@@ -29,7 +29,7 @@ The decision is whether — and how — to add a `claude-code` LLM provider, giv
 
 Chosen: **Option 1 — `claude-code` provider via local `claude --print`**, BUT shipped as an explicitly-bounded, disclosed feature, not a default.
 
-`LlmClient::generate` (`crates/forgeplan-core/src/llm/mod.rs`) gains a `provider == "claude-code"` branch that, instead of `http.post`, spawns `claude --print -p <prompt> --output-format json [--model <model>] [--append-system-prompt <system>]` (interactive auth — reuse `claude login` keychain creds, never `--bare`), reusing the `claude_print` spawn + envelope parse, and returns the `.result` text. Config: `provider: claude-code` with NO `api_key_env`. Model default follows the configured `model` (fall back to a current Sonnet); overridable.
+`LlmClient::generate` (`crates/forgeplan-core/src/llm/mod.rs`) gains a `provider == "claude-code"` branch that, instead of `http.post`, spawns `claude --print --output-format json [--model <model>] [--append-system-prompt <system>]` (interactive auth — reuse `claude login` keychain creds, never `--bare`), reusing the `claude_print` spawn + envelope parse, and returns the `.result` text. **The prompt is fed on the child's stdin, NOT as a `-p` argv element** — a dash-leading prompt would otherwise be mis-parsed as a flag (security review F-2, verified live against `claude` v2.1.165) and this removes the external-parser dependency for prompt content. The `model` string is **charset-gated** (`^[A-Za-z0-9._:-]{1,64}$`, leading `-` rejected) before it reaches argv, as defence-in-depth against argv/flag injection through an untrusted config value (security review F-1) — the sibling dispatcher allowlists its argv strings and this provider now does too. Config: `provider: claude-code` with NO `api_key_env`. Model default follows the configured `model` (omitted → claude picks its default); overridable.
 
 ### Mandatory guardrails (acceptance criteria)
 
@@ -39,6 +39,7 @@ Chosen: **Option 1 — `claude-code` provider via local `claude --print`**, BUT 
 - **AC-4 Graceful degradation**: if `claude` is not on PATH / not logged in, fail with a helpful message (mirrors the existing "LLM provider unavailable" pattern), never a panic.
 - **AC-5 Env hygiene**: do not leak unrelated secrets to the child beyond what `claude` needs; document the known subprocess-env caveat.
 - **AC-6 Not the auto-detect default**: the provider auto-detect order stays key-based (`openai`→`anthropic`→`gemini`); `claude-code` is opt-in only (explicit `provider: claude-code` or `FORGEPLAN_LLM_PROVIDER=claude-code`), so nobody silently routes subscription usage.
+- **AC-7 Keyless config valid**: `provider: claude-code` MUST be a valid configuration with NO `api_key_env` (the HTTP providers require a key; `claude-code`, like `ollama`, is keyless). The api-key validation gate (CLI `require_llm_config`, `routing`) MUST exempt keyless providers — without making them auto-defaults (AC-6 still holds). The set of keyless providers is exactly `{ollama, claude-code}`.
 
 ### Consequences
 
@@ -48,7 +49,7 @@ Chosen: **Option 1 — `claude-code` provider via local `claude --print`**, BUT 
 
 ## Validation
 
-Security review (CWE-78 command-injection surface: prompt passed as a single argv element, fixed binary, no shell string; recursion guard; env hygiene) + tester (mock-binary harness via `FORGEPLAN_CLAUDE_BIN`) gate before activation. Guardian gate confirms AC-1..AC-6 before merge.
+Security review (CWE-78 command-injection surface: prompt passed as a single argv element, fixed binary, no shell string; recursion guard; env hygiene) + tester (mock-binary harness via `FORGEPLAN_CLAUDE_BIN`) gate before activation. Guardian gate confirms AC-1..AC-7 before merge.
 
 ## More Information
 
