@@ -280,12 +280,22 @@ The validator accepts section synonyms:
 ```
 <type>(<scope>): <description>
 
-[body in Russian]
+[body in English]
 
 Refs: RFC-001, FR-001..004
 ```
 Types: `feat`, `docs`, `fix`, `refactor`, `test`, `chore`, `progress`.
 Scope: module (`cli`, `core`, `store`) or artifact (`rfc`, `prd`, `adr`).
+
+**🌐 Language rule (commits + PRs always EN)**:
+- Commit message subject and body — **English only**, no mixing.
+- PR title and description — **English only**.
+- Branch names — English kebab-case (already the convention).
+- Inline tokens are fine: you can quote Russian filenames/identifiers/strings
+  in code spans (e.g. `"Связанные разборы"` block removed), but the surrounding
+  narrative stays English.
+- Content files (`.mdx`, `.md` blog posts, `.forgeplan/` artifacts) keep their
+  source language — the rule applies only to git/GitHub metadata.
 
 **PR rules (minimal)**:
 - Title: `[ARTIFACT-ID] description`
