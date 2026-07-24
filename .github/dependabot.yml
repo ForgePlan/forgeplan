@@ -1,3 +1,6 @@
+# Dependabot SECURITY updates remain deliberately disabled (decision 2026-07-24) —
+# security PRs always target the default branch (main), bypassing the dev-based flow;
+# coverage comes from these weekly version updates plus the CI npm-audit gate instead.
 version: 2
 updates:
   # Enable version updates for GitHub Actions
@@ -7,6 +10,7 @@ updates:
       interval: "weekly"
       day: "monday"
       time: "06:00"
+    target-branch: "dev"
     groups:
       github-actions:
         patterns: ["*"]
@@ -18,8 +22,21 @@ updates:
       interval: "weekly"
       day: "tuesday"
       time: "06:00"
+    target-branch: "dev"
     open-pull-requests-limit: 5
     groups:
       rust-deps:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+
+  # 25 of 27 open alerts (incl. all 4 HIGH at the time) lived in website/ and were
+  # structurally invisible without an npm ecosystem entry.
+  - package-ecosystem: "npm"
+    directory: "/website"
+    schedule:
+      interval: "weekly"
+    target-branch: "dev"
+    open-pull-requests-limit: 5
+    groups:
+      npm-website:
+        patterns: ["*"]
