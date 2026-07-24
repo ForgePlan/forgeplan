@@ -36,6 +36,7 @@ Skill установится в выбранные агенты. После эт
 ```bash
 # macOS (Homebrew)
 brew install forgeplan/tap/forgeplan
+# Homebrew 6.0+: если отклонено с "untrusted tap", выполните `brew trust forgeplan/tap` один раз и повторите.
 
 # Из исходников (Rust)
 cargo install forgeplan

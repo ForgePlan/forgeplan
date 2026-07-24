@@ -36,6 +36,7 @@ The skill will be installed into selected agents. After that, in your AI chat:
 ```bash
 # macOS (Homebrew)
 brew install forgeplan/tap/forgeplan
+# Homebrew 6.0+: if refused with "untrusted tap", run `brew trust forgeplan/tap` once, then re-run.
 
 # From source (Rust)
 cargo install forgeplan

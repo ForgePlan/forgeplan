@@ -83,6 +83,20 @@ forgeplan setup-skill
 brew install forgeplan/tap/forgeplan
 ```
 
+:::note[Homebrew 6.0+ требует доверия к tap]
+В Homebrew 6.0 сторонние tap'ы стали **недоверенными по умолчанию**. Если видите
+`Error: Refusing to load formula forgeplan/tap/forgeplan from untrusted tap`,
+один раз отметьте tap доверенным и повторите установку:
+
+```bash
+brew trust forgeplan/tap
+brew install forgeplan/tap/forgeplan
+```
+
+Это разовое (на машину) подтверждение, что вы доверяете tap'у ForgePlan.
+На Homebrew < 6.0 обычный `brew install` выше работает без этого шага.
+:::
+
 ### Из исходного кода (Rust)
 
 ```bash
