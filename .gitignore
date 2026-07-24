@@ -110,3 +110,15 @@ W1-L2-CLAUDE-additional-sources.zip
 .forgeplan/locks/
 # === end forgeplan section ===
 .forgeplan/anomalies-journal.jsonl
+
+# dev/ reference clones — external repos studied as prior art, not ours to track
+dev/vibe-kanban/
+dev/gastown/
+dev/swarm-forge/
+dev/effective-html/
+dev/architecture-diagram-generator/
+
+# dev/ derived + vendored artifacts — regenerable, never source
+dev/forge-understand/spike/vendor/
+dev/forgeplan-project-map/
+dev/forgeplan-project-map.zip

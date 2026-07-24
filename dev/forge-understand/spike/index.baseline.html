@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ForgePlan — карта проекта</title>
+<script>
+  (function(){const s=localStorage.getItem('fp-map-theme');const d=s?s==='dark':matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.classList.toggle('dark',d);})();
+</script>
+<style>
+  :root{
+    --bg:#FAF9F5; --surface:#FFFFFF; --surface2:#F0EEE6;
+    --ink:#141413; --body:#3D3D3A; --muted:#87867F;
+    --line:#D1CFC5; --line-soft:#E6E3DA;
+    --clay:#D97757; --clay-soft:rgba(217,119,87,.10);
+    --olive:#788C5D; --olive-soft:rgba(120,140,93,.12);
+    --zone:rgba(20,20,19,.022); --zone-line:#CFCcC2;
+    --cyan:#3a8fb0; --emerald:#4f9d6e; --violet:#8366c4; --amber:#bf8a31; --rose:#c46a7e; --slate:#6b7280; --orange:#c8743a;
+    --serif:ui-serif,Georgia,"Times New Roman",serif; --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --shadow:rgba(20,20,19,.10);
+  }
+  html.dark{
+    --bg:#141413; --surface:#1F1F1D; --surface2:#2A2A28;
+    --ink:#FAF9F5; --body:#D1CFC5; --muted:#8A8980;
+    --line:#3D3D3A; --line-soft:#2A2A28;
+    --clay:#E48A6E; --clay-soft:rgba(228,138,110,.15);
+    --olive:#9DB07C; --olive-soft:rgba(157,176,124,.16);
+    --zone:rgba(250,249,245,.026); --zone-line:#3D3D3A;
+    --cyan:#5fb8d6; --emerald:#74c596; --violet:#a48ee0; --amber:#e0b367; --rose:#e08aa0; --slate:#9aa4b2; --orange:#e0935f;
+    --shadow:rgba(0,0,0,.5);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--body);font-family:var(--sans);font-size:14px;display:flex;flex-direction:column;overflow:hidden}
+  .bar{display:flex;align-items:center;gap:14px;padding:13px 20px;border-bottom:1px solid var(--line);background:var(--bg);flex-wrap:wrap;z-index:6}
+  .bar h1{font-family:var(--serif);font-weight:500;font-size:19px;color:var(--ink);margin:0;letter-spacing:-.01em}
+  .bar .sub{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase}
+  .spacer{flex:1}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{font-family:var(--mono);font-size:11px;letter-spacing:.04em;padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer;transition:all .15s}
+  .chip:hover{color:var(--ink);border-color:var(--muted)}
+  .chip.on{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+  button.t{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;padding:6px 11px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer}
+  .wrap{flex:1;display:flex;min-height:0;position:relative}
+  .stage{flex:1;overflow:auto;position:relative;cursor:grab;scroll-behavior:auto;background:radial-gradient(circle at 1px 1px,var(--line-soft) 1px,transparent 0) 0 0/28px 28px}
+  .stage.grabbing{cursor:grabbing}
+  svg.map{display:block}
+  /* zones — dash-dot layer borders */
+  .zone-bg{fill:var(--zone);stroke:var(--zone-line);stroke-width:1.2;stroke-dasharray:6 4 1 4;cursor:pointer;transition:stroke .15s}
+  .zone-bg:hover{stroke:var(--muted)}
+  .zone-bg.zsel{stroke:var(--clay);stroke-width:2.6;stroke-dasharray:none}
+  .conn{margin-top:15px;border-top:1px solid var(--line-soft);padding-top:11px}
+  .conn .ct{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:7px}
+  .conn .row{font-size:12.5px;line-height:1.75;color:var(--body)}
+  .conn .row b{color:var(--ink);font-weight:600}
+  .ztitle{cursor:pointer} .zsub{cursor:pointer}
+  .ztitle{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;fill:var(--muted)}
+  .zsub{font-family:var(--mono);font-size:10px;fill:var(--muted);opacity:.7}
+  /* cards */
+  .node{cursor:pointer}
+  .node .box{fill:var(--surface);stroke:var(--line);stroke-width:1.5;transition:stroke .15s,filter .15s}
+  .node:hover .box{stroke:var(--muted)}
+  .node.sel .box{stroke:var(--clay)!important;stroke-width:2.6}
+  .node .t{font-family:var(--sans);font-size:13.5px;font-weight:600;fill:var(--ink);pointer-events:none}
+  .node .m{font-family:var(--mono);font-size:10px;fill:var(--muted);pointer-events:none}
+  .node.gate .box{fill:var(--clay-soft);stroke:var(--clay)}
+  .node.truth .box{fill:var(--olive-soft);stroke:var(--olive);stroke-width:2}
+  .node.store .box{fill:var(--surface2)}
+  .node.ext .box{stroke-dasharray:6 3}
+  .node.epic .box{stroke:var(--amber)} .node.prd .box{stroke:var(--cyan)} .node.spec .box{stroke:var(--rose)}
+  .node.rfc .box{stroke:var(--emerald)} .node.adr .box{stroke:var(--violet)} .node.evid .box{stroke:var(--olive)}
+  .node.prob .box{stroke:var(--orange)} .node.note .box{stroke:var(--slate)}
+  /* edges */
+  .edge{fill:none;stroke:var(--line);stroke-width:1.5;stroke-linecap:round;transition:opacity .2s,stroke .2s,stroke-width .2s}
+  .elbl{font-family:var(--mono);font-size:9.5px;fill:var(--muted);opacity:0;transition:opacity .2s}
+  .stage.flowing .edge{opacity:.1}
+  .stage.flowing .node{opacity:.26}
+  .stage.flowing .zone{opacity:.45}
+  .stage.flowing .elbl{opacity:0}
+  .stage.flowing .edge.lit{opacity:1;stroke:var(--clay);stroke-width:2.6;stroke-dasharray:1 8;animation:march 1.1s linear infinite}
+  .stage.flowing .node.lit{opacity:1}
+  .stage.flowing .node.lit .box{stroke:var(--clay)}
+  .stage.flowing .elbl.lit{opacity:1;fill:var(--clay);font-weight:600}
+  @keyframes march{to{stroke-dashoffset:-36}}
+  @media (prefers-reduced-motion:reduce){.edge.lit{animation:none}}
+  /* zone focus (drill-down lite) */
+  .stage.zfocus .node:not(.zin){opacity:.18}
+  .stage.zfocus .zone-bg:not(.zsel){opacity:.4}
+  .stage.zfocus .edge{opacity:.07}
+  .stage.zfocus .edge.ein{opacity:.95}
+  .stage.zfocus .elbl.ein{opacity:1;fill:var(--muted)}
+  /* drift demo */
+  .node.changed .box{stroke:var(--clay)!important;stroke-width:2.2}
+  .changed-dot{fill:var(--clay)}
+  .driftbadge{display:none;font-family:var(--mono);font-size:10.5px;color:var(--clay);border:1px solid var(--clay);border-radius:999px;padding:3px 9px;letter-spacing:.03em}
+  .driftbadge.on{display:inline-block}
+  button.t.on{border-color:var(--clay);color:var(--clay)}
+  select.t{appearance:none;-webkit-appearance:none;padding-right:20px;background:transparent}
+  .lenswash{opacity:.42;stroke-width:2.6;pointer-events:none}
+  .stage.lens-on .node:not(.lensed){opacity:.32}
+  .lensscale{font-family:var(--mono);font-size:10.5px;color:var(--muted);display:inline-flex;align-items:center;gap:3px}
+  .lsw{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:2px;vertical-align:-1px}
+  /* right detail panel */
+  .panel{width:340px;border-left:1px solid var(--line);background:var(--bg);padding:20px;overflow:auto}
+  .panel h2{font-family:var(--serif);font-weight:500;font-size:18px;color:var(--ink);margin:0 0 2px}
+  .panel .pm{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:12px}
+  .panel .pb{color:var(--body);line-height:1.6;font-size:13.5px}
+  .panel .empty{color:var(--muted);line-height:1.7}
+  /* legend + minimap, bottom-left */
+  .hud{position:absolute;left:16px;bottom:16px;width:236px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 6px 24px var(--shadow);overflow:hidden;z-index:4}
+  .hud .lt{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:9px 12px 5px}
+  .legend{display:grid;grid-template-columns:1fr 1fr;gap:3px 8px;padding:0 12px 9px}
+  .legend .li{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--body)}
+  .legend .sw{width:11px;height:11px;border-radius:3px;border:1.5px solid;flex:none}
+  .legend .ln{width:14px;height:0;border:none;flex:none}
+  .mini{border-top:1px solid var(--line-soft);position:relative;cursor:pointer;background:var(--bg)}
+  .mini svg{display:block;width:100%}
+  .mini .vp{fill:var(--clay);fill-opacity:.14;stroke:var(--clay);stroke-width:2}
+  .src{position:absolute;top:12px;right:18px;font-family:var(--mono);font-size:9.5px;color:var(--muted);opacity:.85;text-align:right;z-index:4}
+  .flowcap{padding:9px 20px;border-top:1px solid var(--line);background:var(--bg);color:var(--muted);font-size:12px;min-height:18px}
+  .flowcap .fname{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--clay);margin-right:10px}
+  .flowcap ol{margin:5px 0 0;padding:0;list-style:none;display:flex;gap:16px;flex-wrap:wrap;counter-reset:s}
+  .flowcap li{counter-increment:s}
+  .flowcap li::before{content:counter(s);display:inline-block;width:15px;height:15px;line-height:15px;text-align:center;background:var(--clay);color:#fff;border-radius:50%;font-size:9px;margin-right:6px}
+  .flowcap code{font-family:var(--mono);font-size:11px;color:var(--clay)}
+  .panel code{font-family:var(--mono);font-size:12px;color:var(--clay)}
+</style>
+</head>
+<body>
+  <div class="bar">
+    <h1>ForgePlan</h1>
+    <span class="sub">карта проекта · сетка зон спроектирована · связи и описания из данных</span>
+    <div class="spacer"></div>
+    <div class="chips" id="chips">
+      <button class="chip on" data-flow="all">Всё</button>
+      <button class="chip" data-flow="shape">Shape</button>
+      <button class="chip" data-flow="prove">Prove</button>
+      <button class="chip" data-flow="reason">Reason</button>
+      <button class="chip" data-flow="search">Search</button>
+      <button class="chip" data-flow="brownfield">Brownfield</button>
+      <button class="chip" data-flow="drift">Drift</button>
+    </div>
+    <select class="t" id="lens"><option value="off">Линза: нет</option><option value="reff">R_eff (доверие)</option><option value="fresh">Свежесть</option><option value="blind">Слепые зоны</option></select>
+    <span class="lensscale" id="lensscale"></span>
+    <span class="driftbadge" id="driftbadge"></span>
+    <button class="t" id="drift">Δ изменения</button>
+    <button class="t" id="theme">тема</button>
+  </div>
+  <div class="wrap">
+    <div class="stage" id="stage"></div>
+    <div class="src">тащи холст мышью · Ctrl/⌘ + скролл — зум · клик по зоне/блоку — описание · Esc — сброс</div>
+    <div class="hud">
+      <div class="lt">Легенда</div>
+      <div class="legend" id="legend"></div>
+      <div class="lt" style="border-top:1px solid var(--line-soft)">Обзор</div>
+      <div class="mini" id="mini"></div>
+    </div>
+    <aside class="panel" id="panel"><div class="empty"><b style="color:var(--ink)">Карта устройства проекта.</b><br><br>Клик по <b>зоне</b> (пустое место слоя) — про слой целиком: что это, что внутри, как взаимодействует.<br><br>Клик по <b>блоку</b> — что это, как работает и с чем связан.<br><br>Кнопки сверху — подсветить один сквозной поток. Холст листается, внизу слева — мини-карта и легенда.</div></aside>
+  </div>
+  <div class="flowcap" id="flowcap"></div>
+
+<script>
+/* ============================================================================
+   ДАННЫЕ (IR): ЧТО есть и ЧТО с чем связано. Без координат.
+   Сетка зон ниже (поле grid) — спроектированная композиция, а не авто-разброс.
+   ========================================================================== */
+const IR={
+  zones:[
+    {id:'z.surfaces', label:'Surfaces',             sub:'two doors, one core',             accent:'cyan',    grid:[0,0]},
+    {id:'z.write',    label:'Core · Shape → Prove', sub:'the single write path',           accent:'emerald', grid:[0,1]},
+    {id:'z.storage',  label:'Storage · ADR-003',    sub:'markdown is the source of truth', accent:'olive',   grid:[0,2]},
+    {id:'z.decisions',label:'Decision trail',       sub:'the artifact graph',              accent:'slate',   grid:[0,3], layout_rule:'graph'},
+    {id:'z.orch',     label:'Core · Orchestration', sub:'delegate & ingest',               accent:'amber',   grid:[1,0]},
+    {id:'z.intel',    label:'Core · Intelligence',  sub:'questions about the graph',       accent:'violet',  grid:[1,1]},
+    {id:'z.external', label:'External · optional',  sub:'graceful degradation',            accent:'rose',    grid:[1,2]},
+  ],
+  nodes:[
+    {id:'cli',label:'CLI · forgeplan',meta:'surface · 76 commands',zone:'z.surfaces'},
+    {id:'mcp',label:'MCP server',meta:'surface · stdio · 73 tools',zone:'z.surfaces'},
+    {id:'hint',label:'Hint protocol',meta:'contract · PRD-071',zone:'z.surfaces'},
+    {id:'routing',label:'Routing · Depth',meta:'core · routing',zone:'z.write'},
+    {id:'artifact',label:'Artifact model',meta:'core · artifact/*',zone:'z.write'},
+    {id:'projection',label:'projection — write gate',meta:'core · ADR-003 · #8',zone:'z.write',kind:'gate'},
+    {id:'validation',label:'validation',meta:'core · MUST sections',zone:'z.write'},
+    {id:'lifecycle',label:'lifecycle',meta:'core · state machine',zone:'z.write'},
+    {id:'scoring',label:'scoring · R_eff',meta:'core · min(evidence)',zone:'z.write'},
+    {id:'search',label:'search',meta:'core · bm25 + bge-m3',zone:'z.intel'},
+    {id:'graph',label:'graph',meta:'core · petgraph',zone:'z.intel'},
+    {id:'fpf',label:'FPF · ADI',meta:'core · RFC-001',zone:'z.intel'},
+    {id:'health',label:'health · drift',meta:'core · observability',zone:'z.intel'},
+    {id:'playbook',label:'playbook',meta:'core · ADR-009',zone:'z.orch'},
+    {id:'dispatch',label:'dispatch · claim',meta:'core · PRD-057',zone:'z.orch'},
+    {id:'ingest',label:'ingest',meta:'core · SPEC-004',zone:'z.orch'},
+    {id:'brownfield',label:'brownfield',meta:'core · EPIC-006',zone:'z.orch'},
+    {id:'markdown',label:'Markdown · source of truth',meta:'storage',zone:'z.storage',kind:'truth'},
+    {id:'lancedb',label:'LanceDB',meta:'storage · derived',zone:'z.storage',kind:'store'},
+    {id:'fastembed',label:'fastembed · BGE-M3',meta:'storage · 1024-dim',zone:'z.storage',kind:'store'},
+    {id:'git',label:'Git',meta:'storage · versions',zone:'z.storage',kind:'store'},
+    {id:'llm',label:'LLM providers',meta:'external · inference',zone:'z.external',kind:'ext'},
+    {id:'plugins',label:'Agent plugins',meta:'external · delegated',zone:'z.external',kind:'ext'},
+    {id:'marketplace',label:'Marketplace',meta:'external · distribution',zone:'z.external',kind:'ext'},
+    {id:'epic',label:'Epic',meta:'artifact · 8',zone:'z.decisions',kind:'epic'},
+    {id:'prd',label:'PRD',meta:'artifact · 64',zone:'z.decisions',kind:'prd'},
+    {id:'spec',label:'Spec',meta:'artifact · 5',zone:'z.decisions',kind:'spec'},
+    {id:'rfc',label:'RFC',meta:'artifact · 12',zone:'z.decisions',kind:'rfc'},
+    {id:'adr',label:'ADR',meta:'artifact · 17',zone:'z.decisions',kind:'adr'},
+    {id:'evidence',label:'Evidence',meta:'artifact · 147',zone:'z.decisions',kind:'evid'},
+    {id:'problem',label:'Problem',meta:'artifact · 74',zone:'z.decisions',kind:'prob'},
+    {id:'note',label:'Note',meta:'artifact · 44',zone:'z.decisions',kind:'note'},
+  ],
+  edges:[
+    {id:'e-cli-route',source:'cli',target:'routing',relation:'управление'},
+    {id:'e-mcp-proj',source:'mcp',target:'projection',relation:'управление'},
+    {id:'e-route-art',source:'routing',target:'artifact',relation:'управление'},
+    {id:'e-art-proj',source:'artifact',target:'projection',relation:'данные'},
+    {id:'e-proj-md',source:'projection',target:'markdown',relation:'запись'},
+    {id:'e-proj-lance',source:'projection',target:'lancedb',relation:'синхрон'},
+    {id:'e-md-git',source:'markdown',target:'git',relation:'коммит'},
+    {id:'e-proj-valid',source:'projection',target:'validation',relation:'управление'},
+    {id:'e-valid-life',source:'validation',target:'lifecycle',relation:'гейт'},
+    {id:'e-proj-score',source:'projection',target:'scoring',relation:'управление'},
+    {id:'e-score-life',source:'scoring',target:'lifecycle',relation:'гейт'},
+    {id:'e-score-evid',source:'scoring',target:'evidence',relation:'читает'},
+    {id:'te-evid-adr',source:'evidence',target:'adr',relation:'подтверждает'},
+    {id:'e-art-fpf',source:'artifact',target:'fpf',relation:'разбор'},
+    {id:'e-fpf-llm',source:'fpf',target:'llm',relation:'делегирует'},
+    {id:'e-cli-search',source:'cli',target:'search',relation:'запрос'},
+    {id:'e-search-lance',source:'search',target:'lancedb',relation:'читает'},
+    {id:'e-graph-lance',source:'graph',target:'lancedb',relation:'читает'},
+    {id:'e-embed-lance',source:'fastembed',target:'lancedb',relation:'эмбеддинги'},
+    {id:'e-cli-pb',source:'cli',target:'playbook',relation:'запуск'},
+    {id:'e-pb-plugins',source:'playbook',target:'plugins',relation:'делегирует'},
+    {id:'e-plugins-ingest',source:'plugins',target:'ingest',relation:'вывод'},
+    {id:'e-brown-ingest',source:'brownfield',target:'ingest',relation:'управление'},
+    {id:'e-ingest-proj',source:'ingest',target:'projection',relation:'черновики'},
+    {id:'e-proj-epic',source:'projection',target:'epic',relation:'данные'},
+    {id:'e-mcp-health',source:'mcp',target:'health',relation:'запрос'},
+    {id:'e-health-graph',source:'health',target:'graph',relation:'обход'},
+    {id:'e-epic-prd',source:'epic',target:'prd',relation:'входит'},
+    {id:'e-prd-rfc',source:'prd',target:'rfc',relation:'уточняет'},
+    {id:'e-prd-spec',source:'prd',target:'spec',relation:'уточняет'},
+    {id:'e-rfc-adr',source:'rfc',target:'adr',relation:'уточняет'},
+    {id:'e-prob-prd',source:'problem',target:'prd',relation:'повод'},
+  ],
+  flows:{
+    shape:{name:'Shape — от идеи к сохранённому решению',nodes:['cli','mcp','routing','artifact','projection','markdown','lancedb','git'],edges:['e-cli-route','e-mcp-proj','e-route-art','e-art-proj','e-proj-md','e-proj-lance','e-md-git'],steps:['описываешь задачу — система выбирает глубину','создаётся артефакт по шаблону','всё пишется через шлюз записи','сохраняется файл и обновляется индекс','коммит в историю']},
+    prove:{name:'Prove — проверить, оценить, активировать',nodes:['projection','validation','lifecycle','scoring','evidence','adr'],edges:['e-proj-valid','e-valid-life','e-proj-score','e-score-life','e-score-evid','te-evid-adr'],steps:['проверка обязательных разделов','подкладываются доказательства','оценка по слабейшему звену','активация, если оценка выше нуля']},
+    reason:{name:'Reason — разбор перед серьёзным решением',nodes:['cli','routing','artifact','fpf','llm'],edges:['e-cli-route','e-route-art','e-art-fpf','e-fpf-llm'],steps:['для важных, необратимых решений','система выдвигает 3+ гипотезы','при желании зовёт языковую модель','нет модели — работает на правилах']},
+    search:{name:'Search — спросить у графа, без сети',nodes:['cli','search','graph','lancedb','fastembed'],edges:['e-cli-search','e-search-lance','e-graph-lance','e-embed-lance'],steps:['задаёшь вопрос словами','поиск по словам и по смыслу','смысл считается на месте, офлайн','индекс и граф возвращают связное']},
+    brownfield:{name:'Brownfield — восстановить карту из готового кода',nodes:['cli','playbook','plugins','brownfield','ingest','projection','markdown','epic'],edges:['e-cli-pb','e-pb-plugins','e-plugins-ingest','e-brown-ingest','e-ingest-proj','e-proj-md','e-proj-epic'],steps:['запускаешь сценарий разбора','тяжёлый анализ берут помощники','их вывод собирается в черновики','через тот же шлюз — в хранилище']},
+    drift:{name:'Drift — код всё ещё соответствует решениям?',nodes:['mcp','health','graph','lancedb'],edges:['e-mcp-health','e-health-graph','e-graph-lance'],steps:['после правок проверяешь дрейф','система обходит граф связей','находит «слепые зоны» и устаревшее','чинишь до новой работы']},
+  }
+};
+/* Полные описания — нейтральным языком, что это и как работает */
+const DETAIL={
+  cli:'Способ работать с проектом из терминала. Понимает 76 команд — создать, проверить, оценить, активировать и так далее. Сама ничего не придумывает: разбирает, что ты написал, и передаёт в ядро. Поставляется одним файлом, ставится в пару строк.',
+  mcp:'Та же работа, но для ИИ-агента. Даёт агенту 73 готовых действия поверх того же ядра и тех же правил. Каждая запись помечается, какой именно агент её сделал — чтобы потом было видно авторство.',
+  hint:'После каждого ответа система подсказывает следующий разумный шаг одной короткой пометкой («дальше сделай вот это» / «или вот так» / «подожди условие»). Это держит автономного агента на правильной дорожке и не даёт ему растеряться.',
+  routing:'Смотрит на задачу и решает, насколько глубоко её прорабатывать: мелкое и обратимое — почти без церемоний, крупное и необратимое — с полным набором документов. Защищает и от лишней бюрократии, и от легкомыслия.',
+  artifact:'Описывает, из чего состоит каждый документ проекта: какие у него обязательные разделы, как устроен заголовок, как присваивается номер. Через неё проходит любое создание и изменение, дальше — на запись.',
+  projection:'Самое важное место. Единственная дверь, через которую вообще что-либо записывается. Ни одна команда не лезет в базу напрямую. Этот узел сохраняет текстовый файл-первоисточник и обновляет поисковый индекс одновременно, одной операцией, чтобы они не разошлись.',
+  validation:'Проверяет, что в документе заполнены все обязательные разделы, прежде чем пускать его дальше. Понимает синонимы названий разделов. Пока не пройдёт — активировать документ нельзя.',
+  lifecycle:'Следит за состоянием документа: черновик → в работе → закрыт или устарел. Переходы строгие; активировать можно только то, что прошло проверку и набрало доверие.',
+  scoring:'Считает, насколько можно доверять документу, по правилу «цепь не крепче слабого звена»: итог равен самому слабому доказательству, а не среднему. Просроченные доказательства теряют вес сами.',
+  search:'Находит нужное двумя способами сразу: по точным словам и по смыслу. Если смысловой поиск отключён — спокойно работает только по словам, ничего не ломается.',
+  graph:'Хранит все связи между документами как сеть, где у каждой связи есть тип (уточняет, подтверждает, заменяет, блокирует). Именно типы позволяют отвечать на вопросы «что покрыто», «что мешает», «что устарело».',
+  fpf:'Помогает не принимать решения наугад. Выдвигает несколько конкурирующих объяснений, проверяет их и оставляет самое обоснованное. Для важных решений это обязательный шаг.',
+  health:'Показывает состояние проекта: где код живёт без объясняющего решения, где остались «висячие» документы, что устарело. Отдельно ловит расхождение кода с уже принятыми решениями.',
+  playbook:'Готовые многошаговые сценарии. Сам проект не пишет огромных разборов — он по сценарию раздаёт работу помощникам, а потом собирает их результат обратно.',
+  dispatch:'Когда над проектом работает несколько агентов сразу, распределяет, кто за что берётся, без пересечений по файлам. Помечает «занято», чтобы двое не правили одно и то же.',
+  ingest:'Берёт вывод внешних помощников и аккуратно превращает его в черновики документов проекта, со ссылками на конкретные места в коде. Это мост от чужого анализа обратно в нашу систему.',
+  brownfield:'Помогает зайти в уже существующий, недокументированный код и восстановить по нему карту решений: что здесь за части, как они связаны, какие решения за этим стоят.',
+  markdown:'Главное хранилище и первоисточник. Все документы лежат обычными текстовыми файлами — их видно в истории, можно сравнивать построчно. Всё остальное (индекс, эмбеддинги) собирается из них заново в любой момент.',
+  lancedb:'Быстрый поисковый индекс — производная копия для скорости и поиска по смыслу. Его не хранят в истории: он всегда пересобирается из файлов и никогда не считается первоисточником.',
+  fastembed:'Превращает каждый документ и каждый запрос в набор чисел, отражающих смысл, — прямо на твоей машине, без интернета и ключей. Если выключить — поиск останется по словам.',
+  git:'Обычная история версий. Именно на ней держатся авторство, ревью и совместная работа — отдельного сервера система не добавляет. Та же история служит источником для разбора старого кода.',
+  llm:'Необязательная внешняя «умная» помощь — для разбора гипотез и спорных случаев. Если её не подключать, система просто работает на правилах и пропускает «умные» шаги. Ничего не падает.',
+  plugins:'Узкие специалисты (по структуре кода, по предметной области, по исследованию), которых проект зовёт на тяжёлую работу. Их результат он читает обратно и встраивает к себе.',
+  marketplace:'Место, откуда ставятся готовые наборы (сценарий + навык + помощник) и сами плагины. Способ делиться и распространять расширения.',
+  epic:'Самый крупный уровень — объединяет под собой группу документов помельче (что делаем большой темой и зачем).',
+  prd:'Документ «что делаем и зачем» — самый частый. Несёт обязательные разделы и требования. Должен пройти проверку до кода и набрать доверие до активации.',
+  spec:'Документ «как именно это устроено»: точные договорённости об интерфейсах, форматах данных, схемах.',
+  rfc:'Документ «как мы это построим»: предложение по реализации с этапами и взвешенными компромиссами.',
+  adr:'Запись «почему выбрали именно так». Короткое решение с причиной — чтобы спустя месяцы не гадать, отчего сделано вот так.',
+  evidence:'Доказательства — тесты, замеры, бенчмарки, — привязанные к документам, которые они подтверждают. Их структурированные поля питают оценку доверия; просроченные теряют силу.',
+  problem:'Зафиксированная проблема с контекстом — зерно будущего решения. От неё тянется ниточка к документу, который её закрывает.',
+  note:'Лёгкие мелкие решения и короткие заметки. Сами истекают через 90 дней, если их не повысить в ранге.',
+};
+/* Описания зон (слоёв): что это · что внутри · как взаимодействует с другими */
+const ZONEDETAIL={
+  'z.surfaces':'«Входные двери» в систему — два способа дать команду: из терминала (для человека) и через сервер инструментов (для ИИ-агента). За обеими дверями одно и то же ядро и одни и те же правила, поэтому результат одинаков, кто бы ни обращался. Сюда же относятся подсказки следующего шага. Как читать: всё, что снаружи, попадает внутрь только через этот слой — дальше управление уходит в ядро.',
+  'z.write':'Главная рабочая линия: как идея превращается в сохранённое, проверенное решение. Здесь выбирается глубина проработки, наполняется документ и стоит самое важное — единственный шлюз записи, через который проходит любое изменение. Дальше идут проверка, оценка доверия и переход в активное состояние. Взаимодействие: получает команды из «Поверхностей», пишет в «Хранилище», порождает записи в «Следе решений».',
+  'z.storage':'Где всё лежит. Первоисточник — обычные текстовые файлы (их видно в истории, можно сравнивать построчно). Рядом — производные копии для скорости и поиска по смыслу, и сам Git как история версий. Главное правило слоя: файлы — это истина, всё остальное пересобирается из них в любой момент. Взаимодействие: ядро пишет сюда только через шлюз записи; слой «Разбор» отсюда читает индекс.',
+  'z.decisions':'Память проекта — связанная сеть документов: крупные темы, требования, спецификации, решения, доказательства, проблемы, заметки. Связи между ними типизированы (уточняет, подтверждает, входит), поэтому по сети можно отвечать на вопросы «что чем покрыто» и «что устарело». Взаимодействие: сюда ведёт шлюз записи, отсюда доказательства тянутся к решениям, а проблемы — к требованиям.',
+  'z.orch':'Когда работы много или она тяжёлая, система делает её не сама, а раздаёт: запускает готовые сценарии, делегирует специалистам-плагинам, распределяет задачи между несколькими агентами и собирает их результат обратно в черновики. Сюда же относится восстановление карты из уже существующего кода. Взаимодействие: результат возвращается в ядро через тот же шлюз записи.',
+  'z.intel':'Слой, который отвечает на вопросы о проекте: поиск (по словам и по смыслу), граф связей, разбор гипотез перед решением и проверка здоровья/дрейфа. Опирается на «Хранилище» (индекс) и питает решения. Как читать: сюда обращаются, когда нужно что-то найти, понять или убедиться, что код всё ещё соответствует решениям.',
+  'z.external':'Необязательные внешние помощники: языковые модели, плагины-специалисты, магазин дополнений. Всё это можно не подключать — система мягко деградирует и продолжает работать на правилах. Поэтому слой нарисован пунктиром: это опора, а не фундамент. Взаимодействие: «Разбор» зовёт модель для гипотез, «Оркестрация» — плагины для тяжёлой работы.',
+};
+
+/* ---------------- КУРИРУЕМАЯ РАСКЛАДКА (чистая функция от IR) ---------------- */
+const CARD={w:190,h:60,gap:36}, ZPAD={t:50,s:24,b:24}, ZGAP={x:88,y:70}, MARGIN=40;
+const N=IR.nodes.reduce((m,n)=>(m[n.id]=n,m),{}), E=IR.edges.reduce((m,e)=>(m[e.id]=e,m),{}), Z=IR.zones.reduce((m,z)=>(m[z.id]=z,m),{});
+const KIND={gate:'gate',truth:'truth',store:'store',ext:'ext',epic:'epic',prd:'prd',spec:'spec',rfc:'rfc',adr:'adr',evid:'evid',prob:'prob',note:'note'};
+/* per-kind graph placement for the Decision trail (PRD-centred, like the hand-drawn map) */
+const DEC_POS={epic:{c:0,r:1}, prd:{c:1,r:1}, spec:{c:2,r:0}, rfc:{c:2,r:1}, adr:{c:2,r:2}, problem:{c:1,r:2.35}, evidence:{c:3,r:1}, note:{c:3,r:0}};
+const DKEY={epic:'epic',prd:'prd',spec:'spec',rfc:'rfc',adr:'adr',prob:'problem',evid:'evidence',note:'note'};
+function zonePlacement(z,ns){
+  if(z.layout_rule==='graph'){
+    const pos=ns.map(n=>{const p=DEC_POS[DKEY[n.kind]]||{c:0,r:0};return {id:n.id,col:p.c,row:p.r};});
+    const cols=Math.max(...pos.map(p=>p.col))+1, rows=Math.max(...pos.map(p=>p.row))+1;
+    return {cols,rows,pos};
+  }
+  const cols=Math.max(1,Math.ceil(ns.length/3)), rows=Math.ceil(ns.length/cols);
+  return {cols,rows,pos:ns.map((n,i)=>({id:n.id,col:Math.floor(i/rows),row:i%rows}))};
+}
+function layout(){
+  const byZone={}; IR.zones.forEach(z=>byZone[z.id]=[]); IR.nodes.forEach(n=>byZone[n.zone].push(n));
+  const zi={};
+  IR.zones.forEach(z=>{const pl=zonePlacement(z,byZone[z.id]);
+    zi[z.id]={pl,w:pl.cols*CARD.w+(pl.cols-1)*CARD.gap+ZPAD.s*2,h:pl.rows*CARD.h+(pl.rows-1)*CARD.gap+ZPAD.t+ZPAD.b};});
+  const maxR=Math.max(...IR.zones.map(z=>z.grid[0]))+1, maxC=Math.max(...IR.zones.map(z=>z.grid[1]))+1;
+  const colW=Array(maxC).fill(0), rowH=Array(maxR).fill(0);
+  IR.zones.forEach(z=>{const[r,c]=z.grid;colW[c]=Math.max(colW[c],zi[z.id].w);rowH[r]=Math.max(rowH[r],zi[z.id].h);});
+  const colX=[],rowY=[]; let ax=MARGIN; for(let c=0;c<maxC;c++){colX[c]=ax;ax+=colW[c]+ZGAP.x;}
+  let ay=MARGIN; for(let r=0;r<maxR;r++){rowY[r]=ay;ay+=rowH[r]+ZGAP.y;}
+  const zones=[],nodes=[];
+  IR.zones.forEach(z=>{const[r,c]=z.grid,info=zi[z.id],zx=colX[c],zy=rowY[r];
+    zones.push({id:z.id,x:zx,y:zy,w:info.w,h:info.h});
+    info.pl.pos.forEach(p=>{const x=zx+ZPAD.s+p.col*(CARD.w+CARD.gap),y=zy+ZPAD.t+p.row*(CARD.h+CARD.gap);
+      nodes.push({id:p.id,x,y,w:CARD.w,h:CARD.h,cx:x+CARD.w/2,cy:y+CARD.h/2});});});
+  const W=colX[maxC-1]+colW[maxC-1]+MARGIN, H=rowY[maxR-1]+rowH[maxR-1]+MARGIN;
+  return {zones,nodes,W,H,pos:nodes.reduce((m,n)=>(m[n.id]=n,m),{})};
+}
+function curve(a,b,spread){
+  const dx=b.cx-a.cx,dy=b.cy-a.cy,horiz=Math.abs(dx)>=Math.abs(dy);let s,e,c1,c2;
+  if(horiz){const d=dx>0?1:-1;s={x:d>0?a.x+a.w:a.x,y:a.cy+spread};e={x:d>0?b.x:b.x+b.w,y:b.cy-spread};
+    const k=Math.max(38,Math.abs(e.x-s.x)*0.4);c1={x:s.x+d*k,y:s.y};c2={x:e.x-d*k,y:e.y};}
+  else{const d=dy>0?1:-1;s={x:a.cx+spread,y:d>0?a.y+a.h:a.y};e={x:b.cx-spread,y:d>0?b.y:b.y+b.h};
+    const k=Math.max(38,Math.abs(e.y-s.y)*0.4);c1={x:s.x,y:s.y+d*k};c2={x:e.x,y:e.y-d*k};}
+  return{d:`M ${s.x} ${s.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${e.x} ${e.y}`,mid:{x:(c1.x+c2.x)/2,y:(c1.y+c2.y)/2}};
+}
+const SNS='http://www.w3.org/2000/svg',A=a=>`var(--${a})`,el=(n,at={})=>{const e=document.createElementNS(SNS,n);for(const k in at)e.setAttribute(k,at[k]);return e;};
+let L=null, zoomScale=1;
+function applyZoom(){const st=document.getElementById('stage'),svg=st&&st.querySelector('svg.map');if(!svg)return;svg.setAttribute('width',Math.round(L.W*zoomScale));svg.setAttribute('height',Math.round(L.H*zoomScale));if(st.onscroll)st.onscroll();}
+function zoomAt(clientX,clientY,factor){const st=document.getElementById('stage');const r=st.getBoundingClientRect();
+  const ox=clientX-r.left,oy=clientY-r.top;const sx=(st.scrollLeft+ox)/zoomScale,sy=(st.scrollTop+oy)/zoomScale;
+  zoomScale=Math.max(0.5,Math.min(3,zoomScale*factor));applyZoom();
+  st.scrollLeft=sx*zoomScale-ox;st.scrollTop=sy*zoomScale-oy;if(st.onscroll)st.onscroll();}
+function scrollToZone(id){const z=L.zones.find(x=>x.id===id),st=document.getElementById('stage');if(!z)return;st.scrollTo({left:(z.x+z.w/2)*zoomScale-st.clientWidth/2,top:(z.y+z.h/2)*zoomScale-st.clientHeight/2,behavior:'smooth'});}
+function zoomReset(){const st=document.getElementById('stage');if(zoomScale!==1){zoomScale=1;applyZoom();}st.scrollTo({left:0,top:0,behavior:'smooth'});}
+function render(){
+  L=layout();
+  const svg=el('svg',{class:'map',viewBox:`0 0 ${L.W} ${L.H}`,width:L.W,height:L.H});
+  const defs=el('defs');
+  [['edge','var(--line)'],['clay','var(--clay)']].forEach(([k,c])=>{const m=el('marker',{id:'ah-'+k,viewBox:'0 0 10 10',refX:'8',refY:'5',markerWidth:'7',markerHeight:'7',orient:'auto-start-reverse'});const p=el('path',{d:'M0,1 L9,5 L0,9',fill:'none',stroke:c,'stroke-width':'1.6','stroke-linecap':'round','stroke-linejoin':'round'});m.appendChild(p);defs.appendChild(m);});
+  const f=el('filter',{id:'sh',x:'-20%',y:'-30%',width:'140%',height:'170%'});f.appendChild(el('feDropShadow',{dx:'0',dy:'1.5',stdDeviation:'3.5','flood-color':'var(--shadow)'}));defs.appendChild(f);svg.appendChild(defs);
+  // zones
+  IR.zones.forEach(zd=>{const z=L.zones.find(x=>x.id===zd.id);
+    const bg=el('rect',{x:z.x,y:z.y,width:z.w,height:z.h,rx:16,class:'zone-bg','data-z':zd.id});
+    bg.addEventListener('click',()=>selectZone(zd.id));svg.appendChild(bg);
+    const g=el('g',{class:'zone'});g.addEventListener('click',()=>selectZone(zd.id));
+    const t=el('text',{x:z.x+18,y:z.y+26,class:'ztitle'});t.textContent=zd.label;const s=el('text',{x:z.x+18,y:z.y+40,class:'zsub'});s.textContent=zd.sub;g.appendChild(t);g.appendChild(s);svg.appendChild(g);});
+  // edges under cards
+  const eL=el('g');svg.appendChild(eL);const fan={},seen={};IR.edges.forEach(e=>fan[e.source]=(fan[e.source]||0)+1);
+  IR.edges.forEach(ed=>{const a=L.pos[ed.source],b=L.pos[ed.target];if(!a||!b)return;const i=(seen[ed.source]=(seen[ed.source]||0),seen[ed.source]++),t=fan[ed.source];const sp=t>1?(i-(t-1)/2)*12:0;const cv=curve(a,b,sp);
+    eL.appendChild(el('path',{d:cv.d,class:'edge','marker-end':'url(#ah-edge)','data-e':ed.id}));
+    const lb=el('text',{x:cv.mid.x,y:cv.mid.y-3,'text-anchor':'middle',class:'elbl','data-el':ed.id});lb.textContent=ed.relation;eL.appendChild(lb);});
+  // cards (opaque, mask edges)
+  L.nodes.forEach(nd=>{const meta=N[nd.id];const cls='node'+(meta.kind?' '+KIND[meta.kind]:'');const g=el('g',{class:cls,'data-n':nd.id});
+    g.appendChild(el('rect',{x:nd.x,y:nd.y,width:nd.w,height:nd.h,rx:11,fill:'var(--bg)'}));
+    g.appendChild(el('rect',{x:nd.x,y:nd.y,width:nd.w,height:nd.h,rx:11,class:'box',filter:'url(#sh)'}));
+    const t=el('text',{x:nd.x+16,y:nd.y+26,class:'t'});t.textContent=meta.label;g.appendChild(t);
+    const m=el('text',{x:nd.x+16,y:nd.y+43,class:'m'});m.textContent=meta.meta;g.appendChild(m);
+    g.addEventListener('click',()=>select(nd.id));svg.appendChild(g);});
+  svg.addEventListener('click',e=>{if(e.target===svg)resetView();});
+  const st=document.getElementById('stage');st.innerHTML='';st.appendChild(svg);
+  buildLegend();buildMini();
+}
+let selId=null;
+function connList(id){
+  const out=IR.edges.filter(e=>e.source===id).map(e=>`<div class="row">→ <b>${N[e.target].label}</b> &nbsp;<span style="color:var(--muted)">${e.relation}</span></div>`);
+  const inc=IR.edges.filter(e=>e.target===id).map(e=>`<div class="row">← <b>${N[e.source].label}</b> &nbsp;<span style="color:var(--muted)">${e.relation}</span></div>`);
+  const rows=[...out,...inc];
+  return rows.length?`<div class="conn"><div class="ct">С чем связан</div>${rows.join('')}</div>`:'';
+}
+function clearSel(){document.querySelectorAll('.node').forEach(g=>{g.classList.remove('sel');g.classList.remove('zin');});document.querySelectorAll('.zone-bg').forEach(r=>r.classList.remove('zsel'));document.querySelectorAll('.ein').forEach(e=>e.classList.remove('ein'));document.getElementById('stage').classList.remove('zfocus');}
+function select(id){selId=id;clearSel();document.querySelectorAll('.node').forEach(g=>g.classList.toggle('sel',g.dataset.n===id));const n=N[id];
+  document.getElementById('panel').innerHTML=`<h2>${n.label}</h2><div class="pm">${n.meta} · ${Z[n.zone].label}</div><div class="pb">${DETAIL[id]||''}</div>${connList(id)}`;}
+function selectZone(id){selId=null;clearSel();document.querySelectorAll('.zone-bg').forEach(r=>r.classList.toggle('zsel',r.dataset.z===id));
+  const st=document.getElementById('stage');st.classList.remove('flowing');st.classList.add('zfocus');
+  document.querySelectorAll('.node').forEach(g=>g.classList.toggle('zin',N[g.dataset.n].zone===id));
+  document.querySelectorAll('.edge').forEach(p=>{const e=E[p.dataset.e];p.classList.toggle('ein',!!e&&N[e.source].zone===id&&N[e.target].zone===id);});
+  document.querySelectorAll('.elbl').forEach(t=>{const e=E[t.dataset.el];t.classList.toggle('ein',!!e&&N[e.source].zone===id&&N[e.target].zone===id);});
+  const z=Z[id],inside=IR.nodes.filter(n=>n.zone===id);
+  document.getElementById('panel').innerHTML=`<h2>${z.label}</h2><div class="pm">слой · ${z.sub}</div><div class="pb">${ZONEDETAIL[id]||''}</div><div class="conn"><div class="ct">Что внутри (${inside.length})</div>${inside.map(n=>`<div class="row">· <b>${N[n.id].label}</b> &nbsp;<span style="color:var(--muted)">${N[n.id].meta}</span></div>`).join('')}</div>`;}
+function applyFlow(key){clearSel();document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',c.dataset.flow===key));
+  const st=document.getElementById('stage');const all=key==='all',f=IR.flows[key],ns=all?null:new Set(f.nodes),es=all?null:new Set(f.edges);
+  st.classList.toggle('flowing',!all);
+  document.querySelectorAll('.node').forEach(g=>g.classList.toggle('lit',!all&&ns.has(g.dataset.n)));
+  document.querySelectorAll('.edge').forEach(p=>{const on=!all&&es.has(p.dataset.e);p.classList.toggle('lit',on);p.setAttribute('marker-end',on?'url(#ah-clay)':'url(#ah-edge)');});
+  document.querySelectorAll('.elbl').forEach(t=>t.classList.toggle('lit',!all&&es.has(t.dataset.el)));
+  const cap=document.getElementById('flowcap');cap.innerHTML=all?'':`<span class="fname">${f.name}</span><ol>${f.steps.map(s=>`<li>${s}</li>`).join('')}</ol>`;}
+function buildLegend(){
+  const items=[['zone','cyan','Surfaces'],['zone','emerald','Core'],['zone','olive','Storage'],['zone','violet','Intelligence'],['zone','amber','Orchestration'],['zone','rose','External'],
+    ['kind','clay','Write gate'],['kind','olive','Source of truth'],['line','line','Link'],['line','clay','Active flow']];
+  document.getElementById('legend').innerHTML=items.map(([t,c,n])=>{
+    if(t==='line')return `<div class="li"><span class="ln" style="border-top:2px ${c==='clay'?'solid':'solid'} var(--${c})"></span>${n}</div>`;
+    return `<div class="li"><span class="sw" style="border-color:var(--${c});background:${t==='kind'?`var(--${c})`:'transparent'};opacity:${t==='kind'?.5:1}"></span>${n}</div>`;}).join('');
+}
+function buildMini(){
+  const mw=212, scale=mw/L.W, mh=L.H*scale;
+  const svg=`<svg viewBox="0 0 ${L.W} ${L.H}" width="${mw}" height="${mh}" style="display:block">
+    ${L.zones.map(z=>`<rect x="${z.x}" y="${z.y}" width="${z.w}" height="${z.h}" rx="10" fill="var(--zone)" stroke="var(--zone-line)" stroke-width="3"/>`).join('')}
+    ${L.nodes.map(n=>{const k=N[n.id].kind;const col=k==='gate'?'clay':k==='truth'?'olive':({epic:'amber',prd:'cyan',spec:'rose',rfc:'emerald',adr:'violet',evid:'olive',prob:'orange',note:'slate'}[k]||(Z[N[n.id].zone].accent));return `<rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="6" fill="var(--${col})" opacity="0.55"/>`;}).join('')}
+    <rect id="vp" class="vp" x="0" y="0" width="10" height="10"/>
+  </svg>`;
+  const mini=document.getElementById('mini');mini.innerHTML=svg;mini.dataset.scale=scale;
+  const st=document.getElementById('stage');
+  const sync=()=>{const vp=mini.querySelector('#vp');if(!vp)return;vp.setAttribute('x',st.scrollLeft/zoomScale);vp.setAttribute('y',st.scrollTop/zoomScale);vp.setAttribute('width',Math.min(L.W,st.clientWidth/zoomScale));vp.setAttribute('height',Math.min(L.H,st.clientHeight/zoomScale));};
+  st.onscroll=sync;requestAnimationFrame(sync);
+  const jump=ev=>{const r=mini.getBoundingClientRect();const x=(ev.clientX-r.left)/r.width*L.W,y=(ev.clientY-r.top)/r.height*L.H;st.scrollTo({left:x*zoomScale-st.clientWidth/2,top:y*zoomScale-st.clientHeight/2,behavior:'smooth'});};
+  mini.onclick=jump;
+}
+document.getElementById('chips').addEventListener('click',e=>{const b=e.target.closest('.chip');if(b)applyFlow(b.dataset.flow);});
+document.getElementById('theme').addEventListener('click',()=>{const d=!document.documentElement.classList.contains('dark');document.documentElement.classList.toggle('dark',d);localStorage.setItem('fp-map-theme',d?'dark':'light');});
+/* drift demo: какие блоки «изменились с прошлого раза» (в реале — diff structure.json vs git) */
+const CHANGED=new Set(['projection','scoring','evidence','adr']);
+let driftOn=false;
+function toggleDrift(){driftOn=!driftOn;
+  document.getElementById('drift').classList.toggle('on',driftOn);
+  const b=document.getElementById('driftbadge');b.classList.toggle('on',driftOn);b.textContent=`Δ ${CHANGED.size} изменилось за неделю`;
+  document.querySelectorAll('.node').forEach(g=>{const ch=driftOn&&CHANGED.has(g.dataset.n);g.classList.toggle('changed',ch);
+    let dot=g.querySelector('.changed-dot');
+    if(ch&&!dot){const p=L.pos[g.dataset.n];dot=el('circle',{class:'changed-dot',cx:p.x+p.w-10,cy:p.y+10,r:5});g.appendChild(dot);}
+    else if(!ch&&dot){dot.remove();}});}
+document.getElementById('drift').addEventListener('click',toggleDrift);
+/* lens overlay demo: метрики артефактов (в реале — из forgeplan score/stale/blindspots) */
+const LENS={epic:{reff:.75,fresh:true},prd:{reff:.82,fresh:true},spec:{reff:.7,fresh:true},rfc:{reff:.6,fresh:false},adr:{reff:.5,fresh:true},evidence:{reff:.9,fresh:false},problem:{reff:null,fresh:true,blind:true},note:{reff:null,fresh:false}};
+function lensColor(mode,d){
+  if(mode==='reff'){if(d.reff==null)return 'slate';return d.reff>=.7?'emerald':d.reff>=.4?'amber':'rose';}
+  if(mode==='fresh')return d.fresh?'emerald':'amber';
+  if(mode==='blind')return d.blind?'rose':null;
+  return null;}
+const LENS_SCALE={reff:[['emerald','надёжно ≥0.7'],['amber','средне'],['rose','слабо <0.4'],['slate','нет оценки']],fresh:[['emerald','свежо'],['amber','устарело']],blind:[['rose','без доказательств']]};
+function renderLensLegend(mode){const s=document.getElementById('lensscale');if(!s)return;s.innerHTML=mode==='off'?'':(LENS_SCALE[mode]||[]).map(([c,t])=>`<span class="lsw" style="background:var(--${c})"></span>${t}`).join('&nbsp;&nbsp; ');}
+function applyLens(mode){const st=document.getElementById('stage');st.classList.toggle('lens-on',mode!=='off');
+  document.querySelectorAll('.node').forEach(g=>{const id=g.dataset.n,d=LENS[id];
+    const col=(mode!=='off'&&d)?lensColor(mode,d):null;let wash=g.querySelector('.lenswash');
+    if(col){const p=L.pos[id];if(!wash){wash=el('rect',{class:'lenswash',x:p.x,y:p.y,width:p.w,height:p.h,rx:11});g.insertBefore(wash,g.querySelector('.t'));}wash.setAttribute('fill',`var(--${col})`);wash.setAttribute('stroke',`var(--${col})`);g.classList.add('lensed');}
+    else{if(wash)wash.remove();g.classList.remove('lensed');}});
+  renderLensLegend(mode);}
+document.getElementById('lens').addEventListener('change',e=>applyLens(e.target.value));
+document.getElementById('stage').addEventListener('wheel',e=>{if(e.ctrlKey||e.metaKey){e.preventDefault();zoomAt(e.clientX,e.clientY,e.deltaY<0?1.12:0.89);}},{passive:false});
+/* drag-to-pan: тащить холст мышью */
+(function(){const st=document.getElementById('stage');let pan=null,suppress=false;
+  st.addEventListener('mousedown',e=>{if(e.button!==0)return;pan={x:e.clientX,y:e.clientY,l:st.scrollLeft,t:st.scrollTop,moved:false};st.classList.add('grabbing');});
+  window.addEventListener('mousemove',e=>{if(!pan)return;const dx=e.clientX-pan.x,dy=e.clientY-pan.y;if(Math.abs(dx)>3||Math.abs(dy)>3)pan.moved=true;st.scrollLeft=pan.l-dx;st.scrollTop=pan.t-dy;});
+  window.addEventListener('mouseup',()=>{if(!pan)return;st.classList.remove('grabbing');if(pan.moved)suppress=true;pan=null;});
+  st.addEventListener('click',e=>{if(suppress){e.stopPropagation();e.preventDefault();suppress=false;}},true);
+})();
+function resetView(){applyFlow('all');zoomReset();document.getElementById('panel').innerHTML='<div class="empty"><b style="color:var(--ink)">Карта устройства проекта.</b><br><br>Клик по <b>зоне</b> — про слой и что внутри. Клик по <b>блоку</b> — про блок и его связи. <b>Esc</b> или клик по пустому полю — сброс.</div>';}
+addEventListener('keydown',e=>{if(e.key==='Escape')resetView();});
+render();
+addEventListener('resize',()=>{const st=document.getElementById('stage');if(st.onscroll)st.onscroll();});
+</script>
+</body>
+</html>
