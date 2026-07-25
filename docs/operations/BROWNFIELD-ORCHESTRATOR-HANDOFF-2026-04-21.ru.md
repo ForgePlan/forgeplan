@@ -1277,7 +1277,7 @@ git worktree remove ../forgeplan-fix
 - **Bounded Context** (DDD) — explicit boundary within which a model applies
 - **CL** — Congruence Level (0 = opposed, 3 = same context, best)
 - **Context injection** — `project.context` auto-included in MCP tool descriptions
-- **DDR** — Design Decision Record (DDD documentation format for deep ADRs)
+- **DDR** — Detailed Decision Record (DDD documentation format for deep ADRs)
 - **Derived** — stored but re-computable from source of truth (e.g., LanceDB from markdown)
 - **Depth** — routing level (tactical / standard / deep / critical)
 - **Domain Event** (DDD) — something that happened in the domain
