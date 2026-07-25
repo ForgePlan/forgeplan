@@ -83,6 +83,20 @@ See [Marketplace Overview](/docs/marketplace/overview/) for the full plugin cata
 brew install forgeplan/tap/forgeplan
 ```
 
+:::note[Homebrew 6.0+ requires trusting the tap]
+Homebrew 6.0 made third-party taps **untrusted by default**. If you see
+`Error: Refusing to load formula forgeplan/tap/forgeplan from untrusted tap`,
+trust the tap once, then re-run the install:
+
+```bash
+brew trust forgeplan/tap
+brew install forgeplan/tap/forgeplan
+```
+
+This is a one-time, per-machine confirmation that you trust the ForgePlan tap.
+On Homebrew < 6.0 the plain `brew install` above works without this step.
+:::
+
 ### From source (Rust)
 
 ```bash

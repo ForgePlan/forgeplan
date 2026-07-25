@@ -79,6 +79,8 @@
 ```bash
 # Homebrew (macOS, Linux)
 brew install ForgePlan/tap/forgeplan
+# Homebrew 6.0+: если установка отклонена с "untrusted tap",
+# один раз выполните `brew trust ForgePlan/tap` и повторите строку выше.
 
 # Install script
 curl -fsSL https://raw.githubusercontent.com/ForgePlan/forgeplan/main/install.sh | sh

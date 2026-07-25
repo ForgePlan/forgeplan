@@ -79,6 +79,8 @@ Structured artifacts (PRD, RFC, ADR, Epic, Spec), quality scoring, evidence, and
 ```bash
 # Homebrew (macOS, Linux)
 brew install ForgePlan/tap/forgeplan
+# Homebrew 6.0+: if install is refused with "untrusted tap",
+# run `brew trust ForgePlan/tap` once, then re-run the line above.
 
 # Install script
 curl -fsSL https://raw.githubusercontent.com/ForgePlan/forgeplan/main/install.sh | sh
