@@ -11,9 +11,11 @@ llm:
   # max_tokens: 4096 # ≥300 per их note для reasoning tokens
   # temperature: 0.3
   # reason_temperature: 0.3
-  provider: gemini
-  model: gemini-3.1-pro-preview
-  api_key_env: GEMINI_API_KEY
+  provider: claude-code
+  model: claude-opus-4-8
+  # provider: gemini
+  # model: gemini-3.1-pro-preview
+  # api_key_env: GEMINI_API_KEY
   # base_url: https://...    # override for custom endpoints
   max_tokens: 20096
   temperature: 0.7
