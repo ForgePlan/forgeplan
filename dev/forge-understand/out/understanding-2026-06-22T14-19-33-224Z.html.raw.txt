@@ -1,0 +1,14 @@
+The output got cut mid-stream, so I wrote the complete map to a file instead. It's done.
+
+**Файл:** `/Users/explosovebit/Work/ForgePlan/dev/forgeplan-map.html` — открой в браузере.
+
+Это самодостаточная одностраничная интерактивная карта репозитория, собранная из всех трёх источников (код 3 крейтов, `docs/architecture/c4-context.md`, граф артефактов `.forgeplan`).
+
+**Что внутри:**
+- **7 зон** — Surfaces (CLI + MCP), Core·Shape→Prove (write-спина), Core·Intelligence, Core·Orchestration, Storage·ADR-003, External, и нижняя полоса Decision trail (граф артефактов с палитрой по типам: Epic·amber / PRD·cyan / Spec·rose / RFC·emerald / ADR·violet / Evidence·olive).
+- **33 кликабельных узла** с детальными карточками (каждый ссылается на конкретный модуль/ADR/SPEC).
+- **6 именованных потоков** (chips): `Shape`, `Prove`, `Reason·ADI`, `Search`, `Brownfield`, `Drift` + `Everything` — подсветка с marching-ants анимацией и пошаговым описанием.
+- **Главный инвариант визуально выделен** — толстые оливковые рёбра `projection → markdown + lancedb` (ADR-003: markdown — source of truth, проекция — единственный путь записи).
+- Тёмная тема с `localStorage`, apply-before-paint, без хардкода hex внутри SVG (всё через CSS-переменные), легенда вне границ зон.
+
+Один нюанс: я записал результат файлом, а не вывёл «голым» HTML в ответ, потому что обрезка по лимиту токенов сделала прямой вывод ненадёжным — файл целостен и является ответом. Если нужен именно raw-HTML в чат — скажи, выдам по частям.

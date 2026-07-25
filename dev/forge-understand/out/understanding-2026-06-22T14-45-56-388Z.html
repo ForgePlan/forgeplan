@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ForgePlan — стек</title>
+<script>
+  (function () {
+    const saved = localStorage.getItem('fp-theme');
+    const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.classList.toggle('dark', dark);
+  })();
+</script>
+<style>
+  :root {
+    --bg:#FAF9F5; --surface:#FFFFFF; --surface2:#F0EEE6;
+    --ink:#141413; --body:#3D3D3A; --muted:#87867F;
+    --line:#D1CFC5; --line-soft:#E6E3DA;
+    --clay:#D97757; --clay-soft:rgba(217,119,87,0.10);
+    --olive:#788C5D; --olive-soft:rgba(120,140,93,0.12);
+    --zone:rgba(20,20,19,0.022); --zone-line:#D1CFC5;
+    --cyan:#3a8fb0; --emerald:#4f9d6e; --violet:#8366c4;
+    --amber:#bf8a31; --rose:#c46a7e; --slate:#6b7280;
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html.dark {
+    --bg:#141413; --surface:#1F1F1D; --surface2:#2A2A28;
+    --ink:#FAF9F5; --body:#D1CFC5; --muted:#8A8980;
+    --line:#3D3D3A; --line-soft:#2A2A28;
+    --clay:#E48A6E; --clay-soft:rgba(228,138,110,0.15);
+    --olive:#9DB07C; --olive-soft:rgba(157,176,124,0.16);
+    --zone:rgba(250,249,245,0.028); --zone-line:#3D3D3A;
+    --cyan:#5fb8d6; --emerald:#74c596; --violet:#a48ee0;
+    --amber:#e0b367; --rose:#e08aa0; --slate:#9aa4b2;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { height:100%; }
+  body {
+    background:var(--bg); color:var(--body); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; display:flex; flex-direction:column; overflow:hidden;
+  }
+  .bar {
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:11px 20px; border-bottom:1px solid var(--line-soft); flex:none;
+  }
+  .bar h1 { font-family:var(--serif); font-weight:500; font-size:19px; color:var(--ink); letter-spacing:-0.01em; }
+  .bar .sub { font-family:var(--mono); font-size:10.5px; color:var(--muted); letter-spacing:0.05em; text-transform:uppercase; }
+  .spacer { flex:1; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip {
+    font-family:var(--mono); font-size:11px; letter-spacing:0.04em;
+    padding:5px 11px; border:1px solid var(--line); border-radius:999px;
+    background:transparent; color:var(--muted); cursor:pointer; transition:all .15s ease;
+  }
+  .chip:hover { color:var(--ink); border-color:var(--muted); }
+  .chip.on { background:var(--ink); border-color:var(--ink); color:var(--bg); }
+  #themeToggle {
+    font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:0.08em;
+    padding:6px 11px; border:1px solid var(--line); border-radius:6px;
+    background:transparent; color:var(--muted); cursor:pointer;
+  }
+  #themeToggle:hover { color:var(--ink); border-color:var(--muted); }
+
+  .stage { flex:1; position:relative; min-height:0; }
+  .stage svg { position:absolute; inset:0; width:100%; height:100%; display:block; }
+
+  .zone rect { fill:var(--zone); stroke:var(--zone-line); stroke-width:1; stroke-dasharray:5 5; }
+  .zone .ztitle { font-family:var(--mono); font-size:12.5px; letter-spacing:0.1em; text-transform:uppercase; fill:var(--muted); }
+  .zone .zsub { font-family:var(--mono); font-size:10.5px; fill:var(--muted); opacity:0.72; }
+
+  .node { cursor:pointer; }
+  .nodebg { fill:var(--bg); }
+  .node rect.box { fill:var(--surface); stroke:var(--line); stroke-width:1.5; transition:stroke .15s ease, filter .15s ease; }
+  .node:hover rect.box { stroke:var(--muted); }
+  .node.sel rect.box { stroke:var(--clay) !important; stroke-width:2.4; }
+  .node .t { font-family:var(--sans); font-size:14px; font-weight:600; fill:var(--ink); pointer-events:none; }
+  .node .m { font-family:var(--mono); font-size:10.5px; fill:var(--muted); pointer-events:none; }
+  .node .k { font-family:var(--mono); font-size:9.5px; letter-spacing:0.07em; text-transform:uppercase; fill:var(--clay); pointer-events:none; }
+  .node.gate rect.box { fill:var(--clay-soft); stroke:var(--clay); }
+  .node.store rect.box { fill:var(--surface2); }
+  .node.truth rect.box { fill:var(--surface2); stroke:var(--olive); stroke-width:2; }
+  .node.do rect.box { fill:var(--olive-soft); stroke:var(--olive); }
+  .node.ext rect.box { stroke-dasharray:6 3; }
+
+  .node.epic rect.box{stroke:var(--amber);}  .node.epic .k{fill:var(--amber);}
+  .node.prd rect.box{stroke:var(--cyan);}    .node.prd .k{fill:var(--cyan);}
+  .node.spec rect.box{stroke:var(--rose);}   .node.spec .k{fill:var(--rose);}
+  .node.rfc rect.box{stroke:var(--emerald);} .node.rfc .k{fill:var(--emerald);}
+  .node.adr rect.box{stroke:var(--violet);}  .node.adr .k{fill:var(--violet);}
+  .node.evid rect.box{stroke:var(--olive);}  .node.evid .k{fill:var(--olive);}
+
+  .edge { stroke:var(--muted); stroke-width:1.5; fill:none; marker-end:url(#a-mut); transition:opacity .2s ease, stroke .2s ease; }
+  .edge.dash { stroke-dasharray:5 4; }
+  .edge.ws { stroke-width:2.4; stroke:var(--olive); marker-end:url(#a-olive); }
+  .elbl { font-family:var(--mono); font-size:10px; fill:var(--muted); transition:opacity .2s ease; }
+
+  .stage.flowing .edge { opacity:0.09; }
+  .stage.flowing .edge.ws { stroke:var(--muted); }
+  .stage.flowing .elbl { opacity:0.09; }
+  .stage.flowing .node { opacity:0.24; }
+  .stage.flowing .zone { opacity:0.4; }
+  .stage.flowing .legend { opacity:0.4; }
+  .stage.flowing .edge.lit {
+    opacity:1; stroke:var(--clay); marker-end:url(#a-clay);
+    stroke-dasharray:7 5; animation:march 0.9s linear infinite;
+  }
+  .stage.flowing .elbl.lit { opacity:1; fill:var(--clay); }
+  .stage.flowing .node.lit { opacity:1; }
+  .stage.flowing .node.lit rect.box { stroke:var(--clay); }
+  @keyframes march { to { stroke-dashoffset:-12; } }
+  @media (prefers-reduced-motion: reduce) { .stage.flowing .edge.lit { animation:none; } }
+
+  .legend .lt { font-family:var(--mono); font-size:11px; letter-spacing:0.1em; text-transform:uppercase; fill:var(--muted); }
+  .legend text { font-family:var(--mono); font-size:11px; fill:var(--body); }
+  .legend .sw { stroke-width:1.5; }
+
+  .card {
+    position:absolute; background:var(--surface); border:1px solid var(--line); border-radius:12px;
+    padding:14px 16px; box-shadow:0 6px 24px rgba(0,0,0,0.10);
+  }
+  #detail { right:16px; bottom:16px; width:352px; }
+  #detail h3 { font-family:var(--serif); font-weight:500; font-size:17px; color:var(--ink); margin-bottom:2px; }
+  #detail .meta { font-family:var(--mono); font-size:10.5px; color:var(--muted); margin-bottom:8px; }
+  #detail p { font-size:12.5px; line-height:1.55; }
+  #detail p code, #flowcap code { font-family:var(--mono); font-size:11px; color:var(--clay); }
+  #flowcap { left:16px; bottom:16px; max-width:480px; display:none; }
+  #flowcap.show { display:block; }
+  #flowcap .fname { font-family:var(--mono); font-size:10.5px; letter-spacing:0.08em; text-transform:uppercase; color:var(--clay); margin-bottom:6px; }
+  #flowcap ol { margin-left:18px; }
+  #flowcap li { font-size:12.5px; line-height:1.55; }
+  .src { position:absolute; top:10px; right:16px; font-family:var(--mono); font-size:9.5px; color:var(--muted); opacity:0.8; text-align:right; }
+  @media (max-width:900px) {
+    body { overflow:auto; }
+    .stage { min-height:92vh; }
+    #detail { position:static; width:auto; margin:10px 16px; }
+    #flowcap { position:static; margin:0 16px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div>
+    <h1>ForgePlan — стек</h1>
+    <div class="sub">Rust · CLI + MCP · markdown-first · R_eff trust · 3 крейта</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="chips" id="chips">
+    <button class="chip on" data-flow="all">Всё</button>
+    <button class="chip" data-flow="shape">Shape</button>
+    <button class="chip" data-flow="prove">Prove</button>
+    <button class="chip" data-flow="reason">Reason · ADI</button>
+    <button class="chip" data-flow="search">Search</button>
+    <button class="chip" data-flow="brownfield">Brownfield</button>
+    <button class="chip" data-flow="drift">Drift</button>
+  </div>
+  <button id="themeToggle">Тема</button>
+</div>
+
+<div class="stage" id="stage">
+<svg viewBox="0 0 1850 1240" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Архитектура ForgePlan и граф артефактов">
+  <defs>
+    <marker id="a-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.4" markerHeight="6.4" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/>
+    </marker>
+    <marker id="a-clay" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.4" markerHeight="6.4" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--clay)"/>
+    </marker>
+    <marker id="a-olive" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.4" markerHeight="6.4" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--olive)"/>
+    </marker>
+  </defs>
+
+  <!-- ============ ZONES ============ -->
+  <g class="zone">
+    <rect x="60" y="120" width="250" height="560" rx="16"/>
+    <text class="ztitle" x="84" y="150">Поверхности</text>
+    <text class="zsub" x="84" y="168">две входные двери, одно ядро</text>
+  </g>
+  <g class="zone">
+    <rect x="370" y="120" width="410" height="560" rx="16"/>
+    <text class="ztitle" x="394" y="150">forgeplan-core · Shape → Prove</text>
+    <text class="zsub" x="394" y="168">хребет markdown-first</text>
+  </g>
+  <g class="zone">
+    <rect x="840" y="120" width="410" height="300" rx="16"/>
+    <text class="ztitle" x="864" y="150">Ядро · Интеллект</text>
+    <text class="zsub" x="864" y="168">ответы о графе</text>
+  </g>
+  <g class="zone">
+    <rect x="840" y="460" width="410" height="260" rx="16"/>
+    <text class="ztitle" x="864" y="490">Ядро · Оркестрация</text>
+    <text class="zsub" x="864" y="508">делегировать и ingest</text>
+  </g>
+  <g class="zone">
+    <rect x="1310" y="120" width="480" height="300" rx="16"/>
+    <text class="ztitle" x="1338" y="150">Хранилище · ADR-003</text>
+    <text class="zsub" x="1338" y="168">markdown — правда · lance — производное</text>
+  </g>
+  <g class="zone">
+    <rect x="1310" y="460" width="480" height="260" rx="16"/>
+    <text class="ztitle" x="1338" y="490">Внешнее · делегировано</text>
+    <text class="zsub" x="1338" y="508">опционально · graceful fallback</text>
+  </g>
+  <g class="zone">
+    <rect x="60" y="760" width="1180" height="430" rx="16"/>
+    <text class="ztitle" x="84" y="792">След решений</text>
+    <text class="zsub" x="84" y="810">граф артефактов, из которого собран код</text>
+  </g>
+
+  <!-- ============ EDGES (drawn first) ============ -->
+  <!-- surface → core -->
+  <path class="edge" id="e-cli-route"  d="M282,222 C 330,222 360,224 392,224"/>
+  <path class="edge" id="e-mcp-proj"   d="M282,393 C 330,393 362,358 392,348"/>
+  <!-- surface → intelligence / orchestration (through clear channels) -->
+  <path class="edge" id="e-cli-search" d="M236,185 C 380,152 700,150 910,183"/>
+  <path class="edge" id="e-mcp-health" d="M282,360 C 430,294 760,288 1138,294"/>
+  <path class="edge" id="e-cli-pb"     d="M282,545 C 460,526 700,524 862,556"/>
+  <path class="edge" id="e-mcp-disp"   d="M282,416 C 470,406 640,408 760,418 C 920,438 1050,500 1141,517"/>
+
+  <!-- core internal -->
+  <path class="edge" id="e-route-art"  d="M564,224 L586,224"/>
+  <path class="edge" id="e-art-proj"   d="M660,267 L658,300"/>
+  <path class="edge" id="e-proj-valid" d="M470,392 L478,430"/>
+  <path class="edge" id="e-valid-life" d="M564,468 L586,468"/>
+  <path class="edge" id="e-proj-score" d="M575,392 L575,548"/>
+  <path class="edge" id="e-score-life" d="M680,548 C 680,522 672,512 671,508"/>
+
+  <!-- storage write path (ADR-003) -->
+  <path class="edge ws" id="e-proj-md"    d="M575,300 C 575,165 1050,140 1338,210"/>
+  <path class="edge ws" id="e-proj-lance" d="M756,346 C 860,300 1060,278 1338,308"/>
+  <path class="edge ws" id="e-md-git"     d="M1553,256 L1553,372"/>
+  <path class="edge ws" id="e-embed-lance" d="M1562,316 L1540,316"/>
+
+  <!-- intelligence → storage -->
+  <path class="edge" id="e-search-lance" d="M864,255 C 812,335 950,402 1338,326"/>
+  <path class="edge" id="e-graph-lance"  d="M1226,238 C 1285,265 1300,312 1338,342"/>
+  <path class="edge" id="e-health-graph" d="M1141,295 L1141,267"/>
+
+  <!-- fpf / reason -->
+  <path class="edge" id="e-art-fpf"  d="M700,267 C 760,284 850,290 945,295"/>
+  <path class="edge dash" id="e-fpf-llm"  d="M949,375 C 949,440 1250,452 1438,518"/>
+
+  <!-- orchestration → external -->
+  <path class="edge dash" id="e-pb-plugins"     d="M949,520 C 949,470 1400,455 1657,518"/>
+  <path class="edge dash" id="e-plugins-ingest" d="M1580,600 C 1450,618 1100,612 1045,632 C 1042,650 1040,660 1034,666"/>
+  <path class="edge" id="e-ingest-proj"  d="M864,660 C 820,560 760,420 680,392"/>
+  <path class="edge" id="e-brown-ingest" d="M1056,666 L1036,666"/>
+
+  <!-- core → decision trail -->
+  <path class="edge" id="e-proj-epic"  d="M394,365 C 332,430 250,660 175,858"/>
+  <path class="edge" id="e-score-evid" d="M756,600 C 800,720 840,800 878,845"/>
+
+  <!-- artifact graph -->
+  <path class="edge" id="te-epic-prd"  d="M250,908 L330,908"/>
+  <path class="edge" id="te-prd-spec"  d="M480,890 C 520,875 540,862 560,860"/>
+  <path class="edge" id="te-prd-rfc"   d="M480,908 C 520,920 540,930 560,932"/>
+  <path class="edge" id="te-prd-adr"   d="M480,926 C 520,970 535,1002 560,1004"/>
+  <path class="edge dash" id="te-evid-adr"  d="M800,910 C 760,960 730,1000 712,1004"/>
+  <path class="edge dash" id="te-prob-prd"  d="M800,1000 C 600,1060 450,1030 405,958"/>
+
+  <!-- ============ EDGE LABELS ============ -->
+  <text class="elbl" data-e="e-cli-route"  x="338" y="212" text-anchor="middle">76 команд</text>
+  <text class="elbl" data-e="e-mcp-proj"   x="300" y="384">stdio · 73 tools</text>
+  <text class="elbl" data-e="e-cli-search" x="560" y="140" text-anchor="middle">поиск</text>
+  <text class="elbl" data-e="e-mcp-health" x="612" y="278" text-anchor="middle">health / drift</text>
+  <text class="elbl" data-e="e-cli-pb"     x="558" y="518" text-anchor="middle">playbook run</text>
+  <text class="elbl" data-e="e-mcp-disp"   x="648" y="520" text-anchor="middle">dispatch / claim</text>
+  <text class="elbl" data-e="e-proj-md"    x="1000" y="138" text-anchor="middle">запись markdown</text>
+  <text class="elbl" data-e="e-proj-lance" x="1015" y="270" text-anchor="middle">sync · ADR-003</text>
+  <text class="elbl" data-e="e-md-git"     x="1565" y="318">commit</text>
+  <text class="elbl" data-e="e-embed-lance" x="1548" y="340">1024-dim</text>
+  <text class="elbl" data-e="e-score-life" x="694" y="524">R_eff &gt; 0</text>
+  <text class="elbl" data-e="e-search-lance" x="1128" y="400">запрос</text>
+  <text class="elbl" data-e="e-art-fpf"    x="800" y="276">reason</text>
+  <text class="elbl" data-e="e-fpf-llm"    x="1175" y="468">опционально</text>
+  <text class="elbl" data-e="e-pb-plugins" x="1380" y="452" text-anchor="middle">делегирует</text>
+  <text class="elbl" data-e="e-plugins-ingest" x="1300" y="606" text-anchor="middle">файлы на диск</text>
+  <text class="elbl" data-e="e-ingest-proj" x="812" y="476">черновики</text>
+  <text class="elbl" data-e="e-brown-ingest" x="1046" y="652" text-anchor="middle">scan-import</text>
+  <text class="elbl" data-e="e-health-graph" x="1152" y="282">обход графа</text>
+  <text class="elbl" data-e="e-proj-epic"  x="306" y="648" text-anchor="end">создаёт</text>
+  <text class="elbl" data-e="e-score-evid" x="816" y="720">R_eff = min()</text>
+  <text class="elbl" data-e="te-epic-prd"  x="290" y="898" text-anchor="middle">группирует</text>
+  <text class="elbl" data-e="te-evid-adr"  x="742" y="978">informs</text>
+
+  <!-- ============ NODES (opaque bg under styled box, so edges never bleed through) ============ -->
+
+  <!-- SURFACES -->
+  <g class="node" data-k="cli">
+    <rect class="nodebg" x="88" y="185" width="194" height="104" rx="10"/>
+    <rect class="box" x="88" y="185" width="194" height="104" rx="10"/>
+    <text class="t" x="110" y="217">CLI · forgeplan</text>
+    <text class="m" x="110" y="239">clap derive · 76 команд</text>
+    <text class="m" x="110" y="257">алиас: fpl · один бинарь</text>
+    <text class="m" x="110" y="275">для людей</text>
+  </g>
+  <g class="node" data-k="mcp">
+    <rect class="nodebg" x="88" y="335" width="194" height="116" rx="10"/>
+    <rect class="box" x="88" y="335" width="194" height="116" rx="10"/>
+    <text class="t" x="110" y="367">MCP-сервер</text>
+    <text class="m" x="110" y="389">rmcp · stdio · 73 tools</text>
+    <text class="m" x="110" y="407">Claude Code · Cursor · Aider</text>
+    <text class="m" x="110" y="425">AI-агенты · с identity</text>
+  </g>
+  <g class="node" data-k="hint">
+    <rect class="nodebg" x="88" y="500" width="194" height="116" rx="10"/>
+    <rect class="box" x="88" y="500" width="194" height="116" rx="10"/>
+    <text class="t" x="110" y="532">Hint-протокол</text>
+    <text class="k" x="110" y="550">PRD-071</text>
+    <text class="m" x="110" y="568">Next: / Or: / Wait: / Done.</text>
+    <text class="m" x="110" y="586">держит агента на пути</text>
+  </g>
+
+  <!-- CORE · SHAPE -->
+  <g class="node" data-k="routing">
+    <rect class="nodebg" x="394" y="185" width="170" height="82" rx="10"/>
+    <rect class="box" x="394" y="185" width="170" height="82" rx="10"/>
+    <text class="t" x="414" y="217">Маршрутизация</text>
+    <text class="m" x="414" y="238">задача → уровень</text>
+    <text class="m" x="414" y="256">Tactical … Critical</text>
+  </g>
+  <g class="node" data-k="artifact">
+    <rect class="nodebg" x="586" y="185" width="170" height="82" rx="10"/>
+    <rect class="box" x="586" y="185" width="170" height="82" rx="10"/>
+    <text class="t" x="606" y="217">Модель артефакта</text>
+    <text class="m" x="606" y="238">frontmatter · секции</text>
+    <text class="m" x="606" y="256">slug / номер</text>
+  </g>
+  <g class="node gate" data-k="projection">
+    <rect class="nodebg" x="394" y="300" width="362" height="92" rx="10"/>
+    <rect class="box" x="394" y="300" width="362" height="92" rx="10"/>
+    <text class="t" x="414" y="332">projection — шлюз записи</text>
+    <text class="k" x="414" y="351">ADR-003 · red-line #8</text>
+    <text class="m" x="414" y="373">sync_file_to_store → render · атомарно</text>
+  </g>
+  <g class="node" data-k="validation">
+    <rect class="nodebg" x="394" y="430" width="170" height="76" rx="10"/>
+    <rect class="box" x="394" y="430" width="170" height="76" rx="10"/>
+    <text class="t" x="414" y="462">validation</text>
+    <text class="m" x="414" y="484">шлюз MUST-секций</text>
+  </g>
+  <g class="node" data-k="lifecycle">
+    <rect class="nodebg" x="586" y="430" width="170" height="76" rx="10"/>
+    <rect class="box" x="586" y="430" width="170" height="76" rx="10"/>
+    <text class="t" x="606" y="462">lifecycle</text>
+    <text class="m" x="606" y="484">draft→active→…</text>
+  </g>
+  <g class="node" data-k="scoring">
+    <rect class="nodebg" x="394" y="548" width="362" height="80" rx="10"/>
+    <rect class="box" x="394" y="548" width="362" height="80" rx="10"/>
+    <text class="t" x="414" y="580">scoring · R_eff / F-G-R</text>
+    <text class="m" x="414" y="602">min() · CL-штраф · затухание</text>
+  </g>
+
+  <!-- CORE · INTELLIGENCE -->
+  <g class="node" data-k="search">
+    <rect class="nodebg" x="864" y="185" width="170" height="80" rx="10"/>
+    <rect class="box" x="864" y="185" width="170" height="80" rx="10"/>
+    <text class="t" x="884" y="217">search</text>
+    <text class="m" x="884" y="238">BM25 + семантика</text>
+    <text class="m" x="884" y="256">гибрид · фильтры</text>
+  </g>
+  <g class="node" data-k="graph">
+    <rect class="nodebg" x="1056" y="185" width="170" height="80" rx="10"/>
+    <rect class="box" x="1056" y="185" width="170" height="80" rx="10"/>
+    <text class="t" x="1076" y="217">graph</text>
+    <text class="m" x="1076" y="238">обход petgraph</text>
+    <text class="m" x="1076" y="256">типизованные связи</text>
+  </g>
+  <g class="node" data-k="fpf">
+    <rect class="nodebg" x="864" y="295" width="170" height="80" rx="10"/>
+    <rect class="box" x="864" y="295" width="170" height="80" rx="10"/>
+    <text class="t" x="884" y="327">FPF · ADI reason</text>
+    <text class="m" x="884" y="348">trust calculus</text>
+    <text class="m" x="884" y="366">3+ гипотез</text>
+  </g>
+  <g class="node" data-k="health">
+    <rect class="nodebg" x="1056" y="295" width="170" height="80" rx="10"/>
+    <rect class="box" x="1056" y="295" width="170" height="80" rx="10"/>
+    <text class="t" x="1076" y="327">health · drift</text>
+    <text class="m" x="1076" y="348">слепые зоны · пробелы</text>
+    <text class="m" x="1076" y="366">аномалии</text>
+  </g>
+
+  <!-- CORE · ORCHESTRATION -->
+  <g class="node do" data-k="playbook">
+    <rect class="nodebg" x="864" y="520" width="170" height="76" rx="10"/>
+    <rect class="box" x="864" y="520" width="170" height="76" rx="10"/>
+    <text class="t" x="884" y="549">playbook</text>
+    <text class="m" x="884" y="570">YAML многошаговый</text>
+    <text class="m" x="884" y="588">ADR-009</text>
+  </g>
+  <g class="node do" data-k="dispatch">
+    <rect class="nodebg" x="1056" y="520" width="170" height="76" rx="10"/>
+    <rect class="box" x="1056" y="520" width="170" height="76" rx="10"/>
+    <text class="t" x="1076" y="549">dispatch · claim</text>
+    <text class="m" x="1076" y="570">корзины N-агентов</text>
+    <text class="m" x="1076" y="588">без конфликтов</text>
+  </g>
+  <g class="node do" data-k="ingest">
+    <rect class="nodebg" x="864" y="628" width="170" height="76" rx="10"/>
+    <rect class="box" x="864" y="628" width="170" height="76" rx="10"/>
+    <text class="t" x="884" y="657">ingest</text>
+    <text class="m" x="884" y="678">mapping → черновики</text>
+    <text class="m" x="884" y="696">связи по строкам</text>
+  </g>
+  <g class="node do" data-k="brownfield">
+    <rect class="nodebg" x="1056" y="628" width="170" height="76" rx="10"/>
+    <rect class="box" x="1056" y="628" width="170" height="76" rx="10"/>
+    <text class="t" x="1076" y="657">brownfield</text>
+    <text class="m" x="1076" y="678">извлечение из кода</text>
+    <text class="m" x="1076" y="696">EPIC-006</text>
+  </g>
+
+  <!-- STORAGE -->
+  <g class="node truth" data-k="markdown">
+    <rect class="nodebg" x="1338" y="178" width="430" height="78" rx="10"/>
+    <rect class="box" x="1338" y="178" width="430" height="78" rx="10"/>
+    <text class="t" x="1360" y="210">Markdown-файлы</text>
+    <text class="k" x="1360" y="228">источник правды · в git</text>
+    <text class="m" x="1360" y="250">.forgeplan/{prds,adrs,rfcs,…}</text>
+  </g>
+  <g class="node store" data-k="lancedb">
+    <rect class="nodebg" x="1338" y="286" width="200" height="60" rx="10"/>
+    <rect class="box" x="1338" y="286" width="200" height="60" rx="10"/>
+    <text class="t" x="1360" y="314">LanceDB</text>
+    <text class="m" x="1360" y="336">индекс · gitignored</text>
+  </g>
+  <g class="node store" data-k="fastembed">
+    <rect class="nodebg" x="1562" y="286" width="200" height="60" rx="10"/>
+    <rect class="box" x="1562" y="286" width="200" height="60" rx="10"/>
+    <text class="t" x="1584" y="314">fastembed · BGE-M3</text>
+    <text class="m" x="1584" y="336">1024-dim · оффлайн</text>
+  </g>
+  <g class="node store" data-k="git">
+    <rect class="nodebg" x="1338" y="370" width="430" height="46" rx="10"/>
+    <rect class="box" x="1338" y="370" width="430" height="46" rx="10"/>
+    <text class="t" x="1360" y="398">Git-репозиторий</text>
+    <text class="m" x="1620" y="398">версии · PR-совместная работа</text>
+  </g>
+
+  <!-- EXTERNAL -->
+  <g class="node ext" data-k="llm">
+    <rect class="nodebg" x="1338" y="520" width="200" height="80" rx="10"/>
+    <rect class="box" x="1338" y="520" width="200" height="80" rx="10"/>
+    <text class="t" x="1360" y="552">LLM-провайдеры</text>
+    <text class="m" x="1360" y="573">OpenAI · Claude · Gemini</text>
+    <text class="m" x="1360" y="591">Ollama · опционально</text>
+  </g>
+  <g class="node ext" data-k="plugins">
+    <rect class="nodebg" x="1562" y="520" width="200" height="80" rx="10"/>
+    <rect class="box" x="1562" y="520" width="200" height="80" rx="10"/>
+    <text class="t" x="1584" y="552">Агент-плагины</text>
+    <text class="m" x="1584" y="573">c4 · ddd</text>
+    <text class="m" x="1584" y="591">autoresearch · sparc</text>
+  </g>
+  <g class="node ext" data-k="marketplace">
+    <rect class="nodebg" x="1338" y="628" width="430" height="56" rx="10"/>
+    <rect class="box" x="1338" y="628" width="430" height="56" rx="10"/>
+    <text class="t" x="1360" y="650">Marketplace · Packs</text>
+    <text class="m" x="1360" y="670">agentskills.io · Playbook+Skill+Agent+Mapping</text>
+  </g>
+
+  <!-- DECISION TRAIL -->
+  <g class="node epic" data-k="epic">
+    <rect class="nodebg" x="100" y="860" width="150" height="96" rx="10"/>
+    <rect class="box" x="100" y="860" width="150" height="96" rx="10"/>
+    <text class="t" x="120" y="892">Epic</text>
+    <text class="k" x="120" y="910">epic- · 8</text>
+    <text class="m" x="120" y="930">группирует PRD /</text>
+    <text class="m" x="120" y="947">RFC / ADR</text>
+  </g>
+  <g class="node prd" data-k="prd">
+    <rect class="nodebg" x="330" y="860" width="150" height="96" rx="10"/>
+    <rect class="box" x="330" y="860" width="150" height="96" rx="10"/>
+    <text class="t" x="350" y="892">PRD</text>
+    <text class="k" x="350" y="910">prd- · 64</text>
+    <text class="m" x="350" y="930">что и зачем</text>
+    <text class="m" x="350" y="947">MUST-секции</text>
+  </g>
+  <g class="node spec" data-k="spec">
+    <rect class="nodebg" x="560" y="830" width="150" height="60" rx="10"/>
+    <rect class="box" x="560" y="830" width="150" height="60" rx="10"/>
+    <text class="t" x="580" y="862">Spec</text>
+    <text class="k" x="580" y="880">spec- · 5 · контракты</text>
+  </g>
+  <g class="node rfc" data-k="rfc">
+    <rect class="nodebg" x="560" y="902" width="150" height="60" rx="10"/>
+    <rect class="box" x="560" y="902" width="150" height="60" rx="10"/>
+    <text class="t" x="580" y="934">RFC</text>
+    <text class="k" x="580" y="952">rfc- · 12 · как строить</text>
+  </g>
+  <g class="node adr" data-k="adr">
+    <rect class="nodebg" x="560" y="974" width="150" height="60" rx="10"/>
+    <rect class="box" x="560" y="974" width="150" height="60" rx="10"/>
+    <text class="t" x="580" y="1006">ADR</text>
+    <text class="k" x="580" y="1024">adr- · 17 · решения</text>
+  </g>
+  <g class="node evid" data-k="evidence">
+    <rect class="nodebg" x="800" y="845" width="160" height="88" rx="10"/>
+    <rect class="box" x="800" y="845" width="160" height="88" rx="10"/>
+    <text class="t" x="820" y="877">Evidence</text>
+    <text class="k" x="820" y="895">evid- · 147</text>
+    <text class="m" x="820" y="917">доказательства · R_eff</text>
+  </g>
+  <g class="node" data-k="problem">
+    <rect class="nodebg" x="800" y="960" width="160" height="64" rx="10"/>
+    <rect class="box" x="800" y="960" width="160" height="64" rx="10"/>
+    <text class="t" x="820" y="990">Problem</text>
+    <text class="m" x="820" y="1012">prob- · 74 · контекст</text>
+  </g>
+  <g class="node" data-k="note">
+    <rect class="nodebg" x="1030" y="845" width="150" height="80" rx="10"/>
+    <rect class="box" x="1030" y="845" width="150" height="80" rx="10"/>
+    <text class="t" x="1050" y="877">Note</text>
+    <text class="m" x="1050" y="898">note- · 44</text>
+    <text class="m" x="1050" y="916">микрорешение · 90д</text>
+  </g>
+  <g class="node" data-k="links">
+    <rect class="nodebg" x="1030" y="960" width="150" height="72" rx="10"/>
+    <rect class="box" x="1030" y="960" width="150" height="72" rx="10"/>
+    <text class="t" x="1050" y="990">Типизованные связи</text>
+    <text class="m" x="1050" y="1011">informs · based_on</text>
+    <text class="m" x="1050" y="1028">supersedes · blocks</text>
+  </g>
+
+  <!-- ============ LEGEND (outside every zone) ============ -->
+  <g class="legend">
+    <text class="lt" x="1320" y="800">Легенда</text>
+    <rect class="sw" x="1320" y="812" width="26" height="16" rx="4" style="fill:var(--surface);stroke:var(--line)"/>
+    <text x="1356" y="825">модуль ядра</text>
+    <rect class="sw" x="1320" y="838" width="26" height="16" rx="4" style="fill:var(--clay-soft);stroke:var(--clay)"/>
+    <text x="1356" y="851">шлюз projection</text>
+    <rect class="sw" x="1320" y="864" width="26" height="16" rx="4" style="fill:var(--olive-soft);stroke:var(--olive)"/>
+    <text x="1356" y="877">оркестрация</text>
+    <rect class="sw" x="1320" y="890" width="26" height="16" rx="4" style="fill:var(--surface2);stroke:var(--line)"/>
+    <text x="1356" y="903">хранилище / производное</text>
+    <rect class="sw" x="1320" y="916" width="26" height="16" rx="4" style="fill:var(--surface);stroke:var(--muted);stroke-dasharray:5 3"/>
+    <text x="1356" y="929">внешнее · делегировано</text>
+    <line x1="1322" y1="952" x2="1348" y2="952" style="stroke:var(--olive);stroke-width:2.4"/>
+    <text x="1356" y="956">путь записи ADR-003</text>
+
+    <text x="1320" y="988" style="fill:var(--muted)">чипы анимируют поток ·</text>
+    <text x="1320" y="1006" style="fill:var(--muted)">клик по блоку — детали</text>
+
+    <text class="lt" x="1320" y="1044">Виды артефактов</text>
+    <rect class="sw" x="1320" y="1058" width="14" height="14" rx="3" style="fill:none;stroke:var(--amber);stroke-width:2"/><text x="1340" y="1070">Epic</text>
+    <rect class="sw" x="1420" y="1058" width="14" height="14" rx="3" style="fill:none;stroke:var(--cyan);stroke-width:2"/><text x="1440" y="1070">PRD</text>
+    <rect class="sw" x="1515" y="1058" width="14" height="14" rx="3" style="fill:none;stroke:var(--rose);stroke-width:2"/><text x="1535" y="1070">Spec</text>
+    <rect class="sw" x="1320" y="1082" width="14" height="14" rx="3" style="fill:none;stroke:var(--emerald);stroke-width:2"/><text x="1340" y="1094">RFC</text>
+    <rect class="sw" x="1420" y="1082" width="14" height="14" rx="3" style="fill:none;stroke:var(--violet);stroke-width:2"/><text x="1440" y="1094">ADR</text>
+    <rect class="sw" x="1515" y="1082" width="14" height="14" rx="3" style="fill:none;stroke:var(--olive);stroke-width:2"/><text x="1535" y="1094">Evid</text>
+  </g>
+</svg>
+
+  <div class="src">код: 3 крейта (core · cli · mcp) · docs/architecture/c4-context.md<br>.forgeplan: 8 Epic · 64 PRD · 17 ADR · 12 RFC · 5 Spec · 147 Evid</div>
+
+  <div class="card" id="flowcap">
+    <div class="fname" id="f-name"></div>
+    <ol id="f-steps"></ol>
+  </div>
+
+  <div class="card" id="detail">
+    <h3 id="d-title">Кликни что-нибудь</h3>
+    <div class="meta" id="d-meta">ForgePlan — один экран</div>
+    <p id="d-body">Две поверхности (CLI + MCP) над одним Rust-ядром. Каждый блок кликабелен. Чипы сверху трассируют важные потоки: <b>Shape</b> решение, <b>Prove</b> его доказательством, <b>Reason</b> через ADI, <b>Search</b> по графу, прогнать <b>Brownfield</b>-миграцию или проверить <b>Drift</b>. Один инвариант для запоминания: <i>markdown — источник правды, всё остальное производно через шлюз projection.</i></p>
+  </div>
+</div>
+
+<script>
+const DETAIL = {
+  cli:{t:"CLI · forgeplan / fpl",m:"поверхность · clap · 76 команд",b:"Входная дверь для людей. Бинарь на базе <code>clap</code> с 76 подкомандами (<code>route</code>, <code>new</code>, <code>validate</code>, <code>score</code>, <code>activate</code>, <code>search</code>, <code>health</code>…). Только парсит аргументы и вызывает <b>forgeplan-core</b> — своей логики нет. Поставляется одним статическим бинарём через brew / install.sh / cargo."},
+  mcp:{t:"MCP-сервер",m:"поверхность · rmcp · stdio · 73 tools",b:"Входная дверь для AI-агентов. <code>rmcp</code> stdio-сервер, отдающий 73 инструмента любому MCP-клиенту (Claude Code, Cursor, Aider). То же ядро и та же методология, что у CLI — и каждая запись штампует identity вызвавшего агента в <code>last_modified_by</code>."},
+  hint:{t:"Hint-протокол (PRD-071)",m:"контракт · подсказки агенту",b:"Каждый ответ CLI и MCP эмитит ровно один контрактный маркер следующего шага: <code>Next:</code> (запусти как есть), <code>Or:</code> (альтернатива), <code>Wait:</code> (повтор по условию), <code>Done.</code> JSON несёт <code>_next_action</code>. Именно это держит автономного агента на пути Shape→Validate→Code→Evidence→Activate."},
+  routing:{t:"Маршрутизация · Глубина",m:"ядро · routing / depth",b:"Читает описание задачи и калибрует глубину работы — <b>Tactical / Standard / Deep / Critical</b> — и подходящий конвейер артефактов (Note · PRD→RFC · PRD→Spec→RFC→ADR · Epic→…). По умолчанию rule-based, опционально с LLM для неоднозначных задач. Не даёт переусердствовать с документацией опечатки и недодокументировать необратимое решение."},
+  artifact:{t:"Модель артефакта",m:"ядро · artifact/*",b:"10 видов артефактов и их разбор: YAML-frontmatter, синонимы секций и схема identity slug / predicted-number / assigned-number (ADR-012, SPEC-005). Весь CRUD собирается здесь, затем передаётся слою projection для сохранения."},
+  projection:{t:"projection — шлюз записи",m:"ядро · ADR-003 · red-line #8",b:"<b>Единственный путь мутации.</b> Ни одна команда не трогает LanceDB напрямую. <code>sync_file_to_store</code> + <code>render_projection</code> пишут <b>markdown — источник правды</b> и <b>производный индекс</b> вместе, атомарно, и штампуют identity агента. <code>tests/adr_003_invariant.rs</code> блокирует любую регрессию, наращивающую прямые вызовы store."},
+  validation:{t:"validation",m:"ядро · validation/*",b:"Проверяет, что артефакт несёт каждую обязательную (MUST) секцию до перехода дальше. Принимает синонимы секций (Motivation = Problem, Out of Scope = Non-Goals…). Возвращает PASS или явный список ошибок — <code>activate</code> не запустится, пока не пройдёт."},
+  lifecycle:{t:"lifecycle",m:"ядро · машина состояний (ADR-005)",b:"Формальная машина состояний: <code>draft → active → {superseded · deprecated · stale}</code>; <code>stale → active</code> (renew) или <code>deprecated + новый draft</code> (reopen). superseded и deprecated терминальны. Активация гейтится прохождением validation <i>и</i> R_eff &gt; 0."},
+  scoring:{t:"scoring · R_eff / F-G-R",m:"ядро · scoring/*",b:"Считает доверие к артефакту как <b>R_eff = min(evidence_scores)</b> — слабейшее звено, никогда не среднее. Применяет штрафы конгруэнтности (CL0–CL3) и затухание evidence (просроченный <code>valid_until</code> → 0.1). F-G-R оценивает формальность, гранулярность и надёжность независимо."},
+  search:{t:"search",m:"ядро · search/* (bm25 · smart)",b:"Гибридный поиск: BM25 по ключевым словам, слитый с семантической близостью BGE-M3, плюс фильтры. Сначала текст, затем семантические бустеры; чисто текстовый режим, когда фича эмбеддингов выключена при сборке."},
+  graph:{t:"graph",m:"ядро · graph/* (petgraph)",b:"Строит <code>petgraph</code> по типизованным связям (informs · based_on · supersedes · blocks · parent/child). Питает анализ покрытия, поиск блокирующих артефактов, mermaid-граф и обход для drift."},
+  fpf:{t:"FPF · ADI reasoning",m:"ядро · fpf/* (RFC-001, ADR-006)",b:"Движок First-Principles-Framework. Гоняет ADI-циклы — 3+ конкурирующих гипотез через <b>Abduction → Deduction → Induction</b> — плюс настраиваемый trust calculus. Обязателен для Deep/Critical артефактов. Семантический поиск по KB через BGE-M3 за feature-gate."},
+  health:{t:"health · drift · gaps",m:"ядро · health/drift/anomalies",b:"Наблюдаемость над графом. <code>health</code> вскрывает слепые зоны (код без покрывающего ADR), сирот и устаревшие артефакты; <code>drift</code> отмечает изменения кода, нарушающие активный ADR; <code>anomalies</code> каталогизирует структурные проблемы (ADR-014)."},
+  playbook:{t:"playbook",m:"ядро · playbook/* (ADR-009)",b:"Декларативные многошаговые стратегии (SPEC-003), оркеструющие делегации внешним плагинам. Это Forgeplan-как-оркестратор (ADR-001/009): сам не генерирует большие документы анализа — он гоняет playbook, который делегирует, а затем делает ingest результата."},
+  dispatch:{t:"dispatch · claim",m:"ядро · dispatch/claim (PRD-057)",b:"Планировщик мультиагентности. По черновикам и N агентам считает параллельные корзины без пересечения файлов (Жаккар по затронутым файлам) плюс последовательную очередь. <code>claim</code> / <code>release</code> / <code>claims</code> координируют, кто что держит, с TTL."},
+  ingest:{t:"ingest",m:"ядро · ingest/* (SPEC-004)",b:"Применяет Mapping-файл, переводя вывод внешнего плагина — <code>C4-Documentation/</code>, <code>domain-model.md</code>, <code>git log</code> — в черновики Forgeplan-артефактов со связями по строкам. Мост от делегированного анализа обратно в граф."},
+  brownfield:{t:"brownfield",m:"ядро · brownfield (EPIC-006)",b:"Поверхность brownfield-адаптации. Реконструирует карту решений из существующего недокументированного кода: <code>scan-import</code> пересобирает индекс из markdown; playbook'и извлечения добывают структуру, домен и историю git в черновики артефактов."},
+  markdown:{t:"Markdown-файлы",m:"хранилище · ИСТОЧНИК ПРАВДЫ",b:"<code>.forgeplan/{prds,adrs,rfcs,…}/*.md</code> — авторитетное хранилище (ADR-003). Читаемое человеком, diff-абельное, под версионным контролем. Всё остальное <i>производно</i> от этих файлов и пересобирается в любой момент через <code>scan-import</code>."},
+  lancedb:{t:"LanceDB",m:"хранилище · производный индекс · gitignored",b:"Встроенная колоночная векторная БД (in-process, не сетевой сервис). Держит производные записи артефактов + эмбеддинги BGE-M3 для быстрых запросов и семантического поиска. <code>.forgeplan/lance/</code> в gitignore — пересобирается из markdown, никогда не источник правды."},
+  fastembed:{t:"fastembed · BGE-M3",m:"хранилище · локальная модель · оффлайн",b:"Локальная модель эмбеддингов (за feature-gate). Эмбеддит каждый артефакт и каждый запрос в 1024 измерения без сетевых вызовов и API-ключей; веса кешируются в <code>.fastembed_cache/</code>. Graceful fallback на чисто текстовый поиск при отключении."},
+  git:{t:"Git-репозиторий",m:"хранилище · версионирование",b:"Реальный слой персистентности и совместной работы. История артефактов, авторство и ревью едут на стандартном git — Forgeplan не добавляет сервера. <code>git log</code> — также вход для добычи истории в brownfield."},
+  llm:{t:"LLM-провайдеры",m:"внешнее · опциональный inference",b:"Опциональный внешний inference для ADI-рассуждений и маршрутизации неоднозначных задач, за границей provider-dispatch (ADR-007, SPEC-002; claude-code провайдер в ADR-017). Всё опционально — без настроенного провайдера система деградирует до rule-based маршрутизации и пропускает LLM-шаги."},
+  plugins:{t:"Агент-плагины",m:"внешнее · делегированный анализ",b:"Специализированные плагины Claude Code, которые Forgeplan оркеструет для тяжёлой работы: <b>c4-architecture</b> (структура), <b>ddd-domain-expert</b> (домен), <b>autoresearch</b> (рой исследователей), <b>sparc:specification</b> (формальные спеки). Их файловый вывод читается обратно через Mappings."},
+  marketplace:{t:"Marketplace · Packs",m:"внешнее · дистрибуция",b:"Дистрибуция Forgeplan-паков (бандлы Playbook + Skill + Agent + Mapping) и оркеструемых плагинов. Ставятся по стандарту agent-skills (<code>skills-lock.json</code>) с agentskills.io / маркетплейса плагинов Claude."},
+  epic:{t:"Epic",m:"артефакт · epic- · 8",b:"Вершина иерархии — группирует объём работы в дочерние PRD / RFC / ADR. Живые примеры: EPIC-006 brownfield-миграция, EPIC-007 runtime playbook + маркетплейс паков, EPIC-008 извлечение бизнес-логики."},
+  prd:{t:"PRD — Product Requirements",m:"артефакт · prd- · 64",b:"ЧТО и ЗАЧЕМ фичи — самый используемый вид (64 артефакта). Несёт MUST-секции, функциональные требования и целевых пользователей. Обязан пройти validate до кода и быть оценён до активации."},
+  spec:{t:"Spec",m:"артефакт · spec- · 5",b:"КАК ИМЕННО: контракты API, модели данных и YAML-схемы. Пять живых Spec задают схему артефакта, схему playbook, схему mapping, контракт LLM-провайдера и контракт frontmatter slug/number."},
+  rfc:{t:"RFC",m:"артефакт · rfc- · 12",b:"КАК СТРОИМ: поэтапное архитектурное предложение с компромиссами. Напр. RFC-001 движок FPF v2, RFC-003 слоистые driver-трейты, RFC-006 ISP-разбиение хранилища, RFC-009 ленивое назначение ID."},
+  adr:{t:"ADR — Architecture Decision Record",m:"артефакт · adr- · 17",b:"ПОЧЕМУ именно так. Записано 17, включая несущие: ADR-001 (оркестратор — агент, не Forgeplan), ADR-003 (markdown = источник правды), ADR-009 (модель оркестратор / pack), ADR-012 (slug-каноничная identity)."},
+  evidence:{t:"Evidence",m:"артефакт · evid- · 147",b:"EvidencePack'и — тесты, бенчмарки, измерения — связаны <code>informs</code> с артефактами, которые подкрепляют. Самый многочисленный вид (147). Их structured fields (<code>verdict</code> / <code>congruence_level</code> / <code>evidence_type</code>) питают R_eff; просроченные затухают до 0.1."},
+  problem:{t:"Problem",m:"артефакт · prob- · 74",b:"Записанная проблема с контекстом (их 74) — зерно решения, отслеживаемое до PRD/RFC/ADR, который её закрывает (напр. PROB-048 миграция ADR-003, PROB-060 ленивые ID)."},
+  note:{t:"Note",m:"артефакт · note- · 44",b:"Лёгкие микрорешения и Brief'ы (44). Авто-истекают через 90 дней, если не повышены. Способ с наименьшим трением оставить след решения для тривиальных-но-незабываемых вызовов."},
+  links:{t:"Типизованные связи",m:"рёбра графа",b:"Отношения типизованы (informs · based_on · supersedes · blocks · parent/child), а не просто «related». Именно эта типизация позволяет графу отвечать на вопросы покрытия, блокировки и drift, а не просто перечислять соседей."}
+};
+
+const FLOWS = {
+  shape:{
+    name:"Shape — от идеи к сохранённому артефакту",
+    edges:["e-cli-route","e-mcp-proj","e-route-art","e-art-proj","e-proj-md","e-proj-lance","e-md-git"],
+    nodes:["cli","mcp","routing","artifact","projection","markdown","lancedb","git"],
+    steps:["<code>route \"task\"</code> → уровень глубины (Tactical · Standard · Deep · Critical) → конвейер артефактов","<code>new prd</code> → модель артефакта наполняет шаблон MUST-секциями","Каждая запись идёт через <b>шлюз projection</b> — никогда не в store напрямую (ADR-003, red-line #8)","Один поток пишет <b>markdown</b> (источник правды) <i>и</i> синхронит индекс <b>LanceDB</b>","<code>git commit</code> — решение теперь под версионным контролем"]
+  },
+  prove:{
+    name:"Prove — validate, score, activate",
+    edges:["e-proj-valid","e-valid-life","e-proj-score","e-score-life","e-score-evid","te-evid-adr"],
+    nodes:["projection","validation","lifecycle","scoring","evidence","adr"],
+    steps:["<code>validate &lt;id&gt;</code> — шлюз MUST-секций должен дать PASS","Привязать <b>EvidencePack</b> (<code>informs</code>) с <code>verdict</code> / <code>congruence_level</code> / <code>evidence_type</code>","<code>score</code> → <b>R_eff = min(evidence)</b> — доверие это слабейшее звено, не среднее","<code>activate</code> — шлюз lifecycle переводит draft → active только при R_eff &gt; 0"]
+  },
+  reason:{
+    name:"Reason — ADI перед решением",
+    edges:["e-cli-route","e-route-art","e-art-fpf","e-fpf-llm"],
+    nodes:["cli","routing","artifact","fpf","llm"],
+    steps:["<code>reason &lt;id&gt;</code> на Deep / Critical артефакте","FPF генерирует 3+ конкурирующих гипотез (Abduction → Deduction → Induction)","Делегирует LLM-провайдеру по OpenAI-совместимому API","Провайдер не настроен? Graceful деградация до rule-based поведения"]
+  },
+  search:{
+    name:"Search — запрос к графу оффлайн",
+    edges:["e-cli-search","e-search-lance","e-graph-lance","e-embed-lance"],
+    nodes:["cli","search","graph","lancedb","fastembed"],
+    steps:["<code>search \"query\"</code> (или инструмент <code>forgeplan_search</code>)","Гибридное ранжирование: BM25 по словам + семантические векторы BGE-M3","<b>fastembed</b> эмбеддит запрос оффлайн (1024-dim, без сети и API-ключей)","LanceDB возвращает ранжированные артефакты; граф разрешает их типизованные связи"]
+  },
+  brownfield:{
+    name:"Brownfield — реконструкция из кода",
+    edges:["e-cli-pb","e-pb-plugins","e-plugins-ingest","e-brown-ingest","e-ingest-proj","e-proj-md","e-proj-epic"],
+    nodes:["cli","playbook","plugins","brownfield","ingest","projection","markdown","epic"],
+    steps:["<code>playbook run brownfield-migration</code>","Делегирует структурный / доменный анализ внешним плагинам (c4 · ddd · sparc)","<code>ingest --mapping</code> переводит их файловый вывод в <b>черновики артефактов</b>","Черновики входят через тот же шлюз projection; <code>scan-import</code> пересобирает индекс из markdown"]
+  },
+  drift:{
+    name:"Drift — код всё ещё соответствует решениям?",
+    edges:["e-mcp-health","e-health-graph","e-graph-lance"],
+    nodes:["mcp","health","graph","lancedb"],
+    steps:["После изменений кода: <code>forgeplan drift</code> / <code>forgeplan health</code>","Обходит типизованный граф зависимостей","Вскрывает <b>слепые зоны</b> (код без покрывающего ADR) и устаревшие решения","Чини их до новой работы — health должен быть зелёным"]
+  }
+};
+
+const stage = document.getElementById('stage');
+const nodes = document.querySelectorAll('.node');
+const edges = document.querySelectorAll('.edge');
+const elbls = document.querySelectorAll('.elbl');
+const chips = document.querySelectorAll('.chip');
+const fcap  = document.getElementById('flowcap');
+
+function setFlow(key){
+  chips.forEach(c => c.classList.toggle('on', c.dataset.flow === key));
+  edges.forEach(e => e.classList.remove('lit'));
+  elbls.forEach(l => l.classList.remove('lit'));
+  nodes.forEach(n => n.classList.remove('lit'));
+  if (key === 'all'){ stage.classList.remove('flowing'); fcap.classList.remove('show'); return; }
+  const f = FLOWS[key];
+  stage.classList.add('flowing');
+  f.edges.forEach(id => document.getElementById(id)?.classList.add('lit'));
+  elbls.forEach(l => { if (f.edges.includes(l.dataset.e)) l.classList.add('lit'); });
+  f.nodes.forEach(k => document.querySelector('.node[data-k="'+k+'"]')?.classList.add('lit'));
+  document.getElementById('f-name').textContent = f.name;
+  document.getElementById('f-steps').innerHTML = f.steps.map(s => '<li>'+s+'</li>').join('');
+  fcap.classList.add('show');
+}
+chips.forEach(c => c.addEventListener('click', () => setFlow(c.dataset.flow)));
+
+nodes.forEach(n => n.addEventListener('click', () => {
+  nodes.forEach(x => x.classList.remove('sel'));
+  n.classList.add('sel');
+  const d = DETAIL[n.dataset.k];
+  if (!d) return;
+  document.getElementById('d-title').textContent = d.t;
+  document.getElementById('d-meta').textContent = d.m;
+  document.getElementById('d-body').innerHTML = d.b;
+}));
+
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const dark = !document.documentElement.classList.contains('dark');
+  document.documentElement.classList.toggle('dark', dark);
+  localStorage.setItem('fp-theme', dark ? 'dark' : 'light');
+});
+</script>
+</body>
+</html>
