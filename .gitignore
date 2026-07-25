@@ -109,6 +109,9 @@ W1-L2-CLAUDE-additional-sources.zip
 .forgeplan/trash/
 .forgeplan/logs/
 .forgeplan/locks/
+# Per-developer API keys loaded by config/secrets.rs (PRD-077 FR-023).
+# Never commit — config.yaml holds env-var *references*, this file holds values.
+.forgeplan/secrets.env
 # === end forgeplan section ===
 .forgeplan/anomalies-journal.jsonl
 
