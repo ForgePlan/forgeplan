@@ -4,6 +4,9 @@ id: PROB-079
 kind: problem
 last_modified_at: 2026-07-24T22:33:24.522827+00:00
 last_modified_by: claude-code/2.1.219
+links:
+- target: PROB-047
+  relation: based_on
 status: draft
 title: graph --brownfield-only fails to parse hypothesis frontmatter, silently falls back to default lifecycle state
 ---
@@ -106,4 +109,5 @@ title: hypothesis.template
 - Epic #287 — brownfield extraction surface, вводит `--brownfield-only` и kind `hypothesis`.
 - PROB-035, PROB-039 — прецеденты тихих отказов; тот же класс, та же цена.
 - PROB-047 — непреднамеренный `scan-import`, породивший HYP-001..003.
+
 
