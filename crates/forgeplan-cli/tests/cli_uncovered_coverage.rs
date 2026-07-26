@@ -580,6 +580,102 @@ fn remember_list_after_capture_shows_entry() {
         .stdout(predicate::str::contains("mem-list-coverage-entry"));
 }
 
+/// Issue #411 end-to-end: the memory list must show WHO captured the fact.
+///
+/// Exercises the whole chain in one shot — `resolve_author` tier 1 (git
+/// config), the frontmatter + LanceDB author write, `resolve_display_author`
+/// reading the column back, and `shorten_author` dropping the address.
+#[test]
+fn remember_list_shows_the_git_author_column() {
+    // Mirrors the skip guard in `forgeplan_core::git::author` tests.
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let tmp = init_workspace();
+
+    // LOCAL git config overrides global/system, so tier 1 of resolve_author
+    // is deterministic regardless of the developer's own ~/.gitconfig.
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["config", "user.name", "Ada Lovelace"],
+        vec!["config", "user.email", "ada@example.org"],
+    ] {
+        std::process::Command::new("git")
+            .args(&args)
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+    }
+
+    // GIT_AUTHOR_* now OUTRANKS git config (issue #411 env tier). A
+    // developer shell that exports them — or a test run from inside
+    // `git rebase` / `git am`, both of which export the pair — would
+    // otherwise satisfy tier 1 before the local config is consulted and
+    // this test would assert the ambient environment, not the repo.
+    forgeplan()
+        .args(["remember", "LanceDB index is derived, never commit it"])
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["remember", "--list"])
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Author"))
+        .stdout(predicate::str::contains("Ada Lovelace"))
+        // "Ada Lovelace <ada@example.org>" is 30 chars > AUTHOR_COL_MAX:
+        // the address is dropped whole, never cut into.
+        .stdout(predicate::str::contains("ada@example.org").not())
+        // The regression guard: a revert to the hardcoded literal shows up
+        // here and nowhere else.
+        .stdout(predicate::str::contains("cli").not());
+}
+
+/// Issue #411: the agent-facing surface reported the "when" but not the
+/// "who". `recall --json` must carry provenance, and carry it WHOLE.
+#[test]
+fn recall_json_carries_provenance() {
+    let tmp = init_workspace();
+
+    forgeplan()
+        .args(["remember", "PostgreSQL for concurrent writes, not SQLite"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = forgeplan()
+        .args(["recall", "PostgreSQL", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).unwrap();
+    let payload: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let mem = &payload["memories"][0];
+
+    // The key must exist at all — an agent has no other provenance channel.
+    let author = mem.get("author").expect("recall --json must expose author");
+    assert!(
+        author.as_str().is_some_and(|s| !s.is_empty()),
+        "author must be a resolved value, got {author}"
+    );
+    // Unshortened: the payload is machine-read, no width budget applies.
+    assert!(!author.as_str().unwrap().ends_with('…'));
+}
+
 #[test]
 fn remember_forget_removes_memory() {
     let tmp = init_workspace();

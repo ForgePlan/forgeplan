@@ -1,5 +1,10 @@
 //! Git integration — detect changed .forgeplan/ files from git operations.
 
+/// Author attribution from git config (issue #411). Submodule rather than
+/// inline because this file is already 1000+ lines and scoped to change
+/// detection; attribution is a separate concern with separate callers.
+pub mod author;
+
 use std::path::Path;
 use std::process::Command;
 

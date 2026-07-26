@@ -1432,7 +1432,13 @@ impl LanceStore {
     /// ("lookup accepts both formats and resolves to the same canonical
     /// artifact").
     ///
-    /// Accepts two input shapes:
+    /// Accepts three input shapes, tried in order:
+    /// (0) Literal id form — the trimmed input compared byte-for-byte against
+    /// the canonical `id` column. This is the only path that resolves kinds
+    /// whose ids are not `KIND-NNN` shaped, notably Memory
+    /// (`mem-<slugified-text>`, issue #411). Byte-exact by construction, so
+    /// non-canonical casing (`prd-074`) misses here and still falls through
+    /// to (a);
     /// (a) Display id form (`PRD-074`, `prd-074`, `Prd-74` — case-insensitive
     /// prefix; trailing digits parsed as u32 then zero-padded to 3 width)
     /// resolved by direct DB lookup; (b) slug form (`prd-auth-system` —
@@ -1445,14 +1451,42 @@ impl LanceStore {
     /// of the `id` column in the DB (current Phase 1.x form: `KIND-NNN`).
     ///
     /// # Performance
-    /// Display id path is O(1) on indexed DB lookup. Slug path is O(n) over
-    /// records of one kind only (filtered first) — for ~50 PRDs this is
-    /// ~50 frontmatter parses, acceptable for CLI; not benchmarked.
+    /// Literal path is O(1) on an indexed point lookup. Display id path is
+    /// O(1) on indexed DB lookup. Slug path is O(n) over records of one kind
+    /// only (filtered first) — for ~50 PRDs this is ~50 frontmatter parses,
+    /// acceptable for CLI; not benchmarked.
+    ///
+    /// Path 0 is free for already-canonical input (`PRD-074`): it hits and
+    /// returns, consuming the single point query Path 1 would have made.
+    /// It costs one extra point query for non-canonical display input
+    /// (`prd-074`, `PRD-74`) and for anything that ends up on the slug scan —
+    /// negligible next to that scan's `list_records` + frontmatter parses.
     pub async fn resolve_id(&self, input: &str) -> anyhow::Result<Option<String>> {
         // Audit Phase 1.5 M1: trim whitespace from copy-paste / LLM input.
         let input = input.trim();
         if input.is_empty() {
             return Ok(None);
+        }
+
+        // ---- Path 0: literal id match (issue #411) ----
+        // The `id` column IS the canonical identity. Kinds whose ids are not
+        // `KIND-NNN` shaped — Memory (`mem-<slugified-text>`) — are invisible
+        // to Path 1 (which needs an all-digit suffix) and to Path 2 (which
+        // needs a `slug` frontmatter field that `forgeplan remember` never
+        // writes). One point lookup on the trimmed input makes them linkable
+        // without granting Memory a lifecycle, required sections, or any
+        // validation weight.
+        //
+        // Uses the TRIMMED input: `get_record` builds an exact `id = '...'`
+        // predicate, so untrimmed input could never match, and the Phase 1.5
+        // M1 contract ("  PRD-074  " resolves) must hold on this path too.
+        //
+        // Byte-exact on purpose: `prd-074` does NOT match a stored `PRD-074`
+        // here, so it falls through to Path 1's case-insensitive
+        // normalization exactly as before. Making this case-insensitive would
+        // shadow Path 1 and silently change which row wins.
+        if let Some(rec) = self.get_record(input).await? {
+            return Ok(Some(rec.id));
         }
 
         // ---- Path 1: display id form (KIND-NNN) ----
@@ -2846,6 +2880,138 @@ mod tests {
         );
         // Slug form returns None (no slug field) — caller must fall back to verbatim.
         assert_eq!(store.resolve_id("prd-legacy-artifact").await.unwrap(), None);
+    }
+
+    // ── issue #411: Path 0 literal-id match makes Memory a graph citizen ──
+
+    /// Mirrors what `forgeplan remember` writes: id `mem-<slugified-text>`,
+    /// kind `memory`, no `slug` frontmatter field, no lifecycle.
+    fn memory_artifact(id: &str) -> NewArtifact {
+        NewArtifact {
+            id: id.to_string(),
+            kind: "memory".to_string(),
+            status: "active".to_string(),
+            title: "Memory entry".to_string(),
+            body: format!(
+                "---\nid: \"{}\"\nkind: memory\ncategory: fact\nstatus: active\ndepth: tactical\ntitle: \"Memory entry\"\ncreated: 2026-07-26T00:00:00Z\nauthor: cli\n---\n\nMemory body text.\n",
+                id
+            ),
+            depth: "tactical".to_string(),
+            author: Some("cli".to_string()),
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_id_path0_memory_id_resolves_literally() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let mem_id = "mem-postgresql-for-concurrent-writes-not-sqlite";
+        store
+            .create_artifact(&memory_artifact(mem_id))
+            .await
+            .unwrap();
+
+        // Before Path 0 this returned None: Path 1 rejects the non-digit
+        // suffix, Path 2 finds no `slug` field to compare against.
+        assert_eq!(
+            store.resolve_id(mem_id).await.unwrap(),
+            Some(mem_id.to_string()),
+            "memory id must resolve so it can be a link source/target"
+        );
+        // Phase 1.5 M1 trim contract holds on Path 0 too.
+        assert_eq!(
+            store.resolve_id(&format!("  {}\n", mem_id)).await.unwrap(),
+            Some(mem_id.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_id_path0_does_not_shadow_display_form() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+
+        // Canonical input: Path 0 hits and returns the same value as before.
+        assert_eq!(
+            store.resolve_id("PRD-074").await.unwrap(),
+            Some("PRD-074".to_string())
+        );
+        // Non-canonical casing: Path 0 misses (byte-exact predicate), Path 1
+        // still normalizes and wins.
+        assert_eq!(
+            store.resolve_id("prd-074").await.unwrap(),
+            Some("PRD-074".to_string())
+        );
+        // Unpadded: Path 0 misses, Path 1 zero-pads and wins.
+        assert_eq!(
+            store.resolve_id("PRD-74").await.unwrap(),
+            Some("PRD-074".to_string())
+        );
+        // Slug path untouched.
+        assert_eq!(
+            store.resolve_id("prd-auth-system").await.unwrap(),
+            Some("PRD-074".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_id_path0_preserves_h2_early_exit_and_slug_miss() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .await
+            .unwrap();
+
+        // Display-id shape, valid kind, DB miss: Path 0 misses too, so Path 1
+        // still reaches its early `return Ok(None)` and no slug scan happens.
+        assert_eq!(store.resolve_id("PRD-999").await.unwrap(), None);
+        assert_eq!(store.resolve_id("prd-999").await.unwrap(), None);
+        // Slug-shaped input matching nothing: still None, not an error.
+        assert_eq!(store.resolve_id("prd-other-thing").await.unwrap(), None);
+        assert_eq!(
+            store.resolve_id("mem-never-remembered").await.unwrap(),
+            None
+        );
+        // Garbage guards unchanged.
+        assert_eq!(store.resolve_id("").await.unwrap(), None);
+        assert_eq!(store.resolve_id("   ").await.unwrap(), None);
+        assert_eq!(store.resolve_id("foo-bar").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_id_path0_literal_miss_on_empty_store_is_ok_none() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        // No rows at all: a literal lookup must return Ok(None), never Err.
+        let result = store.resolve_id("mem-does-not-exist").await;
+        assert!(result.is_ok(), "literal miss must not error");
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_id_path0_wins_over_display_normalization_for_numeric_memory_id() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        // `forgeplan remember "12345"` produces id `mem-12345` — display-id
+        // SHAPE (alpha prefix + all-digit suffix + valid kind prefix `mem`),
+        // so Path 1 normalizes it to `MEM-12345`, misses, and early-exits to
+        // None. Path 0 must claim it first via the literal id.
+        store
+            .create_artifact(&memory_artifact("mem-12345"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.resolve_id("mem-12345").await.unwrap(),
+            Some("mem-12345".to_string()),
+            "Path 0 must precede Path 1 normalization"
+        );
     }
 
     #[tokio::test]

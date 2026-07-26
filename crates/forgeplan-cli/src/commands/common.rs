@@ -172,6 +172,77 @@ pub fn extract_plain_text(body: &str) -> String {
     lines.join(" ").trim().to_string()
 }
 
+/// Widest author cell rendered in a memory listing, in CHARS.
+///
+/// Issue #411: `git::author::resolve_author` caps the STORED value at
+/// `MAX_FIELD_LEN` (64 BYTES) — far too wide for a table that already runs
+/// to ~140 columns. 20 chars fits every identity this project actually
+/// produces: `cli` (3), `claude-code/1.0.50` (18), and the bare-name form
+/// of `Name <email>`, while bounding the pathological 64-byte case.
+///
+/// This is a CAP, not a fixed width — call sites width-fit the column to
+/// the widest cell actually present (the idiom `id_width` already uses),
+/// so an all-`cli` workspace pays 6 chars (the header), not 20.
+pub const AUTHOR_COL_MAX: usize = 20;
+
+/// Rendered when no author can be resolved. Matches the existing empty-cell
+/// idiom in `log_cmd.rs`, `plugins.rs` and `scan_import.rs` — a bare `-`,
+/// not `"unknown"`, which would read as a value someone actually stored.
+pub const AUTHOR_MISSING: &str = "-";
+
+/// Resolve an artifact's author for display: LanceDB column first,
+/// frontmatter second, `None` when neither answers.
+///
+/// The column is authoritative — it is what
+/// `projection::create_artifact_with_projection` writes from
+/// `NewArtifact.author`, i.e. exactly the value `resolve_author` produced.
+/// The frontmatter fallback covers rows whose column is NULL but whose
+/// markdown still carries `author:` (hand-written memory files, anything
+/// synced before the column was populated) — the same precedence
+/// `author_from_frontmatter` established for scan-import under PROB-068.
+///
+/// Empty/whitespace values are treated as absent: `get_string` can yield
+/// `Some("")` for a blank column, and rendering that as a blank cell would
+/// look like a layout bug rather than missing data.
+pub fn resolve_display_author(record_author: Option<&str>, body: &str) -> Option<String> {
+    record_author
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+        .or_else(|| extract_frontmatter_field(body, "author").filter(|a| !a.is_empty()))
+}
+
+/// Fit an author into `max_chars` for display.
+///
+/// When `Name <email>` does not fit, the ADDRESS is dropped WHOLE rather
+/// than cut into. `git::author::render_git_author` already ruled on this
+/// exact trade-off — "a mangled `<ada@examp` reads like corrupt data,
+/// whereas a bare name is honest" — so this reuses that policy instead of
+/// inventing a second one. Anything still too long gets a trailing `…`,
+/// matching the `truncate` helpers in `claims.rs` / `discover.rs`.
+///
+/// Deliberately NOT a replacement for those two private `truncate` fns:
+/// they carry no address policy, and de-duplicating them is out of scope.
+pub fn shorten_author(author: &str, max_chars: usize) -> String {
+    if author.chars().count() <= max_chars {
+        return author.to_string();
+    }
+    // Guards the `max_chars - 1` below and stops a 0-wide column from
+    // being blown out by a lone `…` (the latent bug in `discover.rs`).
+    if max_chars == 0 {
+        return String::new();
+    }
+    // `split(" <")` yields the whole string when there is no address, and
+    // that case is already known not to fit — the length guard decides,
+    // not the presence of the separator.
+    let name = author.split(" <").next().unwrap_or(author);
+    if !name.is_empty() && name.chars().count() <= max_chars {
+        return name.to_string();
+    }
+    let mut out: String = author.chars().take(max_chars - 1).collect();
+    out.push('…');
+    out
+}
+
 /// Load and validate LLM config — fails early with actionable message if not configured.
 ///
 /// PRD-077 FR-008 / CR-C4 — On failure the error message contains the structured Hint
@@ -329,6 +400,75 @@ mod tests {
             Some("mem-test".to_string())
         );
         assert_eq!(extract_frontmatter_field(body, "missing"), None);
+    }
+
+    #[test]
+    fn resolve_display_author_prefers_column_then_frontmatter() {
+        // The two memories in the wild: no author column populated at the
+        // time, `author: cli` in the body frontmatter.
+        let legacy = "---\nid: \"mem-x\"\ncategory: fact\nauthor: cli\n---\n\nA fact.";
+        assert_eq!(resolve_display_author(None, legacy).as_deref(), Some("cli"));
+
+        // A memory written after #411: the column wins even when both answer.
+        assert_eq!(
+            resolve_display_author(Some("Ada Lovelace <ada@example.org>"), legacy).as_deref(),
+            Some("Ada Lovelace <ada@example.org>")
+        );
+
+        // A blank column must fall through, not render as an empty cell.
+        assert_eq!(
+            resolve_display_author(Some("   "), legacy).as_deref(),
+            Some("cli")
+        );
+
+        // Quoted scalars are unwrapped by extract_frontmatter_field.
+        let quoted = "---\nid: x\nauthor: \"Ada Lovelace <ada@example.org>\"\n---\n\nText.";
+        assert_eq!(
+            resolve_display_author(None, quoted).as_deref(),
+            Some("Ada Lovelace <ada@example.org>")
+        );
+
+        // Neither source answers -> caller renders AUTHOR_MISSING.
+        assert_eq!(
+            resolve_display_author(None, "---\nid: x\n---\n\nText."),
+            None
+        );
+    }
+
+    #[test]
+    fn shorten_author_drops_the_address_before_cutting_into_it() {
+        // Fits — untouched.
+        assert_eq!(shorten_author("cli", AUTHOR_COL_MAX), "cli");
+        assert_eq!(
+            shorten_author("claude-code/1.0.50", AUTHOR_COL_MAX),
+            "claude-code/1.0.50"
+        );
+
+        // 30 chars: the address goes whole. Never `Ada Lovelace <ada@e…`.
+        let out = shorten_author("Ada Lovelace <ada@example.org>", AUTHOR_COL_MAX);
+        assert_eq!(out, "Ada Lovelace");
+        assert!(!out.contains('<'), "a half-address reads like corrupt data");
+
+        // Name alone still too long -> ellipsis, capped at exactly the budget.
+        let out = shorten_author(
+            "Wolfeschlegelsteinhausenbergerdorff <w@example.org>",
+            AUTHOR_COL_MAX,
+        );
+        assert_eq!(out.chars().count(), AUTHOR_COL_MAX);
+        assert!(out.ends_with('…'));
+
+        // Email-only identity (git user.name unset) has no name to fall back to.
+        let out = shorten_author("averyveryverylongaddress@example.org", AUTHOR_COL_MAX);
+        assert_eq!(out.chars().count(), AUTHOR_COL_MAX);
+        assert!(out.ends_with('…'));
+
+        // Multi-byte name must be cut by CHARS — `{:<w$}` pads by chars, so a
+        // byte-based cut would misalign the column.
+        let out = shorten_author(&"\u{03A9}".repeat(40), AUTHOR_COL_MAX);
+        assert_eq!(out.chars().count(), AUTHOR_COL_MAX);
+
+        // Degenerate budget must not emit a lone `…` into a 0-wide column.
+        assert_eq!(shorten_author("Ada", 0), "");
     }
 
     #[test]
