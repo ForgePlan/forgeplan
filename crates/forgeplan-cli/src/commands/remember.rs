@@ -3,6 +3,7 @@ use console::style;
 
 use forgeplan_core::artifact::types::slugify;
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
+use forgeplan_core::git::author::resolve_author;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 
@@ -42,12 +43,29 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
 
     // Build markdown body with frontmatter
     let now = chrono::Utc::now().to_rfc3339();
+
+    // Issue #411: real provenance instead of the hardcoded `cli`.
+    // Resolved ONCE and reused by BOTH the frontmatter string below and
+    // `NewArtifact.author` — writing them separately is exactly how the
+    // markdown and the LanceDB row could drift.
+    //
+    // `None` for the caller identity: the CLI never performs the MCP
+    // clientInfo handshake, so tier 2 is a no-op here and the chain is
+    // git config -> "cli". An MCP-hosted `remember` passes `Some(&id)`.
+    //
+    // `author` is emitted as a double-quoted YAML scalar: the resolver
+    // strips `"` and `\`, so no escaping is needed, and a git user.name
+    // like `- foo` / `foo: bar` / `foo # bar` cannot break the mapping the
+    // way the previous unquoted `author: cli` line would have.
+    let author = resolve_author(&workspace, None).await;
+
     let body = format!(
-        "---\nid: \"{}\"\nkind: memory\ncategory: {}\nstatus: active\ndepth: tactical\ntitle: \"{}\"\ncreated: {}\nauthor: cli\n---\n\n{}",
+        "---\nid: \"{}\"\nkind: memory\ncategory: {}\nstatus: active\ndepth: tactical\ntitle: \"{}\"\ncreated: {}\nauthor: \"{}\"\n---\n\n{}",
         id,
         category,
         title.replace('"', "\\\""),
         now,
+        author,
         text
     );
 
@@ -59,7 +77,8 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
         title: title.clone(),
         body: body.clone(),
         depth: "tactical".to_string(),
-        author: Some("cli".to_string()),
+        // Same value as the frontmatter above — single resolution, no drift.
+        author: Some(author.clone()),
         parent_epic: None,
         valid_until: None,
         // C1: memory artifacts have no tags at creation; users add via `forgeplan tag`.
