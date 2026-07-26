@@ -5,9 +5,44 @@
 //! the graph carried the same non-informative provenance. This module
 //! resolves a *real* author through a three-tier fallback chain:
 //!
-//! 1. **git config** — `user.name` / `user.email` read from the workspace.
-//!    This is the human at the keyboard, which is what a reader of the
-//!    artifact actually wants to see.
+//! 1. **git identity** — `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` from the
+//!    environment, falling back **per field** to `user.name` /
+//!    `user.email` read from the workspace. This is the human at the
+//!    keyboard, which is what a reader of the artifact actually wants to
+//!    see.
+//!
+//!    Env goes BEFORE config because that is git's own precedence
+//!    (`ident.c: git_author_info` reads `GIT_AUTHOR_*` first and only then
+//!    consults config). Mirroring git is the whole argument: it means a CI
+//!    job, a `git rebase`, or a `--author` re-exec attributes the memory to
+//!    exactly whoever git would have credited for a commit made at the same
+//!    moment, so artifact provenance and commit provenance never disagree.
+//!    Slotting env *between* config and the caller identity would invent a
+//!    third precedence order that matches neither git nor the MCP
+//!    handshake, and would silently ignore the env on every developer
+//!    machine (where config is always set) — i.e. exactly the machines
+//!    where a deliberate `GIT_AUTHOR_NAME` override is meaningful.
+//!
+//!    Per **field**, not per source: git resolves name and email
+//!    independently, so a workflow that exports only `GIT_AUTHOR_NAME`
+//!    still gets the email from config. A whole-block "env wins or config
+//!    wins" would throw the config email away.
+//!
+//!    Side effect worth having: when both vars are set the tier-1 lookup
+//!    spawns **zero** git processes.
+//!
+//!    **`GIT_COMMITTER_NAME` / `GIT_COMMITTER_EMAIL` are deliberately out
+//!    of scope.** Git models author (who wrote it) and committer (who
+//!    applied it) as distinct roles, and the frontmatter field is literally
+//!    `author`. Honouring the committer would credit the rebasing
+//!    maintainer or the bot that replayed the work. Git itself never falls
+//!    back between the two. The coverage lost is near-zero — every
+//!    environment that exports `GIT_COMMITTER_*` (CI actions, `git rebase`,
+//!    `git am`) exports `GIT_AUTHOR_*` alongside it — while the
+//!    mis-attribution is real. The `EMAIL` env var (git's last resort,
+//!    ranked *below* config) is excluded for the same reason git ranks it
+//!    so low: it is a generic mail setting, not a statement about
+//!    authorship.
 //! 2. **Caller [`AgentIdentity`]** — the MCP `clientInfo` handshake value,
 //!    when the caller supplies one. The CLI has none today (it never
 //!    performs the handshake), so it passes `None`; an MCP-hosted
@@ -24,9 +59,38 @@
 //! is a submodule rather than more lines in `git/mod.rs` (already 1000+
 //! lines, scoped to change detection) because the concern is attribution.
 //!
-//! Attribution is reusable: `commands/deprecate.rs` and
-//! `common::log_change_field` carry the same `"cli"` literal and can adopt
-//! [`resolve_author`] later with no further plumbing.
+//! ## The other `"cli"` literals are NOT authors
+//!
+//! An earlier draft of this note claimed `commands/deprecate.rs` and
+//! `common::log_change_field` carry "the same" literal and could adopt
+//! [`resolve_author`]. That was wrong. Every remaining `"cli"` in
+//! `forgeplan-cli` — 14 sites: `activate.rs:72`, `deprecate.rs:61`,
+//! `ingest.rs:568,589`, `link.rs:74,173`, `new.rs:215`, `renew.rs:50`,
+//! `reopen.rs:86,96`, `supersede.rs:66`, `update.rs:153,165,170` — is the
+//! trailing `source` argument of `common::log_change` /
+//! `common::log_change_field`. It lands in
+//! [`ChangeLogEntry::source`](crate::changelog::ChangeLogEntry), whose own
+//! doc comment enumerates the closed vocabulary `cli, file_edit, git_sync,
+//! reindex` (and `driver::MemoryEntry::source` documents `"cli", "mcp",
+//! "llm"`). It answers *through which surface did this mutation arrive*,
+//! not *who made it*. Substituting a human name there would destroy the
+//! audit trail's only surface discriminator: `git_sync` and `reindex`
+//! entries would stop being distinguishable from interactive ones, and
+//! nothing else in the row records the channel.
+//!
+//! How to tell the two apart at a glance: a **channel** `"cli"` is the
+//! last positional argument of a `log_change*` call and its sibling values
+//! elsewhere in the tree are `git_sync` / `reindex`; an **author** `"cli"`
+//! flows into `NewArtifact.author` or into an `author:` frontmatter line.
+//! After the `remember.rs` fix there are no author-`"cli"` sites left.
+//!
+//! The real remaining attribution gap is a different shape: `new.rs:200`,
+//! `capture.rs:63`, `generate.rs:73`, `ingest.rs:556` and `reason.rs:346`
+//! all build a `NewArtifact` with `author: None`, so every PRD/RFC/ADR is
+//! created with no author at all. Adopting [`resolve_author`] there is a
+//! separate, larger change — and it is the point at which memoising the
+//! git lookup stops being theoretical, because it turns one call site into
+//! six.
 //!
 //! ## Shape of the rendered value
 //!
@@ -102,15 +166,38 @@ pub async fn resolve_author(dir: &Path, caller: Option<&AgentIdentity>) -> Strin
     FALLBACK_AUTHOR.to_string()
 }
 
-/// Tier 1: read `user.name` + `user.email` and render them.
+/// Environment variable git reads for the author name, ahead of
+/// `user.name`. Named constants (not inline literals) because the test
+/// guard has to clear exactly these two keys.
+const ENV_AUTHOR_NAME: &str = "GIT_AUTHOR_NAME";
+
+/// Environment variable git reads for the author email, ahead of
+/// `user.email`.
+const ENV_AUTHOR_EMAIL: &str = "GIT_AUTHOR_EMAIL";
+
+/// Tier 1: resolve name + email the way git does, then render them.
+///
+/// Per-field precedence `GIT_AUTHOR_* env` -> `git config` -> nothing.
+/// Resolved independently for name and email so a CI job exporting only
+/// `GIT_AUTHOR_NAME` keeps the config email (see the module docs for why
+/// env outranks config, and why `GIT_COMMITTER_*` does not participate).
 ///
 /// Two `git config --get` calls rather than one `git var GIT_AUTHOR_IDENT`
 /// on purpose: `git var` *synthesises* a name from the OS passwd/gecos
 /// entry when `user.name` is unset, which would silently defeat the
 /// "user.name unset falls through" requirement.
+///
+/// The env reads are synchronous and free, and short-circuit the
+/// subprocess: with both vars set this function spawns no git at all.
 async fn git_identity(dir: &Path) -> Option<String> {
-    let name = git_config_value(dir, "user.name").await;
-    let email = git_config_value(dir, "user.email").await;
+    let name = match env_component(std::env::var_os(ENV_AUTHOR_NAME)) {
+        Some(n) => Some(n),
+        None => git_config_value(dir, "user.name").await,
+    };
+    let email = match env_component(std::env::var_os(ENV_AUTHOR_EMAIL)) {
+        Some(e) => Some(e),
+        None => git_config_value(dir, "user.email").await,
+    };
     render_git_author(name.as_deref(), email.as_deref())
 }
 
@@ -150,6 +237,36 @@ async fn git_config_value(dir: &Path, key: &str) -> Option<String> {
     // `git config --get` on a key explicitly set to "" exits 0 with empty
     // stdout. Sanitising to None handles it.
     sanitize_component(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Run one already-read env value through the SAME sanitiser as a git
+/// config value.
+///
+/// Takes the value rather than the key so the whole policy is testable
+/// without mutating the process environment (`std::env::set_var` is
+/// `unsafe` and forces serialisation); the single caller passes
+/// `std::env::var_os(..)`.
+///
+/// Sanitising is not optional here — env vars are the more
+/// attacker-adjacent of the two inputs. CI workflows routinely interpolate
+/// fork-controlled data (branch names, PR titles, commit metadata) into
+/// `GIT_AUTHOR_NAME`, and the value is written verbatim into a
+/// double-quoted YAML scalar. [`sanitize_component`] drops `"`, `<`, `>`,
+/// control and bidi characters, so a name cannot close the scalar, forge a
+/// second `<address>`, or smuggle a direction override past a reviewer.
+/// The `MAX_FIELD_LEN` cap is applied afterwards by
+/// [`render_git_author`].
+///
+/// Non-UTF8 is decoded lossily rather than rejected: an unreadable name
+/// must not fail `remember`. Surviving U+FFFD is cosmetic and still passes
+/// `AgentIdentity::new`.
+///
+/// Returns `None` for unset AND for set-but-empty, so `GIT_AUTHOR_NAME=""`
+/// falls through to config. Git itself errors on an empty ident; this
+/// module can never fail, so falling through is the honest analogue —
+/// and it mirrors the existing empty-`user.name` behaviour exactly.
+fn env_component(raw: Option<std::ffi::OsString>) -> Option<String> {
+    sanitize_component(&raw?.to_string_lossy())
 }
 
 /// Compose the frontmatter author from already-sanitised parts.
@@ -254,6 +371,7 @@ fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::path::Path;
     use std::process::Command;
     use tempfile::TempDir;
@@ -261,6 +379,62 @@ mod tests {
     /// Skip git-dependent tests where git is not installed.
     fn git_available() -> bool {
         Command::new("git").arg("--version").output().is_ok()
+    }
+
+    /// RAII: clear `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` for the duration
+    /// of a test and restore the ambient values on drop.
+    ///
+    /// Mandatory for EVERY `resolve_author` test now that env outranks
+    /// config. A developer shell that exports `GIT_AUTHOR_NAME`, or a test
+    /// runner invoked from inside `git rebase` / `git am` (both of which
+    /// export the pair), would otherwise satisfy tier 1 before git config
+    /// or the fallback is ever reached — turning four currently-green
+    /// assertions into environment-dependent flakes.
+    ///
+    /// Users must also carry `#[serial_test::serial(env_path)]`. That key
+    /// is reused rather than a fresh one on purpose: it is the same lock
+    /// the PATH test already holds, and a PATH test running concurrently
+    /// with an author-env test that still needs to spawn git would corrupt
+    /// both. One key = all env mutation in this module is mutually
+    /// exclusive.
+    struct AuthorEnvGuard {
+        name: Option<OsString>,
+        email: Option<OsString>,
+    }
+
+    impl AuthorEnvGuard {
+        fn cleared() -> Self {
+            let saved = Self {
+                name: std::env::var_os(ENV_AUTHOR_NAME),
+                email: std::env::var_os(ENV_AUTHOR_EMAIL),
+            };
+            unsafe {
+                std::env::remove_var(ENV_AUTHOR_NAME);
+                std::env::remove_var(ENV_AUTHOR_EMAIL);
+            }
+            saved
+        }
+
+        /// Set a var for the rest of the guard's life. Takes `&self` so the
+        /// guard is provably still alive at the call site.
+        fn set(&self, key: &str, value: &str) {
+            unsafe { std::env::set_var(key, value) }
+        }
+    }
+
+    impl Drop for AuthorEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.name.take() {
+                    Some(v) => std::env::set_var(ENV_AUTHOR_NAME, v),
+                    None => std::env::remove_var(ENV_AUTHOR_NAME),
+                }
+                match self.email.take() {
+                    Some(v) => std::env::set_var(ENV_AUTHOR_EMAIL, v),
+                    None => std::env::remove_var(ENV_AUTHOR_EMAIL),
+                }
+            }
+        }
     }
 
     /// Temp repo with `user.name` / `user.email` written to the LOCAL
@@ -285,10 +459,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     async fn resolve_author_uses_git_config_when_set() {
         if !git_available() {
             return;
         }
+        // Ambient GIT_AUTHOR_* now outranks config; without this the test
+        // would assert the developer's shell, not the repo.
+        let _env = AuthorEnvGuard::cleared();
         let tmp = TempDir::new().unwrap();
         init_repo_with(tmp.path(), "Ada Lovelace", "ada@example.org");
 
@@ -302,10 +480,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     async fn resolve_author_falls_through_when_git_config_is_empty() {
         if !git_available() {
             return;
         }
+        let _env = AuthorEnvGuard::cleared();
         let tmp = TempDir::new().unwrap();
         // `git config --get` on an explicitly-empty key exits 0 with empty
         // stdout — the subtle case that a naive `status.success()` check
@@ -321,7 +501,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     async fn resolve_author_falls_back_to_cli_when_git_cannot_answer() {
+        // The env tier answers without touching git at all, so a tier-1
+        // miss now requires the env to be clear as well as the path bad.
+        let _env = AuthorEnvGuard::cleared();
         // `git -C /nonexistent` exits 128 — a deterministic tier-1 miss
         // that needs no env mutation. Structurally identical to the
         // git-absent path (`.output().await.ok()?` yields None).
@@ -332,6 +516,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(env_path)]
     async fn resolve_author_falls_back_when_git_absent_from_path() {
+        // Clearing PATH no longer disables tier 1 by itself — the env tier
+        // needs no subprocess. Clear it too or this passes for the wrong
+        // reason.
+        let _env = AuthorEnvGuard::cleared();
         let original = std::env::var_os("PATH");
         unsafe {
             std::env::set_var("PATH", "/nonexistent-dir-for-test-isolation-411");
@@ -424,7 +612,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(env_path)]
     async fn caller_identity_wins_over_fallback_but_unknown_does_not() {
+        // Tier 2 is only reachable when tier 1 misses — which now means
+        // both the env and the git config must be unable to answer.
+        let _env = AuthorEnvGuard::cleared();
         let missing = Path::new("/nonexistent-forgeplan-411");
 
         let real = AgentIdentity::new("claude-code", "1.0.50").unwrap();
@@ -439,6 +631,48 @@ mod tests {
         assert_eq!(
             resolve_author(missing, Some(&sentinel)).await,
             FALLBACK_AUTHOR
+        );
+    }
+
+    #[test]
+    fn env_component_sanitises_and_treats_empty_as_unset() {
+        // Unset and set-but-empty must give the same answer: fall through
+        // to config. Git errors on an empty ident; this module can never
+        // fail, so falling through is the analogue — and it matches the
+        // existing empty-`user.name` behaviour.
+        assert_eq!(env_component(None), None);
+        assert_eq!(env_component(Some(OsString::from(""))), None);
+        assert_eq!(env_component(Some(OsString::from("   \t"))), None);
+
+        // Same sanitiser as the config path. The quote would close the
+        // double-quoted YAML scalar, the angle brackets would forge a
+        // second address, the newline would inject a frontmatter line —
+        // all stripped, none rejected.
+        assert_eq!(
+            env_component(Some(OsString::from("Ada\nB \"x\" <y>"))).as_deref(),
+            Some("Ada B x y")
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(env_path)]
+    async fn env_author_name_outranks_config_and_mixes_per_field() {
+        if !git_available() {
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        init_repo_with(tmp.path(), "Config Human", "config@example.org");
+
+        // Only the NAME is exported — the CI-runner shape.
+        let env = AuthorEnvGuard::cleared();
+        env.set(ENV_AUTHOR_NAME, "CI Bot");
+
+        let author = resolve_author(tmp.path(), None).await;
+
+        assert_eq!(
+            author, "CI Bot <config@example.org>",
+            "env must outrank config PER FIELD: the name comes from the \
+             environment, the email must still come from git config"
         );
     }
 }

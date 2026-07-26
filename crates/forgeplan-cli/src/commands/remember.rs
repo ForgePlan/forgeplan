@@ -122,18 +122,40 @@ async fn run_list() -> Result<()> {
         return Ok(());
     }
 
+    // Issue #411: the author is stored but was invisible in the one place
+    // people look. Cells are materialised BEFORE the header so the column
+    // can be width-fitted the same way `id_width` already is — a workspace
+    // where every memory says `cli` pays 6 chars, not the 20-char cap.
+    let author_cells: Vec<String> = records
+        .iter()
+        .map(|r| {
+            common::resolve_display_author(r.author.as_deref(), &r.body)
+                .map(|a| common::shorten_author(&a, common::AUTHOR_COL_MAX))
+                .unwrap_or_else(|| common::AUTHOR_MISSING.to_string())
+        })
+        .collect();
+
     // Print header
     let id_width = records.iter().map(|r| r.id.len()).max().unwrap_or(6).max(2);
+    // `.max(6)` is the "Author" header floor, mirroring `.max(2)` for "ID".
+    let author_width = author_cells
+        .iter()
+        .map(|a| a.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("Author".len());
     println!(
-        "{:<id_w$}  {:<12}  {:<12}  {}",
+        "{:<id_w$}  {:<12}  {:<a_w$}  {:<12}  {}",
         style("ID").bold().underlined(),
         style("Category").bold().underlined(),
+        style("Author").bold().underlined(),
         style("Created").bold().underlined(),
         style("Text").bold().underlined(),
         id_w = id_width,
+        a_w = author_width,
     );
 
-    for r in &records {
+    for (r, author) in records.iter().zip(author_cells.iter()) {
         let category = common::extract_frontmatter_field(&r.body, "category")
             .unwrap_or_else(|| "fact".to_string());
         let date: String = r.created_at.chars().take(10).collect();
@@ -141,12 +163,14 @@ async fn run_list() -> Result<()> {
         let truncated: String = plain_text.chars().take(60).collect();
 
         println!(
-            "{:<id_w$}  {:<12}  {:<12}  {}",
+            "{:<id_w$}  {:<12}  {:<a_w$}  {:<12}  {}",
             style(&r.id).bold(),
             category,
+            author,
             date,
             truncated,
             id_w = id_width,
+            a_w = author_width,
         );
     }
 
