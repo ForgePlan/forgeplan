@@ -126,3 +126,9 @@ dev/architecture-diagram-generator/
 dev/forge-understand/spike/vendor/
 dev/forgeplan-project-map/
 dev/forgeplan-project-map.zip
+
+# Serena tool state (per-developer, regenerable)
+.serena/
+
+# vNext pack: per-machine GitHub issue-creation state
+docs/vnext/engineering-contract-layer/.created-issues.json
