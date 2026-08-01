@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeplan.dev/schemas/evidence-bundle.v1.json",
+  "title": "ForgePlan EvidenceBundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "protocol_version",
+    "bundle_id",
+    "contract",
+    "execution_id",
+    "producer",
+    "repository",
+    "criteria",
+    "created_at",
+    "digest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "forgeplan.evidence-bundle.v1"
+    },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^1\\."
+    },
+    "bundle_id": {
+      "type": "string"
+    },
+    "contract": {
+      "type": "object",
+      "required": [
+        "id",
+        "version",
+        "digest"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "execution_id": {
+      "type": "string"
+    },
+    "producer": {
+      "type": "string"
+    },
+    "verifier": {
+      "type": "string"
+    },
+    "repository": {
+      "type": "object",
+      "required": [
+        "base_sha",
+        "result_sha",
+        "changed_paths",
+        "delta_digest"
+      ],
+      "properties": {
+        "base_sha": {
+          "type": "string"
+        },
+        "result_sha": {
+          "type": "string"
+        },
+        "changed_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "delta_digest": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "criterion_id",
+          "claim",
+          "evidence"
+        ],
+        "properties": {
+          "criterion_id": {
+            "type": "string"
+          },
+          "claim": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "verdict",
+                "provenance"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "verdict": {
+                  "enum": [
+                    "supports",
+                    "weakens",
+                    "refutes",
+                    "unknown"
+                  ]
+                },
+                "provenance": {
+                  "type": "object"
+                },
+                "artifact_ref": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "command",
+          "exit_code"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "report_ref": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "valid_until": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "digest": {
+      "type": "string"
+    },
+    "extensions": {
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeplan.dev/schemas/extension-manifest.v1.json",
+  "title": "ForgePlan Extension Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "version",
+    "kind",
+    "compatibility",
+    "capabilities",
+    "permissions",
+    "ownership",
+    "maturity"
+  ],
+  "properties": {
+    "schema": {
+      "const": "forgeplan.extension-manifest.v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]+$"
+    },
+    "version": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "host_adapter",
+        "orchestrator_adapter",
+        "methodology_pack",
+        "evidence_provider",
+        "domain_pack",
+        "migration_pack",
+        "visualization_extension"
+      ]
+    },
+    "compatibility": {
+      "type": "object"
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": [
+          "full",
+          "partial",
+          "advisory",
+          "unsupported",
+          "experimental"
+        ]
+      }
+    },
+    "permissions": {
+      "type": "object"
+    },
+    "ownership": {
+      "type": "object",
+      "required": [
+        "owns",
+        "does_not_own"
+      ],
+      "properties": {
+        "owns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "does_not_own": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "conformance": {
+      "type": "object"
+    },
+    "maturity": {
+      "enum": [
+        "experimental",
+        "beta",
+        "stable",
+        "deprecated"
+      ]
+    }
+  }
+}

@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeplan.dev/schemas/work-contract.v1.json",
+  "title": "ForgePlan WorkContract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "protocol_version",
+    "contract_id",
+    "version",
+    "digest",
+    "source",
+    "repository",
+    "objective",
+    "scope",
+    "acceptance",
+    "evidence_required",
+    "authority"
+  ],
+  "properties": {
+    "schema": {
+      "const": "forgeplan.work-contract.v1"
+    },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^1\\."
+    },
+    "contract_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "digest": {
+      "type": "string",
+      "minLength": 16
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "artifacts"
+      ],
+      "properties": {
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "digest"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string"
+              },
+              "git_ref": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "repository": {
+      "type": "object",
+      "required": [
+        "base_sha"
+      ],
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "base_ref": {
+          "type": "string"
+        },
+        "base_sha": {
+          "type": "string",
+          "minLength": 7
+        }
+      },
+      "additionalProperties": false
+    },
+    "objective": {
+      "type": "object",
+      "required": [
+        "summary"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_outcome": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "included",
+        "excluded",
+        "allowed_paths",
+        "forbidden_paths"
+      ],
+      "properties": {
+        "included": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "excluded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowed_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "forbidden_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "statement",
+          "source"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "statement": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "claim"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "claim": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "evidence_required": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "criterion",
+          "kinds"
+        ],
+        "properties": {
+          "criterion": {
+            "type": "string"
+          },
+          "kinds": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "authority": {
+      "type": "object",
+      "required": [
+        "execute",
+        "expand_scope",
+        "accept_evidence",
+        "activate"
+      ],
+      "properties": {
+        "execute": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expand_scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "accept_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "activate": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "extensions": {
+      "type": "object"
+    }
+  }
+}
