@@ -97,7 +97,7 @@ forgeplan list -t adr            # список всех ADR
 forgeplan get ADR-003            # прочитать один
 forgeplan validate PRD-024       # проверить качество
 forgeplan score PRD-024          # вычислить R_eff
-forgeplan scan-import            # пересобрать LanceDB-индекс из markdown
+forgeplan reindex                # пересобрать LanceDB-индекс из markdown
 ```
 
 **Процесс при свежем клонировании:**
@@ -105,7 +105,7 @@ forgeplan scan-import            # пересобрать LanceDB-индекс �
 ```bash
 git clone <repo> && cd forgeplan
 forgeplan init -y                # создаёт .forgeplan/lance/ локально (пустую)
-forgeplan scan-import            # индексирует отслеживаемые markdown в LanceDB
+forgeplan reindex                # синхронизирует отслеживаемые markdown в LanceDB
 forgeplan list                   # проверка — должны отображаться все артефакты
 ```
 
@@ -120,6 +120,6 @@ forgeplan list                   # проверка — должны отобр�
 ## Соглашения
 
 - **Все пути в документах указаны относительно корня репозитория.**
-- **Файлы артефактов в `.forgeplan/` управляются CLI `forgeplan`** — ручное редактирование работает, но может вызвать рассинхронизацию с индексом LanceDB до запуска `scan-import`.
+- **Файлы артефактов в `.forgeplan/` управляются CLI `forgeplan`** — ручное редактирование работает, но может вызвать рассинхронизацию с индексом LanceDB до запуска `reindex`.
 - **Документация методологии здесь является авторитетной** — если руководство и схема расходятся, приоритет у схемы.
 - **Активированные артефакты неизменяемы** — замена через `forgeplan supersede`, историю не переписывать.

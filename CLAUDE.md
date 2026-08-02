@@ -28,7 +28,9 @@ Instructions for Claude Code when working in this repository.
   semantic search промахнётся. Если случайно отредактирован — recover через
   `forgeplan_update id=<ID> body=<full new body>` (читаешь файл, формируешь
   полное новое body без YAML frontmatter, пушишь через MCP). Last-resort
-  fallback: `forgeplan scan-import` пересоберёт LanceDB из markdown.
+  fallback: `forgeplan reindex` пересоберёт LanceDB из markdown
+  (**не** `scan-import` — тот ищет и импортирует новые артефакты из
+  произвольного markdown, существующие не синхронизирует; см. #420).
   Direct Edit OK ТОЛЬКО для не-forgeplan markdown (READMEs, CLAUDE.md,
   KNOWN-ISSUES, src code, .changeset/*.md).
 
@@ -542,7 +544,9 @@ Each MUST find ≥3 issues. Zero findings → re-spawn (suspect superficial revi
 1. Re-Read file to capture current content
 2. Strip YAML frontmatter (forgeplan_update body excludes it)
 3. `mcp__forgeplan__forgeplan_update(id="<ID>", body=<full body>)`
-4. Last-resort fallback: `forgeplan scan-import` rebuilds LanceDB from markdown
+4. Last-resort fallback: `forgeplan reindex` rebuilds LanceDB from markdown
+   (**not** `scan-import` — that one discovers and imports *new* artifacts from
+   arbitrary markdown; it does not sync artifacts already in the graph, #420)
 
 Document the violation в commit message so reviewer recognizes the pattern was caught.
 
@@ -663,14 +667,18 @@ forgeplan claims              # кто что захватил
 ├── evidence/ problems/ solutions/
 ├── notes/ refresh/ memory/
 ├── config.yaml         ← tracked (env var refs only, no hardcoded secrets)
-├── lance/              ← ⚠️ gitignored (derived index — forgeplan scan-import)
+├── lance/              ← ⚠️ gitignored (derived index — forgeplan reindex)
 ├── .fastembed_cache/   ← ⚠️ gitignored
 └── session.yaml        ← ⚠️ gitignored (per-machine runtime state)
 ```
 
-**Fresh clone**: `git clone → forgeplan init -y → forgeplan scan-import → forgeplan list`.
+**Fresh clone**: `git clone → forgeplan init -y → forgeplan reindex → forgeplan list`.
 
-**Rules**: edit via `forgeplan` CLI; direct markdown edits require `forgeplan scan-import`; DO NOT commit `lance/` or `session.yaml`.
+**`reindex` vs `scan-import`** — не взаимозаменяемы:
+- `forgeplan reindex` — синхронизирует **существующие** артефакты `.forgeplan/**.md` в LanceDB. Это команда восстановления индекса.
+- `forgeplan scan-import` — **находит и импортирует новые** артефакты из произвольного markdown. Существующие не трогает, и в этом репозитории затягивает `templates/` и `docs/` как ложные артефакты (PROB-047).
+
+**Rules**: edit via `forgeplan` CLI; direct markdown edits require `forgeplan reindex`; DO NOT commit `lance/` or `session.yaml`.
 
 ---
 
