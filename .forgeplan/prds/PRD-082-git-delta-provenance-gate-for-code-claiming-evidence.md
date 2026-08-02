@@ -115,3 +115,4 @@ DONE, при этом `git diff` пуст. **Зелёные тесты на пу
 - ADR-003 — markdown source of truth; поля живут в теле артефакта
 - PRD-078 — разрешение workspace, на котором строится выбор repo_root
 
+
