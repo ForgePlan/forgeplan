@@ -52,6 +52,14 @@ jobs:
       - name: Validate artifacts
         run: ./target/debug/forgeplan validate --ci
 
+      - name: MCP tool count drift check — detector self-test
+        # #421: the detector's own pattern had never been asserted, and a
+        # whitespace-only separator made it walk past `NN MCP-инструмента`
+        # (the idiomatic hyphenated Russian form) while printing "No drift".
+        # A green gate that certifies the drift it exists to catch is worse
+        # than no gate, so the pattern is now tested before it is trusted.
+        run: SELF_TEST=1 ./scripts/check-mcp-tool-count.sh
+
       - name: MCP tool count drift check
         # Drift detector — fails CI if README/CLAUDE/landing/docs disagree
         # with actual MCP tool count в src. Lessons learned 2026-05-04:

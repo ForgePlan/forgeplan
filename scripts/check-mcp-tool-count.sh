@@ -76,7 +76,48 @@ SEARCH_PATHS=(
 # not any other number on the same line (avoid false-positive "1940 tests"
 # / "76 CLI commands"). Word boundary anchored с trailing non-letter
 # чтобы не matchать `tooltip`/`toolbox`/`toolkit` (audit C-3 finding).
-EXTRACT_RE='[0-9]+[[:space:]]*(MCP[[:space:]]*tool[s]?([^a-zA-Z]|$)|tool[s]?([^a-zA-Z]|$)|MCP[[:space:]]*инструмент|инструмент)'
+#
+# Separator between `MCP` and the noun is [[:space:]-]*, NOT whitespace-only:
+# Russian writes the compound hyphenated (`73 MCP-инструмента`), which is the
+# idiomatic form and therefore what the RU pages actually use. With a
+# whitespace-only class this script scanned website/src, walked straight past
+# `63 MCP-инструмента` in ru/docs/cli/serve.md, and printed "No drift" — a
+# green gate certifying the very drift it exists to catch. English `MCP-tools`
+# has the same exposure. See #421.
+EXTRACT_RE='[0-9]+[[:space:]]*(MCP[[:space:]-]*tool[s]?([^a-zA-Z]|$)|tool[s]?([^a-zA-Z]|$)|MCP[[:space:]-]*инструмент|инструмент)'
+
+# --self-test: exercise the extraction regex against both languages and both
+# separators. Runs offline, touches no repo file. The blind spot in #421
+# survived because nothing ever asserted the pattern itself.
+if [[ "${SELF_TEST:-0}" -eq 1 ]]; then
+    st_fail=0
+    st_expect() { # <should-match 0|1> <sample>
+        local want="$1" sample="$2" got
+        got=$(printf '%s' "$sample" | grep -coE "$EXTRACT_RE")
+        if [[ "$got" -ne "$want" ]]; then
+            echo "  SELF-TEST FAIL: expected match=$want got=$got for: $sample" >&2
+            st_fail=1
+        else
+            echo "  ok (match=$got): $sample"
+        fi
+    }
+    echo "Self-test: EXTRACT_RE"
+    st_expect 1 '73 MCP tools for agents'
+    st_expect 1 '73 MCP-tools for agents'
+    st_expect 1 '73 tools for agents'
+    st_expect 1 '73 MCP инструмента для агентов'
+    st_expect 1 '73 MCP-инструмента, сопоставленных с операциями'
+    st_expect 1 '73 инструмента для агентов'
+    # Must NOT match — the audit C-3 false positives.
+    st_expect 0 'a tooltip and a toolbox'
+    st_expect 0 '76 CLI commands'
+    if [[ "$st_fail" -ne 0 ]]; then
+        echo "Self-test FAILED" >&2
+        exit 1
+    fi
+    echo "Self-test OK"
+    exit 0
+fi
 
 DRIFT_FOUND=0
 DRIFT_OUTPUT=$(mktemp)
