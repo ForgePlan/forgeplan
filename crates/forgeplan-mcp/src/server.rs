@@ -3752,7 +3752,10 @@ impl ForgeplanServer {
             .get_record(&canonical)
             .await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
-        let _pre_record = match pre_record {
+        // Retained (not `_`-discarded): a title change needs the ORIGINAL title
+        // to locate the old projection file for cleanup — see the rename block
+        // after the mutation helpers.
+        let original = match pre_record {
             Some(r) => r,
             // Surface the user's original input in the not-found message (mirrors
             // `forgeplan_get`) — most helpful when the id genuinely doesn't exist.
@@ -3830,6 +3833,20 @@ impl ForgeplanServer {
             projection::update_body_with_projection(&ctx, &canonical, body)
                 .await
                 .map_err(safe_mcp_error)?;
+        }
+
+        // A title change renames the projection file, so the OLD path must be
+        // removed or both survive carrying the same id — a duplicate-id
+        // collision produced by one sanctioned call. `update.rs` has cleaned
+        // this up since the PRD-073 audit; the MCP handler never got the same
+        // fix, so renames through MCP silently forked the artifact in two.
+        // Exact-path removal (not a prefix glob) so a sibling whose id is a
+        // prefix of this one is never clobbered, and AFTER the new file is in
+        // place so there is no orphan window — same ordering as the CLI.
+        if p.title.is_some() {
+            let _ =
+                projection::remove_projection_at(&ws, &canonical, &original.kind, &original.title)
+                    .await;
         }
 
         // Re-fetch for the response payload.

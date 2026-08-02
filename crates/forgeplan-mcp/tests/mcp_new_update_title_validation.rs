@@ -221,3 +221,57 @@ async fn mcp_update_lowercase_id_persists_change() {
         "the title written via the lowercase id must be visible on the canonical artifact"
     );
 }
+
+// ── #419: a title change must not leave the old file behind ──────────
+
+/// Renaming through MCP used to write the new slug-derived filename and leave
+/// the old one on disk, producing two `.md` files carrying the same `id:` — a
+/// duplicate-id collision created by one sanctioned call.
+///
+/// The CLI has cleaned this up since the PRD-073 audit (`update.rs` calls
+/// `remove_projection_at` with the ORIGINAL title); the MCP handler never got
+/// the same fix. This pins the parity.
+#[tokio::test]
+async fn mcp_update_title_removes_the_old_projection_file() {
+    let fx = McpFixture::new().await;
+    let id = fx.seed_prd("Original probe title").await;
+
+    let prds_dir = fx.workspace_path.join("prds");
+    let count_files = || {
+        std::fs::read_dir(&prds_dir)
+            .expect("prds dir")
+            .filter_map(Result::ok)
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().to_uppercase();
+                n.ends_with(".MD") && n.starts_with(&format!("{}-", id.to_uppercase()))
+            })
+            .count()
+    };
+    assert_eq!(count_files(), 1, "one file after create");
+
+    fx.call_tool_json(
+        "forgeplan_update",
+        serde_json::json!({"id": id, "title": "Renamed probe title"}),
+    )
+    .await
+    .assert_ok();
+
+    assert_eq!(
+        count_files(),
+        1,
+        "a rename must leave exactly one file — the old slug path has to go, \
+         otherwise two files carry id {id} and the resolver picks by scan order"
+    );
+
+    // And the survivor must be the NEW name, not the stale one.
+    let names: Vec<String> = std::fs::read_dir(&prds_dir)
+        .expect("prds dir")
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".md"))
+        .collect();
+    assert!(
+        names.iter().any(|n| n.contains("renamed-probe-title")),
+        "the surviving file must carry the new slug, got: {names:?}"
+    );
+}
