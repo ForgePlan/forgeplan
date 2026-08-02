@@ -191,6 +191,60 @@ pub fn changed_artifact_files(
     Ok(files)
 }
 
+/// Re-derive the set of paths that actually changed between two commits.
+///
+/// This is the ground-truth half of the #360 provenance gate: an EvidencePack
+/// may *claim* it changed certain files, but only git can say whether it did.
+/// The caller compares the claim against what this returns — see
+/// `scoring::provenance`.
+///
+/// Both refs go through [`validate_git_ref`], so a SHA that looks like a CLI
+/// option (`--output=…`) or smuggles a revision range (`a..b`) is rejected
+/// before it reaches the git process [CWE-88]. Refs are passed as two separate
+/// arguments rather than a `base..result` string — the validator forbids `..`
+/// outright, and `git diff A B` is equivalent.
+///
+/// Returns paths relative to the repository root, in git's own order.
+/// An empty vector is a legitimate answer: it means the two commits are
+/// identical in content. For a code-claiming EvidencePack that is precisely
+/// the failure #360 describes — green tests over an empty delta are a NULL
+/// result, not a pass — but this function only reports; it does not judge.
+///
+/// # Errors
+/// - either ref fails [`validate_git_ref`]
+/// - git cannot be spawned (not installed / not on PATH)
+/// - git exits non-zero (unknown ref, not a repository, shallow clone missing
+///   the base commit) — stderr is surfaced so the caller can tell an unknown
+///   SHA from a broken repo
+pub fn changed_paths_between(
+    repo_root: &Path,
+    base: &str,
+    result: &str,
+) -> anyhow::Result<Vec<String>> {
+    validate_git_ref(base)
+        .map_err(|e| anyhow::anyhow!("changed_paths_between: invalid base ref: {e}"))?;
+    validate_git_ref(result)
+        .map_err(|e| anyhow::anyhow!("changed_paths_between: invalid result ref: {e}"))?;
+
+    let output = Command::new("git")
+        .args(["diff", "--name-only", base, result])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run git (is git installed?): {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git diff {base} {result} failed: {}", stderr.trim());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 /// List artifact filenames present in `origin/dev` for a given kind directory.
 ///
 /// Used by `forgeplan new` (PROB-060 / SPEC-005 Phase 1.3) to warn when a
@@ -798,6 +852,110 @@ mod tests {
             .unwrap();
         assert!(st.success(), "git commit");
         tmp
+    }
+
+    // ── #360 / PRD-082 FR-001: ground-truth delta between two commits ────
+
+    /// Helper: write `files` and commit them, returning the new HEAD sha.
+    fn commit_files(work: &Path, files: &[(&str, &str)], msg: &str) -> String {
+        for (rel, content) in files {
+            let p = work.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        }
+        assert!(
+            Command::new("git")
+                .args(["add", "."])
+                .current_dir(work)
+                .status()
+                .unwrap()
+                .success(),
+            "git add"
+        );
+        assert!(
+            Command::new("git")
+                .args(["commit", "--quiet", "-m", msg])
+                .current_dir(work)
+                .status()
+                .unwrap()
+                .success(),
+            "git commit"
+        );
+        head_commit_hash(work).expect("HEAD after commit")
+    }
+
+    #[test]
+    fn changed_paths_between_lists_files_changed_in_a_commit() {
+        let tmp = init_repo_with_files(&[("src/a.rs", "fn a() {}\n")]);
+        let work = tmp.path();
+        let base = head_commit_hash(work).expect("base HEAD");
+        let result = commit_files(
+            work,
+            &[("src/b.rs", "fn b() {}\n"), ("src/a.rs", "fn a2() {}\n")],
+            "second",
+        );
+
+        let mut paths = changed_paths_between(work, &base, &result).expect("diff must succeed");
+        paths.sort();
+        assert_eq!(paths, vec!["src/a.rs".to_string(), "src/b.rs".to_string()]);
+    }
+
+    #[test]
+    fn changed_paths_between_returns_empty_for_identical_commits() {
+        // The #360 case: an EvidencePack claims code work, tests are green,
+        // and the delta is empty. This function must report that honestly —
+        // an empty vector, not an error and not a silent pass.
+        let tmp = init_repo_with_files(&[("src/a.rs", "fn a() {}\n")]);
+        let work = tmp.path();
+        let sha = head_commit_hash(work).expect("HEAD");
+
+        let paths = changed_paths_between(work, &sha, &sha).expect("same-sha diff must succeed");
+        assert!(
+            paths.is_empty(),
+            "identical commits must yield an empty delta, got {paths:?}"
+        );
+    }
+
+    #[test]
+    fn changed_paths_between_rejects_option_like_ref() {
+        // CWE-88: a ref starting with '-' would be parsed by git as a CLI
+        // option. Must be refused before the process is spawned.
+        let tmp = init_repo_with_files(&[]);
+        let err = changed_paths_between(tmp.path(), "--output=/tmp/pwn", "HEAD")
+            .expect_err("option-like base ref must be rejected");
+        assert!(
+            format!("{err}").contains("invalid base ref"),
+            "error must name which ref was bad, got: {err}"
+        );
+    }
+
+    #[test]
+    fn changed_paths_between_rejects_range_ref() {
+        // `a..b` would smuggle a second revision past the argument boundary.
+        let tmp = init_repo_with_files(&[]);
+        let err = changed_paths_between(tmp.path(), "HEAD", "dev..main")
+            .expect_err("range-shaped result ref must be rejected");
+        assert!(
+            format!("{err}").contains("invalid result ref"),
+            "error must name which ref was bad, got: {err}"
+        );
+    }
+
+    #[test]
+    fn changed_paths_between_errors_on_unknown_ref() {
+        // A well-formed but nonexistent sha must surface git's own complaint,
+        // not be swallowed into an empty delta — otherwise a typo'd base_sha
+        // would read as "nothing changed" and pass the gate.
+        let tmp = init_repo_with_files(&[("src/a.rs", "fn a() {}\n")]);
+        let sha = head_commit_hash(tmp.path()).expect("HEAD");
+        let err =
+            changed_paths_between(tmp.path(), "deadbeefdeadbeefdeadbeefdeadbeef12345678", &sha)
+                .expect_err("unknown base sha must error, never read as an empty delta");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("git diff") && msg.contains("failed"),
+            "error must surface git's stderr, got: {msg}"
+        );
     }
 
     #[test]
