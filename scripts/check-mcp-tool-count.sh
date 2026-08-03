@@ -89,7 +89,7 @@ EXTRACT_RE='[0-9]+[[:space:]]*(MCP[[:space:]-]*tool[s]?([^a-zA-Z]|$)|tool[s]?([^
 # --self-test: exercise the extraction regex against both languages and both
 # separators. Runs offline, touches no repo file. The blind spot in #421
 # survived because nothing ever asserted the pattern itself.
-if [[ "${SELF_TEST:-0}" -eq 1 ]]; then
+if [[ "${SELF_TEST:-0}" == "1" ]]; then
     st_fail=0
     st_expect() { # <should-match 0|1> <sample>
         local want="$1" sample="$2" got
