@@ -275,3 +275,92 @@ async fn mcp_update_title_removes_the_old_projection_file() {
         "the surviving file must carry the new slug, got: {names:?}"
     );
 }
+
+/// #419 BLOCKER regression: a title edit that slugifies to the SAME filename
+/// (case-only / punctuation-only) must NOT delete the artifact's file. The
+/// original #419 fix removed the old file unconditionally; when old and new
+/// slug are identical, the "old" file IS the just-written one, so the mutation
+/// silently destroyed the markdown source of truth. The first fix's test only
+/// covered a different-slug rename, so the suite was green over a live BLOCKER.
+#[tokio::test]
+async fn mcp_update_same_slug_title_keeps_the_file() {
+    let fx = McpFixture::new().await;
+    let id = fx.seed_prd("Probe").await;
+
+    let prds_dir = fx.workspace_path.join("prds");
+    let survivors = || {
+        std::fs::read_dir(&prds_dir)
+            .expect("prds dir")
+            .filter_map(Result::ok)
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().to_uppercase();
+                n.ends_with(".MD") && n.starts_with(&format!("{}-", id.to_uppercase()))
+            })
+            .count()
+    };
+    assert_eq!(survivors(), 1, "one file after create");
+
+    // Case-only edit: "Probe" -> "probe" slugifies to the same "probe".
+    fx.call_tool_json(
+        "forgeplan_update",
+        serde_json::json!({"id": id, "title": "probe"}),
+    )
+    .await
+    .assert_ok();
+
+    assert_eq!(
+        survivors(),
+        1,
+        "same-slug title edit must leave the file intact, not delete it (id {id})"
+    );
+    // And forgeplan_get must still resolve — a reindex would otherwise prune the
+    // orphaned row and lose the artifact permanently.
+    let got = fx
+        .call_tool_json("forgeplan_get", serde_json::json!({"id": id}))
+        .await;
+    got.assert_ok();
+}
+
+/// #418 E2E on the MCP surface (RED LINE #5: real E2E on the affected surface,
+/// not just a pure-fn unit test). new -> update body=<prose only> must keep the
+/// ADR-012 identity triple that `forgeplan_new` wrote into the body block. The
+/// pure-function carry_identity_forward tests use a hand-written body; this
+/// drives the actual tool path end to end.
+#[tokio::test]
+async fn mcp_update_body_preserves_identity_triple() {
+    let fx = McpFixture::new().await;
+    let id = fx.seed_prd("Identity survival probe").await;
+
+    // A body of prose only — exactly what CLAUDE.md prescribes right after new.
+    fx.call_tool_json(
+        "forgeplan_update",
+        serde_json::json!({"id": id, "body": "## Problem\n\nprobe body\n\n## Goals\n\nprobe\n"}),
+    )
+    .await
+    .assert_ok();
+
+    let prds_dir = fx.workspace_path.join("prds");
+    let file = std::fs::read_dir(&prds_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                n.to_uppercase()
+                    .starts_with(&format!("{}-", id.to_uppercase()))
+            })
+        })
+        .expect("artifact file on disk");
+    let text = std::fs::read_to_string(&file).unwrap();
+
+    for field in ["slug:", "predicted_number:", "assigned_number:"] {
+        assert!(
+            text.contains(field),
+            "identity field {field:?} must survive a body replacement (#418), file:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("probe body"),
+        "the new prose must have landed"
+    );
+}

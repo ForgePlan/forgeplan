@@ -692,6 +692,41 @@ pub async fn remove_projection_at(
     }
 }
 
+/// Remove the OLD projection file after a title change — but only if the title
+/// actually renamed the file.
+///
+/// A title edit that slugifies to the *same* filename (a case-only or
+/// punctuation-only change, or the identical title re-submitted) must NOT delete
+/// anything: the mutation path writes the new file at `slug(new_title)` first,
+/// and when `slug(old) == slug(new)` that is the very file we would then remove.
+/// `slugify` lowercases and collapses every non-alphanumeric run to `-`, so
+/// `"Auth system"`, `"Auth system!"` and `"auth system"` all map to
+/// `auth-system` — without this guard, `forgeplan_update --title` on any of
+/// those against an existing `auth-system` artifact deletes the markdown source
+/// of truth. `forgeplan_get` keeps working (the LanceDB row survives), so the
+/// loss is silent until the next `reindex` prunes the now-orphaned row —
+/// unrecoverable (ADR-003: markdown is the source of truth).
+///
+/// Comparing resolved file paths rather than raw slugs also means a future
+/// change to the slug algorithm cannot reopen the hole.
+///
+/// # Errors
+/// Same as [`remove_projection_at`]: invalid id/kind, or a filesystem error
+/// during removal.
+pub async fn remove_stale_projection_after_rename(
+    workspace: &Path,
+    id: &str,
+    kind: &str,
+    old_title: &str,
+    new_title: &str,
+) -> anyhow::Result<bool> {
+    if projection_slug(old_title) == projection_slug(new_title) {
+        // Same filename — the "old" file IS the file we just wrote. No-op.
+        return Ok(false);
+    }
+    remove_projection_at(workspace, id, kind, old_title).await
+}
+
 // =============================================================================
 // PRD-073 file-first mutation helpers
 // -----------------------------------------------------------------------------
@@ -2252,6 +2287,60 @@ mod tests {
         // A body with no frontmatter at all must not panic or corrupt.
         let new = "## Problem\n\nplain\n";
         assert_eq!(carry_identity_forward("no frontmatter here\n", new), new);
+    }
+
+    // ── #419 BLOCKER: same-slug title change must not delete the file ────
+
+    #[tokio::test]
+    async fn rename_helper_removes_old_file_on_a_real_rename() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path();
+        let dir = ws.join("prds");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        // Both files exist (new already written by the mutation path).
+        tokio::fs::write(dir.join("PRD-001-old-title.md"), "x")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("PRD-001-new-title.md"), "x")
+            .await
+            .unwrap();
+
+        let removed =
+            remove_stale_projection_after_rename(ws, "PRD-001", "prd", "Old title", "New title")
+                .await
+                .unwrap();
+        assert!(removed, "a genuine rename must remove the stale file");
+        assert!(!dir.join("PRD-001-old-title.md").exists());
+        assert!(
+            dir.join("PRD-001-new-title.md").exists(),
+            "the new file must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_helper_is_a_noop_when_slug_is_unchanged() {
+        // The #419 BLOCKER: "Probe" -> "probe" (or "Probe!") slugifies to the
+        // same filename. The helper must NOT delete the just-written file.
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path();
+        let dir = ws.join("prds");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let f = dir.join("PRD-001-probe.md");
+        tokio::fs::write(&f, "the only copy").await.unwrap();
+
+        for (old, new) in [("Probe", "probe"), ("Probe", "Probe!"), ("Probe", "Probe")] {
+            let removed = remove_stale_projection_after_rename(ws, "PRD-001", "prd", old, new)
+                .await
+                .unwrap();
+            assert!(
+                !removed,
+                "same-slug edit {old:?}->{new:?} must be a no-op, not a delete"
+            );
+            assert!(
+                f.exists(),
+                "the artifact file must survive a same-slug edit {old:?}->{new:?}"
+            );
+        }
     }
 
     #[test]

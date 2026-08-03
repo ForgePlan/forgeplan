@@ -137,8 +137,18 @@ Fix: forgeplan list",
     // PRD-073 audit M1 fix: clean up OLD slug AFTER the new file is in place
     // (so there's no orphan window) and use exact-path removal so we don't
     // accidentally clobber a sibling artifact whose ID is a prefix of this one.
-    if title.is_some() {
-        let _ = projection::remove_projection_at(&ws, id, &original.kind, &original.title).await;
+    // The rename-aware helper additionally skips removal when the new title
+    // slugifies to the same filename (case/punctuation-only edit) — otherwise
+    // it deletes the file update just wrote (silent, reindex-unrecoverable).
+    if let Some(new_title) = title {
+        let _ = projection::remove_stale_projection_after_rename(
+            &ws,
+            id,
+            &original.kind,
+            &original.title,
+            new_title,
+        )
+        .await;
     }
 
     // Log changes

@@ -3843,10 +3843,15 @@ impl ForgeplanServer {
         // Exact-path removal (not a prefix glob) so a sibling whose id is a
         // prefix of this one is never clobbered, and AFTER the new file is in
         // place so there is no orphan window — same ordering as the CLI.
-        if p.title.is_some() {
-            let _ =
-                projection::remove_projection_at(&ws, &canonical, &original.kind, &original.title)
-                    .await;
+        if let Some(ref new_title) = p.title {
+            let _ = projection::remove_stale_projection_after_rename(
+                &ws,
+                &canonical,
+                &original.kind,
+                &original.title,
+                new_title,
+            )
+            .await;
         }
 
         // Re-fetch for the response payload.
