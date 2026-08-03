@@ -4136,10 +4136,11 @@ impl ForgeplanServer {
 
         // #360 / PRD-082: activate-time git-delta provenance gate (CLI parity).
         // Runs on the just-synced body. `force` bypasses, matching the CLI and
-        // the methodology gates. In `block` mode a failed claim returns an error
-        // result the agent sees; in `warn` mode (default) it is logged
-        // server-side and activation proceeds — surfacing the warning in the
-        // response payload is a follow-up FR.
+        // the methodology gates. `block` returns an error result the agent
+        // sees; `warn` (default) surfaces the discrepancy in the success payload
+        // (see `provenance_warning` woven into `msg` below) AND logs it
+        // server-side.
+        let mut provenance_warning: Option<String> = None;
         if !p.force
             && let Ok(Some(record)) = store.get_record(&p.id).await
         {
@@ -4151,6 +4152,7 @@ impl ForgeplanServer {
                 GateDecision::Pass => {}
                 GateDecision::Warn(msg) => {
                     tracing::warn!(target = "provenance", id = %p.id, "{msg}");
+                    provenance_warning = Some(msg);
                 }
                 GateDecision::Block(msg) => {
                     return Ok(err_result(&format!(
@@ -4209,6 +4211,11 @@ impl ForgeplanServer {
                 };
                 let safe_id = sanitize_for_hint(&ref_form);
                 let mut msg = format!("Activated {safe_id} (draft → active)");
+                // #360 / PRD-082: surface a `warn`-mode provenance discrepancy in
+                // the agent-visible payload, not only the server log.
+                if let Some(w) = &provenance_warning {
+                    msg.push_str(&format!("\n⚠ {w}"));
+                }
                 if result.forced {
                     msg.push_str(&format!(
                         "\nWarning: Activated with {} validation error{}",

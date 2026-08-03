@@ -125,6 +125,22 @@ fn block_mode_refuses_activation_on_an_empty_delta_claim() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("provenance gate"));
+
+    // The refusal must be real, not just a diagnostic: the artifact stays draft.
+    let out = forgeplan()
+        .args(["get", &id, "--json"])
+        .current_dir(&dir)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        json["status"].as_str().unwrap(),
+        "draft",
+        "a blocked activation must leave the EVID draft"
+    );
 }
 
 #[test]

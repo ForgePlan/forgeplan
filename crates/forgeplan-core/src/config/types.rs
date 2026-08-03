@@ -107,16 +107,21 @@ pub struct IntegrityConfig {
     /// When an EvidencePack carries `base_sha` / `result_sha` / `changed_paths`
     /// and its claim does not hold against git (empty delta, missing path,
     /// incomplete fields), this decides what `forgeplan_activate` does:
-    /// - `block` — refuse activation;
-    /// - `warn` — activate but print the discrepancy (default: a new gate must
-    ///   not surprise existing flows on first rollout; flip to `block` once
-    ///   trusted);
+    /// - `block` — refuse activation (the agent sees an error on both CLI and MCP);
+    /// - `warn` — activate but surface the discrepancy (CLI prints to stderr,
+    ///   MCP appends it to the success payload). Default: a new gate must not
+    ///   surprise existing flows on first rollout; flip to `block` once trusted;
     /// - `off` — skip the check entirely.
     ///
     /// A pack with no provenance fields is never affected (verdict `NotClaimed`),
-    /// and a git error (unreachable base sha, shallow clone) only ever warns —
-    /// an environment problem is not a false claim, and ForgePlan does not own
-    /// the worktree (ADR-019).
+    /// and a git error only ever warns, never blocks — an environment problem is
+    /// not a false claim, and ForgePlan does not own the worktree (ADR-019).
+    /// One consequence: under `block`, a base/result SHA that does not resolve
+    /// (a hallucinated or typo'd sha, or a real sha absent from a shallow clone)
+    /// warns rather than blocks — the two cannot be told apart locally without a
+    /// network fetch, and blocking legitimate shallow-clone CI is worse. The
+    /// canonical #360 case (an empty delta between two *resolvable* SHAs) is
+    /// still blocked.
     #[serde(default = "default_evidence_provenance_gate")]
     pub evidence_provenance_gate: String,
 }
