@@ -198,24 +198,44 @@ pub fn changed_artifact_files(
 /// The caller compares the claim against what this returns — see
 /// `scoring::provenance`.
 ///
+/// Semantics: paths that **`result` introduced since it diverged from `base`**,
+/// computed with `git diff --merge-base base result`. This is NOT the symmetric
+/// two-endpoint `git diff base result`, and the distinction is load-bearing for
+/// a provenance gate. When `base` is not an ancestor of `result` — the common
+/// case where the recorded `base_sha` was a moving ref (e.g. `origin/dev` at
+/// task start) that advanced while the branch was cut from an earlier commit —
+/// the two-endpoint diff also reports files that changed only on *base's* own
+/// history, which the gate would then credit to `result` as satisfied claims.
+/// `--merge-base` diffs from the fork point, so only `result`'s real work
+/// counts. For an ancestor `base` the fork point is `base` itself, so this is
+/// identical to the linear case.
+///
+/// `--no-renames` pins the verdict against ambient `diff.renames` config (a
+/// `git mv` otherwise reports differently depending on the runner's git config,
+/// making the gate non-deterministic). `-z` emits NUL-separated, **unquoted**
+/// paths, so non-ASCII names (this repo's docs and notes are Russian) survive
+/// verbatim instead of being C-octal-escaped and failing an exact-string
+/// compare downstream.
+///
 /// Both refs go through [`validate_git_ref`], so a SHA that looks like a CLI
 /// option (`--output=…`) or smuggles a revision range (`a..b`) is rejected
-/// before it reaches the git process [CWE-88]. Refs are passed as two separate
-/// arguments rather than a `base..result` string — the validator forbids `..`
-/// outright, and `git diff A B` is equivalent.
+/// before it reaches the git process [CWE-88]. The `--*` flags are hardcoded,
+/// not user input.
 ///
-/// Returns paths relative to the repository root, in git's own order.
-/// An empty vector is a legitimate answer: it means the two commits are
-/// identical in content. For a code-claiming EvidencePack that is precisely
-/// the failure #360 describes — green tests over an empty delta are a NULL
-/// result, not a pass — but this function only reports; it does not judge.
+/// Returns paths relative to the repository root. An empty vector is a
+/// legitimate answer: `result` introduced nothing over the fork point. For a
+/// code-claiming EvidencePack that is precisely the failure #360 describes —
+/// green tests over an empty delta are a NULL result, not a pass — but this
+/// function only reports; it does not judge.
 ///
 /// # Errors
 /// - either ref fails [`validate_git_ref`]
 /// - git cannot be spawned (not installed / not on PATH)
 /// - git exits non-zero (unknown ref, not a repository, shallow clone missing
-///   the base commit) — stderr is surfaced so the caller can tell an unknown
-///   SHA from a broken repo
+///   the base commit, or `base` and `result` share no merge base) — stderr is
+///   surfaced so the caller can tell an unknown SHA from a broken repo. Never
+///   folded into an empty delta: an unresolvable base must not read as
+///   "nothing changed".
 pub fn changed_paths_between(
     repo_root: &Path,
     base: &str,
@@ -227,7 +247,15 @@ pub fn changed_paths_between(
         .map_err(|e| anyhow::anyhow!("changed_paths_between: invalid result ref: {e}"))?;
 
     let output = Command::new("git")
-        .args(["diff", "--name-only", base, result])
+        .args([
+            "diff",
+            "--merge-base",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            base,
+            result,
+        ])
         .current_dir(repo_root)
         .output()
         .map_err(|e| anyhow::anyhow!("Failed to run git (is git installed?): {e}"))?;
@@ -237,10 +265,10 @@ pub fn changed_paths_between(
         anyhow::bail!("git diff {base} {result} failed: {}", stderr.trim());
     }
 
+    // `-z` output is NUL-separated with a trailing NUL; paths are raw (unquoted).
     Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
+        .split('\0')
+        .filter(|p| !p.is_empty())
         .map(str::to_string)
         .collect())
 }
@@ -856,6 +884,19 @@ mod tests {
 
     // ── #360 / PRD-082 FR-001: ground-truth delta between two commits ────
 
+    /// Helper: run a git subcommand in `work`, asserting success.
+    fn run_git(work: &Path, args: &[&str]) {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(work)
+                .status()
+                .unwrap()
+                .success(),
+            "git {args:?}"
+        );
+    }
+
     /// Helper: write `files` and commit them, returning the new HEAD sha.
     fn commit_files(work: &Path, files: &[(&str, &str)], msg: &str) -> String {
         for (rel, content) in files {
@@ -913,6 +954,60 @@ mod tests {
         assert!(
             paths.is_empty(),
             "identical commits must yield an empty delta, got {paths:?}"
+        );
+    }
+
+    #[test]
+    fn changed_paths_between_uses_merge_base_for_a_non_ancestor_base() {
+        // Audit F1 (MAJOR): base is NOT an ancestor of result (dev advanced
+        // during the task). The two-endpoint 'git diff base result' would also
+        // report shared.rs (changed only on base's own line) and the gate would
+        // credit it as satisfied. --merge-base must report ONLY result's work.
+        let tmp = init_repo_with_files(&[("shared.rs", "v1\n"), ("keep.rs", "k\n")]);
+        let work = tmp.path();
+
+        // result branch off the initial commit: touches only worker.rs.
+        run_git(work, &["checkout", "--quiet", "-b", "feat"]);
+        let result = commit_files(work, &[("worker.rs", "w\n")], "work on feat");
+
+        // base line advances independently, changing shared.rs.
+        run_git(work, &["checkout", "--quiet", "dev"]);
+        let base = commit_files(work, &[("shared.rs", "v2\n")], "dev moves ahead");
+
+        // base is not an ancestor of result.
+        assert!(
+            !std::process::Command::new("git")
+                .args(["merge-base", "--is-ancestor", &base, &result])
+                .current_dir(work)
+                .status()
+                .unwrap()
+                .success(),
+            "precondition: base must not be an ancestor of result"
+        );
+
+        let paths = changed_paths_between(work, &base, &result).expect("diff must succeed");
+        assert_eq!(
+            paths,
+            vec!["worker.rs".to_string()],
+            "only result's work since the fork must count, not base-side changes; got {paths:?}"
+        );
+    }
+
+    #[test]
+    fn changed_paths_between_returns_non_ascii_paths_verbatim() {
+        // Audit F2: without -z / quotepath handling a Cyrillic filename comes
+        // back C-octal-escaped and quoted, breaking the exact-string compare
+        // downstream. This repo's docs/notes are Russian, so the trigger is real.
+        let tmp = init_repo_with_files(&[("keep.rs", "k\n")]);
+        let work = tmp.path();
+        let base = head_commit_hash(work).expect("base");
+        let result = commit_files(work, &[("docs-Разбор.md", "x\n")], "cyrillic path");
+
+        let paths = changed_paths_between(work, &base, &result).expect("diff must succeed");
+        assert_eq!(
+            paths,
+            vec!["docs-Разбор.md".to_string()],
+            "a non-ASCII path must come back raw (not octal-escaped/quoted); got {paths:?}"
         );
     }
 
