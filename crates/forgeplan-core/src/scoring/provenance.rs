@@ -91,6 +91,91 @@ impl ProvenanceVerdict {
     }
 }
 
+/// How the activate-time provenance gate reacts to a failed claim (PRD-082
+/// slice 2, config `integrity.evidence_provenance_gate`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateMode {
+    /// Refuse activation when the claim does not hold against git.
+    Block,
+    /// Activate but surface the discrepancy.
+    Warn,
+    /// Do not check.
+    Off,
+}
+
+impl GateMode {
+    /// Parse the config string. Unknown values fall back to `Warn` (the config
+    /// validator rejects them earlier; this is defense-in-depth, never silently
+    /// `Off`).
+    #[must_use]
+    pub fn from_config(s: &str) -> Self {
+        match s {
+            "block" => GateMode::Block,
+            "off" => GateMode::Off,
+            _ => GateMode::Warn,
+        }
+    }
+}
+
+/// What the caller should do with an activation, given a verdict and the mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateDecision {
+    /// Proceed silently.
+    Pass,
+    /// Proceed, but print this warning first.
+    Warn(String),
+    /// Refuse the activation with this message.
+    Block(String),
+}
+
+/// Decide what an activation should do, given the provenance verdict and the
+/// configured mode. Pure — no IO — so it is exhaustively testable.
+///
+/// The rules, in order:
+/// - `Off` → always `Pass`.
+/// - An acceptable verdict (`NotClaimed`, `Verified`) → `Pass`. The 148 legacy
+///   packs are all `NotClaimed`, so they never gate regardless of mode.
+/// - A failed claim (`EmptyDelta`, `PathMismatch`, `Incomplete`) → `Block` under
+///   `Block`, `Warn` under `Warn`.
+#[must_use]
+pub fn gate_decision(verdict: &ProvenanceVerdict, mode: GateMode) -> GateDecision {
+    if mode == GateMode::Off || verdict.is_acceptable() {
+        return GateDecision::Pass;
+    }
+    let msg = format!("git-delta provenance gate: {}", verdict.summary());
+    match mode {
+        GateMode::Block => GateDecision::Block(msg),
+        GateMode::Warn => GateDecision::Warn(msg),
+        GateMode::Off => GateDecision::Pass,
+    }
+}
+
+/// Run the whole activate-time gate for one artifact body.
+///
+/// Folds the two rules a caller must never get wrong:
+/// - `Off` short-circuits before any git call.
+/// - A git *error* (unreachable base sha, shallow clone, not a repository) is
+///   turned into a `Warn`, never a `Block`. An environment problem is not a
+///   false claim, and ForgePlan does not own the worktree (ADR-019); blocking
+///   activation because the runner's clone is shallow would make the gate
+///   fragile. A verified-false claim (empty delta, missing path) is what
+///   `Block` is for, and that comes from `gate_decision`.
+///
+/// Cheap for the common case: a body with no provenance fields resolves to
+/// `NotClaimed` inside `verify_code_provenance` without ever spawning git.
+pub fn evaluate_provenance_gate(body: &str, repo_root: &Path, mode: GateMode) -> GateDecision {
+    if mode == GateMode::Off {
+        return GateDecision::Pass;
+    }
+    match verify_code_provenance(body, repo_root) {
+        Ok(verdict) => gate_decision(&verdict, mode),
+        Err(e) => GateDecision::Warn(format!(
+            "git-delta provenance gate: could not verify the claim against git \
+             (base sha unreachable, shallow clone, or not a repository) — {e}"
+        )),
+    }
+}
+
 /// Parse the provenance claim out of an artifact body.
 ///
 /// Reads the same `key: value` Structured Fields block that already carries
@@ -195,6 +280,103 @@ pub fn verify_code_provenance(body: &str, repo_root: &Path) -> anyhow::Result<Pr
             missing,
             actual_paths,
         })
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    #[test]
+    fn off_mode_always_passes_even_on_a_failed_claim() {
+        assert_eq!(
+            gate_decision(&ProvenanceVerdict::EmptyDelta, GateMode::Off),
+            GateDecision::Pass
+        );
+    }
+
+    #[test]
+    fn acceptable_verdicts_pass_in_every_mode() {
+        for mode in [GateMode::Block, GateMode::Warn, GateMode::Off] {
+            assert_eq!(
+                gate_decision(&ProvenanceVerdict::NotClaimed, mode),
+                GateDecision::Pass,
+                "NotClaimed (the 148 legacy packs) must never gate — mode {mode:?}"
+            );
+            assert_eq!(
+                gate_decision(
+                    &ProvenanceVerdict::Verified {
+                        actual_paths: vec![]
+                    },
+                    mode
+                ),
+                GateDecision::Pass
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_claim_blocks_under_block_and_warns_under_warn() {
+        for verdict in [
+            ProvenanceVerdict::EmptyDelta,
+            ProvenanceVerdict::PathMismatch {
+                missing: vec!["a.rs".into()],
+                actual_paths: vec!["b.rs".into()],
+            },
+            ProvenanceVerdict::Incomplete {
+                missing_fields: vec!["result_sha".into()],
+            },
+        ] {
+            assert!(
+                matches!(
+                    gate_decision(&verdict, GateMode::Block),
+                    GateDecision::Block(_)
+                ),
+                "{verdict:?} must Block under Block"
+            );
+            assert!(
+                matches!(
+                    gate_decision(&verdict, GateMode::Warn),
+                    GateDecision::Warn(_)
+                ),
+                "{verdict:?} must Warn under Warn"
+            );
+        }
+    }
+
+    #[test]
+    fn from_config_parses_the_three_modes_and_defaults_to_warn() {
+        assert_eq!(GateMode::from_config("block"), GateMode::Block);
+        assert_eq!(GateMode::from_config("warn"), GateMode::Warn);
+        assert_eq!(GateMode::from_config("off"), GateMode::Off);
+        // Defense-in-depth: an unknown value is Warn, never silently Off.
+        assert_eq!(GateMode::from_config("nonsense"), GateMode::Warn);
+    }
+
+    #[test]
+    fn evaluate_off_short_circuits_without_touching_git() {
+        // repo_root is a bogus path; Off must not care.
+        let d = evaluate_provenance_gate(
+            "base_sha: x\nresult_sha: y\nchanged_paths: a.rs\n",
+            std::path::Path::new("/nonexistent/repo"),
+            GateMode::Off,
+        );
+        assert_eq!(d, GateDecision::Pass);
+    }
+
+    #[test]
+    fn evaluate_turns_a_git_error_into_a_warn_never_a_block() {
+        // A claim against a non-repository path errors in changed_paths_between;
+        // the gate must WARN (environment issue), never BLOCK, even under Block.
+        let d = evaluate_provenance_gate(
+            "base_sha: 0000000\nresult_sha: 1111111\nchanged_paths: a.rs\n",
+            std::path::Path::new("/nonexistent/not-a-repo"),
+            GateMode::Block,
+        );
+        assert!(
+            matches!(d, GateDecision::Warn(_)),
+            "a git error under Block must warn, not block: {d:?}"
+        );
     }
 }
 

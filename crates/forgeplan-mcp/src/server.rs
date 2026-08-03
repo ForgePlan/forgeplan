@@ -4134,6 +4134,33 @@ impl ForgeplanServer {
             return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
 
+        // #360 / PRD-082: activate-time git-delta provenance gate (CLI parity).
+        // Runs on the just-synced body. `force` bypasses, matching the CLI and
+        // the methodology gates. In `block` mode a failed claim returns an error
+        // result the agent sees; in `warn` mode (default) it is logged
+        // server-side and activation proceeds — surfacing the warning in the
+        // response payload is a follow-up FR.
+        if !p.force
+            && let Ok(Some(record)) = store.get_record(&p.id).await
+        {
+            use forgeplan_core::scoring::provenance::{self, GateDecision, GateMode};
+            let mode = forgeplan_core::workspace::load_config(&ws)
+                .map(|c| GateMode::from_config(&c.integrity.evidence_provenance_gate))
+                .unwrap_or(GateMode::Warn);
+            match provenance::evaluate_provenance_gate(&record.body, &ws, mode) {
+                GateDecision::Pass => {}
+                GateDecision::Warn(msg) => {
+                    tracing::warn!(target = "provenance", id = %p.id, "{msg}");
+                }
+                GateDecision::Block(msg) => {
+                    return Ok(err_result(&format!(
+                        "{msg}\nFix: correct base_sha/result_sha/changed_paths, \
+                         or set force=true to override the provenance gate"
+                    )));
+                }
+            }
+        }
+
         match forgeplan_core::lifecycle::activate(&store, &p.id, p.force).await {
             Ok(result) => {
                 // PROB-057 / Round 9 HIGH-1: MCP parity — sync the cached R_eff
