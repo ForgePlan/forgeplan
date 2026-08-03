@@ -707,8 +707,9 @@ pub async fn remove_projection_at(
 /// loss is silent until the next `reindex` prunes the now-orphaned row —
 /// unrecoverable (ADR-003: markdown is the source of truth).
 ///
-/// Comparing resolved file paths rather than raw slugs also means a future
-/// change to the slug algorithm cannot reopen the hole.
+/// The comparison uses `projection_slug` — the same function that builds the
+/// on-disk filename from the title — so slug-equality is exactly file-path
+/// equality here (both paths share this artifact's id, kind and directory).
 ///
 /// # Errors
 /// Same as [`remove_projection_at`]: invalid id/kind, or a filesystem error
