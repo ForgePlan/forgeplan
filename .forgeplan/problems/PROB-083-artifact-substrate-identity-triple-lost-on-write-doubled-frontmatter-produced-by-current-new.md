@@ -2,7 +2,7 @@
 depth: standard
 id: PROB-083
 kind: problem
-last_modified_at: 2026-08-01T19:23:15.905865+00:00
+last_modified_at: 2026-08-04T13:41:50.634425+00:00
 last_modified_by: claude-code/2.1.220
 links:
 - target: EPIC-009
@@ -10,6 +10,17 @@ links:
 status: draft
 title: 'Artifact substrate: identity triple lost on write, doubled frontmatter produced by current new'
 ---
+
+depth: standard
+id: PROB-083
+kind: problem
+last_modified_at: 2026-08-01T19:23:15.905865+00:00
+last_modified_by: claude-code/2.1.220
+links:
+- target: EPIC-009
+  relation: informs
+status: draft
+title: 'Artifact substrate: identity triple lost on write, doubled frontmatter produced by current new'
 
 ## Filed upstream
 
@@ -23,7 +34,6 @@ Not filed: Problem 4 is a duplicate of PROB-047 (active, three of five mitigatio
 unimplemented). Problem 5 is by-design detection scope; only its misleading `limitations`
 list is arguably a defect, severity LOW.
 
----
 
 
 # Artifact substrate: identity triple lost on write, doubled frontmatter produced by current `new`
@@ -86,7 +96,6 @@ id: PRD-001
 kind: prd
 status: draft
 title: Slug persistence probe
----
 
 ---                                    # блок 2 — из шаблона, парсеру невидим
 assigned_number: 1
@@ -95,7 +104,6 @@ predicted_number: 1
 slug: prd-slug-persistence-probe
 status: Draft
 ...
----
 ```
 
 `slug`, `predicted_number` и `assigned_number` лежат **только во втором блоке**.
@@ -167,4 +175,49 @@ Severity низкая, но следствие практическое: рек�
 
 Все мутации `.forgeplan/**` — только через MCP/CLI (RED LINE #11).
 
+
+
+---
+
+## Verified 2026-08-04 — workflow re-investigation (4 investigators + skeptics)
+
+Каждый пункт root-caused против кода, классификация проверена скептиком, спорное — эмпирикой на живой базе. Итог: **PROB-083 по существу верна**, но два места переоценены и одно фактически неверно. Ниже — исправления к собственным утверждениям выше.
+
+### Итоговая классификация
+
+| Пункт | Класс | Severity | Комментарий |
+|---|---|---|---|
+| Problem 0 (docs `scan-import`→`reindex`) | OPERATOR-ERROR + docs (#420) | — | верно, исправлено в `0487e12` |
+| Problem 1+2 (#418 identity-триплет + сдвоенный frontmatter) | REAL-BUG | MAJOR | **фикс проверен работающим — см. ниже** |
+| Problem 3 (EVID-143 / PRD-012 id-коллизии) | REAL-BUG (data + code) | MAJOR | код-гейт = GitHub #394 |
+| Problem 5 (`forgeplan_contradictions` = `[]`) | **BY-DESIGN** | — | утверждение ниже **фактически неверно**, исправлено |
+| ADR-013 без frontmatter | BY-DESIGN + data-hygiene | — | сканер корректно пропускает |
+
+### Исправление к Problem 1+2 — фикс #418 ПРОВЕРЕН работающим
+
+Утверждение выше («identity-триплет теряется») верно **для ветки без фикса**. На ветке `fix/frontmatter-identity-triple` (PR #424) проверено эмпирически на свежем workspace:
+
+```
+forgeplan new prd "..."          → get --json slug: prd-...   (резолвится)
+forgeplan update --body @prose   → get --json slug: prd-...   (пережил update)
+forgeplan reindex                → get --json slug: prd-...   (пережил перебор индекса из markdown)
+```
+
+То есть slug **резолвится и переживает reindex** — идентичность на write-path закрыта фиксом #424. Ранняя гипотеза «фикс неполный, slug остаётся в нечитаемом блоке 2» **опровергнута**: DB получает slug на create, и reindex его сохраняет. Двухблочность у новых артефактов остаётся, но она **инертна** (блок 1 авторитетен и корректен).
+
+### Исправление к Problem 5 — фактическая ошибка
+
+Утверждение выше «зафиксируй коллизию ребром `contradicts`, чтобы она стала машинно-видимой — цели не достигает» **неверно**. Рёбра `contradicts` **машинно-видимы** через `forgeplan graph` (рендерит `PROB-082 -->|contradicts| ADR-001/009/011`, structural-relation). `forgeplan_contradictions` — это НЕ листер типизированных рёбер, а brownfield-эвристика дедупа гипотез (Epic #287, `brownfield.rs`), records-only. Оператор спросил не тот инструмент. Правильная формулировка: коллизия видна через `forgeplan graph`; пустой `contradictions` — by-design.
+
+### Исправление к Next — «37 конфликтующих статусов» переоценено
+
+Пункт «Разрешить … 37 конфликтующих статусов» переоценивает status-дрейф как отдельную задачу. 37 конфликтов **инертны**: `parse_frontmatter` читает блок 1, `forgeplan get PRD-008` → `deprecated` (верно). Это косметический дрейф, исчезающий как side-effect перерендера legacy-файлов, а не самостоятельная работа.
+
+### Остаётся реальным — Problem 3 (id-коллизии), план data-hygiene
+
+- **EVID-143** — два разных содержательных файла (профиль PROB-073 + детектор коллизий PRD-008), независимо сминтивших один номер на параллельных ветках (это GitHub #394, не #419-rename). План: оставить ранний как EVID-143, поздний перезавести под следующий свободный EVID через MCP.
+- **PRD-012** — пустая заглушка (`PRD-012-project-onboarding.md`, draft) + реальный active (`...-init-scan.md`). План: deprecate заглушку через CLI.
+- **Код-гейт**: `reindex` не зовёт `find_duplicate_ids` — коллизия схлопывается молча (last-writer-wins). Это GitHub #394; предложение — вызвать детектор в `reindex` и падать громко, печатая оба пути.
+
+Data-hygiene и код-гейт вынесены в отдельный проход (терминальные lifecycle-переходы + код на ветке от dev), не выполнены в этой сессии.
 
