@@ -11,6 +11,7 @@ status: draft
 title: 'Artifact substrate: identity triple lost on write, doubled frontmatter produced by current new'
 ---
 
+
 depth: standard
 id: PROB-083
 kind: problem
@@ -220,4 +221,16 @@ forgeplan reindex                → get --json slug: prd-...   (пережил 
 - **Код-гейт**: `reindex` не зовёт `find_duplicate_ids` — коллизия схлопывается молча (last-writer-wins). Это GitHub #394; предложение — вызвать детектор в `reindex` и падать громко, печатая оба пути.
 
 Data-hygiene и код-гейт вынесены в отдельный проход (терминальные lifecycle-переходы + код на ветке от dev), не выполнены в этой сессии.
+
+
+---
+
+## Update 2026-08-06 — Problem 3 закрыт (детектор + data-hygiene)
+
+Оба хвоста Problem 3 из раздела «Остаётся реальным» выполнены (ранее числились «вынесены в отдельный проход, не выполнены в этой сессии»):
+
+- **Код-гейт (#394)** — `reindex` теперь собирает карту `id → файлы` во время обхода и **громко** докладывает каждую коллизию (оба пути ws-relative + счётчик `id-collisions` в summary + warning-hint), оставаясь **non-fatal** (exit 0 — чтобы `git clone && reindex` на уже-грязном репо не ломался; молчание было багом, а не завершение). Реальный E2E `cli_reindex_id_collision.rs` (позитив + негативный контроль) + догфуд на живой базе (поймал ровно 2 коллизии: PRD-012 и EVID-143). PR **#429**. `fmt 0, clippy 0`.
+- **Data-hygiene** — PRD-012 заглушка удалена (оставлен active `init-scan`, refines EPIC-001); EVID-143 разведён по git-первенству: ранний профиль PROB-073 (00:42) сохраняет номер, поздний детектор (01:08) перезаведён через `forgeplan new` как **EVID-149** (содержимое сохранено, git видит 83% rename → blame цел). Поправлена одна устаревшая ссылка `EVID-143-collision` в `docs/v0.33-handoff.md`. Проверено свежим ребилдом индекса (`lance/` в сторону → `reindex`): **`0 id-collisions`**, каждый id резолвится в один артефакт. PR **#430**.
+
+Классификация Problem 3: REAL-BUG (data + code) → **устранён**. Оба PR — draft, ждут ревью/мержа владельцем (RED LINE #2). Остаётся только чужой хвост, не Problem 3: 5 pre-existing health-debt ошибок реиндекса (ADR-013 без frontmatter + 4 строки на отсутствующие файлы) — отдельный трек v0.33-plan.
 
