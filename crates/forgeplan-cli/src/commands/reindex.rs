@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use forgeplan_core::projection;
 
 use crate::commands::common;
@@ -40,6 +43,15 @@ pub async fn run() -> anyhow::Result<()> {
     let mut skipped = 0usize;
     let mut errors = 0usize;
 
+    // #394: detect duplicate-id collisions. Two `.md` files that carry the
+    // same frontmatter `id` both resolve to a single LanceDB row; Phase 1
+    // processes them in `read_dir` order (which is not even stable) and the
+    // last one silently overwrites the first — last-writer-wins with no
+    // anomaly surfaced. The scan-import surface already flags this via
+    // `find_duplicate_ids`; reindex was the blind spot. Record every file per
+    // id here and report after the walk.
+    let mut id_to_paths: HashMap<String, Vec<PathBuf>> = HashMap::new();
+
     for dir_name in forgeplan_core::workspace::ARTIFACT_DIRS {
         let dir = ws.join(dir_name);
         if !dir.exists() {
@@ -79,6 +91,14 @@ pub async fn run() -> anyhow::Result<()> {
                     continue;
                 }
             };
+
+            // #394: remember every file that resolves to this id so a
+            // duplicate-id collision (two files, same id) is reported after
+            // the walk instead of silently overwriting during the upsert below.
+            id_to_paths
+                .entry(id.clone())
+                .or_default()
+                .push(path.clone());
 
             // Check if artifact exists in LanceDB
             match store.get_record(&id).await? {
@@ -215,6 +235,38 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
+    // #394: surface the duplicate-id collisions gathered during Phase 1.
+    // Non-fatal (same convention as the per-file errors above) so an
+    // onboarding `git clone && forgeplan reindex` still completes on a repo
+    // that already carries a collision — but it is now LOUD on stderr and
+    // counted in the summary, never silent. `id_to_paths` is consumed here.
+    let mut id_collisions: Vec<(String, Vec<PathBuf>)> = id_to_paths
+        .into_iter()
+        .filter(|(_, paths)| paths.len() > 1)
+        .collect();
+    id_collisions.sort_by(|a, b| a.0.cmp(&b.0));
+    for (_, paths) in id_collisions.iter_mut() {
+        paths.sort();
+    }
+    if !id_collisions.is_empty() {
+        eprintln!(
+            "\n⚠ {} duplicate-id collision(s): multiple files claim the same artifact id.",
+            id_collisions.len()
+        );
+        eprintln!("  Reindex is last-writer-wins — the shadowed file(s) never reach the index");
+        eprintln!("  (ADR-003: one id = one file). Resolve before trusting the index:");
+        for (cid, paths) in &id_collisions {
+            eprintln!("    {cid}");
+            for p in paths {
+                let rel = p.strip_prefix(&ws).unwrap_or(p);
+                eprintln!("      {}", rel.display());
+            }
+        }
+        eprintln!(
+            "  Resolution: keep one file per id (renumber or delete the duplicate), then rerun forgeplan reindex.\n"
+        );
+    }
+
     // Phase 2: Remove DB records whose .md file no longer exists (files-first cleanup)
     //
     // PRD-044 fix: previously `parse::<ArtifactKind>()` returning Err caused
@@ -331,14 +383,30 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     println!(
-        "\nReindex complete: {} synced, {} unchanged, {} removed, {} orphan relations, {} errors.",
-        synced, skipped, removed, orphan_relations, errors
+        "\nReindex complete: {} synced, {} unchanged, {} removed, {} orphan relations, {} errors, {} id-collisions.",
+        synced,
+        skipped,
+        removed,
+        orphan_relations,
+        errors,
+        id_collisions.len()
     );
 
     // PRD-071 hint contract: reindex is a maintenance op — point user to
     // health for next-action surfacing (or to scan-import for new docs).
     let mut next_hints: Vec<forgeplan_core::hints::Hint> = Vec::new();
-    if errors > 0 {
+    if !id_collisions.is_empty() {
+        // #394: a duplicate-id collision means the index no longer faithfully
+        // mirrors the markdown (one row shadows another) — surface it above a
+        // plain parse/sync error.
+        next_hints.push(
+            forgeplan_core::hints::Hint::warning(format!(
+                "{} duplicate-id collision(s) — one id maps to multiple files; index is last-writer-wins",
+                id_collisions.len()
+            ))
+            .with_action("forgeplan health"),
+        );
+    } else if errors > 0 {
         next_hints.push(
             forgeplan_core::hints::Hint::warning(format!(
                 "{} parse/sync errors during reindex",
