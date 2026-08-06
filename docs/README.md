@@ -99,7 +99,7 @@ forgeplan list -t adr            # list all ADRs
 forgeplan get ADR-003            # read one
 forgeplan validate PRD-024       # check quality
 forgeplan score PRD-024          # compute R_eff
-forgeplan scan-import            # rebuild LanceDB index from markdown
+forgeplan reindex                # rebuild LanceDB index from markdown
 ```
 
 **Fresh clone workflow:**
@@ -107,7 +107,7 @@ forgeplan scan-import            # rebuild LanceDB index from markdown
 ```bash
 git clone <repo> && cd forgeplan
 forgeplan init -y                # creates .forgeplan/lance/ locally (empty)
-forgeplan scan-import            # indexes tracked markdown into LanceDB
+forgeplan reindex                # syncs tracked markdown into LanceDB
 forgeplan list                   # verify — should see all artifacts
 ```
 
@@ -122,6 +122,6 @@ forgeplan list                   # verify — should see all artifacts
 ## Conventions
 
 - **All paths in documents are relative to repository root.**
-- **Artifact files in `.forgeplan/` are managed by the `forgeplan` CLI** — hand-editing works but may cause drift with the LanceDB index until `scan-import` runs.
+- **Artifact files in `.forgeplan/` are managed by the `forgeplan` CLI** — hand-editing works but may cause drift with the LanceDB index until `reindex` runs.
 - **Methodology docs here are authoritative** — if a tutorial and a schema disagree, the schema wins.
 - **Activated artifacts are immutable** — supersede via `forgeplan supersede`, do not rewrite history.
