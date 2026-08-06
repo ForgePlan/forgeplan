@@ -1,6 +1,8 @@
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::lifecycle;
 use forgeplan_core::projection;
+use forgeplan_core::scoring::provenance::{self, GateDecision, GateMode};
+use forgeplan_core::workspace;
 
 use crate::commands::common;
 
@@ -27,6 +29,31 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     // Sync file→LanceDB before lifecycle call (preserve user edits)
     if let Some(record) = store.get_record(id).await? {
         projection::sync_file_to_store(&store, &ws, &record).await?;
+
+        // #360 / PRD-082: activate-time git-delta provenance gate. `--force`
+        // bypasses it (same escape hatch as the methodology gates below). Cheap
+        // unless the pack actually carries base_sha/result_sha/changed_paths.
+        //
+        // Re-fetch AFTER the sync above: the first `get_record` returned the
+        // pre-sync store body, and `sync_file_to_store` may have just pulled a
+        // newer markdown edit (a teammate's fix to a bad base/result_sha). The
+        // gate must see the source of truth, not the stale copy — mirrors the
+        // MCP handler's post-sync fetch.
+        if !force && let Some(synced) = store.get_record(id).await? {
+            let mode = workspace::load_config(&ws)
+                .map(|c| GateMode::from_config(&c.integrity.evidence_provenance_gate))
+                .unwrap_or(GateMode::Warn);
+            match provenance::evaluate_provenance_gate(&synced.body, &ws, mode) {
+                GateDecision::Pass => {}
+                GateDecision::Warn(msg) => eprintln!("  ⚠ {msg}"),
+                GateDecision::Block(msg) => {
+                    return Err(anyhow::anyhow!(
+                        "{msg}\nFix: correct the claim (base_sha/result_sha/changed_paths) \
+                         or activate with --force to override the provenance gate"
+                    ));
+                }
+            }
+        }
     }
 
     let result = lifecycle::activate(&store, id, force)

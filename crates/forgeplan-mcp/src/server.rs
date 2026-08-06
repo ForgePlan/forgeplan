@@ -4156,6 +4156,35 @@ impl ForgeplanServer {
             return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
 
+        // #360 / PRD-082: activate-time git-delta provenance gate (CLI parity).
+        // Runs on the just-synced body. `force` bypasses, matching the CLI and
+        // the methodology gates. `block` returns an error result the agent
+        // sees; `warn` (default) surfaces the discrepancy in the success payload
+        // (see `provenance_warning` woven into `msg` below) AND logs it
+        // server-side.
+        let mut provenance_warning: Option<String> = None;
+        if !p.force
+            && let Ok(Some(record)) = store.get_record(&p.id).await
+        {
+            use forgeplan_core::scoring::provenance::{self, GateDecision, GateMode};
+            let mode = forgeplan_core::workspace::load_config(&ws)
+                .map(|c| GateMode::from_config(&c.integrity.evidence_provenance_gate))
+                .unwrap_or(GateMode::Warn);
+            match provenance::evaluate_provenance_gate(&record.body, &ws, mode) {
+                GateDecision::Pass => {}
+                GateDecision::Warn(msg) => {
+                    tracing::warn!(target = "provenance", id = %p.id, "{msg}");
+                    provenance_warning = Some(msg);
+                }
+                GateDecision::Block(msg) => {
+                    return Ok(err_result(&format!(
+                        "{msg}\nFix: correct base_sha/result_sha/changed_paths, \
+                         or set force=true to override the provenance gate"
+                    )));
+                }
+            }
+        }
+
         match forgeplan_core::lifecycle::activate(&store, &p.id, p.force).await {
             Ok(result) => {
                 // PROB-057 / Round 9 HIGH-1: MCP parity — sync the cached R_eff
@@ -4204,6 +4233,11 @@ impl ForgeplanServer {
                 };
                 let safe_id = sanitize_for_hint(&ref_form);
                 let mut msg = format!("Activated {safe_id} (draft → active)");
+                // #360 / PRD-082: surface a `warn`-mode provenance discrepancy in
+                // the agent-visible payload, not only the server log.
+                if let Some(w) = &provenance_warning {
+                    msg.push_str(&format!("\n⚠ {w}"));
+                }
                 if result.forced {
                     msg.push_str(&format!(
                         "\nWarning: Activated with {} validation error{}",
