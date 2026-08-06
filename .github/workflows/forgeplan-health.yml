@@ -52,11 +52,9 @@ jobs:
       - name: Validate artifacts
         run: ./target/debug/forgeplan validate --ci
 
-      - name: MCP tool count drift check
-        # Drift detector — fails CI if README/CLAUDE/landing/docs disagree
-        # with actual MCP tool count в src. Lessons learned 2026-05-04:
-        # external OpenAI agent caught 18+ stale references (28/37/45/47
-        # vs actual 63) that passive grep sweeps had been missing.
-        # PR 2.6 audit C-2: this step closes "preventive value theoretical"
-        # finding by wiring the script into the health gate.
-        run: ./scripts/check-mcp-tool-count.sh
+      # The MCP tool-count drift check moved to ci.yml (job
+      # check-mcp-tool-count-drift). #421: this workflow only triggers on
+      # paths .forgeplan/** and crates/**, but the drift it guards lives in
+      # website/**, docs/**, CLAUDE.md, README.md and TODO.md — a docs-only PR
+      # never ran the detector here, which is exactly how the stale '63' in a
+      # RU page survived. ci.yml runs on every PR with no path filter.

@@ -84,6 +84,29 @@ jobs:
           chmod +x scripts/check-kind-list-drift.sh
           scripts/check-kind-list-drift.sh
 
+  check-mcp-tool-count-drift:
+    name: Check MCP tool count drift
+    runs-on: ubuntu-latest
+    # In ci.yml (all PRs, no path filter) rather than forgeplan-health.yml
+    # (paths .forgeplan/**, crates/**): #421 showed the drift it guards lives
+    # in website/docs/CLAUDE.md/README/TODO, so a docs-only PR never ran it.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Self-test the detector's own regex
+        # #421: the extraction pattern had never been asserted, and a
+        # whitespace-only separator made it walk past `NN MCP-инструмента`
+        # (the idiomatic hyphenated Russian form) while printing "No drift".
+        # The pattern is tested before it is trusted.
+        run: SELF_TEST=1 scripts/check-mcp-tool-count.sh
+
+      - name: Check docs/site tool counts against src
+        # Fails CI if README/CLAUDE/landing/docs disagree with the actual
+        # #[tool(...)] count in src. Lessons learned 2026-05-04: an external
+        # reviewer caught 18+ stale references before the internal sweep.
+        run: scripts/check-mcp-tool-count.sh
+
   # PROB-060 Phase 2.3 (T4) — workspace audit of frontmatter validator coverage.
   #
   # Self-test job: runs scripts/validator-audit-all.sh against the canonical
