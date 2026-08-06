@@ -117,6 +117,7 @@ use crate::artifact::sanitize::sanitize_for_hint;
 use crate::artifact::types::DECISION_KINDS_EVIDENCE;
 use crate::artifact::types::{ArtifactKind, Mode};
 use crate::db::store::{ArtifactFilter, ArtifactRecord, LanceStore};
+use crate::lifecycle::transitions::is_terminal;
 use crate::scoring::evidence::parse_evidence_from_record;
 use crate::scoring::reff;
 use crate::status::derived::{DerivedStatus, derive_status};
@@ -1593,6 +1594,15 @@ fn find_at_risk(
     let mut at_risk = Vec::new();
 
     for record in records {
+        // A terminal artifact (deprecated/superseded) is closed: its R_eff is
+        // frozen and no longer actionable, so surfacing it as "At Risk — inspect
+        // the score" is pure noise. PROB-078 (a refuted problem, deprecated,
+        // whose only evidence is a [Refutes] pack scoring R_eff=0) was wrongly
+        // flagged at-risk with a `forgeplan score PROB-078` next-action that can
+        // never clear it. At-risk is a signal for LIVE artifacts only.
+        if is_terminal(&record.status) {
+            continue;
+        }
         let key = record.id.to_ascii_lowercase();
         let Some(linked) = evidence_index.get(&key) else {
             continue;
@@ -2590,6 +2600,52 @@ mod tests {
             "PRD-007 should be at risk: {ids:?}"
         );
         assert!(!ids.contains(&"PROB-007"));
+    }
+
+    // PROB-078 regression: a terminal-status (deprecated/superseded) artifact
+    // must NOT be surfaced as at-risk. Its R_eff is frozen — flagging a closed
+    // artifact "At Risk, inspect the score" is noise the operator cannot act on
+    // (the live bug: `forgeplan health` listed the deprecated, refuted PROB-078
+    // as At Risk with a `forgeplan score PROB-078` next-action that never clears).
+    #[test]
+    fn find_at_risk_skips_terminal_status() {
+        // The same CL0 (R_eff well below 0.3) evidence shape links to two
+        // problems: one active, one deprecated. Only the active one is a live
+        // at-risk signal.
+        let mut live = make_record("PROB-100", "problem");
+        live.status = "active".into();
+        let mut closed = make_record("PROB-101", "problem");
+        closed.status = "deprecated".into();
+
+        let mut ev_live = make_record("EVID-100", "evidence");
+        ev_live.body =
+            "verdict: supports\ncongruence_level: 0\nevidence_type: measurement\n".into();
+        let mut ev_closed = make_record("EVID-101", "evidence");
+        ev_closed.body =
+            "verdict: refutes\ncongruence_level: 0\nevidence_type: measurement\n".into();
+
+        let mut outgoing: RelationIndex = BTreeMap::new();
+        outgoing.insert(
+            "EVID-100".into(),
+            vec![("PROB-100".into(), "informs".into())],
+        );
+        outgoing.insert(
+            "EVID-101".into(),
+            vec![("PROB-101".into(), "informs".into())],
+        );
+
+        let evs = vec![ev_live, ev_closed];
+        let refs: Vec<&ArtifactRecord> = vec![&live, &closed];
+        let at_risk = find_at_risk(&refs, &evs, &outgoing);
+        let ids: Vec<&str> = at_risk.iter().map(|a| a.id.as_str()).collect();
+        assert!(
+            ids.contains(&"PROB-100"),
+            "an ACTIVE low-R_eff artifact must still be at-risk: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"PROB-101"),
+            "a DEPRECATED artifact must NOT be flagged at-risk (PROB-078): {ids:?}"
+        );
     }
 
     // PROB-051 L-M2: find_duplicate_pairs returns FULL list (no truncation).
