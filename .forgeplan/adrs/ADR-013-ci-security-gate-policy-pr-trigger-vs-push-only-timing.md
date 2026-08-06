@@ -1,3 +1,14 @@
+---
+depth: standard
+id: ADR-013
+kind: adr
+links:
+- target: PRD-077
+  relation: based_on
+status: active
+title: CI Security Gate Policy — PR Trigger vs Push-Only Timing
+---
+
 # ADR-013: CI Security Gate Policy — PR Trigger vs Push-Only Timing
 
 **Status:** Accepted
@@ -106,3 +117,7 @@ A: Removed. It was inherited from the pre-ADR-013 configuration but contradicts 
 **Q: Won't this regress our security posture?**
 
 A: No. Security posture is maintained by the weekly scan and the release-time gate (push to main). We are trading per-PR instant feedback for reduced friction and honest signal clarity.
+
+
+
+
