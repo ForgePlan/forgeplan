@@ -39,6 +39,7 @@
 //! flat wire shape). The pure detectors live in `crate::brownfield`.
 
 use crate::artifact::sanitize::sanitize_for_hint;
+use crate::artifact::types::DECISION_KINDS_EVIDENCE;
 use crate::db::store::LanceStore;
 use crate::health::DEFAULT_STALE_DRAFT_HOURS;
 // Note: `is_evidence_complete` is consumed via `lifecycle::ready_to_activate`
@@ -371,6 +372,15 @@ pub async fn detect_anomalies(
         if !src_kind.eq_ignore_ascii_case("evidence") {
             continue;
         }
+        // …and only when the TARGET is a decision. Evidence→evidence `based_on`
+        // is legitimate precedent lineage — an evidence pack grounded in an
+        // earlier one (docs/methodology/EVIDENCE-PROTOCOL.md) — so flagging it is
+        // a false positive (PROB-083 Problem 3: EVID-089/090/091 each ground
+        // themselves in a prior pack, correctly, via based_on).
+        let tgt_kind = kind_by_id.get(tgt.as_str()).copied().unwrap_or("");
+        if tgt_kind.eq_ignore_ascii_case("evidence") {
+            continue;
+        }
         anomalies.push(Anomaly {
             id: format!("anom-mistyped-based-on-{src}-{tgt}"),
             kind: AnomalyKind::MistypedBasedOn,
@@ -378,8 +388,11 @@ pub async fn detect_anomalies(
             tier: Tier::Adi,
             affected: vec![src.clone(), tgt.clone()],
             observed_at: now_str.clone(),
+            // `based_on` and `informs` score identically (both CL2 — see
+            // scoring/reff.rs), so this is a canonical-form nudge, NOT a scoring
+            // penalty. The earlier "(CL penalty cascades)" wording was false.
             description: format!(
-                "{src} --based_on--> {tgt}: evidence should `inform`, not `based_on` (CL penalty cascades)"
+                "{src} --based_on--> {tgt}: evidence links to a decision via `based_on`; the canonical evidence relation is `informs`"
             ),
             evidence: serde_json::json!({
                 "source": src,
@@ -619,6 +632,14 @@ pub async fn detect_anomalies(
         .collect();
     const WEAKEST_LINK_MAX_DEPTH: usize = 16;
     for r in &all_records {
+        // weakest_link_unresolvable diagnoses DECISION artifacts whose evidence
+        // chain bottoms out at an un-evidenced ancestor. Evidence packs and notes
+        // do not self-score — their R_eff=0 is inherent, not a resolvable weak
+        // link — so skip non-decision kinds (they were ~97 of the 137 false
+        // firings; PROB-083 Problem 3 / Class D).
+        if !DECISION_KINDS_EVIDENCE.contains(&r.kind.to_ascii_lowercase().as_str()) {
+            continue;
+        }
         if !r.status.eq_ignore_ascii_case("active") {
             continue;
         }
@@ -1126,6 +1147,121 @@ mod tests {
         let suggestion = mistyped[0].suggested_resolution.as_ref().unwrap();
         assert_eq!(suggestion.action.as_deref(), Some("forgeplan_link"));
         assert!(suggestion.rationale.contains("replace=true"));
+    }
+
+    /// B fix (PROB-083 Problem 3): evidence→evidence `based_on` is legitimate
+    /// precedent lineage (a pack grounded in an earlier one), not a mistype —
+    /// it must NOT be flagged. The EVID-089/090/091 false positives were exactly
+    /// this shape.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn mistyped_based_on_skips_evidence_to_evidence() {
+        let (_tmp, ws, store) = fresh_store().await;
+        for id in ["EVID-001", "EVID-002"] {
+            store
+                .create_artifact_for_test(&NewArtifact {
+                    id: id.into(),
+                    kind: "evidence".into(),
+                    status: "active".into(),
+                    title: format!("Evidence {id}"),
+                    body: "verdict: supports\ncongruence_level: 3\n".into(),
+                    depth: "tactical".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        // EVID-001 grounds itself in the earlier EVID-002 — legit lineage.
+        store
+            .add_relation_for_test("EVID-001", "EVID-002", "based_on")
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let mistyped: Vec<_> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::MistypedBasedOn)
+            .collect();
+        assert!(
+            mistyped.is_empty(),
+            "evidence→evidence based_on is legit lineage, must not be flagged: {mistyped:?}"
+        );
+    }
+
+    /// D fix (PROB-083 Problem 3 / Class D): weakest_link_unresolvable is a
+    /// DECISION-artifact diagnostic. An evidence source (R_eff=0 inherent) must
+    /// NOT be flagged; a decision source with R_eff=0 + a parent still is.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn weakest_link_skips_non_decision_source() {
+        let (_tmp, ws, store) = fresh_store().await;
+        // Evidence source: active, r_eff=0 (default), with an informs parent.
+        // Pre-fix this fired weakest_link; post-fix it is skipped.
+        store
+            .create_artifact_for_test(&NewArtifact {
+                id: "EVID-001".into(),
+                kind: "evidence".into(),
+                status: "active".into(),
+                title: "Evidence".into(),
+                body: "verdict: supports\ncongruence_level: 3\n".into(),
+                depth: "tactical".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .unwrap();
+        // Decision source: active PRD (r_eff=0) with a parent EPIC → still flagged.
+        for (id, kind) in [("PRD-001", "prd"), ("EPIC-001", "epic")] {
+            store
+                .create_artifact_for_test(&NewArtifact {
+                    id: id.into(),
+                    kind: kind.into(),
+                    status: "active".into(),
+                    title: format!("Decision {id}"),
+                    body: "## Problem\nbody\n".into(),
+                    depth: "tactical".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        store
+            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("PRD-001", "EPIC-001", "based_on")
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let weak: Vec<&str> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::WeakestLinkUnresolvable)
+            .flat_map(|a| a.affected.iter().map(|s| s.as_str()))
+            .collect();
+        assert!(
+            !weak.contains(&"EVID-001"),
+            "evidence source must NOT be a weakest_link candidate: {weak:?}"
+        );
+        assert!(
+            weak.contains(&"PRD-001"),
+            "a decision source with R_eff=0 + parent must still be flagged: {weak:?}"
+        );
     }
 
     /// Filter by kind narrows the result set.
