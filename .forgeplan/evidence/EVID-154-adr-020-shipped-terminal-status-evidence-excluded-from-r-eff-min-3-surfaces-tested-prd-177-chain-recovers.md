@@ -28,8 +28,8 @@ congruence_level: 3
 evidence_type: test
 
 base_sha: 92154e19
-result_sha: 6cfefad
-changed_paths: crates/forgeplan-core/src/scoring/reff.rs, crates/forgeplan-core/src/scoring/evidence.rs, crates/forgeplan-cli/src/commands/score.rs, crates/forgeplan-mcp/src/server.rs, crates/forgeplan-mcp/src/types.rs, crates/forgeplan-cli/tests/cli_score_terminal_evidence.rs, crates/forgeplan-mcp/tests/score_terminal_evidence_e2e.rs
+result_sha: 808db24
+changed_paths: crates/forgeplan-core/src/scoring/reff.rs, crates/forgeplan-core/src/scoring/evidence.rs, crates/forgeplan-cli/src/commands/score.rs, crates/forgeplan-mcp/src/server.rs, crates/forgeplan-mcp/src/types.rs, crates/forgeplan-cli/tests/cli_score_terminal_evidence.rs, crates/forgeplan-mcp/tests/score_terminal_evidence_e2e.rs, crates/forgeplan-cli/src/commands/update.rs, crates/forgeplan-core/src/anomalies.rs, crates/forgeplan-core/src/scoring/mod.rs
 
 CL3: тесты и догфуд гоняют ровно тот shipped-код, который описывает ADR.
 
@@ -45,6 +45,8 @@ CL3: тесты и догфуд гоняют ровно тот shipped-код, �
 
 Branch `fix/reff-exclude-terminal-evidence` (off origin/dev 92154e19). Код: коммит 6cfefad; доки: f0cd5ad; артефакты: 71f01a2. Исследование перед фиксом: 4-пуловый workflow (доки/граф+первоисточники/forgeplan.dev/код) — включение терминальной эвиденции нигде не задокументировано как намеренное; quint-code `decision.go:818` и FPF F.10:6.1 подтверждают семантику исключения.
 
+## Audit round (2026-08-14)
 
+Adversarial workflow (3 линзы × скептик-верификация): **14 confirmed / 4 refuted** — все confirmed закрыты в коммите 808db24 до публикации ветки. Ключевое: [BLOCKER] `update --status superseded` был однокомандным отмыванием score → заперт на CLI+MCP (redirect на lifecycle-команды; MCP теперь запирает и `active`); [MAJOR] successor-free `deprecate` → детектор `unbacked_displacement`; [MAJOR] кэш R_eff после вытеснения → `rescore_evidence_dependents` на всех 4 поверхностях; [MAJOR] text/JSON hints расходились → единая eligible-популяция; + decay/gaps/journal/context согласованы. Догфуд эксплойта аудита: шаг 1 блокируется, шаг 2 детектится, рескоринг срабатывает. Итог: core 2097 pass, anomalies 31 pass, оба e2e pass, clippy 0.
 
 
