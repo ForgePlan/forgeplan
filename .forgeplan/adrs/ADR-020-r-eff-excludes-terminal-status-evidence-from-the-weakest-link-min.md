@@ -5,7 +5,7 @@ kind: adr
 links:
 - target: ADR-002
   relation: refines
-status: draft
+status: active
 title: R_eff excludes terminal-status evidence from the weakest-link min
 ---
 
@@ -69,6 +69,8 @@ title: R_eff excludes terminal-status evidence from the weakest-link min
 - **Отдельная метрика «исторический минимум»** — отвергнуто: история уже сохранена графом (пакет + статус + ребро supersedes); вторая метрика — оверинжиниринг.
 - **Новый relation `resolves`** — отвергнуто: `supersedes` уже значит «заменяет»; чинить надо соблюдение семантики, не плодить словарь.
 - **Фильтровать и draft (буквальный acceptance #436)** — отвергнуто: ломает score-гейт Standard-flow (см. Decision §2).
+
+
 
 
 
