@@ -11,6 +11,10 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Changed
+
+- **R_eff scoring semantics (ADR-020, #436)** — the weakest-link `min()` now ranges over the artifact's *current* evidence only: packs with a terminal lifecycle status (`superseded`/`deprecated`) are excluded. Previously a displaced refutes pack pinned R_eff to 0 forever — no honest recovery existed after a fix was re-verified, which pressured agents into editing historical verdicts. Displacement is auditable (skips logged in factors, packs stay listed with `excluded: true` / "excluded from min"), all-terminal degrades to "no active evidence", draft evidence still counts, and an **active** refutes pack still zeroes the score. Scores are correct after this change; the previous values were silently wrong (they answered "worst ever recorded", not "current reliability"). Cached `r_eff_score` values recover on the next `forgeplan score` of the artifact. Aligns the evidence path with the dependency path (ADR-002) and with the source methodologies (quint-code `decision.go` superseded filter; FPF F.10:6.1 Window discipline).
+
 ## [0.33.0] - 2026-06-04
 
 Sprint headline: **MCP worktree-aware routing (PRD-078) + read-after-write correctness investigation (PROB-078 refuted) + dogfood-driven CLI hardening.**

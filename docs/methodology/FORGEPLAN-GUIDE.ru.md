@@ -402,7 +402,7 @@ forgeplan score ADR-002
 
 ### R_eff = min(evidence_scores)
 
-R_eff = weakest link. Если есть 3 evidence и одно слабое — R_eff = слабое. НЕ average.
+R_eff = weakest link. Если есть 3 evidence и одно слабое — R_eff = слабое. НЕ average. Участвует только *текущая* эвиденция: superseded/deprecated пакеты исключаются из min (ADR-020) — устаревший слабый пакет вытесняй через `supersede <старый> --by <новый>`, а не правкой его verdict.
 
 ---
 

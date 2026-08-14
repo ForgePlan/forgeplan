@@ -478,7 +478,9 @@ R_eff calculates the **weakest link** across the entire dependency tree. Rules:
 - **Draft** -- skipped (not started yet, nothing to calculate)
 - **Deprecated/Superseded** -- skipped (closed)
 
-Skipped dependencies are visible in `forgeplan score`: `"Skipped EPIC-002 (status: draft)"`.
+The same principle applies to **directly linked evidence** (ADR-020): packs with a terminal status (`superseded`/`deprecated`) are excluded from the min -- displaced testimony stays visible in the breakdown but no longer scores. Draft evidence DOES count here (unlike draft dependencies): it is a fresh measurement awaiting activation.
+
+Skipped dependencies and evidence are visible in `forgeplan score`: `"Skipped EPIC-002 (status: draft)"`, `"Skipped EVID-012 (status: superseded)"`.
 
 ### Enforcement Hooks (for AI agents)
 
@@ -727,7 +729,7 @@ forgeplan route "task description"
 
 **Why it's bad**: FPF says: **R_eff = min(scores)**, not average. A chain is as reliable as its weakest link. If one evidence says "refutes" -- the entire decision is in question.
 
-**How to do it right**: Fix the weak evidence. Or remove it and get R_eff from the remaining ones.
+**How to do it right**: Fix the weak evidence. Or displace it honestly: link a re-verification pack and `supersede <old> --by <new>` -- a terminal-status pack leaves the min (ADR-020) while staying in the graph as history.
 
 **In plain terms**: one hole in the boat sinks the whole boat. Don't average -- fix the weak spot.
 

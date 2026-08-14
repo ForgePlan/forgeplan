@@ -120,7 +120,7 @@ congruence_level: 3
 evidence_type: measurement
 ```
 
-(See [EvidencePack schema](../schemas/EVIDENCE.md) for details.)
+(Field semantics: this section; scoring participation: §Evidence Lifecycle and Scoring below.)
 
 ### Step 3: Link to the artifact
 ```bash
@@ -141,6 +141,21 @@ Refs: PRD-MMM"
 gh pr create --title "[Evidence] Add EVID-NNN for PRD-MMM" \
   --body "Retroactively captured evidence from merged feature. See EVID-NNN for test results."
 ```
+
+## Evidence Lifecycle and Scoring (ADR-020)
+
+Which packs feed `R_eff = min(evidence_scores)` depends on the pack's lifecycle status:
+
+| Evidence status | Participates in min()? | Why |
+|---|---|---|
+| `draft` | **yes** | a fresh measurement awaiting activation — the score gate runs before activation in the standard flow |
+| `active` | **yes** | current testimony; an active `refutes` pack zeroes the score |
+| `superseded` | **no** | displaced by a successor (`supersede <old> --by <new>`) — history stays in the graph, but it no longer speaks for present reliability |
+| `deprecated` | **no** | retired (e.g. a duplicate deprecated with `--reason "superseded by EVID-y"`) |
+
+Every exclusion is logged in `forgeplan score` factors (`Skipped EVID-x (status: superseded)`) and marked in the breakdown (`excluded from min`) — displacement is auditable, never silent. If ALL linked packs are terminal, the artifact degrades to **no active evidence** (R_eff 0.0): recovery requires the replacement pack to be *linked* to the artifact, not just to exist.
+
+The honest way to clear a stale weak pack is displacement — link the re-verification evidence, then supersede the old pack. Editing a pack's verdict to raise a score is history falsification; the graph keeps the original pack precisely so you never have to.
 
 ## Technical Details
 
@@ -227,5 +242,5 @@ A: File a PROB or decision note explaining why, then decide: (1) reclassify as `
 - **PROB-035, PROB-039**: Silent failures from happy-path-only testing
 - **Hooks**: `.claude/hooks/pre-pr-evidence-check.sh`
 - **Health**: `forgeplan health` command
-- **Schema**: `docs/schemas/EVIDENCE.md` (EvidencePack structure)
+- **Schema**: §Structured Fields above (EvidencePack structure; a dedicated `docs/schemas/EVIDENCE.md` does not exist yet)
 

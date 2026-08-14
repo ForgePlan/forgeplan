@@ -683,7 +683,7 @@ JSON: `_next_action` field. Following hints = staying на methodology path
 ## Key formulas
 
 ### R_eff (scoring)
-- `R_eff = min(evidence_scores)` — trust = weakest link, **never average**
+- `R_eff = min(evidence_scores)` — trust = weakest link, **never average**. Min идёт только по **текущей** эвиденции: пакеты с терминальным статусом (superseded/deprecated) исключаются (ADR-020); draft считается; активный `refutes` по-прежнему обнуляет
 - Evidence Decay: `valid_until` TTL, expired = 0.1
 - CL penalty: CL3=0.0, CL2=0.1, CL1=0.4, CL0=0.9
 - DerivedStatus: UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED

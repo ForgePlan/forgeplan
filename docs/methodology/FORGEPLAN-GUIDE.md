@@ -402,7 +402,7 @@ forgeplan score ADR-002
 
 ### R_eff = min(evidence_scores)
 
-R_eff = weakest link. If there are 3 evidence items and one is weak -- R_eff = the weak one. NOT average.
+R_eff = weakest link. If there are 3 evidence items and one is weak -- R_eff = the weak one. NOT average. Only *current* evidence participates: superseded/deprecated packs are excluded from the min (ADR-020) — displace a stale weak pack with `supersede <old> --by <new>` instead of editing its verdict.
 
 ---
 

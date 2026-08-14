@@ -120,7 +120,7 @@ congruence_level: 3
 evidence_type: measurement
 ```
 
-(См. [EvidencePack schema](../schemas/EVIDENCE.md) для деталей.)
+(Семантика полей — эта секция; участие в скоринге — §Жизненный цикл эвиденции и скоринг ниже.)
 
 ### Шаг 3: Link на артефакт
 ```bash
@@ -141,6 +141,21 @@ Refs: PRD-MMM"
 gh pr create --title "[Evidence] Add EVID-NNN for PRD-MMM" \
   --body "Retroactively captured evidence from merged feature. See EVID-NNN for test results."
 ```
+
+## Жизненный цикл эвиденции и скоринг (ADR-020)
+
+Какие пакеты участвуют в `R_eff = min(evidence_scores)`, зависит от статуса пакета:
+
+| Статус эвиденции | Участвует в min()? | Почему |
+|---|---|---|
+| `draft` | **да** | свежее измерение, ждущее активации — score-гейт идёт ДО активации в стандартном flow |
+| `active` | **да** | текущее показание; активный `refutes` обнуляет score |
+| `superseded` | **нет** | вытеснен наследником (`supersede <старый> --by <новый>`) — история остаётся в графе, но о текущей надёжности больше не говорит |
+| `deprecated` | **нет** | закрыт (например, дубль, deprecated с `--reason "superseded by EVID-y"`) |
+
+Каждое исключение логируется в factors (`Skipped EVID-x (status: superseded)`) и помечается в breakdown (`excluded from min`) — вытеснение всегда видимо, никогда не молчаливо. Если ВСЯ слинкованная эвиденция терминальна — артефакт деградирует к **no active evidence** (R_eff 0.0): для восстановления пакет-замена должен быть *слинкован* с артефактом, а не просто существовать.
+
+Честный способ убрать устаревший слабый пакет — вытеснение: слинковать эвиденцию ре-верификации и вытеснить старый пакет. Править verdict пакета ради поднятия score — фальсификация истории; граф хранит исходный пакет ровно для того, чтобы этого никогда не требовалось.
 
 ## Технические детали
 
@@ -227,5 +242,5 @@ Blind Spots (artifacts without evidence):
 - **PROB-035, PROB-039**: Silent failures из happy-path-only testing
 - **Hooks**: `.claude/hooks/pre-pr-evidence-check.sh`
 - **Health**: `forgeplan health` команда
-- **Schema**: `docs/schemas/EVIDENCE.md` (EvidencePack структура)
+- **Schema**: §Structured Fields выше (структура EvidencePack; отдельного `docs/schemas/EVIDENCE.md` пока не существует)
 

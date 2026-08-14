@@ -134,6 +134,8 @@ R_eff = min(evidence_scores)
 
 **NEVER the average.** A single weak piece of evidence brings down the entire score.
 
+**Which evidence participates**: the min ranges over the artifact's *current* evidence only. Packs with a terminal lifecycle status (`superseded`/`deprecated`) are excluded — a displaced pack stays in the graph as history but no longer speaks for present reliability (ADR-020, mirrors the dependency skip of ADR-002). Draft evidence still counts (it is the normal pre-activation state of a fresh measurement). An **active** `refutes` pack still zeroes the score; recovery is honest displacement: link the re-verification pack, then `supersede <old> --by <new>`.
+
 ### Evidence Score Calculation
 
 ```

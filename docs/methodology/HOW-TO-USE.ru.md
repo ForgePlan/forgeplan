@@ -212,7 +212,7 @@ FR-003: User can persist and query structured data with ACID guarantees
 
 ### R_eff Scoring — для решений с evidence:
 
-R_eff = min(evidence_scores). Trust = самое слабое звено.
+R_eff = min(evidence_scores). Trust = самое слабое звено. Min идёт только по текущей эвиденции — пакеты с терминальным статусом (`superseded`/`deprecated`) исключаются (ADR-020).
 
 **Когда**: есть EvidencePack артефакты с verdict и CL. Не нужно если нет формальных evidence.
 

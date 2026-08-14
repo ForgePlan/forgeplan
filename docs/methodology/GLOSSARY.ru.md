@@ -79,7 +79,7 @@ UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED → RE
 ```
 R_eff = min(evidence_scores) с CL penalties
 ```
-Trust = weakest link, **НИКОГДА** average. Надёжность решения определяется самым слабым доказательством, а не средним.
+Trust = weakest link, **НИКОГДА** average. Надёжность решения определяется самым слабым из *текущих* доказательств, а не средним. Пакеты с терминальным статусом (`superseded`/`deprecated`) исключаются из min (ADR-020); активный `refutes` по-прежнему обнуляет score.
 
 ### Stepping Stone
 Вариант, открывающий будущие возможности даже если не оптимален сейчас. Boolean flag в SolutionPortfolio. Учитывается при выборе варианта наряду с R_eff.
