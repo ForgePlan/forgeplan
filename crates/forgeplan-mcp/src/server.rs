@@ -3007,7 +3007,7 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores).",
+        description = "Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores) over the artifact's CURRENT evidence — packs with a terminal status (superseded/deprecated) are excluded from the min (ADR-020) but stay listed with `excluded: true`. An active refutes pack still zeroes the score.",
         annotations(
             title = "Compute R_eff Score",
             read_only_hint = true,
@@ -3087,7 +3087,10 @@ impl ForgeplanServer {
             }
 
             let item = parse_evidence_from_record(ev);
-            let item_score = reff::r_eff(std::slice::from_ref(&item));
+            // ADR-020: report the pack's raw own-merit score; terminal-status
+            // packs stay listed but flagged `excluded` — they no longer feed
+            // the weakest-link min (r_eff filters them internally).
+            let item_score = reff::raw_evidence_score(&item);
             let expired = item
                 .valid_until
                 .map(|dt| Utc::now().naive_utc() > dt)
@@ -3099,6 +3102,8 @@ impl ForgeplanServer {
                 congruence_level: item.congruence_level,
                 score: item_score,
                 expired,
+                status: item.status.clone(),
+                excluded: !item.is_scoring_eligible(),
             });
             evidence_items.push(item);
         }

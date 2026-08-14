@@ -237,13 +237,17 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         let evidence_json: Vec<_> = evidence_items
             .iter()
             .map(|item| {
-                let item_score = reff::r_eff(std::slice::from_ref(item));
+                // ADR-020: show the pack's own raw score plus its exclusion
+                // flag — terminal-status packs stay visible but marked.
+                let item_score = reff::raw_evidence_score(item);
                 serde_json::json!({
                     "id": item.id,
                     "verdict": format!("{:?}", item.verdict),
                     "congruence_level": item.congruence_level,
                     "score": item_score,
                     "expired": item.valid_until.map(|dt| Utc::now().naive_utc() > dt).unwrap_or(false),
+                    "status": item.status,
+                    "excluded": !item.is_scoring_eligible(),
                 })
             })
             .collect();
@@ -251,14 +255,17 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         // PRD-071 contract: surface deterministic primary next-action.
         // Reuse score_hints (already exposed in text mode). When all hints
         // are silent, fall back to "activate" (R_eff is healthy).
+        // ADR-020: hints reason over the ACTIVE population — a superseded
+        // CL0 pack must not trigger "fix CL0" advice, and all-terminal
+        // means "no active evidence", not "has evidence".
         let cl0_count_json = evidence_items
             .iter()
-            .filter(|e| e.congruence_level == 0)
+            .filter(|e| e.is_scoring_eligible() && e.congruence_level == 0)
             .count();
         let score_hints_json = hints::score_hints(
             &target_ref,
             report.r_eff,
-            !evidence_items.is_empty(),
+            evidence_items.iter().any(|e| e.is_scoring_eligible()),
             cl0_count_json,
         );
         let next_action_json = hints::primary_action(&score_hints_json).or_else(|| {
@@ -318,14 +325,19 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
                 .valid_until
                 .map(|dt| Utc::now().naive_utc() > dt)
                 .unwrap_or(false);
-            let item_score = reff::r_eff(std::slice::from_ref(item));
+            let item_score = reff::raw_evidence_score(item);
+            // ADR-020: terminal packs stay listed, marked as excluded —
+            // the history is visible, it just no longer speaks for NOW.
+            let mut marks = String::new();
+            if expired {
+                marks.push_str(" (EXPIRED)");
+            }
+            if !item.is_scoring_eligible() {
+                marks.push_str(&format!(" ({} — excluded from min)", item.status));
+            }
             println!(
                 "    {} [{:?}] CL{} = {:.1}{}",
-                item.id,
-                item.verdict,
-                item.congruence_level,
-                item_score,
-                if expired { " (EXPIRED)" } else { "" }
+                item.id, item.verdict, item.congruence_level, item_score, marks
             );
         }
         println!();

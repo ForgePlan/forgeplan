@@ -41,6 +41,25 @@ pub struct EvidenceItem {
     /// Congruence Level 0-3. Higher = more congruent.
     pub congruence_level: u8,
     pub valid_until: Option<NaiveDateTime>,
+    /// Lifecycle status of the evidence artifact ("active", "draft",
+    /// "superseded", "deprecated", …; empty = unknown → treated as live).
+    /// ADR-020: terminal-status packs are excluded from the weakest-link
+    /// min() — a displaced (superseded/deprecated) pack no longer speaks
+    /// for the artifact's CURRENT reliability. Mirrors the dependency-path
+    /// skip (ADR-002) and quint-code's `Verdict != "superseded"` filter
+    /// (decision.go:818, FPF F.10:6.1). The pack itself stays in the graph.
+    #[serde(default)]
+    pub status: String,
+}
+
+impl EvidenceItem {
+    /// ADR-020 eligibility: does this pack participate in the min()?
+    /// Only TERMINAL statuses are excluded — draft evidence still counts
+    /// (it is the normal working state of a fresh measurement in the
+    /// Shape→Evidence→Activate flow; the score gate runs before activation).
+    pub fn is_scoring_eligible(&self) -> bool {
+        !crate::lifecycle::transitions::is_terminal(&self.status)
+    }
 }
 
 /// Congruence Level penalty. CL3 = no penalty, CL0 = almost disqualified.
@@ -61,6 +80,14 @@ fn is_expired(valid_until: Option<NaiveDateTime>) -> bool {
     }
 }
 
+/// Raw score of a single evidence item, IGNORING scoring eligibility.
+/// Display-only helper: breakdown tables show what a terminal-status pack
+/// scored on its own merits, alongside the "excluded from min" marker —
+/// never feed this into an aggregate (use `r_eff` for that, ADR-020).
+pub fn raw_evidence_score(e: &EvidenceItem) -> f64 {
+    score_evidence(e)
+}
+
 /// Score a single evidence item.
 fn score_evidence(e: &EvidenceItem) -> f64 {
     // Expired evidence = 0.1 (stale, not absent)
@@ -73,15 +100,23 @@ fn score_evidence(e: &EvidenceItem) -> f64 {
 }
 
 /// R_eff = min(evidence_scores) — trust equals the weakest link, NEVER average.
+///
+/// The min ranges over the artifact's CURRENT evidence: packs whose lifecycle
+/// status is terminal (superseded/deprecated) are excluded before scoring
+/// (ADR-020 — they were displaced by a successor and no longer testify to
+/// present reliability; the record itself stays in the graph). An ACTIVE
+/// refutes pack still zeroes the score — eligibility changed, aggregation
+/// did not. All packs terminal → treated as "no active evidence" → 0.0.
 pub fn r_eff(evidence: &[EvidenceItem]) -> f64 {
-    if evidence.is_empty() {
-        return 0.0;
+    let mut min_score: Option<f64> = None;
+    for e in evidence.iter().filter(|e| e.is_scoring_eligible()) {
+        let s = score_evidence(e);
+        min_score = Some(match min_score {
+            Some(m) if m <= s => m,
+            _ => s,
+        });
     }
-    evidence
-        .iter()
-        .map(score_evidence)
-        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .unwrap_or(0.0)
+    min_score.unwrap_or(0.0)
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -144,10 +179,13 @@ impl ReffCi {
 /// With N=100 evidence, uncertainty ≈ 0.03 (confident).
 pub fn r_eff_with_ci(evidence: &[EvidenceItem]) -> ReffCi {
     let point = r_eff(evidence);
-    let count = evidence.len();
+    // ADR-020: the CI describes the same population the point estimate was
+    // computed over — terminal-status packs are excluded from both, so a
+    // superseded pack neither narrows the interval nor counts as "evidence".
+    let count = evidence.iter().filter(|e| e.is_scoring_eligible()).count();
     let stale_count = evidence
         .iter()
-        .filter(|e| is_expired(e.valid_until))
+        .filter(|e| e.is_scoring_eligible() && is_expired(e.valid_until))
         .count();
 
     if count == 0 {
@@ -267,14 +305,35 @@ pub async fn r_eff_recursive(
         linked_evidence_ids.insert(source_id.clone());
     }
 
-    let evidence_items: Vec<EvidenceItem> = all_evidence
+    // ADR-020: terminal-status evidence (superseded/deprecated) is excluded
+    // from the weakest-link min — symmetric with the dependency skip below
+    // (ADR-002). Each skip is logged in factors so the exclusion is auditable,
+    // never silent. Draft evidence stays eligible (fresh measurement, scored
+    // before activation in the standard flow).
+    let mut evidence_items: Vec<EvidenceItem> = Vec::new();
+    let mut terminal_skips = 0usize;
+    for rec in all_evidence
         .iter()
         .filter(|rec| linked_evidence_ids.contains(&rec.id))
-        .map(parse_evidence_from_record)
-        .collect();
+    {
+        if crate::lifecycle::transitions::is_terminal(&rec.status) {
+            factors.push(format!("Skipped {} (status: {})", rec.id, rec.status));
+            terminal_skips += 1;
+            continue;
+        }
+        evidence_items.push(parse_evidence_from_record(rec));
+    }
 
     let self_score = if evidence_items.is_empty() {
-        factors.push("No evidence found (L0)".to_string());
+        if terminal_skips > 0 {
+            // quint-code edge case (decision.go:826): all evidence displaced
+            // → degrade to no-active-evidence, not the displaced score.
+            factors.push(format!(
+                "No active evidence — all {terminal_skips} pack(s) superseded/deprecated"
+            ));
+        } else {
+            factors.push("No evidence found (L0)".to_string());
+        }
         0.0
     } else {
         // Track decay for reporting
@@ -394,6 +453,7 @@ mod tests {
             verdict: Verdict::Supports,
             congruence_level: 3,
             valid_until: None,
+            status: "active".into(),
         }];
         assert_eq!(r_eff(&evidence), 1.0);
     }
@@ -407,6 +467,7 @@ mod tests {
                 verdict: Verdict::Supports,
                 congruence_level: 3,
                 valid_until: None,
+                status: "active".into(),
             },
             EvidenceItem {
                 id: "e2".into(),
@@ -414,9 +475,145 @@ mod tests {
                 verdict: Verdict::Weakens,
                 congruence_level: 3,
                 valid_until: None,
+                status: "active".into(),
             },
         ];
         assert_eq!(r_eff(&evidence), 0.5);
+    }
+
+    // === ADR-020: terminal-status evidence is excluded from the min ===
+
+    /// #436 acceptance: mixed active + superseded evidence → the result
+    /// equals the min over ACTIVE packs only. This is the PRD-177 shape:
+    /// a superseded refutes pack (0.0) displaced by supports re-verification.
+    #[test]
+    fn superseded_refutes_does_not_pin_score() {
+        let evidence = vec![
+            EvidenceItem {
+                id: "evid-refutes-old".into(),
+                evidence_type: EvidenceType::Test,
+                verdict: Verdict::Refutes,
+                congruence_level: 3,
+                valid_until: None,
+                status: "superseded".into(),
+            },
+            EvidenceItem {
+                id: "evid-supports-new".into(),
+                evidence_type: EvidenceType::Test,
+                verdict: Verdict::Supports,
+                congruence_level: 3,
+                valid_until: None,
+                status: "active".into(),
+            },
+        ];
+        assert_eq!(
+            r_eff(&evidence),
+            1.0,
+            "a displaced refutes pack must not drag the min (ADR-020)"
+        );
+    }
+
+    /// Deprecated is the second terminal status — same exclusion.
+    #[test]
+    fn deprecated_evidence_excluded_from_min() {
+        let evidence = vec![
+            EvidenceItem {
+                id: "evid-dep".into(),
+                evidence_type: EvidenceType::Test,
+                verdict: Verdict::Refutes,
+                congruence_level: 3,
+                valid_until: None,
+                status: "deprecated".into(),
+            },
+            EvidenceItem {
+                id: "evid-live".into(),
+                evidence_type: EvidenceType::Benchmark,
+                verdict: Verdict::Weakens,
+                congruence_level: 3,
+                valid_until: None,
+                status: "active".into(),
+            },
+        ];
+        assert_eq!(r_eff(&evidence), 0.5, "min over non-terminal packs only");
+    }
+
+    /// quint-code edge case (decision.go:826): ALL packs displaced →
+    /// "no active evidence" (0.0), never the displaced pack's score.
+    #[test]
+    fn all_terminal_degrades_to_no_active_evidence() {
+        let evidence = vec![EvidenceItem {
+            id: "evid-only-superseded".into(),
+            evidence_type: EvidenceType::Test,
+            verdict: Verdict::Supports, // would be 1.0 if it counted
+            congruence_level: 3,
+            valid_until: None,
+            status: "superseded".into(),
+        }];
+        assert_eq!(r_eff(&evidence), 0.0, "all-terminal → no active evidence");
+    }
+
+    /// The guardrail the fix must NOT loosen: an ACTIVE refutes pack still
+    /// zeroes the score ("one strong benchmark and one refuted test is
+    /// still a risky PRD"). Draft evidence also still counts — it is the
+    /// normal pre-activation state of a fresh measurement.
+    #[test]
+    fn active_refutes_still_zeroes_and_draft_still_counts() {
+        let evidence = vec![
+            EvidenceItem {
+                id: "evid-refutes-live".into(),
+                evidence_type: EvidenceType::Test,
+                verdict: Verdict::Refutes,
+                congruence_level: 3,
+                valid_until: None,
+                status: "active".into(),
+            },
+            EvidenceItem {
+                id: "evid-supports-draft".into(),
+                evidence_type: EvidenceType::Test,
+                verdict: Verdict::Supports,
+                congruence_level: 3,
+                valid_until: None,
+                status: "draft".into(),
+            },
+        ];
+        assert_eq!(r_eff(&evidence), 0.0, "active refutes must keep zeroing");
+
+        let draft_only = vec![EvidenceItem {
+            id: "evid-draft".into(),
+            evidence_type: EvidenceType::Test,
+            verdict: Verdict::Supports,
+            congruence_level: 3,
+            valid_until: None,
+            status: "draft".into(),
+        }];
+        assert_eq!(r_eff(&draft_only), 1.0, "draft evidence stays eligible");
+    }
+
+    /// The CI describes the filtered population: a superseded pack must not
+    /// count toward evidence_count (or "insufficient evidence" labels lie).
+    #[test]
+    fn ci_population_excludes_terminal() {
+        let evidence = vec![
+            EvidenceItem {
+                id: "evid-sup".into(),
+                evidence_type: EvidenceType::Test,
+                verdict: Verdict::Refutes,
+                congruence_level: 3,
+                valid_until: None,
+                status: "superseded".into(),
+            },
+            EvidenceItem {
+                id: "evid-a".into(),
+                evidence_type: EvidenceType::Test,
+                verdict: Verdict::Supports,
+                congruence_level: 3,
+                valid_until: None,
+                status: "active".into(),
+            },
+        ];
+        let ci = r_eff_with_ci(&evidence);
+        assert_eq!(ci.evidence_count, 1, "terminal pack not in the population");
+        assert_eq!(ci.point, 1.0);
     }
 
     #[test]
@@ -427,6 +624,7 @@ mod tests {
             verdict: Verdict::Supports,
             congruence_level: 0, // CL0 = 0.9 penalty
             valid_until: None,
+            status: "active".into(),
         }];
         let score = r_eff(&evidence);
         assert!((score - 0.1).abs() < f64::EPSILON);
@@ -469,6 +667,7 @@ mod tests {
             verdict: Verdict::Supports,
             congruence_level: 3,
             valid_until: None,
+            status: "active".into(),
         };
         // 1.0 - 0.0 (CL3) - 0.1 (Benchmark) = 0.9
         let s = score_evidence_full(&e);
@@ -483,6 +682,7 @@ mod tests {
             verdict: Verdict::Supports,
             congruence_level: 3,
             valid_until: None,
+            status: "active".into(),
         };
         // 1.0 - 0.0 (CL3) - 0.2 (Audit) = 0.8
         let s = score_evidence_full(&e);
@@ -497,6 +697,7 @@ mod tests {
             verdict: Verdict::Supports,
             congruence_level: 2, // CL2 = 0.1
             valid_until: None,
+            status: "active".into(),
         };
         // 1.0 - 0.1 (CL2) - 0.2 (Audit) = 0.7
         let s = score_evidence_full(&e);
@@ -511,6 +712,7 @@ mod tests {
             verdict: Verdict::Weakens, // base = 0.5
             congruence_level: 1,       // CL1 = 0.4
             valid_until: None,
+            status: "active".into(),
         };
         // 0.5 - 0.4 - 0.2 = -0.1 → 0.0
         let s = score_evidence_full(&e);
@@ -529,6 +731,7 @@ mod tests {
             verdict: Verdict::Supports,
             congruence_level: 3,
             valid_until: past,
+            status: "active".into(),
         };
         // Expired = 0.1, type penalty irrelevant
         let s = score_evidence_full(&e);
@@ -582,6 +785,7 @@ mod tests {
                 verdict: Verdict::Supports,
                 congruence_level: 3,
                 valid_until: None,
+                status: "active".into(),
             },
             EvidenceItem {
                 id: "e2".into(),
@@ -589,6 +793,7 @@ mod tests {
                 verdict: Verdict::Supports,
                 congruence_level: 2, // CL2 = 0.1
                 valid_until: None,
+                status: "active".into(),
             },
         ];
         // r_eff uses old score_evidence (no type mod):
@@ -611,6 +816,7 @@ mod tests {
             verdict: Verdict::Supports,
             congruence_level: cl,
             valid_until: None,
+            status: "active".into(),
         }
     }
 
@@ -626,6 +832,7 @@ mod tests {
                     .and_hms_opt(0, 0, 0)
                     .unwrap(),
             ),
+            status: "active".into(),
         }
     }
 
