@@ -60,6 +60,15 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let all_evidence = store.list_records(Some(&evidence_filter)).await?;
     let evidence_id_set: HashSet<String> =
         all_evidence.iter().map(|r| r.id.to_uppercase()).collect();
+    // ADR-020: displayed links keep ALL packs (context is a history view),
+    // but `has_evidence` below reasons over non-terminal packs only — an
+    // all-displaced artifact needs "link a live successor", not
+    // "review evidence quality".
+    let eligible_evidence_id_set: HashSet<String> = all_evidence
+        .iter()
+        .filter(|r| !forgeplan_core::lifecycle::transitions::is_terminal(&r.status))
+        .map(|r| r.id.to_uppercase())
+        .collect();
 
     for (target, rel) in &outgoing {
         if evidence_id_set.contains(&target.to_uppercase()) {
@@ -130,7 +139,9 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     );
 
     // 7. Derived status
-    let has_evidence = !evidence_ids.is_empty();
+    let has_evidence = evidence_ids
+        .iter()
+        .any(|e| eligible_evidence_id_set.contains(&e.to_uppercase()));
     let derived = derive_status(
         &record.status,
         &record.body,

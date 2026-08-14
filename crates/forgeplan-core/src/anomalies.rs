@@ -157,6 +157,15 @@ pub enum AnomalyKind {
     /// load-bearing.
     /// evidence fields: { evidence_count }
     UntriangulatedHypothesis,
+
+    /// ADR-020 guard: a refutes/weakens evidence pack was terminated
+    /// (superseded/deprecated) with NO `supersedes` successor edge while an
+    /// artifact it informs is still live. Terminal packs leave the R_eff
+    /// min, so a successor-free termination of hostile evidence is the
+    /// cheapest score-laundering move — honest displacement always carries
+    /// the `supersedes` edge created by `supersede --by`.
+    /// evidence fields: { verdict, status, informed_targets: [..] }
+    UnbackedDisplacement,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -409,6 +418,94 @@ pub async fn detect_anomalies(
                 ),
             }),
         });
+    }
+
+    // ---------------------------------------------------------------
+    // 3b. unbacked_displacement — refutes/weakens pack terminated with no
+    // supersedes successor while its informed artifact is live (ADR-020
+    // audit MAJOR: under terminal-evidence exclusion this is the cheapest
+    // score-laundering move; honest `supersede --by` always leaves the
+    // `supersedes` edge, and dedup-deprecate of a supports pack never
+    // fires here).
+    // ---------------------------------------------------------------
+    {
+        let status_by_id: HashMap<&str, &str> = all_records
+            .iter()
+            .map(|r| (r.id.as_str(), r.status.as_str()))
+            .collect();
+        for r in &all_records {
+            if !r.kind.eq_ignore_ascii_case("evidence") {
+                continue;
+            }
+            if !crate::lifecycle::transitions::is_terminal(&r.status) {
+                continue;
+            }
+            let verdict = crate::scoring::evidence::extract_field(&r.body, "verdict")
+                .map(|v| v.to_lowercase())
+                .unwrap_or_default();
+            if verdict != "refutes" && verdict != "weakens" {
+                continue;
+            }
+            // A `supersedes` edge INTO this pack = a successor displaced it.
+            let has_successor = all_relations
+                .iter()
+                .any(|(_, tgt, rel)| rel == "supersedes" && tgt.eq_ignore_ascii_case(&r.id));
+            if has_successor {
+                continue;
+            }
+            let live_targets: Vec<String> = all_relations
+                .iter()
+                .filter(|(src, _, rel)| {
+                    src.eq_ignore_ascii_case(&r.id)
+                        && matches!(rel.as_str(), "informs" | "based_on" | "refines")
+                })
+                .filter(|(_, tgt, _)| {
+                    status_by_id
+                        .get(tgt.as_str())
+                        .is_some_and(|s| !crate::lifecycle::transitions::is_terminal(s))
+                })
+                .map(|(_, tgt, _)| tgt.clone())
+                .collect();
+            if live_targets.is_empty() {
+                continue;
+            }
+            let first_target = live_targets[0].clone();
+            anomalies.push(Anomaly {
+                id: format!("anom-unbacked-displacement-{}", r.id),
+                kind: AnomalyKind::UnbackedDisplacement,
+                severity: Severity::Medium,
+                tier: Tier::Adi,
+                affected: {
+                    let mut v = vec![r.id.clone()];
+                    v.extend(live_targets.iter().cloned());
+                    v
+                },
+                observed_at: now_str.clone(),
+                description: format!(
+                    "{} ({verdict}) is {} with no supersedes successor while {} is live — \
+                     the pack left the R_eff min without replacement evidence",
+                    r.id,
+                    r.status,
+                    live_targets.join(", ")
+                ),
+                evidence: serde_json::json!({
+                    "verdict": verdict,
+                    "status": r.status,
+                    "informed_targets": live_targets,
+                }),
+                suggested_resolution: Some(SuggestedResolution {
+                    tier: Tier::Adi,
+                    action: Some("forgeplan_score".to_string()),
+                    target: Some(first_target.clone()),
+                    rationale: format!(
+                        "Link the re-verification pack and supersede properly \
+                         (forgeplan supersede {} --by <NEW-EVID>), or re-score {} and review \
+                         whether the displacement was justified",
+                        r.id, first_target
+                    ),
+                }),
+            });
+        }
     }
 
     // ---------------------------------------------------------------
@@ -1261,6 +1358,124 @@ mod tests {
         assert!(
             weak.contains(&"PRD-001"),
             "a decision source with R_eff=0 + parent must still be flagged: {weak:?}"
+        );
+    }
+
+    /// ADR-020 laundering guard: a refutes pack that went terminal WITHOUT a
+    /// supersedes successor, while informing a live artifact, must be flagged.
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn unbacked_displacement_detected() {
+        let (_tmp, ws, store) = fresh_store().await;
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .create_artifact_for_test(&new_artifact(
+                "EVID-001",
+                "evidence",
+                "superseded",
+                "verdict: refutes\ncongruence_level: 3\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let hits: Vec<_> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::UnbackedDisplacement)
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "successor-free hostile termination must flag"
+        );
+        assert!(hits[0].affected.contains(&"EVID-001".to_string()));
+        assert!(hits[0].affected.contains(&"PRD-001".to_string()));
+        assert_eq!(hits[0].severity, Severity::Medium);
+    }
+
+    /// The detector stays quiet on honest flows: (a) a supersedes successor
+    /// edge exists; (b) the terminated pack is a supports pack (dedup flow).
+    #[tokio::test]
+    #[cfg(feature = "test-helpers")]
+    async fn unbacked_displacement_quiet_on_honest_flows() {
+        let (_tmp, ws, store) = fresh_store().await;
+        store
+            .create_artifact_for_test(&new_artifact(
+                "PRD-001",
+                "prd",
+                "active",
+                "## Problem\nbody\n",
+            ))
+            .await
+            .unwrap();
+        // (a) refutes pack displaced by a real successor.
+        store
+            .create_artifact_for_test(&new_artifact(
+                "EVID-001",
+                "evidence",
+                "superseded",
+                "verdict: refutes\ncongruence_level: 3\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .await
+            .unwrap();
+        store
+            .create_artifact_for_test(&new_artifact(
+                "EVID-002",
+                "evidence",
+                "active",
+                "verdict: supports\ncongruence_level: 3\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("EVID-002", "EVID-001", "supersedes")
+            .await
+            .unwrap();
+        // (b) deprecated SUPPORTS duplicate (sanctioned dedup flow).
+        store
+            .create_artifact_for_test(&new_artifact(
+                "EVID-003",
+                "evidence",
+                "deprecated",
+                "verdict: supports\ncongruence_level: 3\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("EVID-003", "PRD-001", "informs")
+            .await
+            .unwrap();
+
+        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let hits: Vec<_> = report
+            .anomalies
+            .iter()
+            .filter(|a| a.kind == AnomalyKind::UnbackedDisplacement)
+            .collect();
+        assert!(
+            hits.is_empty(),
+            "honest supersede + supports-dedup must not flag: {hits:?}"
         );
     }
 

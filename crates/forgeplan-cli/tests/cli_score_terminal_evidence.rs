@@ -73,11 +73,40 @@ fn superseded_refutes_no_longer_pins_score() {
         "active refutes must still zero the score"
     );
 
+    // The laundering shortcut must be CLOSED: a raw status write may not
+    // displace the pack (audit BLOCKER — it bypassed transition validation,
+    // successor, edge and journal).
+    let out = forgeplan()
+        .args(["update", &refutes, "--status", "superseded"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "update --status superseded must be rejected"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("supersede"),
+        "rejection must redirect to the lifecycle verb: {err}"
+    );
+    assert_eq!(
+        score_json(&tmp, &prd)["r_eff"].as_f64().unwrap(),
+        0.0,
+        "the blocked write must not have changed the score"
+    );
+
     // Honest displacement: new supports evidence + supersede --by.
     let supports = new_artifact(&tmp, "evidence", "re-verification on later commit passes");
     set_body(&tmp, &supports, SUPPORTS_BODY);
     run_ok(&tmp, &["link", &supports, &prd, "--relation", "informs"]);
-    run_ok(&tmp, &["supersede", &refutes, "--by", &supports]);
+    let supersede_out = run_ok(&tmp, &["supersede", &refutes, "--by", &supports]);
+    // ADR-020 audit MAJOR: displacement refreshes the informed artifact's
+    // CACHED score immediately — no manual `forgeplan score` required.
+    assert!(
+        supersede_out.contains(&format!("Rescored {prd}")),
+        "supersede must rescore the informed artifact: {supersede_out}"
+    );
 
     let after = score_json(&tmp, &prd);
     assert_eq!(

@@ -99,3 +99,47 @@ async fn mcp_score_recovers_after_supersede_and_flags_excluded() {
         .expect("successor listed");
     assert_eq!(live["excluded"].as_bool(), Some(false));
 }
+
+/// Audit BLOCKER guard on the MCP surface: `forgeplan_update` may not write
+/// lifecycle-bearing statuses — `superseded`/`deprecated` (score-laundering
+/// bypass: no successor, no edge, no transition validation, no journal) and
+/// `active` (would skip the validation/R_eff/provenance gates).
+#[tokio::test]
+async fn mcp_update_rejects_lifecycle_status_writes() {
+    let fx = McpFixture::new().await;
+
+    let prd = new_artifact(&fx, "prd", "gate probe").await;
+    let evid = new_artifact(&fx, "evidence", "hostile pack").await;
+    fx.call_tool_json(
+        "forgeplan_update",
+        serde_json::json!({"id": evid, "body": REFUTES_BODY}),
+    )
+    .await
+    .assert_ok();
+    fx.call_tool_json(
+        "forgeplan_link",
+        serde_json::json!({"source": evid, "target": prd, "relation": "informs"}),
+    )
+    .await
+    .assert_ok();
+
+    for status in ["superseded", "deprecated", "active"] {
+        let env = fx
+            .call_tool_json(
+                "forgeplan_update",
+                serde_json::json!({"id": evid, "status": status}),
+            )
+            .await;
+        assert!(
+            env.is_error,
+            "forgeplan_update status={status} must be rejected, got: {}",
+            env.raw_text
+        );
+    }
+
+    // The pack is untouched — still draft.
+    let got = fx
+        .call_tool_json("forgeplan_get", serde_json::json!({"id": evid}))
+        .await;
+    assert_eq!(got.assert_ok()["status"].as_str(), Some("draft"));
+}

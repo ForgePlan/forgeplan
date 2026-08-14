@@ -3773,6 +3773,32 @@ impl ForgeplanServer {
             ));
         }
 
+        // ADR-020 audit BLOCKER (CLI parity + gate integrity): status writes
+        // that carry lifecycle meaning must go through the lifecycle tools.
+        // `active` would bypass the validation/R_eff/provenance gates of
+        // forgeplan_activate; `superseded`/`deprecated` are score-relevant
+        // displacement (the pack leaves the R_eff min) and previously formed a
+        // one-call score-laundering vector with no successor, edge, journal,
+        // or transition validation. Only `draft` remains a raw write — it is
+        // score-neutral-or-lowering and doubles as the recovery path for an
+        // accidental terminal write.
+        if let Some(ref s) = p.status {
+            match s {
+                StatusKind::Active => {
+                    return Ok(err_result(&format!(
+                        "Direct status change to 'active' is not allowed — it would bypass the validation, R_eff and provenance gates.\nFix: forgeplan_activate id={canonical}"
+                    )));
+                }
+                StatusKind::Superseded | StatusKind::Deprecated => {
+                    return Ok(err_result(&format!(
+                        "Direct status change to '{}' is not allowed — displacement goes through the lifecycle.\nFix: forgeplan_supersede id={canonical} by=<NEW-ID>\nOr: forgeplan_deprecate id={canonical} reason=\"...\"",
+                        s.as_str()
+                    )));
+                }
+                StatusKind::Draft => {}
+            }
+        }
+
         // DoS protection: enforce configurable input limits.
         let integrity_config = workspace::load_config(&ws)
             .map(|c| c.integrity)
@@ -4368,6 +4394,19 @@ impl ForgeplanServer {
                     "forgeplan_supersede",
                 )
                 .await;
+                // ADR-020: a displaced evidence pack just left the R_eff min
+                // of the artifacts it informs — refresh their cached scores
+                // (CLI parity; best-effort, never fails the supersede).
+                let rescored =
+                    forgeplan_core::scoring::rescore_evidence_dependents(&store, &p.id).await;
+                if !rescored.is_empty() {
+                    tracing::info!(
+                        "rescored {} dependent(s) of displaced evidence {}: {:?}",
+                        rescored.len(),
+                        p.id,
+                        rescored
+                    );
+                }
                 let safe_id = sanitize_for_hint(&p.id);
                 let safe_new = sanitize_for_hint(&p.by);
                 // PRD-071: single primary, real ID for first dependent.
@@ -4501,6 +4540,18 @@ impl ForgeplanServer {
                     "forgeplan_deprecate",
                 )
                 .await;
+                // ADR-020: refresh cached scores of artifacts the displaced
+                // evidence informs (CLI parity; best-effort).
+                let rescored =
+                    forgeplan_core::scoring::rescore_evidence_dependents(&store, &p.id).await;
+                if !rescored.is_empty() {
+                    tracing::info!(
+                        "rescored {} dependent(s) of displaced evidence {}: {:?}",
+                        rescored.len(),
+                        p.id,
+                        rescored
+                    );
+                }
                 let safe_id = sanitize_for_hint(&p.id);
                 // PRD-071: single primary action; surface first dependent.
                 let next_action = if dependents.is_empty() {

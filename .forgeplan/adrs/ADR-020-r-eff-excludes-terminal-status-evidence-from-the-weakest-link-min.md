@@ -34,13 +34,17 @@ title: R_eff excludes terminal-status evidence from the weakest-link min
 
 ## Anti-laundering bounds
 
-- `supersede` требует `--by <successor>` — вытеснить без предъявления замены нельзя; пропуски видимы в factors.
-- Полноценный «audited Evidence dismissal» (актор/причина/policy) — зона vNext FPV-06, здесь не реализуется.
-- Window-дисциплина FPF: честное вытеснение опирается на измерение из более нового окна (поздний коммит). Механическая проверка этого — provenance-gate (PRD-082, `base_sha`/`result_sha`), уже в dev; связка «supersede требует более нового окна» — кандидат в follow-up.
+Аудит этого ADR (adversarial, 3 линзы) показал, что каналов вытеснения больше, чем один `supersede`. Границы по каждому:
+
+- **`supersede`** требует `--by <successor>` и валидного перехода (`active → superseded`); создаёт ребро `supersedes`; пропуск виден в factors.
+- **`update --status superseded|deprecated`** (CLI и MCP) — **ЗАПЕРТ** этим же изменением (аудит-BLOCKER: сырая запись статуса обходила переход, наследника, ребро и журнал — однокомандное отмывание score). Redirect на lifecycle-команды, как ранее для `active`. MCP `update --status active` также заперт (обходил бы validation/R_eff/provenance-гейты). Открытым остаётся только `draft` — score-нейтральный или занижающий, и это recovery-путь после случайной терминальной записи.
+- **`deprecate`** наследника не требует (санкционированный dedup-flow) — канал ограничен **детектором** `unbacked_displacement` (аудит-MAJOR): refutes/weakens-пак с терминальным статусом БЕЗ входящего ребра `supersedes`, информирующий живой артефакт → аномалия Medium. Честный supersede несёт ребро — не флагается; deprecate supports-дубля — не флагается.
+- **`unlink`** — дожившийся до ADR-020 однокомандный канал (снять ребро — пак вне сбора), существовал и до этого изменения; полноценный «audited Evidence dismissal» (актор/причина/policy) — зона vNext FPV-06.
+- Window-дисциплина FPF: честное вытеснение опирается на измерение из более нового окна (поздний коммит). Механическая проверка — provenance-gate (PRD-082, `base_sha`/`result_sha`), уже в dev; связка «supersede требует более нового окна» — кандидат в follow-up.
 
 ## Consequences
 
-- Затронутые артефакты не «поднимутся» сами: 4 потребителя кэша `r_eff_score` (PROB-057 — get.rs, filter.rs, fgr.rs, reason.rs) отдают старое значение до пересчёта. После апгрейда нужен `forgeplan score` по затронутым артефактам (или score-all).
+- Кэш `r_eff_score`: supersede/deprecate эвиденции теперь сам пересчитывает НАПРЯМУЮ информируемые артефакты (`rescore_evidence_dependents`). Транзитивные родители — вне scope (как у `sync_score_target`): для них `forgeplan score-all`. Существующие артефакты, застрявшие на старой семантике, поднимутся при первом `forgeplan score`.
 - Upstream #436 закрывается этим изменением; расхождение с его acceptance по draft задокументировано выше.
 - Доки обновляются синхронно: CLAUDE.md §Key formulas, QUALITY-GATES, METHODOLOGY-COURSE Ch5/Ch8, GLOSSARY, HOW-TO-USE, FORGEPLAN-GUIDE, EVIDENCE-PROTOCOL (EN+RU), CHANGELOG; сайт (score/supersede/evidence + ru) — отдельным PR.
 
@@ -49,7 +53,7 @@ title: R_eff excludes terminal-status evidence from the weakest-link min
 - min-never-average — не нарушен (меняется только население min()).
 - Активная refutes-эвиденция обнуляет score — не ослаблено.
 - Терминальный пакет никогда не удаляется и остаётся видимым в графе и в score-выдаче (с пометкой) — «supersede, do not delete».
-- Пропуск любой эвиденции из min() всегда оставляет след в factors.
+- На score-поверхностях (CLI/MCP `score` через рекурсивный скорер) каждый пропуск оставляет след в factors, а вытесненный пак остаётся видимым в breakdown с пометкой. Чистая функция `r_eff()` фильтрует молча by design — она не имеет канала factors; потребители-витрины (journal/gaps/health/decay) отражают согласованное ЧИСЛО, а аудит-след вытеснения живёт в графе (статус + ребро supersedes) и в детекторе `unbacked_displacement`.
 
 ## Rollback Plan
 
@@ -59,7 +63,11 @@ title: R_eff excludes terminal-status evidence from the weakest-link min
 
 - `crates/forgeplan-core/src/scoring/reff.rs` — `EvidenceItem.status`, фильтр в `r_eff`/`r_eff_with_ci`, лог пропусков в self-score блоке, doc-comment формулы.
 - `crates/forgeplan-core/src/scoring/evidence.rs` — `parse_evidence_from_record` заполняет status.
-- `crates/forgeplan-core/src/scoring/decay.rs` — конструктор EvidenceItem.
+- `crates/forgeplan-core/src/scoring/decay.rs` — терминальные паки не попадают в decay-отчёт (их нельзя освежить), raw own-merit score в expired-строках.
+- `crates/forgeplan-cli/src/commands/update.rs`, MCP `forgeplan_update` — запрет сырой записи терминальных статусов (+ `active` на MCP).
+- `crates/forgeplan-core/src/anomalies.rs` — детектор `unbacked_displacement`.
+- `crates/forgeplan-core/src/scoring/mod.rs` — `rescore_evidence_dependents`: supersede/deprecate эвиденции сразу освежает кэш R_eff информируемых артефактов (PROB-057 blast radius закрыт для прямых целей).
+- `crates/forgeplan-core/src/gaps/mod.rs`, `journal/mod.rs`, `crates/forgeplan-cli/src/commands/context.rs` — has_evidence/stale-флаги считают только не-терминальные паки.
 - `crates/forgeplan-cli/src/commands/score.rs`, `crates/forgeplan-mcp/src/server.rs` — пометка исключённых пакетов в выдаче; описание tool.
 - Тесты: юнит (reff), e2e CLI, e2e MCP.
 
@@ -69,8 +77,4 @@ title: R_eff excludes terminal-status evidence from the weakest-link min
 - **Отдельная метрика «исторический минимум»** — отвергнуто: история уже сохранена графом (пакет + статус + ребро supersedes); вторая метрика — оверинжиниринг.
 - **Новый relation `resolves`** — отвергнуто: `supersedes` уже значит «заменяет»; чинить надо соблюдение семантики, не плодить словарь.
 - **Фильтровать и draft (буквальный acceptance #436)** — отвергнуто: ломает score-гейт Standard-flow (см. Decision §2).
-
-
-
-
 

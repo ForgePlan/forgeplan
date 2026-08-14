@@ -421,11 +421,14 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         ui::warning("Add evidence with `forgeplan new evidence`");
     }
 
-    // Contextual hints
-    let has_evidence = !evidence_items.is_empty();
+    // Contextual hints — same ACTIVE-population rule as the JSON path
+    // (ADR-020 audit MAJOR: text and JSON hints must not contradict; a
+    // superseded CL0 pack must not trigger fix-CL0 advice, and all-terminal
+    // means "no active evidence").
+    let has_evidence = evidence_items.iter().any(|e| e.is_scoring_eligible());
     let cl0_count = evidence_items
         .iter()
-        .filter(|e| e.congruence_level == 0)
+        .filter(|e| e.is_scoring_eligible() && e.congruence_level == 0)
         .count();
     let score_hints =
         forgeplan_core::hints::score_hints(&target_ref, report.r_eff, has_evidence, cl0_count);

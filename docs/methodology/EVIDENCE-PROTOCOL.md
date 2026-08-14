@@ -150,6 +150,7 @@ Which packs feed `R_eff = min(evidence_scores)` depends on the pack's lifecycle 
 |---|---|---|
 | `draft` | **yes** | a fresh measurement awaiting activation — the score gate runs before activation in the standard flow |
 | `active` | **yes** | current testimony; an active `refutes` pack zeroes the score |
+| `stale` | **yes** | not terminal — flagged for re-evaluation but not displaced; an expired `valid_until` separately decays the pack's score to 0.1 |
 | `superseded` | **no** | displaced by a successor (`supersede <old> --by <new>`) — history stays in the graph, but it no longer speaks for present reliability |
 | `deprecated` | **no** | retired (e.g. a duplicate deprecated with `--reason "superseded by EVID-y"`) |
 

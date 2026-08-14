@@ -159,5 +159,7 @@ fn kind_label(k: AnomalyKind) -> &'static str {
         AnomalyKind::UnverifiedInvariant => "unverified_invariant",
         AnomalyKind::OrphanGlossaryTerm => "orphan_glossary_term",
         AnomalyKind::UntriangulatedHypothesis => "untriangulated_hypothesis",
+        // ADR-020 laundering guard.
+        AnomalyKind::UnbackedDisplacement => "unbacked_displacement",
     }
 }
