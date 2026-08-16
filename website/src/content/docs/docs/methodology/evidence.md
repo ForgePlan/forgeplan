@@ -75,6 +75,12 @@ R_eff = min(0.9, 0.6, 0.1) = 0.1 -- AT RISK
 
 The weak link is the unverified production concern. To improve R_eff, you need either stronger evidence about production readiness (run your own production test, CL3) or remove that concern from your evidence set if it is not relevant to your use case.
 
+## Which packs participate in the min
+
+R_eff ranges over the artifact's **current** evidence only. Packs with a terminal lifecycle status — `superseded` or `deprecated` — are excluded from the min: a displaced pack stays in the graph as history (and stays listed in `forgeplan score` with an "excluded from min" mark), but it no longer speaks for present reliability. Draft evidence **does** count (it is the normal state of a fresh measurement before activation), and an **active** `refutes` pack still zeroes the score.
+
+The honest way to clear a stale weak pack is displacement, not deletion or verdict editing: link the re-verification pack, then `forgeplan supersede <old> --by <new>`. If *all* linked packs are terminal, the artifact degrades to "no active evidence" (R_eff 0.0) — recovery requires the replacement pack to be linked, not merely to exist. A refutes/weakens pack terminated *without* a successor is flagged by the `unbacked_displacement` anomaly.
+
 ## Evidence Decay
 
 Evidence has a TTL (`valid_until` field). When it expires:
