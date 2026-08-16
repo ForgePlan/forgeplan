@@ -79,7 +79,7 @@ A set of non-dominated options — none is strictly worse across **all** dimensi
 ```
 R_eff = min(evidence_scores) with CL penalties
 ```
-Trust = weakest link, **NEVER** average. Decision reliability is determined by the weakest piece of evidence, not the average.
+Trust = weakest link, **NEVER** average. Decision reliability is determined by the weakest piece of *current* evidence, not the average. Terminal-status packs (`superseded`/`deprecated`) are excluded from the min (ADR-020); an active `refutes` still zeroes the score.
 
 ### Stepping Stone
 An option that opens future possibilities even if not optimal now. A boolean flag in SolutionPortfolio. Considered when choosing an option alongside R_eff.

@@ -71,6 +71,14 @@ pub async fn decay_report(store: &LanceStore) -> anyhow::Result<Vec<DecayEntry>>
             }
 
             let item = parse_evidence_from_record(ev);
+
+            // ADR-020: a displaced (terminal-status) pack is out of the min
+            // and cannot be refreshed — reporting it as decayed would nag
+            // the operator to renew evidence that no longer participates.
+            if !item.is_scoring_eligible() {
+                continue;
+            }
+
             let is_expired = item.valid_until.map(|dt| now > dt).unwrap_or(false);
 
             if is_expired {
@@ -84,7 +92,9 @@ pub async fn decay_report(store: &LanceStore) -> anyhow::Result<Vec<DecayEntry>>
                     id: ev.id.clone(),
                     valid_until: valid_until_str.to_string(),
                     days_expired: days,
-                    individual_score: reff::r_eff(std::slice::from_ref(&item)),
+                    // Raw own-merit score: a single-item r_eff() would hit
+                    // eligibility filtering, not the pack's decayed value.
+                    individual_score: reff::raw_evidence_score(&item),
                 });
             }
 

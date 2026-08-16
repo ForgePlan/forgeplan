@@ -254,6 +254,14 @@ pub struct EvidenceDto {
     pub congruence_level: u8,
     pub score: f64,
     pub expired: bool,
+    /// Lifecycle status of the evidence artifact (ADR-020).
+    #[serde(default)]
+    pub status: String,
+    /// ADR-020: true when the pack's terminal status (superseded/deprecated)
+    /// excludes it from the weakest-link min. `score` is then the pack's raw
+    /// own-merit score, shown for transparency — it does NOT feed R_eff.
+    #[serde(default)]
+    pub excluded: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

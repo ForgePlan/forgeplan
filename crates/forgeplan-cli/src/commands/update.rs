@@ -63,6 +63,23 @@ Fix: forgeplan list",
         );
     }
 
+    // ADR-020 audit BLOCKER: terminal statuses are score-relevant displacement
+    // (a terminal evidence pack leaves the R_eff min), so they must go through
+    // the lifecycle verbs — validated transition, successor (`supersede --by`)
+    // or reason (`deprecate --reason`), journal entry. A raw metadata write
+    // here was a one-call score-laundering vector: `update --status superseded`
+    // cleared an active refutes pack with no successor, no edge, no gate.
+    if let Some(s) = status
+        && (s.eq_ignore_ascii_case("superseded") || s.eq_ignore_ascii_case("deprecated"))
+    {
+        anyhow::bail!(
+            "Direct status change to '{}' is not allowed — displacement goes through the lifecycle.\nFix: forgeplan supersede {} --by <NEW-ID>\nOr: forgeplan deprecate {} --reason \"...\"",
+            s.to_lowercase(),
+            id,
+            id
+        );
+    }
+
     // PRD-073 audit fix: order is metadata FIRST (which writes any title
     // change into LanceDB), THEN depth/body (each renders against the new
     // title → new slug). The previous order ran depth before metadata, so

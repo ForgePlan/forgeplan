@@ -140,7 +140,7 @@ forgeplan review PRD-001
 | `forgeplan init` | Создать .forgeplan/ workspace | `forgeplan init` |
 | `forgeplan new <kind> "<title>"` | Создать артефакт из шаблона | `forgeplan new prd "Auth System"` |
 | `forgeplan get <id>` | Прочитать артефакт | `forgeplan get PRD-001` |
-| `forgeplan update <id>` | Обновить метаданные/body | `forgeplan update PRD-001 --status active` |
+| `forgeplan update <id>` | Обновить метаданные/body | `forgeplan update PRD-001 --body @prd.md` (lifecycle-статусы — через `activate` / `supersede` / `deprecate`) |
 | `forgeplan delete <id>` | Удалить артефакт | `forgeplan delete PRD-001 --yes` |
 | `forgeplan list` | Список артефактов | `forgeplan list --type prd --status active` |
 
@@ -402,7 +402,7 @@ forgeplan score ADR-002
 
 ### R_eff = min(evidence_scores)
 
-R_eff = weakest link. Если есть 3 evidence и одно слабое — R_eff = слабое. НЕ average.
+R_eff = weakest link. Если есть 3 evidence и одно слабое — R_eff = слабое. НЕ average. Участвует только *текущая* эвиденция: superseded/deprecated пакеты исключаются из min (ADR-020) — устаревший слабый пакет вытесняй через `supersede <старый> --by <новый>`, а не правкой его verdict.
 
 ---
 

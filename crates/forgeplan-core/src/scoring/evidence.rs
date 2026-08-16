@@ -148,6 +148,9 @@ pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
         verdict,
         congruence_level: cl,
         valid_until,
+        // ADR-020: carried so r_eff()/r_eff_with_ci() can exclude
+        // terminal-status packs at the single choke point.
+        status: record.status.clone(),
     }
 }
 

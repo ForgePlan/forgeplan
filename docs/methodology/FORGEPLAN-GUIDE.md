@@ -140,7 +140,7 @@ If MUST is empty -- activate. If not -- refine.
 | `forgeplan init` | Create .forgeplan/ workspace | `forgeplan init` |
 | `forgeplan new <kind> "<title>"` | Create artifact from template | `forgeplan new prd "Auth System"` |
 | `forgeplan get <id>` | Read artifact | `forgeplan get PRD-001` |
-| `forgeplan update <id>` | Update metadata/body | `forgeplan update PRD-001 --status active` |
+| `forgeplan update <id>` | Update metadata/body | `forgeplan update PRD-001 --body @prd.md` (lifecycle statuses go through `activate` / `supersede` / `deprecate`) |
 | `forgeplan delete <id>` | Delete artifact | `forgeplan delete PRD-001 --yes` |
 | `forgeplan list` | List artifacts | `forgeplan list --type prd --status active` |
 
@@ -402,7 +402,7 @@ forgeplan score ADR-002
 
 ### R_eff = min(evidence_scores)
 
-R_eff = weakest link. If there are 3 evidence items and one is weak -- R_eff = the weak one. NOT average.
+R_eff = weakest link. If there are 3 evidence items and one is weak -- R_eff = the weak one. NOT average. Only *current* evidence participates: superseded/deprecated packs are excluded from the min (ADR-020) — displace a stale weak pack with `supersede <old> --by <new>` instead of editing its verdict.
 
 ---
 

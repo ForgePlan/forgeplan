@@ -64,6 +64,12 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
 
     println!("  Deprecated {id}: {reason}");
 
+    // ADR-020: a displaced evidence pack just left the R_eff min of the
+    // artifacts it informs — refresh their cached scores now.
+    for target in forgeplan_core::scoring::rescore_evidence_dependents(&store, id).await {
+        println!("  Rescored {target} (displaced evidence left its weakest-link min)");
+    }
+
     if !dependents.is_empty() {
         println!("\nDependents affected:");
         for dep in &dependents {
