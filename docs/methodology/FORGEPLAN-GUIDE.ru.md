@@ -140,7 +140,7 @@ forgeplan review PRD-001
 | `forgeplan init` | Создать .forgeplan/ workspace | `forgeplan init` |
 | `forgeplan new <kind> "<title>"` | Создать артефакт из шаблона | `forgeplan new prd "Auth System"` |
 | `forgeplan get <id>` | Прочитать артефакт | `forgeplan get PRD-001` |
-| `forgeplan update <id>` | Обновить метаданные/body | `forgeplan update PRD-001 --status active` |
+| `forgeplan update <id>` | Обновить метаданные/body | `forgeplan update PRD-001 --body @prd.md` (lifecycle-статусы — через `activate` / `supersede` / `deprecate`) |
 | `forgeplan delete <id>` | Удалить артефакт | `forgeplan delete PRD-001 --yes` |
 | `forgeplan list` | Список артефактов | `forgeplan list --type prd --status active` |
 

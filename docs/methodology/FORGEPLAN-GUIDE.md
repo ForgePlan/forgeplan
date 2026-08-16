@@ -140,7 +140,7 @@ If MUST is empty -- activate. If not -- refine.
 | `forgeplan init` | Create .forgeplan/ workspace | `forgeplan init` |
 | `forgeplan new <kind> "<title>"` | Create artifact from template | `forgeplan new prd "Auth System"` |
 | `forgeplan get <id>` | Read artifact | `forgeplan get PRD-001` |
-| `forgeplan update <id>` | Update metadata/body | `forgeplan update PRD-001 --status active` |
+| `forgeplan update <id>` | Update metadata/body | `forgeplan update PRD-001 --body @prd.md` (lifecycle statuses go through `activate` / `supersede` / `deprecate`) |
 | `forgeplan delete <id>` | Delete artifact | `forgeplan delete PRD-001 --yes` |
 | `forgeplan list` | List artifacts | `forgeplan list --type prd --status active` |
 
