@@ -142,6 +142,48 @@ gh pr create --title "[Evidence] Add EVID-NNN for PRD-MMM" \
   --body "Retroactively captured evidence from merged feature. See EVID-NNN for test results."
 ```
 
+## Git Provenance for Code-Claiming Evidence (PRD-082 / #360)
+
+An EvidencePack that claims code changed may declare three extra fields in the same
+`## Structured Fields` block. **All three or none** — a partial claim is rejected as
+`Incomplete`:
+
+```markdown
+base_sha: 92154e19                        # state BEFORE the change
+result_sha: 808db24                       # state AFTER
+changed_paths: src/a.rs, tests/b.rs       # comma-separated
+```
+
+`forgeplan activate` (CLI and `forgeplan_activate` over MCP) re-derives the claim against
+the real git delta — `git diff --merge-base --name-only --no-renames -z base result` —
+instead of trusting the executor's self-report. Verify the artifact, not the claim.
+
+| Verdict | Meaning |
+|---|---|
+| `NotClaimed` | no provenance fields — every pack written before this feature; never a failure |
+| `Verified` | the claimed paths appear in the real delta |
+| `EmptyDelta` | the two SHAs produce **no** delta — green tests over nothing changed is a null result, not a pass |
+| `PathMismatch` | a claimed path is absent from the delta |
+| `Incomplete` | only some of the three fields are present |
+
+Gate mode lives in `.forgeplan/config.yaml`:
+
+```yaml
+integrity:
+  evidence_provenance_gate: warn   # block | warn | off  (default: warn)
+```
+
+- **`block`** — activation is refused; the artifact stays `draft`.
+- **`warn`** *(default)* — activation proceeds and the discrepancy is surfaced (CLI on stderr,
+  MCP inside the success payload).
+- **`off`** — the gate is skipped entirely.
+
+`forgeplan activate --force` bypasses the gate, the same escape hatch as the methodology
+gates. A git error (unresolvable SHA — hallucinated, or real but absent from a shallow
+clone) only ever **warns**, never blocks: the two cannot be told apart locally without a
+network fetch (ADR-019). The gate establishes that the claimed change *exists* — it does
+not run tests and says nothing about their quality.
+
 ## Evidence Lifecycle and Scoring (ADR-020)
 
 Which packs feed `R_eff = min(evidence_scores)` depends on the pack's lifecycle status:

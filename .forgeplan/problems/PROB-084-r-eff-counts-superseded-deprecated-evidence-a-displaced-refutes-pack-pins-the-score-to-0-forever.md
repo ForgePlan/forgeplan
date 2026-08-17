@@ -5,7 +5,7 @@ kind: problem
 links:
 - target: ADR-020
   relation: informs
-status: draft
+status: active
 title: R_eff counts superseded/deprecated evidence — a displaced refutes pack pins the score to 0 forever
 ---
 
@@ -44,6 +44,7 @@ forgeplan score PRD-177 → R_eff: 0.00 (движок v0.33.0)
 ## Fix direction
 
 ADR-020: терминальная эвиденция исключается из min() (draft остаётся в счёте), фильтр в одной точке через `EvidenceItem.status`, пропуски логируются в factors, all-terminal → «no active evidence». Активный refutes продолжает обнулять — это намеренная семантика и она не трогается.
+
 
 
 

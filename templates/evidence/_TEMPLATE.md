@@ -24,6 +24,18 @@ evidence_type: measurement
 verdict: supports
 congruence_level: 3
 
+<!-- Git provenance — ONLY for code-claiming evidence (PRD-082 / #360).
+     All three fields or none: a partial claim is rejected as `Incomplete`.
+     `forgeplan activate` re-derives the claim against the real git delta
+     instead of trusting the executor's self-report; green tests over an
+     EMPTY delta are a null result, not a pass. Gate mode lives in
+     .forgeplan/config.yaml → integrity.evidence_provenance_gate
+     (block | warn | off, default warn). `--force` bypasses it.
+base_sha: <sha before the change>
+result_sha: <sha after the change>
+changed_paths: crates/a/src/lib.rs, crates/a/tests/b.rs
+-->
+
 ## Measurement
 
 {Что измерено, как измерено, в каких условиях}

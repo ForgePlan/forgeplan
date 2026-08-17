@@ -142,6 +142,48 @@ gh pr create --title "[Evidence] Add EVID-NNN for PRD-MMM" \
   --body "Retroactively captured evidence from merged feature. See EVID-NNN for test results."
 ```
 
+## Git-provenance для code-claiming эвиденции (PRD-082 / #360)
+
+EvidencePack, утверждающий, что код изменился, может объявить три дополнительных поля
+в том же блоке `## Structured Fields`. **Все три или ни одного** — частичный claim
+отвергается как `Incomplete`:
+
+```markdown
+base_sha: 92154e19                        # состояние ДО изменения
+result_sha: 808db24                       # состояние ПОСЛЕ
+changed_paths: src/a.rs, tests/b.rs       # через запятую
+```
+
+`forgeplan activate` (CLI и `forgeplan_activate` через MCP) перепроверяет claim против
+реальной git-дельты — `git diff --merge-base --name-only --no-renames -z base result` —
+вместо доверия самоотчёту исполнителя. Проверяем артефакт, а не утверждение.
+
+| Вердикт | Что значит |
+|---|---|
+| `NotClaimed` | provenance-полей нет — все паки, написанные до этой фичи; никогда не отказ |
+| `Verified` | заявленные пути присутствуют в реальной дельте |
+| `EmptyDelta` | две SHA дают **пустую** дельту — зелёные тесты поверх «ничего не изменилось» это NULL-результат, а не пройденная проверка |
+| `PathMismatch` | заявленный путь отсутствует в дельте |
+| `Incomplete` | присутствует только часть из трёх полей |
+
+Режим гейта задаётся в `.forgeplan/config.yaml`:
+
+```yaml
+integrity:
+  evidence_provenance_gate: warn   # block | warn | off  (default: warn)
+```
+
+- **`block`** — в активации отказано; артефакт остаётся `draft`.
+- **`warn`** *(по умолчанию)* — активация проходит, расхождение показывается
+  (CLI — в stderr, MCP — внутри success-payload).
+- **`off`** — гейт пропускается целиком.
+
+`forgeplan activate --force` обходит гейт — тот же escape hatch, что и у методологических
+гейтов. Ошибка git (нерезолвимая SHA — выдуманная либо реальная, но отсутствующая в
+shallow-клоне) всегда только **предупреждает**, никогда не блокирует: локально их не
+различить без сетевого fetch (ADR-019). Гейт устанавливает, что заявленное изменение
+*существует* — он не запускает тесты и ничего не говорит об их качестве.
+
 ## Жизненный цикл эвиденции и скоринг (ADR-020)
 
 Какие пакеты участвуют в `R_eff = min(evidence_scores)`, зависит от статуса пакета:

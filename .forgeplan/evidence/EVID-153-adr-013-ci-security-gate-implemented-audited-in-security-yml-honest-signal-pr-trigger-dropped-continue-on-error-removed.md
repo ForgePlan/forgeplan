@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: ADR-013
   relation: informs
-status: draft
+status: active
 title: 'ADR-013 CI security gate implemented + audited in security.yml (honest-signal: PR trigger dropped, continue-on-error removed)'
 ---
 
@@ -31,5 +31,6 @@ CL3: same context — the audited artifact IS the ADR's own `security.yml`.
 ## Method
 
 No unit-test surface exists (workflow YAML), so this is `audit`-type evidence: a diff-read of the live `security.yml` `on:` block + absence of `continue-on-error`, cross-checked against the two implementing commits (`git show`), plus two independent adversarial-audit EvidencePacks. Records what was observed, not a fabricated test. Confirmed no artifact supersedes ADR-013.
+
 
 

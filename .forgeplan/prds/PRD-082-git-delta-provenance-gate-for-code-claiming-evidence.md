@@ -4,7 +4,7 @@ id: PRD-082
 kind: prd
 last_modified_at: 2026-08-02T23:27:10.535824+00:00
 last_modified_by: claude-code/2.1.220
-status: draft
+status: active
 title: Git-delta provenance gate for code-claiming Evidence
 ---
 
@@ -114,6 +114,7 @@ DONE, при этом `git diff` пуст. **Зелёные тесты на пу
 - ADR-019 — граница: проверка это знание, исполнение — нет
 - ADR-003 — markdown source of truth; поля живут в теле артефакта
 - PRD-078 — разрешение workspace, на котором строится выбор repo_root
+
 
 
 

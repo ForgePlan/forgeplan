@@ -11,7 +11,7 @@ links:
   relation: informs
 - target: PROB-083
   relation: informs
-status: draft
+status: active
 title: 'vNext pack 13-agent adversarial audit: NEEDS_REWORK across all nine areas'
 ---
 
@@ -107,6 +107,7 @@ provenance gate (GitHub #360) не зависит ни от Protocol v1, ни о
 - PROB-082 — реестр коллизий с активными ADR (гейт FPV-01)
 - PROB-083 — дефекты субстрата, обнаруженные по ходу
 - EPIC-009 — якорь программы
+
 
 
 
