@@ -78,3 +78,4 @@ title: R_eff excludes terminal-status evidence from the weakest-link min
 - **Новый relation `resolves`** — отвергнуто: `supersedes` уже значит «заменяет»; чинить надо соблюдение семантики, не плодить словарь.
 - **Фильтровать и draft (буквальный acceptance #436)** — отвергнуто: ломает score-гейт Standard-flow (см. Decision §2).
 
+
