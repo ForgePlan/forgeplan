@@ -7,10 +7,9 @@ last_modified_by: claude-code/2.1.220
 links:
 - target: EPIC-009
   relation: informs
-status: draft
+status: active
 title: 'Artifact substrate: identity triple lost on write, doubled frontmatter produced by current new'
 ---
-
 
 depth: standard
 id: PROB-083
@@ -233,4 +232,5 @@ Data-hygiene и код-гейт вынесены в отдельный прох�
 - **Data-hygiene** — PRD-012 заглушка удалена (оставлен active `init-scan`, refines EPIC-001); EVID-143 разведён по git-первенству: ранний профиль PROB-073 (00:42) сохраняет номер, поздний детектор (01:08) перезаведён через `forgeplan new` как **EVID-149** (содержимое сохранено, git видит 83% rename → blame цел). Поправлена одна устаревшая ссылка `EVID-143-collision` в `docs/v0.33-handoff.md`. Проверено свежим ребилдом индекса (`lance/` в сторону → `reindex`): **`0 id-collisions`**, каждый id резолвится в один артефакт. PR **#430**.
 
 Классификация Problem 3: REAL-BUG (data + code) → **устранён**. Оба PR — draft, ждут ревью/мержа владельцем (RED LINE #2). Остаётся только чужой хвост, не Problem 3: 5 pre-existing health-debt ошибок реиндекса (ADR-013 без frontmatter + 4 строки на отсутствующие файлы) — отдельный трек v0.33-plan.
+
 

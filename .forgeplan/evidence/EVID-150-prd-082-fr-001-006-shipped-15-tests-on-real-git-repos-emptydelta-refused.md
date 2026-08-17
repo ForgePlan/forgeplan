@@ -7,7 +7,7 @@ last_modified_by: claude-code/2.1.220
 links:
 - target: PRD-082
   relation: informs
-status: draft
+status: active
 title: 'PRD-082 FR-001..006 shipped: 15 tests on real git repos, EmptyDelta refused'
 ---
 
@@ -82,4 +82,5 @@ ForgePlan по-прежнему не запускает тесты и не вл�
 - PRD-082 — родительский документ
 - GitHub #360 — источник постановки
 - ADR-019 — граница «проверка это знание»
+
 

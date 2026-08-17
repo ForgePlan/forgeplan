@@ -275,6 +275,27 @@ congruence_level: 3          # CL3 = same context (best) … CL0 = opposed (wors
 evidence_type: measurement   # measurement / test / benchmark / audit
 ```
 
+**Code-claiming evidence** (пак утверждает, что код изменился) — добавь git-provenance
+(PRD-082 / #360). Все три поля или ни одного: частичный claim отвергается как `Incomplete`.
+
+```markdown
+base_sha: 92154e19                          # состояние ДО изменения
+result_sha: 808db24                         # состояние ПОСЛЕ
+changed_paths: src/a.rs, tests/b.rs         # comma-separated
+```
+
+`forgeplan activate` перепроверяет claim против реальной git-дельты
+(`git diff --merge-base`), а не верит самоотчёту исполнителя. Зелёные тесты
+поверх **пустой дельты** — NULL-результат, не пройденная проверка. Режим задаётся
+`integrity.evidence_provenance_gate` в `.forgeplan/config.yaml`:
+`block` (отказать в активации) / `warn` (активировать + показать расхождение, **default**) /
+`off`. `--force` обходит гейт. Паки без provenance-полей не затронуты (`NotClaimed`).
+
+**R_eff считает только текущую эвиденцию** (ADR-020): паки с терминальным статусом
+(`superseded`/`deprecated`) исключаются из min, но остаются в графе как история.
+Активный `refutes` по-прежнему обнуляет score. Вытеснять — через
+`supersede <old> --by <new>`, а не правкой вердикта.
+
 ---
 
 ## Lifecycle commands

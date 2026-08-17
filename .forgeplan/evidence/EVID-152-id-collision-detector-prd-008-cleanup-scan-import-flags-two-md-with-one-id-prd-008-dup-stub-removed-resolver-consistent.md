@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-008
   relation: informs
-status: draft
+status: active
 title: 'id-collision detector + PRD-008 cleanup: scan-import flags two .md with one id; PRD-008 dup stub removed, resolver consistent'
 ---
 
@@ -41,6 +41,7 @@ evidence_type: test
 - Branch: `fix/id-collision-detector` (off `origin/dev`)
 - Files: `crates/forgeplan-core/src/scan/import.rs`, `crates/forgeplan-cli/src/commands/scan_import.rs`; removed `.forgeplan/prds/PRD-008-cli-ux-redesign.md`
 - **Renumber note (2026-08-06):** this evidence was itself a file-level id-collision — it and the earlier-committed EVID-143 (PROB-073 create-roundtrip profile) both carried `id: EVID-143`. Per the same one-id-one-file rule this evidence documents, it was re-minted as **EVID-149** (content unchanged) so PROB-073 keeps EVID-143. The companion reindex detector that catches this exact class at reindex time (not just scan-import) is issue #394.
+
 
 
 

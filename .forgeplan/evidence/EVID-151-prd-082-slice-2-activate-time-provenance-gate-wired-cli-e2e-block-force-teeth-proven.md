@@ -7,7 +7,7 @@ last_modified_by: claude-code/2.1.220
 links:
 - target: PRD-082
   relation: informs
-status: draft
+status: active
 title: 'PRD-082 slice 2: activate-time provenance gate wired, CLI E2E block+force teeth-proven'
 ---
 
@@ -77,4 +77,5 @@ cargo test -p forgeplan --test cli_provenance_gate_e2e       -> 2 passed
 - PRD-082 — родительский документ
 - EVID-150 — слайс 1 (примитив)
 - GitHub #360 — источник; ADR-019 — граница
+
 
