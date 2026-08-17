@@ -390,6 +390,7 @@ integrity:
   stub_marker_threshold: 3
   mcp_max_title_len: 256
   mcp_max_body_len: 1048576      # 1 MiB
+  evidence_provenance_gate: warn # block | warn | off
 ```
 
 | Field | Type | Default | Range | Description |
@@ -399,6 +400,7 @@ integrity:
 | `stub_marker_threshold` | `usize` | `3` | `>= 1` | Minimum number of stub markers (`TODO`, `TBD`, empty headings, etc.) required to flag an artefact body as a stub. |
 | `mcp_max_title_len` | `usize` | `256` | `[16, 4096]` | Max artefact title length accepted via MCP. Prevents memory abuse from malicious clients. |
 | `mcp_max_body_len` | `usize` | `1048576` | `[1024, 104857600]` | Max artefact body length (bytes) accepted via MCP. Default: 1 MiB. Hard cap: 100 MiB. |
+| `evidence_provenance_gate` | `string` | `warn` | `block` \| `warn` \| `off` | Activate-time git-delta provenance gate for code-claiming EvidencePacks (PRD-082). When a pack declares `base_sha` / `result_sha` / `changed_paths`, `forgeplan activate` re-derives the claim against the real git delta instead of trusting the self-report. `block` refuses activation (artefact stays `draft`); `warn` activates and surfaces the discrepancy (CLI on stderr, MCP inside the success payload); `off` skips the check. Packs without provenance fields are unaffected. An unresolvable SHA only ever warns. `activate --force` bypasses. |
 
 :::note[Why these limits exist]
 The MCP server is network-reachable when run over stdio by a shared LLM agent. The MCP limits protect against runaway prompts or buggy clients that would otherwise fill up `lance/` with multi-megabyte artefacts.

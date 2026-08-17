@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ForgePlan — the stack</title>
+<script>
+  (function () {
+    const saved = localStorage.getItem('fp-theme');
+    const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.classList.toggle('dark', dark);
+  })();
+</script>
+<style>
+  /* ─── DESIGN TOKENS ─────────────────────────────────────────────────────── */
+  :root {
+    /* Canvas */
+    --bg:       #FAF9F5;
+    --bg-alt:   #F2F0E8;   /* subtle canvas texture break */
+    --surface:  #FFFFFF;
+    --surface2: #F5F3EC;
+
+    /* Ink */
+    --ink:      #141413;
+    --body:     #3D3D3A;
+    --muted:    #87867F;
+    --faint:    #B5B3AB;
+
+    /* Borders */
+    --line:     #D9D7CE;
+    --line-soft:#E8E5DB;
+
+    /* Brand */
+    --clay:     #D97757;
+    --clay-dim: rgba(217,119,87,0.09);
+    --olive:    #788C5D;
+    --olive-dim:rgba(120,140,93,0.10);
+
+    /* Accent palette */
+    --cyan:    #2E8FB5;
+    --emerald: #40956A;
+    --violet:  #7659C0;
+    --amber:   #B07A28;
+    --rose:    #B85D72;
+    --slate:   #5E6B7D;
+
+    /* Zone slab fills — borderless tint (light) */
+    --z-surfaces-fill:     rgba(46 ,143,181,0.045);  /* cyan family */
+    --z-core-fill:         rgba(217,119, 87,0.042);  /* clay/warm */
+    --z-storage-fill:      rgba(120,140, 93,0.052);  /* olive */
+    --z-dtail-fill:        rgba(114, 89,192,0.040);  /* violet */
+    --z-orch-fill:         rgba(120,140, 93,0.036);  /* olive-lite */
+    --z-intel-fill:        rgba(46 ,143,181,0.036);  /* cyan-lite */
+    --z-ext-fill:          rgba(176,122, 40,0.036);  /* amber */
+
+    /* Zone label colors (lighter than ink, heavier than muted) */
+    --z-lbl-surfaces: var(--cyan);
+    --z-lbl-core:     var(--clay);
+    --z-lbl-storage:  var(--olive);
+    --z-lbl-dtail:    var(--violet);
+    --z-lbl-orch:     var(--emerald);
+    --z-lbl-intel:    var(--cyan);
+    --z-lbl-ext:      var(--amber);
+
+    /* Typography */
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+    --sans:  system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono:  ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+    /* Shadows (cards) */
+    --shadow-card: 0 2px 12px rgba(20,20,19,0.08), 0 1px 3px rgba(20,20,19,0.06);
+    --shadow-up:   0 6px 24px rgba(20,20,19,0.12), 0 2px 6px rgba(20,20,19,0.07);
+  }
+  html.dark {
+    --bg:       #141413;
+    --bg-alt:   #1A1A18;
+    --surface:  #1F1F1D;
+    --surface2: #292927;
+
+    --ink:      #F0EEE6;
+    --body:     #C8C5BB;
+    --muted:    #7E7C74;
+    --faint:    #4A4945;
+
+    --line:     #35332E;
+    --line-soft:#2A2A27;
+
+    --clay:     #E0845F;
+    --clay-dim: rgba(224,132, 95,0.12);
+    --olive:    #94AD6E;
+    --olive-dim:rgba(148,173,110,0.13);
+
+    --cyan:    #4DAFD6;
+    --emerald: #5CB882;
+    --violet:  #9A82E0;
+    --amber:   #D4A04A;
+    --rose:    #D67D93;
+    --slate:   #8898A8;
+
+    --z-surfaces-fill:     rgba(77 ,175,214,0.060);
+    --z-core-fill:         rgba(224,132, 95,0.058);
+    --z-storage-fill:      rgba(148,173,110,0.065);
+    --z-dtail-fill:        rgba(154,130,224,0.058);
+    --z-orch-fill:         rgba(92 ,184,130,0.050);
+    --z-intel-fill:        rgba(77 ,175,214,0.050);
+    --z-ext-fill:          rgba(212,160, 74,0.050);
+
+    --shadow-card: 0 2px 12px rgba(0,0,0,0.30), 0 1px 3px rgba(0,0,0,0.20);
+    --shadow-up:   0 6px 28px rgba(0,0,0,0.40), 0 2px 8px rgba(0,0,0,0.25);
+  }
+
+  /* ─── RESET & BASE ──────────────────────────────────────────────────────── */
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { height:100%; }
+  body {
+    background:var(--bg); color:var(--body); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; display:flex; flex-direction:column; overflow:hidden;
+  }
+
+  /* ─── TOPBAR ────────────────────────────────────────────────────────────── */
+  .bar {
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+    padding:10px 20px; border-bottom:1px solid var(--line-soft); flex:none;
+    background:var(--surface);
+  }
+  .bar h1 {
+    font-family:var(--serif); font-weight:500; font-size:18px;
+    color:var(--ink); letter-spacing:-0.015em; line-height:1.1;
+  }
+  .bar .sub {
+    font-family:var(--mono); font-size:10px; color:var(--muted);
+    letter-spacing:0.06em; text-transform:uppercase; margin-top:1px;
+  }
+  .spacer { flex:1; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip {
+    font-family:var(--mono); font-size:10.5px; letter-spacing:0.04em;
+    padding:5px 12px; border:1px solid var(--line); border-radius:999px;
+    background:transparent; color:var(--muted); cursor:pointer;
+    transition:color .12s ease, border-color .12s ease, background .12s ease;
+  }
+  .chip:hover { color:var(--ink); border-color:var(--body); }
+  .chip.on { background:var(--ink); border-color:var(--ink); color:var(--bg); }
+  #themeToggle {
+    font-family:var(--mono); font-size:10px; text-transform:uppercase;
+    letter-spacing:0.08em; padding:6px 12px; border:1px solid var(--line);
+    border-radius:6px; background:transparent; color:var(--muted); cursor:pointer;
+    transition:color .12s ease, border-color .12s ease;
+  }
+  #themeToggle:hover { color:var(--ink); border-color:var(--body); }
+
+  /* ─── STAGE ─────────────────────────────────────────────────────────────── */
+  .stage { flex:1; position:relative; min-height:0; overflow:hidden; }
+  .stage svg {
+    position:absolute; inset:0; width:100%; height:100%; display:block;
+    cursor:grab; user-select:none;
+  }
+  .stage svg.panning { cursor:grabbing; }
+
+  /* ─── ZONE SLABS — borderless tinted regions ────────────────────────────
+     Philosophy: no stroke, no dashes. The tint IS the boundary.
+     A thin 1px hairline rule sits just below the zone label — it anchors
+     the title without boxing the content. Nodes float inside, un-caged.
+  ─────────────────────────────────────────────────────────────────────────── */
+
+  /* Zone body fill — class names set per zone via inline style on the <rect> */
+  .zone-slab { rx:18; }   /* referenced by JS for corner radius only */
+
+  /* Zone label typography */
+  .ztitle {
+    font-family:var(--serif); font-size:13px; font-weight:500;
+    letter-spacing:-0.01em;
+  }
+  .zsub {
+    font-family:var(--mono); font-size:9.5px; letter-spacing:0.06em;
+    text-transform:uppercase; opacity:0.72;
+  }
+  /* Hairline rule under zone title (rendered as a <line> in SVG) */
+  .zrule { stroke-width:1; opacity:0.30; }
+
+  /* ─── NODES ─────────────────────────────────────────────────────────────── */
+  .node { cursor:pointer; }
+  .node rect {
+    fill:var(--surface); stroke:var(--line); stroke-width:1;
+    rx:9;
+    filter:drop-shadow(0 1px 3px rgba(20,20,19,0.06));
+    transition:stroke .14s ease, filter .14s ease;
+  }
+  html.dark .node rect {
+    filter:drop-shadow(0 1px 4px rgba(0,0,0,0.22));
+  }
+  .node:hover rect {
+    stroke:var(--muted);
+    filter:drop-shadow(0 2px 8px rgba(20,20,19,0.10));
+  }
+  html.dark .node:hover rect {
+    filter:drop-shadow(0 2px 10px rgba(0,0,0,0.34));
+  }
+  .node.sel rect {
+    stroke:var(--clay) !important; stroke-width:1.8;
+    filter:drop-shadow(0 0 0 2.5px var(--clay-dim));
+  }
+
+  /* Node text */
+  .node .t  { font-family:var(--sans); font-size:13px; font-weight:600; fill:var(--ink); pointer-events:none; }
+  .node .m  { font-family:var(--mono); font-size:10px; fill:var(--muted); pointer-events:none; }
+  .node .k  { font-family:var(--mono); font-size:9px; letter-spacing:0.08em; text-transform:uppercase; fill:var(--clay); pointer-events:none; }
+
+  /* Node variants */
+  .node.gate rect { fill:var(--clay-dim); stroke:var(--clay); stroke-width:1.2; }
+  .node.store rect { fill:var(--surface2); stroke:var(--line); }
+  .node.truth rect { fill:var(--surface2); stroke:var(--olive); stroke-width:1.6; }
+  .node.do rect    { fill:var(--olive-dim); stroke:var(--olive); }
+  .node.ext rect   { stroke-dasharray:5 3; stroke:var(--line); }
+
+  /* Artifact-kind accent strokes + label fills */
+  .node.epic  rect { stroke:var(--amber); } .node.epic  .k { fill:var(--amber); }
+  .node.prd   rect { stroke:var(--cyan);  } .node.prd   .k { fill:var(--cyan);  }
+  .node.spec  rect { stroke:var(--rose);  } .node.spec  .k { fill:var(--rose);  }
+  .node.rfc   rect { stroke:var(--emerald);} .node.rfc  .k { fill:var(--emerald);}
+  .node.adr   rect { stroke:var(--violet);} .node.adr   .k { fill:var(--violet);}
+  .node.evid  rect { stroke:var(--olive); } .node.evid  .k { fill:var(--olive); }
+
+  /* ─── EDGES ─────────────────────────────────────────────────────────────── */
+  .edge { stroke:var(--line); stroke-width:1.4; fill:none; marker-end:url(#a-line); transition:opacity .18s ease, stroke .18s ease; }
+  .edge.dash { stroke-dasharray:4 4; }
+  .edge.ws   { stroke-width:2; stroke:var(--olive); marker-end:url(#a-olive); }
+  .elbl { font-family:var(--mono); font-size:9.5px; fill:var(--faint); transition:opacity .18s ease; }
+
+  /* ─── FLOW HIGHLIGHT ────────────────────────────────────────────────────── */
+  .stage.flowing .edge  { opacity:0.08; }
+  .stage.flowing .edge.ws { stroke:var(--line); opacity:0.08; }
+  .stage.flowing .elbl  { opacity:0.06; }
+  .stage.flowing .node  { opacity:0.18; }
+  .stage.flowing .zone-group { opacity:0.32; }
+  .stage.flowing .legend-g  { opacity:0.32; }
+
+  .stage.flowing .edge.lit {
+    opacity:1; stroke:var(--clay); marker-end:url(#a-clay);
+    stroke-dasharray:7 5; animation:march .85s linear infinite;
+  }
+  .stage.flowing .elbl.lit { opacity:1; fill:var(--clay); }
+  .stage.flowing .node.lit { opacity:1; }
+  .stage.flowing .node.lit rect { stroke:var(--clay); filter:drop-shadow(0 0 0 3px var(--clay-dim)); }
+  @keyframes march { to { stroke-dashoffset:-12; } }
+  @media (prefers-reduced-motion: reduce) {
+    .stage.flowing .edge.lit { animation:none; }
+  }
+
+  /* ─── LEGEND ────────────────────────────────────────────────────────────── */
+  .legend .lt  { font-family:var(--serif); font-size:12px; font-weight:500; fill:var(--ink); }
+  .legend text { font-family:var(--mono); font-size:10px; fill:var(--body); }
+  .legend .sw  { stroke-width:1.2; }
+
+  /* ─── DETAIL + FLOW CARD ────────────────────────────────────────────────── */
+  .card {
+    position:absolute; background:var(--surface); border:1px solid var(--line);
+    border-radius:14px; padding:16px 18px; box-shadow:var(--shadow-up);
+    backdrop-filter:blur(2px);
+  }
+  #detail { right:16px; bottom:16px; width:348px; }
+  #detail h3 { font-family:var(--serif); font-weight:500; font-size:17px; color:var(--ink); margin-bottom:2px; line-height:1.25; }
+  #detail .meta { font-family:var(--mono); font-size:10px; color:var(--muted); letter-spacing:0.04em; margin-bottom:10px; }
+  #detail p { font-size:12.5px; line-height:1.6; color:var(--body); }
+  #detail p code, #flowcap code { font-family:var(--mono); font-size:10.5px; color:var(--clay); }
+  #flowcap { left:16px; bottom:16px; max-width:460px; display:none; }
+  #flowcap.show { display:block; }
+  #flowcap .fname { font-family:var(--mono); font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:var(--clay); margin-bottom:8px; }
+  #flowcap ol { margin-left:18px; }
+  #flowcap li { font-size:12.5px; line-height:1.6; margin-bottom:3px; }
+  .src { position:absolute; top:10px; right:16px; font-family:var(--mono); font-size:9px; color:var(--muted); opacity:0.75; text-align:right; }
+
+  /* ─── MINIMAP ────────────────────────────────────────────────────────────── */
+  #minimap {
+    position:absolute; bottom:16px; left:50%; transform:translateX(-50%);
+    background:var(--surface); border:1px solid var(--line); border-radius:8px;
+    padding:5px; opacity:0.72; pointer-events:none;
+  }
+  #minimap canvas { display:block; }
+
+  /* ─── ZOOM HINT ─────────────────────────────────────────────────────────── */
+  .zoom-hint {
+    position:absolute; top:10px; left:50%; transform:translateX(-50%);
+    font-family:var(--mono); font-size:10px; color:var(--muted);
+    letter-spacing:0.06em; opacity:0; transition:opacity .3s ease;
+    pointer-events:none;
+  }
+  .zoom-hint.show { opacity:1; }
+
+  @media (max-width:900px) {
+    body { overflow:auto; }
+    .stage { min-height:88vh; }
+    #detail  { position:static; width:auto; margin:10px 16px; }
+    #flowcap { position:static; margin:0 16px 16px; }
+    #minimap { display:none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div>
+    <h1>ForgePlan — the stack</h1>
+    <div class="sub">Rust · CLI + MCP · markdown-first · R_eff trust · 3 crates</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="chips" id="chips">
+    <button class="chip on" data-flow="all">Everything</button>
+    <button class="chip" data-flow="shape">Shape</button>
+    <button class="chip" data-flow="prove">Prove</button>
+    <button class="chip" data-flow="reason">Reason · ADI</button>
+    <button class="chip" data-flow="search">Search</button>
+    <button class="chip" data-flow="brownfield">Brownfield</button>
+    <button class="chip" data-flow="drift">Drift</button>
+  </div>
+  <button id="themeToggle">Theme</button>
+</div>
+
+<div class="stage" id="stage">
+<svg id="map-svg"
+     viewBox="0 0 1760 1060"
+     preserveAspectRatio="xMidYMid meet"
+     role="img"
+     aria-label="ForgePlan repository architecture and artifact graph">
+  <defs>
+    <marker id="a-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,1 L9,5 L0,9 z" style="fill:var(--line)"/>
+    </marker>
+    <marker id="a-clay" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,1 L9,5 L0,9 z" style="fill:var(--clay)"/>
+    </marker>
+    <marker id="a-olive" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,1 L9,5 L0,9 z" style="fill:var(--olive)"/>
+    </marker>
+    <marker id="a-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,1 L9,5 L0,9 z" style="fill:var(--muted)"/>
+    </marker>
+  </defs>
+
+  <!-- ════════════════════════════════════════════════════════════════════════
+       LAYOUT GRID  (viewBox 1760 × 1060)
+
+       ROW 0  y=40..620   — the "machine" (how it works)
+         col A  x=40..280   Surfaces (entry)
+         col B  x=296..700  Core · Shape→Prove  (the spine)
+         col C  x=716..980  Core · Intelligence  (query layer)
+         col D  x=716..980  Core · Orchestration  (under Intelligence)
+         col E  x=996..1340 Storage · ADR-003  (persistence)
+         col F  x=1356..1720 External · optional  (periphery)
+
+       ROW 1  y=636..1020  — the "memory" (what it produces)
+         full width         Decision-trail
+  ════════════════════════════════════════════════════════════════════════ -->
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       ZONE SLABS  (borderless tinted rectangles; title + hairline only)
+  ────────────────────────────────────────────────────────────────────────── -->
+
+  <!-- Z1: Surfaces -->
+  <g class="zone-group">
+    <rect x="40" y="40" width="240" height="572" rx="18"
+          style="fill:var(--z-surfaces-fill);stroke:none;"/>
+    <text class="ztitle" x="62" y="74" style="fill:var(--z-lbl-surfaces)">Surfaces</text>
+    <text class="zsub"   x="62" y="90" style="fill:var(--z-lbl-surfaces)">two front doors · one core</text>
+    <line class="zrule"  x1="62" y1="97" x2="260" y2="97" style="stroke:var(--z-lbl-surfaces)"/>
+  </g>
+
+  <!-- Z2: Core · Shape→Prove  (the spine / widest zone) -->
+  <g class="zone-group">
+    <rect x="296" y="40" width="408" height="572" rx="18"
+          style="fill:var(--z-core-fill);stroke:none;"/>
+    <text class="ztitle" x="318" y="74" style="fill:var(--z-lbl-core)">Core · Shape → Prove</text>
+    <text class="zsub"   x="318" y="90" style="fill:var(--z-lbl-core)">the markdown-first spine · write gate</text>
+    <line class="zrule"  x1="318" y1="97" x2="686" y2="97" style="stroke:var(--z-lbl-core)"/>
+  </g>
+
+  <!-- Z3: Core · Intelligence (upper mid-right) -->
+  <g class="zone-group">
+    <rect x="720" y="40" width="268" height="284" rx="18"
+          style="fill:var(--z-intel-fill);stroke:none;"/>
+    <text class="ztitle" x="742" y="74" style="fill:var(--z-lbl-intel)">Core · Intelligence</text>
+    <text class="zsub"   x="742" y="90" style="fill:var(--z-lbl-intel)">query · traverse · reason</text>
+    <line class="zrule"  x1="742" y1="97" x2="970" y2="97" style="stroke:var(--z-lbl-intel)"/>
+  </g>
+
+  <!-- Z4: Core · Orchestration (lower mid-right, under Intelligence) -->
+  <g class="zone-group">
+    <rect x="720" y="340" width="268" height="272" rx="18"
+          style="fill:var(--z-orch-fill);stroke:none;"/>
+    <text class="ztitle" x="742" y="374" style="fill:var(--z-lbl-orch)">Core · Orchestration</text>
+    <text class="zsub"   x="742" y="390" style="fill:var(--z-lbl-orch)">delegate · ingest · multi-agent</text>
+    <line class="zrule"  x1="742" y1="397" x2="970" y2="397" style="stroke:var(--z-lbl-orch)"/>
+  </g>
+
+  <!-- Z5: Storage · ADR-003 -->
+  <g class="zone-group">
+    <rect x="1004" y="40" width="336" height="572" rx="18"
+          style="fill:var(--z-storage-fill);stroke:none;"/>
+    <text class="ztitle" x="1026" y="74" style="fill:var(--z-lbl-storage)">Storage · ADR-003</text>
+    <text class="zsub"   x="1026" y="90" style="fill:var(--z-lbl-storage)">markdown is truth · lance is derived</text>
+    <line class="zrule"  x1="1026" y1="97" x2="1322" y2="97" style="stroke:var(--z-lbl-storage)"/>
+  </g>
+
+  <!-- Z6: External · optional -->
+  <g class="zone-group">
+    <rect x="1356" y="40" width="360" height="572" rx="18"
+          style="fill:var(--z-ext-fill);stroke:none;"/>
+    <text class="ztitle" x="1378" y="74" style="fill:var(--z-lbl-ext)">External · optional</text>
+    <text class="zsub"   x="1378" y="90" style="fill:var(--z-lbl-ext)">graceful degradation · periphery</text>
+    <line class="zrule"  x1="1378" y1="97" x2="1698" y2="97" style="stroke:var(--z-lbl-ext)"/>
+  </g>
+
+  <!-- Z7: Decision-trail (full-width bottom row) -->
+  <g class="zone-group">
+    <rect x="40" y="636" width="1676" height="384" rx="18"
+          style="fill:var(--z-dtail-fill);stroke:none;"/>
+    <text class="ztitle" x="62" y="672" style="fill:var(--z-lbl-dtail)">Decision trail</text>
+    <text class="zsub"   x="62" y="688" style="fill:var(--z-lbl-dtail)">the artifact graph this codebase is built from</text>
+    <line class="zrule"  x1="62" y1="695" x2="1698" y2="695" style="stroke:var(--z-lbl-dtail)"/>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       EDGES (drawn before nodes so nodes sit on top)
+  ────────────────────────────────────────────────────────────────────────── -->
+
+  <!-- Surfaces → Core -->
+  <path class="edge" id="e-cli-route"  d="M280,200 C 292,200 296,196 318,195"/>
+  <path class="edge" id="e-mcp-proj"   d="M280,370 C 292,366 296,320 318,318"/>
+  <path class="edge" id="e-cli-search" d="M280,192 C 490,122 620,148 742,186"/>
+  <path class="edge" id="e-mcp-health" d="M280,380 C 360,610 730,598 900,310"/>
+  <path class="edge" id="e-cli-pb"     d="M160,256 C 200,610 620,598 742,480"/>
+  <path class="edge" id="e-mcp-disp"   d="M280,385 C 310,590 752,558 900,468"/>
+
+  <!-- Core · Shape internal -->
+  <path class="edge" id="e-route-art"  d="M500,196 L522,196"/>
+  <path class="edge" id="e-art-proj"   d="M596,234 C 576,252 538,258 514,266"/>
+  <path class="edge" id="e-proj-valid" d="M410,354 L410,380"/>
+  <path class="edge" id="e-valid-life" d="M498,416 L522,416"/>
+  <path class="edge" id="e-proj-score" d="M508,354 L508,488"/>
+  <path class="edge" id="e-score-life" d="M558,488 C 580,470 596,464 596,452"/>
+
+  <!-- Core → Storage (ADR-003 write path — highlighted olive) -->
+  <path class="edge ws" id="e-proj-md"    d="M510,272 C 500,80 1170,74 1202,130"/>
+  <path class="edge ws" id="e-proj-lance" d="M524,274 C 560,118 1000,228 1030,270"/>
+  <path class="edge"    id="e-md-git"     d="M1202,228 L1202,322"/>
+  <path class="edge"    id="e-embed-lance"d="M1494,278 L1370,278"/>
+
+  <!-- Intelligence internal + to Storage -->
+  <path class="edge" id="e-search-lance" d="M882,194 C 970,188 1000,240 1030,268"/>
+  <path class="edge" id="e-graph-lance"  d="M988,198 C 1002,218 1012,252 1030,272"/>
+  <path class="edge" id="e-health-graph" d="M900,290 C 900,254 944,236 960,232"/>
+
+  <!-- Intelligence ↔ Core -->
+  <path class="edge" id="e-art-fpf"   d="M680,198 C 718,228 726,262 742,288"/>
+  <path class="edge dash" id="e-fpf-llm" d="M826,338 C 924,430 1060,480 1374,492"/>
+
+  <!-- Orchestration ↔ External -->
+  <path class="edge dash" id="e-pb-plugins"    d="M988,462 C 1200,440 1340,456 1374,484"/>
+  <path class="edge dash" id="e-plugins-ingest"d="M1374,528 C 1160,582 1002,566 900,558"/>
+  <path class="edge"      id="e-ingest-proj"   d="M742,550 C 700,460 685,360 680,312"/>
+  <path class="edge"      id="e-brown-ingest"  d="M900,553 L882,553"/>
+
+  <!-- Core → Decision-trail -->
+  <path class="edge" id="e-proj-epic"  d="M356,356 C 308,530 290,674 236,760"/>
+  <path class="edge" id="e-score-evid" d="M680,525 C 732,650 736,712 764,750"/>
+
+  <!-- Decision-trail internal -->
+  <path class="edge" id="te-epic-prd"  d="M236,758 L316,758"/>
+  <path class="edge" id="te-prd-spec"  d="M466,750 C 498,720 516,706 536,704"/>
+  <path class="edge" id="te-prd-rfc"   d="M466,758 C 500,770 518,778 536,778"/>
+  <path class="edge" id="te-prd-adr"   d="M466,764 C 498,810 518,850 536,852"/>
+  <path class="edge dash" id="te-evid-adr" d="M764,762 C 720,810 706,852 686,852"/>
+  <path class="edge dash" id="te-prob-prd" d="M764,852 C 636,850 535,810 467,764"/>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       EDGE LABELS
+  ────────────────────────────────────────────────────────────────────────── -->
+  <text class="elbl" data-e="e-cli-route"   x="296" y="190">76 cmds</text>
+  <text class="elbl" data-e="e-mcp-proj"    x="294" y="346">stdio · 73 tools</text>
+  <text class="elbl" data-e="e-cli-search"  x="574" y="134" text-anchor="middle">search</text>
+  <text class="elbl" data-e="e-mcp-health"  x="698" y="608" text-anchor="middle">health / drift</text>
+  <text class="elbl" data-e="e-cli-pb"      x="474" y="624" text-anchor="middle">playbook run</text>
+  <text class="elbl" data-e="e-mcp-disp"    x="608" y="568" text-anchor="middle">dispatch / claim</text>
+  <text class="elbl" data-e="e-proj-md"     x="890" y="70"  text-anchor="middle">write markdown</text>
+  <text class="elbl" data-e="e-proj-lance"  x="956" y="162" text-anchor="middle">sync index · ADR-003</text>
+  <text class="elbl" data-e="e-md-git"      x="1210" y="282">commit</text>
+  <text class="elbl" data-e="e-embed-lance" x="1428" y="262">1024-dim</text>
+  <text class="elbl" data-e="e-score-life"  x="604" y="460">R_eff &gt; 0</text>
+  <text class="elbl" data-e="e-search-lance"x="1010" y="214">query</text>
+  <text class="elbl" data-e="e-art-fpf"     x="714" y="254">reason</text>
+  <text class="elbl" data-e="e-fpf-llm"     x="1090" y="462">optional</text>
+  <text class="elbl" data-e="e-pb-plugins"  x="1170" y="436" text-anchor="middle">delegate</text>
+  <text class="elbl" data-e="e-plugins-ingest" x="1120" y="590" text-anchor="middle">filesystem output</text>
+  <text class="elbl" data-e="e-ingest-proj" x="718" y="440">drafts</text>
+  <text class="elbl" data-e="e-brown-ingest"x="910" y="545" text-anchor="end">scan-import</text>
+  <text class="elbl" data-e="e-health-graph"x="946" y="248">traverse</text>
+  <text class="elbl" data-e="e-proj-epic"   x="306" y="654" text-anchor="end">produces</text>
+  <text class="elbl" data-e="e-score-evid"  x="740" y="696">R_eff = min()</text>
+  <text class="elbl" data-e="te-epic-prd"   x="276" y="752" text-anchor="middle">groups</text>
+  <text class="elbl" data-e="te-evid-adr"   x="730" y="812">informs</text>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       NODES — SURFACES  (col A)
+  ────────────────────────────────────────────────────────────────────────── -->
+  <g class="node" data-k="cli">
+    <rect x="62" y="114" width="196" height="102" rx="9"/>
+    <text class="t" x="82" y="148">CLI · forgeplan</text>
+    <text class="m" x="82" y="168">clap derive · 76 commands</text>
+    <text class="m" x="82" y="184">alias: fpl · single binary</text>
+    <text class="m" x="82" y="200">humans</text>
+  </g>
+  <g class="node" data-k="mcp">
+    <rect x="62" y="266" width="196" height="118" rx="9"/>
+    <text class="t" x="82" y="300">MCP server</text>
+    <text class="m" x="82" y="320">rmcp · stdio · 73 tools</text>
+    <text class="m" x="82" y="338">Claude Code · Cursor · Aider</text>
+    <text class="m" x="82" y="356">AI agents · identity-stamped</text>
+  </g>
+  <g class="node" data-k="hint">
+    <rect x="62" y="434" width="196" height="112" rx="9"/>
+    <text class="t" x="82" y="468">Hint protocol</text>
+    <text class="k" x="82" y="486">PRD-071</text>
+    <text class="m" x="82" y="504">Next: / Or: / Wait: / Done.</text>
+    <text class="m" x="82" y="520">keeps agents on the path</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       NODES — CORE · SHAPE → PROVE  (col B)
+  ────────────────────────────────────────────────────────────────────────── -->
+  <g class="node" data-k="routing">
+    <rect x="318" y="114" width="172" height="82" rx="9"/>
+    <text class="t" x="338" y="148">Routing · Depth</text>
+    <text class="m" x="338" y="168">task → depth tier</text>
+    <text class="m" x="338" y="184">Tactical … Critical</text>
+  </g>
+  <g class="node" data-k="artifact">
+    <rect x="510" y="114" width="172" height="82" rx="9"/>
+    <text class="t" x="530" y="148">Artifact model</text>
+    <text class="m" x="530" y="168">frontmatter · sections</text>
+    <text class="m" x="530" y="184">slug / number identity</text>
+  </g>
+  <g class="node gate" data-k="projection">
+    <rect x="318" y="266" width="364" height="88" rx="9"/>
+    <text class="t" x="338" y="300">projection — the write gate</text>
+    <text class="k" x="338" y="318">ADR-003 · red-line #8</text>
+    <text class="m" x="338" y="338">sync_file_to_store → render · atomic</text>
+  </g>
+  <g class="node" data-k="validation">
+    <rect x="318" y="380" width="172" height="76" rx="9"/>
+    <text class="t" x="338" y="414">Validation</text>
+    <text class="m" x="338" y="434">MUST-section gate</text>
+  </g>
+  <g class="node" data-k="lifecycle">
+    <rect x="510" y="380" width="172" height="76" rx="9"/>
+    <text class="t" x="530" y="414">Lifecycle</text>
+    <text class="m" x="530" y="434">draft → active → …</text>
+  </g>
+  <g class="node" data-k="scoring">
+    <rect x="318" y="488" width="364" height="78" rx="9"/>
+    <text class="t" x="338" y="522">Scoring · R_eff / F-G-R</text>
+    <text class="m" x="338" y="542">weakest-link min() · CL penalty · decay</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       NODES — CORE · INTELLIGENCE  (col C, upper)
+  ────────────────────────────────────────────────────────────────────────── -->
+  <g class="node" data-k="search">
+    <rect x="742" y="114" width="230" height="82" rx="9"/>
+    <text class="t" x="762" y="148">search</text>
+    <text class="m" x="762" y="168">BM25 + semantic · hybrid</text>
+    <text class="m" x="762" y="184">filters · offline BGE-M3</text>
+  </g>
+  <g class="node" data-k="graph">
+    <rect x="742" y="208" width="108" height="82" rx="9"/>
+    <text class="t" x="762" y="242">graph</text>
+    <text class="m" x="762" y="262">petgraph</text>
+    <text class="m" x="762" y="278">typed links</text>
+  </g>
+  <g class="node" data-k="fpf">
+    <rect x="864" y="208" width="108" height="82" rx="9"/>
+    <text class="t" x="884" y="242">FPF · ADI</text>
+    <text class="m" x="884" y="262">trust calculus</text>
+    <text class="m" x="884" y="278">3+ hypotheses</text>
+  </g>
+  <g class="node" data-k="health">
+    <rect x="742" y="302" width="230" height="74" rx="9"/>
+    <text class="t" x="762" y="336">health · drift · gaps</text>
+    <text class="m" x="762" y="356">blind spots · anomalies</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       NODES — CORE · ORCHESTRATION  (col C, lower)
+  ────────────────────────────────────────────────────────────────────────── -->
+  <g class="node do" data-k="playbook">
+    <rect x="742" y="412" width="108" height="80" rx="9"/>
+    <text class="t" x="762" y="446">playbook</text>
+    <text class="m" x="762" y="466">YAML multi-step</text>
+    <text class="m" x="762" y="482">ADR-009</text>
+  </g>
+  <g class="node do" data-k="dispatch">
+    <rect x="864" y="412" width="108" height="80" rx="9"/>
+    <text class="t" x="884" y="446">dispatch</text>
+    <text class="m" x="884" y="466">N-agent buckets</text>
+    <text class="m" x="884" y="482">conflict-free</text>
+  </g>
+  <g class="node do" data-k="ingest">
+    <rect x="742" y="508" width="108" height="80" rx="9"/>
+    <text class="t" x="762" y="542">ingest</text>
+    <text class="m" x="762" y="562">mapping → drafts</text>
+    <text class="m" x="762" y="578">line-level links</text>
+  </g>
+  <g class="node do" data-k="brownfield">
+    <rect x="864" y="508" width="108" height="80" rx="9"/>
+    <text class="t" x="884" y="542">brownfield</text>
+    <text class="m" x="884" y="562">extract from code</text>
+    <text class="m" x="884" y="578">EPIC-006</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       NODES — STORAGE  (col E)
+  ────────────────────────────────────────────────────────────────────────── -->
+  <g class="node truth" data-k="markdown">
+    <rect x="1030" y="114" width="284" height="98" rx="9"/>
+    <text class="t" x="1050" y="148">Markdown files</text>
+    <text class="k" x="1050" y="166">source of truth · git-tracked</text>
+    <text class="m" x="1050" y="186">.forgeplan/{prds,adrs,rfcs,…}</text>
+  </g>
+  <g class="node store" data-k="lancedb">
+    <rect x="1030" y="228" width="284" height="68" rx="9"/>
+    <text class="t" x="1050" y="260">LanceDB</text>
+    <text class="m" x="1050" y="280">derived index · gitignored</text>
+  </g>
+  <g class="node store" data-k="fastembed">
+    <rect x="1030" y="310" width="284" height="68" rx="9"/>
+    <text class="t" x="1050" y="342">fastembed · BGE-M3</text>
+    <text class="m" x="1050" y="362">1024-dim · fully offline</text>
+  </g>
+  <g class="node store" data-k="git">
+    <rect x="1030" y="394" width="284" height="68" rx="9"/>
+    <text class="t" x="1050" y="426">Git repository</text>
+    <text class="m" x="1050" y="446">versioning · PR collab · history mining</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       NODES — EXTERNAL  (col F)
+  ────────────────────────────────────────────────────────────────────────── -->
+  <g class="node ext" data-k="llm">
+    <rect x="1378" y="114" width="314" height="90" rx="9"/>
+    <text class="t" x="1398" y="148">LLM providers</text>
+    <text class="m" x="1398" y="168">OpenAI · Claude · Gemini</text>
+    <text class="m" x="1398" y="186">Ollama · optional · ADR-007</text>
+  </g>
+  <g class="node ext" data-k="plugins">
+    <rect x="1378" y="224" width="314" height="90" rx="9"/>
+    <text class="t" x="1398" y="258">Agent plugins</text>
+    <text class="m" x="1398" y="278">c4 · ddd · autoresearch · sparc</text>
+    <text class="m" x="1398" y="296">filesystem-output model</text>
+  </g>
+  <g class="node ext" data-k="marketplace">
+    <rect x="1378" y="334" width="314" height="90" rx="9"/>
+    <text class="t" x="1398" y="368">Marketplace · Packs</text>
+    <text class="m" x="1398" y="388">agentskills.io · skills-lock.json</text>
+    <text class="m" x="1398" y="406">Playbook + Skill + Agent + Mapping</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       NODES — DECISION TRAIL  (row 1)
+  ────────────────────────────────────────────────────────────────────────── -->
+  <g class="node epic" data-k="epic">
+    <rect x="66" y="716" width="154" height="96" rx="9"/>
+    <text class="t" x="86" y="750">Epic</text>
+    <text class="k" x="86" y="768">epic- · 8</text>
+    <text class="m" x="86" y="788">groups PRD /</text>
+    <text class="m" x="86" y="804">RFC / ADR</text>
+  </g>
+  <g class="node prd" data-k="prd">
+    <rect x="316" y="716" width="154" height="96" rx="9"/>
+    <text class="t" x="336" y="750">PRD</text>
+    <text class="k" x="336" y="768">prd- · 80</text>
+    <text class="m" x="336" y="788">what &amp; why</text>
+    <text class="m" x="336" y="804">MUST sections</text>
+  </g>
+  <g class="node spec" data-k="spec">
+    <rect x="536" y="710" width="144" height="62" rx="9"/>
+    <text class="t" x="556" y="738">Spec</text>
+    <text class="k" x="556" y="756">spec- · 5 · contracts</text>
+  </g>
+  <g class="node rfc" data-k="rfc">
+    <rect x="536" y="784" width="144" height="62" rx="9"/>
+    <text class="t" x="556" y="812">RFC</text>
+    <text class="k" x="556" y="830">rfc- · 12 · how-to-build</text>
+  </g>
+  <g class="node adr" data-k="adr">
+    <rect x="536" y="858" width="144" height="62" rx="9"/>
+    <text class="t" x="556" y="886">ADR</text>
+    <text class="k" x="556" y="904">adr- · 17 · decisions</text>
+  </g>
+  <g class="node evid" data-k="evidence">
+    <rect x="764" y="720" width="164" height="88" rx="9"/>
+    <text class="t" x="784" y="754">Evidence</text>
+    <text class="k" x="784" y="772">evid- · 147</text>
+    <text class="m" x="784" y="792">proof · feeds R_eff</text>
+  </g>
+  <g class="node" data-k="problem">
+    <rect x="764" y="826" width="164" height="66" rx="9"/>
+    <text class="t" x="784" y="856">Problem</text>
+    <text class="m" x="784" y="876">prob- · 74 · context</text>
+  </g>
+  <g class="node" data-k="note">
+    <rect x="1000" y="716" width="164" height="84" rx="9"/>
+    <text class="t" x="1020" y="750">Note</text>
+    <text class="m" x="1020" y="770">note- · 44</text>
+    <text class="m" x="1020" y="788">micro-decision · 90d</text>
+  </g>
+  <g class="node" data-k="links">
+    <rect x="1000" y="820" width="164" height="76" rx="9"/>
+    <text class="t" x="1020" y="852">Typed links</text>
+    <text class="m" x="1020" y="872">informs · based_on</text>
+    <text class="m" x="1020" y="888">supersedes · blocks</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────────────────
+       LEGEND
+  ────────────────────────────────────────────────────────────────────────── -->
+  <g class="legend legend-g">
+    <text class="lt" x="1230" y="736">Legend</text>
+
+    <!-- Node types -->
+    <rect class="sw" x="1230" y="750" width="24" height="15" rx="4"
+          style="fill:var(--surface);stroke:var(--line)"/>
+    <text x="1262" y="763">core module</text>
+
+    <rect class="sw" x="1230" y="774" width="24" height="15" rx="4"
+          style="fill:var(--clay-dim);stroke:var(--clay)"/>
+    <text x="1262" y="787">the projection gate</text>
+
+    <rect class="sw" x="1230" y="798" width="24" height="15" rx="4"
+          style="fill:var(--olive-dim);stroke:var(--olive)"/>
+    <text x="1262" y="811">orchestration</text>
+
+    <rect class="sw" x="1230" y="822" width="24" height="15" rx="4"
+          style="fill:var(--surface2);stroke:var(--line)"/>
+    <text x="1262" y="835">storage / derived</text>
+
+    <rect class="sw" x="1230" y="846" width="24" height="15" rx="4"
+          style="fill:var(--surface);stroke:var(--line);stroke-dasharray:5 3"/>
+    <text x="1262" y="859">external · delegated</text>
+
+    <!-- Edge types -->
+    <line x1="1232" y1="882" x2="1252" y2="882"
+          style="stroke:var(--olive);stroke-width:2"/>
+    <text x="1262" y="886">ADR-003 write path</text>
+
+    <line x1="1232" y1="904" x2="1252" y2="904"
+          style="stroke:var(--line);stroke-width:1.4;stroke-dasharray:4 3"/>
+    <text x="1262" y="908">optional / delegated</text>
+
+    <!-- Hint -->
+    <text x="1230" y="934" style="fill:var(--muted)">chips animate one flow ·</text>
+    <text x="1230" y="952" style="fill:var(--muted)">click any node for detail</text>
+
+    <!-- Artifact kind swatches -->
+    <text class="lt" x="1450" y="736">Artifact kinds</text>
+    <rect class="sw" x="1450" y="750" width="13" height="13" rx="3"
+          style="fill:none;stroke:var(--amber);stroke-width:1.6"/>
+    <text x="1468" y="762">Epic</text>
+
+    <rect class="sw" x="1540" y="750" width="13" height="13" rx="3"
+          style="fill:none;stroke:var(--cyan);stroke-width:1.6"/>
+    <text x="1558" y="762">PRD</text>
+
+    <rect class="sw" x="1630" y="750" width="13" height="13" rx="3"
+          style="fill:none;stroke:var(--rose);stroke-width:1.6"/>
+    <text x="1648" y="762">Spec</text>
+
+    <rect class="sw" x="1450" y="774" width="13" height="13" rx="3"
+          style="fill:none;stroke:var(--emerald);stroke-width:1.6"/>
+    <text x="1468" y="786">RFC</text>
+
+    <rect class="sw" x="1540" y="774" width="13" height="13" rx="3"
+          style="fill:none;stroke:var(--violet);stroke-width:1.6"/>
+    <text x="1558" y="786">ADR</text>
+
+    <rect class="sw" x="1630" y="774" width="13" height="13" rx="3"
+          style="fill:none;stroke:var(--olive);stroke-width:1.6"/>
+    <text x="1648" y="786">Evid</text>
+  </g>
+</svg>
+
+  <div class="src">
+    code: 3 crates (core · cli · mcp) · docs/architecture/c4-context.md<br>
+    .forgeplan: 8 Epic · 80 PRD · 17 ADR · 12 RFC · 5 Spec · 147 Evid
+  </div>
+
+  <div class="card" id="flowcap">
+    <div class="fname" id="f-name"></div>
+    <ol id="f-steps"></ol>
+  </div>
+
+  <div class="card" id="detail">
+    <h3 id="d-title">Click anything</h3>
+    <div class="meta" id="d-meta">ForgePlan — one screen</div>
+    <p id="d-body">Two surfaces (CLI + MCP) over one Rust core. Every node is clickable. The chips up top trace the flows that matter: <b>Shape</b> a decision, <b>Prove</b> it with evidence, <b>Reason</b> with ADI, <b>Search</b> the graph, run a <b>Brownfield</b> migration, or check for <b>Drift</b>. The one invariant to remember: <i>markdown is the source of truth, everything else is derived through the projection gate.</i></p>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   DATA
+═══════════════════════════════════════════════════════════════════════════ */
+const DETAIL = {
+  cli:{t:"CLI · forgeplan / fpl",m:"surface · clap · 76 commands",b:"The human front door. A <code>clap</code>-derived binary with 76 subcommands (<code>route</code>, <code>new</code>, <code>validate</code>, <code>score</code>, <code>activate</code>, <code>search</code>, <code>health</code>…). It only parses args and calls into <b>forgeplan-core</b> — no logic of its own. Shipped as one static binary via brew / install.sh / cargo."},
+  mcp:{t:"MCP server",m:"surface · rmcp · stdio · 73 tools",b:"The AI-agent front door. An <code>rmcp</code> stdio server exposing 73 tools to any MCP client (Claude Code, Cursor, Aider). Same core, same methodology as the CLI — and every write stamps the calling agent's identity into <code>last_modified_by</code>."},
+  hint:{t:"Hint protocol (PRD-071)",m:"contract · agent guidance",b:"Every CLI &amp; MCP response emits exactly one contract marker telling the agent its next step: <code>Next:</code> (run as-is), <code>Or:</code> (alternative), <code>Wait:</code> (retry on condition), <code>Done.</code> JSON carries <code>_next_action</code>. This is what keeps an autonomous agent on the Shape→Validate→Code→Evidence→Activate path."},
+  routing:{t:"Routing · Depth",m:"core · routing / depth",b:"Reads a task description and calibrates work depth — <b>Tactical / Standard / Deep / Critical</b> — and the matching artifact pipeline (Note · PRD→RFC · PRD→Spec→RFC→ADR · Epic→…). Rule-based by default, optionally LLM-assisted for ambiguous tasks. Stops you over-documenting a typo or under-documenting an irreversible call."},
+  artifact:{t:"Artifact model",m:"core · artifact/*",b:"The 10 artifact kinds and their parsing: YAML frontmatter, section aliases, and the slug / predicted-number / assigned-number identity scheme (ADR-012, SPEC-005). All CRUD assembles here, then hands off to the projection layer to be persisted."},
+  projection:{t:"projection — the write gate",m:"core · ADR-003 · red-line #8",b:"<b>The single mutation path.</b> No command may touch LanceDB directly. <code>sync_file_to_store</code> + <code>render_projection</code> write the <b>markdown source of truth</b> and the <b>derived index</b> together, atomically, and stamp agent identity. <code>tests/adr_003_invariant.rs</code> blocks any regression that grows direct-store calls."},
+  validation:{t:"Validation",m:"core · validation/*",b:"Checks an artifact carries every required (MUST) section before it can advance. Accepts section synonyms (Motivation = Problem, Out of Scope = Non-Goals…). Returns PASS or an explicit error list — <code>activate</code> refuses to run until it passes."},
+  lifecycle:{t:"Lifecycle",m:"core · state machine (ADR-005)",b:"The formal state machine: <code>draft → active → {superseded · deprecated · stale}</code>; <code>stale → active</code> (renew) or <code>deprecated + new draft</code> (reopen). superseded &amp; deprecated are terminal. Activation is gated on validation PASS <i>and</i> R_eff &gt; 0."},
+  scoring:{t:"Scoring · R_eff / F-G-R",m:"core · scoring/*",b:"Computes artifact trust as <b>R_eff = min(evidence_scores)</b> — the weakest link, never an average. Applies congruence penalties (CL0–CL3) and evidence decay (expired <code>valid_until</code> → 0.1). F-G-R scores formality, granularity and reliability independently."},
+  search:{t:"search",m:"core · search/* (bm25 · smart)",b:"Hybrid retrieval: BM25 keyword scoring fused with BGE-M3 semantic similarity, plus filters. Text-first with semantic boosters; degrades cleanly to pure text when the embedding feature is compiled out."},
+  graph:{t:"graph",m:"core · graph/* (petgraph)",b:"Builds a <code>petgraph</code> over the typed links (informs · based_on · supersedes · blocks · parent/child). Powers coverage analysis, blocking-artifact detection, the mermaid graph view, and drift traversal."},
+  fpf:{t:"FPF · ADI reasoning",m:"core · fpf/* (RFC-001, ADR-006)",b:"The First-Principles-Framework engine. Runs ADI cycles — 3+ competing hypotheses through <b>Abduction → Deduction → Induction</b> — plus a configurable trust calculus. Required for Deep/Critical artifacts. Feature-gated KB semantic search via BGE-M3."},
+  health:{t:"health · drift · gaps",m:"core · health/drift/anomalies",b:"Observability over the graph. <code>health</code> surfaces blind spots (code with no covering ADR), orphans and stale artifacts; <code>drift</code> flags code changes that appear to violate an active ADR; <code>anomalies</code> catalogs structural issues (ADR-014)."},
+  playbook:{t:"playbook",m:"core · playbook/* (ADR-009)",b:"Declarative multi-step strategies (SPEC-003) that orchestrate external plugin delegations. This is Forgeplan-as-orchestrator (ADR-001/009): it doesn't generate big analysis documents itself — it runs a playbook that delegates, then ingests the result."},
+  dispatch:{t:"dispatch · claim",m:"core · dispatch/claim (PRD-057)",b:"Multi-agent planner. Given draft artifacts and N agents, it computes parallel buckets with no file overlap (Jaccard similarity on affected files) plus a serial queue. <code>claim</code> / <code>release</code> / <code>claims</code> coordinate who holds what, with TTLs."},
+  ingest:{t:"ingest",m:"core · ingest/* (SPEC-004)",b:"Applies a Mapping file to translate external plugin output — <code>C4-Documentation/</code>, <code>domain-model.md</code>, <code>git log</code> — into draft Forgeplan artifacts with line-level source links. The bridge from delegated analysis back into the graph."},
+  brownfield:{t:"brownfield",m:"core · brownfield (EPIC-006)",b:"The brownfield adoption surface. Reconstructs a decision map from an existing, undocumented codebase: <code>scan-import</code> rebuilds the index from markdown; extraction playbooks mine structure, domain and git history into draft artifacts."},
+  markdown:{t:"Markdown files",m:"storage · SOURCE OF TRUTH",b:"<code>.forgeplan/{prds,adrs,rfcs,…}/*.md</code> — the authoritative store (ADR-003). Human-readable, diff-able, version-controlled. Everything else is <i>derived</i> from these files and can be rebuilt at any time with <code>scan-import</code>."},
+  lancedb:{t:"LanceDB",m:"storage · derived index · gitignored",b:"An embedded columnar vector DB (in-process, not a network service). Holds derived artifact records + BGE-M3 embeddings for fast query and semantic search. <code>.forgeplan/lance/</code> is gitignored — rebuilt from markdown, never the source of truth."},
+  fastembed:{t:"fastembed · BGE-M3",m:"storage · local model · offline",b:"The local embedding model (feature-gated). Embeds every artifact and every query to 1024 dimensions with zero network calls or API keys; weights cached in <code>.fastembed_cache/</code>. Graceful fallback to text-only search when disabled."},
+  git:{t:"Git repository",m:"storage · versioning",b:"The real persistence &amp; collaboration layer. Artifact history, authorship and review all ride standard git — Forgeplan adds no server. <code>git log</code> is also the input for brownfield history mining."},
+  llm:{t:"LLM providers",m:"external · optional inference",b:"Optional external inference for ADI reasoning and ambiguous-task routing, behind a provider-dispatch boundary (ADR-007, SPEC-002; claude-code provider in ADR-017). All optional — with none configured the system degrades to rule-based routing and skips LLM-assisted steps."},
+  plugins:{t:"Agent plugins",m:"external · delegated analysis",b:"Specialist Claude Code plugins that Forgeplan orchestrates for heavy lifting: <b>c4-architecture</b> (structure), <b>ddd-domain-expert</b> (domain), <b>autoresearch</b> (research swarm), <b>sparc:specification</b> (formal specs). Their filesystem output is read back through Mappings."},
+  marketplace:{t:"Marketplace · Packs",m:"external · distribution",b:"Distribution for Forgeplan Packs (Playbook + Skill + Agent + Mapping bundles) and the plugins it orchestrates. Installed via the agent-skills standard (<code>skills-lock.json</code>) from agentskills.io / the Claude plugin marketplace."},
+  epic:{t:"Epic",m:"artifact · epic- · 8",b:"Top of the hierarchy — groups a body of work into child PRDs / RFCs / ADRs. Live examples: EPIC-006 Brownfield migration, EPIC-007 Playbook runtime + pack marketplace, EPIC-008 Business-logic extraction."},
+  prd:{t:"PRD — Product Requirements",m:"artifact · prd- · 80",b:"The WHAT and WHY of a feature — the most-used kind (80 artifacts). Carries MUST sections, functional requirements and target users. Must validate before any code, and is scored before it can be activated."},
+  spec:{t:"Spec",m:"artifact · spec- · 5",b:"The HOW-EXACTLY: API contracts, data models and YAML schemas. The five live Specs define the artifact schema, the playbook schema, the mapping schema, the LLM-provider contract and the slug/number frontmatter contract."},
+  rfc:{t:"RFC",m:"artifact · rfc- · 12",b:"The HOW-WE-BUILD-IT: a phased architectural proposal with trade-offs. e.g. RFC-001 FPF engine v2, RFC-003 layered driver traits, RFC-006 ISP storage split, RFC-009 lazy ID assignment."},
+  adr:{t:"ADR — Architecture Decision Record",m:"artifact · adr- · 17",b:"WHY exactly this. 17 recorded, including the load-bearing ones: ADR-001 (agent is the orchestrator, not Forgeplan), ADR-003 (markdown = source of truth), ADR-009 (orchestrator / pack model), ADR-012 (slug-canonical identity)."},
+  evidence:{t:"Evidence",m:"artifact · evid- · 147",b:"EvidencePacks — tests, benchmarks, measurements — linked <code>informs</code> to the artifacts they back. The most numerous kind (147). Their structured fields (<code>verdict</code> / <code>congruence_level</code> / <code>evidence_type</code>) feed R_eff; expired ones decay to 0.1."},
+  problem:{t:"Problem",m:"artifact · prob- · 74",b:"A recorded problem with context (74 of them) — the seed of a decision, tracked through to the PRD/RFC/ADR that resolves it (e.g. PROB-048 ADR-003 migration, PROB-060 lazy IDs)."},
+  note:{t:"Note",m:"artifact · note- · 44",b:"Lightweight micro-decisions and Briefs (44). Auto-expire after 90 days unless promoted. The lowest-friction way to leave a decision trail for trivial-but-not-forgettable calls."},
+  links:{t:"Typed links",m:"the edges of the graph",b:"Relations are typed (informs · based_on · supersedes · blocks · parent/child), not just 'related'. That typing is what lets the graph answer coverage, blocking and drift questions instead of merely listing neighbours."}
+};
+
+const FLOWS = {
+  shape:{
+    name:"Shape — idea to a stored artifact",
+    edges:["e-cli-route","e-mcp-proj","e-route-art","e-art-proj","e-proj-md","e-proj-lance","e-md-git"],
+    nodes:["cli","mcp","routing","artifact","projection","markdown","lancedb","git"],
+    steps:["<code>route \"task\"</code> → depth tier (Tactical · Standard · Deep · Critical) → the artifact pipeline","<code>new prd</code> → the artifact model fills a template with its MUST sections","Every write goes through the <b>projection gate</b> — never the store directly (ADR-003, red-line #8)","One flow writes the <b>markdown</b> (source of truth) <i>and</i> syncs the <b>LanceDB</b> index","<code>git commit</code> — the decision is now version-controlled"]
+  },
+  prove:{
+    name:"Prove — validate, score, activate",
+    edges:["e-proj-valid","e-valid-life","e-proj-score","e-score-life","e-score-evid","te-evid-adr"],
+    nodes:["projection","validation","lifecycle","scoring","evidence","adr"],
+    steps:["<code>validate &lt;id&gt;</code> — the MUST-section gate must PASS","Link an <b>EvidencePack</b> (<code>informs</code>) carrying <code>verdict</code> / <code>congruence_level</code> / <code>evidence_type</code>","<code>score</code> → <b>R_eff = min(evidence)</b> — trust is the weakest link, never an average","<code>activate</code> — the lifecycle gate flips draft → active only when R_eff &gt; 0"]
+  },
+  reason:{
+    name:"Reason — ADI before a decision",
+    edges:["e-cli-route","e-route-art","e-art-fpf","e-fpf-llm"],
+    nodes:["cli","routing","artifact","fpf","llm"],
+    steps:["<code>reason &lt;id&gt;</code> on a Deep / Critical artifact","FPF generates 3+ competing hypotheses (Abduction → Deduction → Induction)","Delegates to an LLM provider over an OpenAI-compatible API","No provider configured? It degrades gracefully to rule-based behaviour"]
+  },
+  search:{
+    name:"Search — query the graph offline",
+    edges:["e-cli-search","e-search-lance","e-graph-lance","e-embed-lance"],
+    nodes:["cli","search","graph","lancedb","fastembed"],
+    steps:["<code>search \"query\"</code> (or the <code>forgeplan_search</code> tool)","Hybrid ranking: BM25 keyword + BGE-M3 semantic vectors","<b>fastembed</b> embeds the query offline (1024-dim, no network, no API keys)","LanceDB returns ranked artifacts; the graph resolves their typed links"]
+  },
+  brownfield:{
+    name:"Brownfield — reconstruct from code",
+    edges:["e-cli-pb","e-pb-plugins","e-plugins-ingest","e-brown-ingest","e-ingest-proj","e-proj-md","e-proj-epic"],
+    nodes:["cli","playbook","plugins","brownfield","ingest","projection","markdown","epic"],
+    steps:["<code>playbook run brownfield-migration</code>","Delegates structural / domain analysis to external plugins (c4 · ddd · sparc)","<code>ingest --mapping</code> translates their filesystem output into <b>draft artifacts</b>","Drafts enter through the same projection gate; <code>scan-import</code> rebuilds the index from markdown"]
+  },
+  drift:{
+    name:"Drift — does code still match the decisions?",
+    edges:["e-mcp-health","e-health-graph","e-graph-lance"],
+    nodes:["mcp","health","graph","lancedb"],
+    steps:["After code changes: <code>forgeplan drift</code> / <code>forgeplan health</code>","Traverses the typed dependency graph","Surfaces <b>blind spots</b> (code with no covering ADR) and stale decisions","Fix them before starting new work — health must be green"]
+  }
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FLOW CHIP LOGIC
+═══════════════════════════════════════════════════════════════════════════ */
+const stage  = document.getElementById('stage');
+const svg    = document.getElementById('map-svg');
+const nodes  = document.querySelectorAll('.node');
+const edges  = document.querySelectorAll('.edge');
+const elbls  = document.querySelectorAll('.elbl');
+const chips  = document.querySelectorAll('.chip');
+const fcap   = document.getElementById('flowcap');
+
+function setFlow(key) {
+  chips.forEach(c => c.classList.toggle('on', c.dataset.flow === key));
+  edges.forEach(e => e.classList.remove('lit'));
+  elbls.forEach(l => l.classList.remove('lit'));
+  nodes.forEach(n => n.classList.remove('lit'));
+  if (key === 'all') {
+    stage.classList.remove('flowing');
+    fcap.classList.remove('show');
+    return;
+  }
+  const f = FLOWS[key];
+  stage.classList.add('flowing');
+  f.edges.forEach(id => document.getElementById(id)?.classList.add('lit'));
+  elbls.forEach(l => { if (f.edges.includes(l.dataset.e)) l.classList.add('lit'); });
+  f.nodes.forEach(k => document.querySelector(`.node[data-k="${k}"]`)?.classList.add('lit'));
+  document.getElementById('f-name').textContent = f.name;
+  document.getElementById('f-steps').innerHTML = f.steps.map(s => `<li>${s}</li>`).join('');
+  fcap.classList.add('show');
+}
+chips.forEach(c => c.addEventListener('click', () => setFlow(c.dataset.flow)));
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   NODE CLICK → DETAIL
+═══════════════════════════════════════════════════════════════════════════ */
+nodes.forEach(n => n.addEventListener('click', () => {
+  nodes.forEach(x => x.classList.remove('sel'));
+  n.classList.add('sel');
+  const d = DETAIL[n.dataset.k];
+  if (!d) return;
+  document.getElementById('d-title').textContent = d.t;
+  document.getElementById('d-meta').textContent  = d.m;
+  document.getElementById('d-body').innerHTML    = d.b;
+}));
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THEME TOGGLE
+═══════════════════════════════════════════════════════════════════════════ */
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const dark = !document.documentElement.classList.contains('dark');
+  document.documentElement.classList.toggle('dark', dark);
+  localStorage.setItem('fp-theme', dark ? 'dark' : 'light');
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PAN + CTRL/CMD-SCROLL ZOOM
+═══════════════════════════════════════════════════════════════════════════ */
+let vbX=0, vbY=0, vbW=1760, vbH=1060;
+let isPanning=false, startX=0, startY=0, startVbX=0, startVbY=0;
+
+function applyVB() {
+  svg.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
+}
+
+svg.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  isPanning = true;
+  startX = e.clientX; startY = e.clientY;
+  startVbX = vbX; startVbY = vbY;
+  svg.classList.add('panning');
+});
+window.addEventListener('mousemove', e => {
+  if (!isPanning) return;
+  const scaleX = vbW / svg.getBoundingClientRect().width;
+  const scaleY = vbH / svg.getBoundingClientRect().height;
+  vbX = startVbX - (e.clientX - startX) * scaleX;
+  vbY = startVbY - (e.clientY - startY) * scaleY;
+  applyVB();
+});
+window.addEventListener('mouseup', () => {
+  isPanning = false;
+  svg.classList.remove('panning');
+});
+
+svg.addEventListener('wheel', e => {
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  const rect = svg.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) / rect.width;
+  const my = (e.clientY - rect.top)  / rect.height;
+  const factor = e.deltaY > 0 ? 1.10 : 0.91;
+  const newW = Math.min(3200, Math.max(640, vbW * factor));
+  const newH = Math.min(2000, Math.max(400, vbH * factor));
+  vbX = vbX + mx * (vbW - newW);
+  vbY = vbY + my * (vbH - newH);
+  vbW = newW; vbH = newH;
+  applyVB();
+  showZoomHint();
+}, { passive: false });
+
+/* Touch pan/pinch */
+let touches = null, startVbOnTouch = null;
+svg.addEventListener('touchstart', e => {
+  touches = [...e.touches];
+  startVbOnTouch = { x: vbX, y: vbY, w: vbW, h: vbH };
+}, { passive: true });
+svg.addEventListener('touchmove', e => {
+  if (!touches || !startVbOnTouch) return;
+  const rect = svg.getBoundingClientRect();
+  const scaleX = vbW / rect.width;
+  const scaleY = vbH / rect.height;
+  if (e.touches.length === 1 && touches.length === 1) {
+    const dx = (e.touches[0].clientX - touches[0].clientX) * scaleX;
+    const dy = (e.touches[0].clientY - touches[0].clientY) * scaleY;
+    vbX = startVbOnTouch.x - dx;
+    vbY = startVbOnTouch.y - dy;
+    applyVB();
+  } else if (e.touches.length === 2 && touches.length === 2) {
+    const d0 = Math.hypot(touches[1].clientX - touches[0].clientX, touches[1].clientY - touches[0].clientY);
+    const d1 = Math.hypot(e.touches[1].clientX - e.touches[0].clientX, e.touches[1].clientY - e.touches[0].clientY);
+    const factor = d0 / d1;
+    const newW = Math.min(3200, Math.max(640, startVbOnTouch.w * factor));
+    const newH = Math.min(2000, Math.max(400, startVbOnTouch.h * factor));
+    vbW = newW; vbH = newH;
+    applyVB();
+  }
+  e.preventDefault();
+}, { passive: false });
+svg.addEventListener('touchend', () => { touches = null; });
+
+/* Zoom hint */
+let hintTimer = null;
+const zoomHint = document.createElement('div');
+zoomHint.className = 'zoom-hint';
+zoomHint.textContent = 'ctrl/cmd + scroll to zoom · drag to pan';
+stage.appendChild(zoomHint);
+function showZoomHint() {
+  zoomHint.classList.add('show');
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => zoomHint.classList.remove('show'), 1800);
+}
+</script>
+</body>
+</html>

@@ -28,7 +28,9 @@ Instructions for Claude Code when working in this repository.
   semantic search промахнётся. Если случайно отредактирован — recover через
   `forgeplan_update id=<ID> body=<full new body>` (читаешь файл, формируешь
   полное новое body без YAML frontmatter, пушишь через MCP). Last-resort
-  fallback: `forgeplan scan-import` пересоберёт LanceDB из markdown.
+  fallback: `forgeplan reindex` пересоберёт LanceDB из markdown
+  (**не** `scan-import` — тот ищет и импортирует новые артефакты из
+  произвольного markdown, существующие не синхронизирует; см. #420).
   Direct Edit OK ТОЛЬКО для не-forgeplan markdown (READMEs, CLAUDE.md,
   KNOWN-ISSUES, src code, .changeset/*.md).
 
@@ -86,6 +88,21 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 ## Current status
 
+- **v0.34.0** (2026-08-17) — **artifact integrity**. R_eff scores an artifact's
+  **current** evidence only (ADR-020, breaking: terminal `superseded`/`deprecated`
+  packs leave the weakest-link min; active `refutes` still zeroes; draft still
+  counts) + **git-delta provenance** for code-claiming Evidence (PRD-082/#360:
+  `base_sha`/`result_sha`/`changed_paths` re-derived against the real delta;
+  config `integrity.evidence_provenance_gate` = block|warn|off, default warn) +
+  identity/collision class closed (`update --status superseded|deprecated|active`
+  now rejected — it was a one-call score-laundering vector; `reindex` reports
+  duplicate ids; new `unbacked_displacement` detector; anomalies 140 → 34).
+  Security: RUSTSEC-2026-0204 crossbeam-epoch (cargo-deny had been red on `dev`
+  for 11 days — RustSec is not mirrored into Dependabot), quinn-proto HIGH,
+  serde_with. Dependabot: lru LOW carried; 39 npm alerts scheduled (website-only).
+  Migration: run `forgeplan score --all`; expect a small number of artifacts whose
+  only evidence was retired to drop to 0 (1 of 89 here) — that is real debt the
+  old formula masked.
 - **v0.33.0** (2026-06-04) — MCP worktree-aware routing (PRD-078: optional
   `workspace` param on store-resolution tools — strict write-gate / soft read,
   closes PROB-072) + CRITICAL #350 fix (`@file` body expansion, no silent data
@@ -97,7 +114,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
   lru LOW carried; lancedb 0.30 / sha2 / notify / arrow-schema deferred to v0.34.
 - **v0.32.1** (2026-05-21) — hotfix: Windows binary build; v0.32.0: Epic #287
   brownfield extraction surface + PROB-074 stale-handle hardening.
-- **76 CLI commands**, **73 MCP tools**, **3095+ tests**, **0 warnings** on both feature configs
+- **81 CLI commands**, **73 MCP tools**, **3243 tests + 9 doc-tests** (CI `nextest`), **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**, **Epic #287 ✅** (brownfield). Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 (feature-gated, graceful fallback)
 
@@ -152,6 +169,92 @@ Call `memory_recall` only for records beyond the index.
 
 ---
 
+## Task List Discipline
+
+**Список задач — единственная долговечная запись работы в полёте.** Чат прокручивается,
+агенты уходят в простой, контекст сжимается. Всё, что существует только в прозе —
+теряется.
+
+Единица работы становится задачей **до** того, как кто-то трогает код, а не после.
+Каждая задача несёт владельца — имя агента или главную сессию. Задача `in_progress`
+без владельца означает работу, которую никто не делает.
+
+### Соотношение с forgeplan
+
+Этот репозиторий — сам forgeplan, поэтому `.forgeplan/` здесь и dogfood, и рабочий
+граф (`forgeplan` + `hindsight` + `orch` в `.mcp.json`). Разделение слоёв — каждый
+факт живёт ровно в одном месте:
+
+| Слой | Где | Что в нём |
+| --- | --- | --- |
+| Работа в полёте | task list | что делается прямо сейчас, кем, в каком статусе |
+| Решения | `.forgeplan/adrs/` | ADR — **единственное** место; `docs/` держит гайды и схемы, не решения |
+| Найденные дефекты | `.forgeplan/problems/` | находка + репродьюсер + `file:line`, переживающая сессию |
+| Доказательства | `.forgeplan/evidence/` | вердикт прогона со `## Structured Fields`, а не пересказ отчёта агента |
+| Дорожная карта | `TODO.md` (приоритеты), `docs/ROADMAP.md` (gap analysis) | долгосрочный бэклог |
+
+Задача **ссылается на артефакт по ID** (`PROB-079`), а не копирует его тело.
+Артефакт переживает сессию; задача — нет. Поэтому находка, которая должна дожить
+до следующей недели, обязана стать артефактом, **даже если задача по ней закрыта**.
+
+`/smith` читает состояние через `forgeplan_health` / `forgeplan_claims` — пустой
+граф означает, что он маршрутизирует вслепую. Если работа велась, а артефактов не
+появилось, это дефект процесса, а не экономия.
+
+🔴 Артефакты мутируются **только** через MCP/CLI (RED LINE #11). Задача может
+описывать что угодно; породить `.forgeplan/*.md` она обязана через
+`forgeplan_new` / `forgeplan_update` / `forgeplan_link`.
+
+### Статусы честные
+
+- `in_progress` ставится **при старте**, не при планировании.
+- Заблокированная задача **остаётся** `in_progress` и получает пометку о блокере
+  (что именно ждём). Она не откатывается тихо в `pending` — тихий откат выглядит
+  как «никто этим не занимался», а не как «застряли на X».
+- `completed` означает, что **верификацию перезапустил ты сам**, а не что агент
+  отрапортовал об успехе. Перезапуск гейта (`cargo test`, `cargo clippy`,
+  `forgeplan validate`) дёшев; ложный зелёный — нет.
+
+### Ничего не теряется
+
+- **Находки по ходу становятся задачами**, а не строчками в отчёте. «Я заметил X,
+  пока делал Y» и больше нигде — это ровно то, как X теряется.
+- **Отложенная работа получает явный триггер** — в том же виде, в каком это делают
+  ADR: *что должно стать правдой, чтобы её взяли*. «Потом» — не триггер. «Когда
+  измерим cold-start» — триггер.
+- **Описание задачи хранит, что решили и почему**, включая исправления. Если
+  заявленная острота находки оказалась завышенной — исправленная версия живёт
+  в задаче, чтобы следующий читатель не вывел заново неверный вывод.
+
+### Переоткрывать без колебаний
+
+Агент, помечающий собственную задачу готовой, выносит **утверждение**, а не вердикт
+(то же разделение, что generator ≠ verifier в `/audit`). Нет доказательства —
+тест не компилировался, гейт не запускался, отчёт не пришёл — верни в `in_progress`
+и **назови, какого именно доказательства не хватает**.
+
+### Параллельные агенты
+
+- **Строгое владение файлами, объявленное в задании** — перечисли OWNED и FORBIDDEN
+  пути (см. «Worker brief required fields» ниже). При реальной необходимости пересечь
+  границу агент **останавливается и спрашивает**, а не правит и упоминает потом.
+- **В общих файлах — только точечные правки по совпадению строки, никогда перезапись
+  файла целиком.** Точечные правки в непересекающихся местах сосуществуют; целофайловая
+  запись молча съедает чужое изменение.
+- **Агенты уходят в простой, не отправив отчёт** — проверяй состояние дерева сам
+  (`git status`, `git log`, чтение файла). Быстрее и надёжнее повторного запроса.
+- **Мутационный тест оставляет в рабочей копии настоящую уязвимость** — держи окно
+  коротким, не уходи в простой с ней, проверяй откат самостоятельно.
+
+### Чего не делать
+
+- Не заводить задачу на однострочную правку — Tactical depth не требует трекинга.
+- Не держать задачу открытой «на всякий случай».
+- Не дублировать в задаче то, что уже записано в ADR/RFC/PRD — задача **ссылается**
+  на решение, а не переписывает его.
+
+---
+
 ## Routing — one question determines depth
 
 | Complexity | Depth | Artifacts | ADI |
@@ -186,6 +289,27 @@ verdict: supports            # supports / weakens / refutes
 congruence_level: 3          # CL3 = same context (best) … CL0 = opposed (worst)
 evidence_type: measurement   # measurement / test / benchmark / audit
 ```
+
+**Code-claiming evidence** (пак утверждает, что код изменился) — добавь git-provenance
+(PRD-082 / #360). Все три поля или ни одного: частичный claim отвергается как `Incomplete`.
+
+```markdown
+base_sha: 92154e19                          # состояние ДО изменения
+result_sha: 808db24                         # состояние ПОСЛЕ
+changed_paths: src/a.rs, tests/b.rs         # comma-separated
+```
+
+`forgeplan activate` перепроверяет claim против реальной git-дельты
+(`git diff --merge-base`), а не верит самоотчёту исполнителя. Зелёные тесты
+поверх **пустой дельты** — NULL-результат, не пройденная проверка. Режим задаётся
+`integrity.evidence_provenance_gate` в `.forgeplan/config.yaml`:
+`block` (отказать в активации) / `warn` (активировать + показать расхождение, **default**) /
+`off`. `--force` обходит гейт. Паки без provenance-полей не затронуты (`NotClaimed`).
+
+**R_eff считает только текущую эвиденцию** (ADR-020): паки с терминальным статусом
+(`superseded`/`deprecated`) исключаются из min, но остаются в графе как история.
+Активный `refutes` по-прежнему обнуляет score. Вытеснять — через
+`supersede <old> --by <new>`, а не правкой вердикта.
 
 ---
 
@@ -280,12 +404,22 @@ The validator accepts section synonyms:
 ```
 <type>(<scope>): <description>
 
-[body in Russian]
+[body in English]
 
 Refs: RFC-001, FR-001..004
 ```
 Types: `feat`, `docs`, `fix`, `refactor`, `test`, `chore`, `progress`.
 Scope: module (`cli`, `core`, `store`) or artifact (`rfc`, `prd`, `adr`).
+
+**🌐 Language rule (commits + PRs always EN)**:
+- Commit message subject and body — **English only**, no mixing.
+- PR title and description — **English only**.
+- Branch names — English kebab-case (already the convention).
+- Inline tokens are fine: you can quote Russian filenames/identifiers/strings
+  in code spans (e.g. `"Связанные разборы"` block removed), but the surrounding
+  narrative stays English.
+- Content files (`.mdx`, `.md` blog posts, `.forgeplan/` artifacts) keep their
+  source language — the rule applies only to git/GitHub metadata.
 
 **PR rules (minimal)**:
 - Title: `[ARTIFACT-ID] description`
@@ -532,7 +666,9 @@ Each MUST find ≥3 issues. Zero findings → re-spawn (suspect superficial revi
 1. Re-Read file to capture current content
 2. Strip YAML frontmatter (forgeplan_update body excludes it)
 3. `mcp__forgeplan__forgeplan_update(id="<ID>", body=<full body>)`
-4. Last-resort fallback: `forgeplan scan-import` rebuilds LanceDB from markdown
+4. Last-resort fallback: `forgeplan reindex` rebuilds LanceDB from markdown
+   (**not** `scan-import` — that one discovers and imports *new* artifacts from
+   arbitrary markdown; it does not sync artifacts already in the graph, #420)
 
 Document the violation в commit message so reviewer recognizes the pattern was caught.
 
@@ -583,7 +719,7 @@ JSON: `_next_action` field. Following hints = staying на methodology path
 ## Key formulas
 
 ### R_eff (scoring)
-- `R_eff = min(evidence_scores)` — trust = weakest link, **never average**
+- `R_eff = min(evidence_scores)` — trust = weakest link, **never average**. Min идёт только по **текущей** эвиденции: пакеты с терминальным статусом (superseded/deprecated) исключаются (ADR-020); draft считается; активный `refutes` по-прежнему обнуляет
 - Evidence Decay: `valid_until` TTL, expired = 0.1
 - CL penalty: CL3=0.0, CL2=0.1, CL1=0.4, CL0=0.9
 - DerivedStatus: UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED
@@ -653,14 +789,18 @@ forgeplan claims              # кто что захватил
 ├── evidence/ problems/ solutions/
 ├── notes/ refresh/ memory/
 ├── config.yaml         ← tracked (env var refs only, no hardcoded secrets)
-├── lance/              ← ⚠️ gitignored (derived index — forgeplan scan-import)
+├── lance/              ← ⚠️ gitignored (derived index — forgeplan reindex)
 ├── .fastembed_cache/   ← ⚠️ gitignored
 └── session.yaml        ← ⚠️ gitignored (per-machine runtime state)
 ```
 
-**Fresh clone**: `git clone → forgeplan init -y → forgeplan scan-import → forgeplan list`.
+**Fresh clone**: `git clone → forgeplan init -y → forgeplan reindex → forgeplan list`.
 
-**Rules**: edit via `forgeplan` CLI; direct markdown edits require `forgeplan scan-import`; DO NOT commit `lance/` or `session.yaml`.
+**`reindex` vs `scan-import`** — не взаимозаменяемы:
+- `forgeplan reindex` — синхронизирует **существующие** артефакты `.forgeplan/**.md` в LanceDB. Это команда восстановления индекса.
+- `forgeplan scan-import` — **находит и импортирует новые** артефакты из произвольного markdown. Существующие не трогает, и в этом репозитории затягивает `templates/` и `docs/` как ложные артефакты (PROB-047).
+
+**Rules**: edit via `forgeplan` CLI; direct markdown edits require `forgeplan reindex`; DO NOT commit `lance/` or `session.yaml`.
 
 ---
 

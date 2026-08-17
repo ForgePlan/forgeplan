@@ -65,6 +65,7 @@ plan-dist-manifest.json
 # Playwright screenshots
 *.png
 !.github/assets/*.png
+!favicon_pack/*.png
 *.pen
 W1-L2-CLAUDE-additional-sources.zip
 
@@ -108,5 +109,26 @@ W1-L2-CLAUDE-additional-sources.zip
 .forgeplan/trash/
 .forgeplan/logs/
 .forgeplan/locks/
+# Per-developer API keys loaded by config/secrets.rs (PRD-077 FR-023).
+# Never commit — config.yaml holds env-var *references*, this file holds values.
+.forgeplan/secrets.env
 # === end forgeplan section ===
 .forgeplan/anomalies-journal.jsonl
+
+# dev/ reference clones — external repos studied as prior art, not ours to track
+dev/vibe-kanban/
+dev/gastown/
+dev/swarm-forge/
+dev/effective-html/
+dev/architecture-diagram-generator/
+
+# dev/ derived + vendored artifacts — regenerable, never source
+dev/forge-understand/spike/vendor/
+dev/forgeplan-project-map/
+dev/forgeplan-project-map.zip
+
+# Serena tool state (per-developer, regenerable)
+.serena/
+
+# vNext pack: per-machine GitHub issue-creation state
+docs/vnext/engineering-contract-layer/.created-issues.json

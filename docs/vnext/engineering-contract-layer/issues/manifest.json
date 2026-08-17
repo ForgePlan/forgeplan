@@ -1,0 +1,184 @@
+{
+  "schema": "forgeplan.vnext.issue-manifest.v1",
+  "generated_for": "ForgePlan",
+  "issues": [
+    {
+      "key": "FPV-00",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[EPIC] ForgePlan vNext — engineering contract and verification layer",
+      "phase": 0,
+      "depends": [],
+      "summary": "Umbrella program coordinating product boundary, Protocol v1, Core, integrations, Web and documentation."
+    },
+    {
+      "key": "FPV-01",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[ARCH] Adopt canonical ForgePlan product boundary and target architecture",
+      "phase": 0,
+      "depends": [],
+      "summary": "Create authoritative ADR/docs defining what ForgePlan owns, delegates and never becomes."
+    },
+    {
+      "key": "FPV-02",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[PROTOCOL] Publish ForgePlan Protocol v1 schemas and compatibility rules",
+      "phase": 1,
+      "depends": [
+        "FPV-01"
+      ],
+      "summary": "Create versioned neutral protocol types independent of CLI, MCP and individual hosts."
+    },
+    {
+      "key": "FPV-03",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[CORE] Implement deterministic WorkContract compiler v1",
+      "phase": 2,
+      "depends": [
+        "FPV-02"
+      ],
+      "summary": "Compile artifact graph, active decisions and policy into immutable execution contracts."
+    },
+    {
+      "key": "FPV-04",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[CORE] Add ExecutionReceipt and external reference model",
+      "phase": 2,
+      "depends": [
+        "FPV-02"
+      ],
+      "summary": "Correlate external executions without owning their runtime state."
+    },
+    {
+      "key": "FPV-05",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[CORE] Implement EvidenceBundle and ground-truth verification gates",
+      "phase": 2,
+      "depends": [
+        "FPV-02",
+        "FPV-03",
+        "FPV-04"
+      ],
+      "summary": "Verify actual git/test/CI evidence instead of trusting agent completion claims."
+    },
+    {
+      "key": "FPV-06",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[CORE] Introduce claim-centric Evidence scoring and R_eff v2",
+      "phase": 2,
+      "depends": [
+        "FPV-02"
+      ],
+      "summary": "Preserve weakest-link reasoning while scoring required claims rather than arbitrary attached items."
+    },
+    {
+      "key": "FPV-07",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[CORE] Implement authority and policy engine",
+      "phase": 2,
+      "depends": [
+        "FPV-02",
+        "FPV-03"
+      ],
+      "summary": "Enforce who may compile, execute, change scope, accept Evidence and activate decisions."
+    },
+    {
+      "key": "FPV-08",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[AGENT-API] Unify CLI/MCP semantics and ship role-based Agent API v2",
+      "phase": 2,
+      "depends": [
+        "FPV-02"
+      ],
+      "summary": "Reduce tool surface, add batch context and eliminate transport asymmetries/performance gaps."
+    },
+    {
+      "key": "FPV-09",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[CONFORMANCE] Add capability manifest and host/orchestrator conformance framework",
+      "phase": 3,
+      "depends": [
+        "FPV-02",
+        "FPV-03",
+        "FPV-04",
+        "FPV-05",
+        "FPV-07"
+      ],
+      "summary": "Make compatibility claims evidence-based and machine-generated."
+    },
+    {
+      "key": "FPV-10",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[DOCS] Rebuild product positioning, documentation IA and docs-as-code gates",
+      "phase": 1,
+      "depends": [
+        "FPV-01"
+      ],
+      "summary": "Align site, README and docs around contract/verification positioning and eliminate drift."
+    },
+    {
+      "key": "FPV-11",
+      "repo": "ForgePlan/marketplace",
+      "title": "[EXTENSIONS V2] Introduce extension taxonomy, manifests and generated catalog",
+      "phase": 3,
+      "depends": [
+        "FPV-02",
+        "FPV-09"
+      ],
+      "summary": "Turn the Claude-first Marketplace into explicit cross-host ForgePlan Extensions."
+    },
+    {
+      "key": "FPV-12",
+      "repo": "ForgePlan/marketplace",
+      "title": "[HOST ADAPTERS] Ship official Cursor, Codex and OpenCode integrations",
+      "phase": 4,
+      "depends": [
+        "FPV-03",
+        "FPV-07",
+        "FPV-09",
+        "FPV-11"
+      ],
+      "summary": "Provide native host packages over the same WorkContract and policy semantics."
+    },
+    {
+      "key": "FPV-13",
+      "repo": "ForgePlan/marketplace",
+      "title": "[ORCHESTRATOR ADAPTERS] Integrate Kandev, Vibe Kanban, Conductor and Paperclip",
+      "phase": 5,
+      "depends": [
+        "FPV-04",
+        "FPV-05",
+        "FPV-09",
+        "FPV-11"
+      ],
+      "summary": "Connect external task/workspace/runtime systems without duplicating their state."
+    },
+    {
+      "key": "FPV-14",
+      "repo": "ForgePlan/forgeplan-web",
+      "title": "[WEB V2] Visualize contracts, executions, evidence, authority and PR graph delta",
+      "phase": 5,
+      "depends": [
+        "FPV-02",
+        "FPV-03",
+        "FPV-04",
+        "FPV-05",
+        "FPV-07"
+      ],
+      "summary": "Evolve the read-only graph viewer into verification observability without becoming a task/runtime UI."
+    },
+    {
+      "key": "FPV-15",
+      "repo": "ForgePlan/forgeplan",
+      "title": "[SERVER] Optional remote MCP and event-ingestion service for 24/7 systems",
+      "phase": 6,
+      "depends": [
+        "FPV-02",
+        "FPV-04",
+        "FPV-05",
+        "FPV-07",
+        "FPV-09"
+      ],
+      "summary": "Add optional durable integration infrastructure without becoming an agent scheduler."
+    }
+  ]
+}

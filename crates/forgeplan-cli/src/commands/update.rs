@@ -63,6 +63,23 @@ Fix: forgeplan list",
         );
     }
 
+    // ADR-020 audit BLOCKER: terminal statuses are score-relevant displacement
+    // (a terminal evidence pack leaves the R_eff min), so they must go through
+    // the lifecycle verbs — validated transition, successor (`supersede --by`)
+    // or reason (`deprecate --reason`), journal entry. A raw metadata write
+    // here was a one-call score-laundering vector: `update --status superseded`
+    // cleared an active refutes pack with no successor, no edge, no gate.
+    if let Some(s) = status
+        && (s.eq_ignore_ascii_case("superseded") || s.eq_ignore_ascii_case("deprecated"))
+    {
+        anyhow::bail!(
+            "Direct status change to '{}' is not allowed — displacement goes through the lifecycle.\nFix: forgeplan supersede {} --by <NEW-ID>\nOr: forgeplan deprecate {} --reason \"...\"",
+            s.to_lowercase(),
+            id,
+            id
+        );
+    }
+
     // PRD-073 audit fix: order is metadata FIRST (which writes any title
     // change into LanceDB), THEN depth/body (each renders against the new
     // title → new slug). The previous order ran depth before metadata, so
@@ -137,8 +154,18 @@ Fix: forgeplan list",
     // PRD-073 audit M1 fix: clean up OLD slug AFTER the new file is in place
     // (so there's no orphan window) and use exact-path removal so we don't
     // accidentally clobber a sibling artifact whose ID is a prefix of this one.
-    if title.is_some() {
-        let _ = projection::remove_projection_at(&ws, id, &original.kind, &original.title).await;
+    // The rename-aware helper additionally skips removal when the new title
+    // slugifies to the same filename (case/punctuation-only edit) — otherwise
+    // it deletes the file update just wrote (silent, reindex-unrecoverable).
+    if let Some(new_title) = title {
+        let _ = projection::remove_stale_projection_after_rename(
+            &ws,
+            id,
+            &original.kind,
+            &original.title,
+            new_title,
+        )
+        .await;
     }
 
     // Log changes

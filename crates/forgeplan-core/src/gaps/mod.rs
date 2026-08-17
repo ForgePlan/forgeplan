@@ -253,8 +253,12 @@ fn check_active_without_evidence(
         return;
     }
 
+    // ADR-020: only non-terminal packs count as "has evidence" — an artifact
+    // whose every pack was displaced is in the MUST "no active evidence" gap,
+    // not the softer "weak evidence" one.
     let has_evidence = evidence_records
         .iter()
+        .filter(|ev| !crate::lifecycle::transitions::is_terminal(&ev.status))
         .any(|ev| is_evidence_linked(&record.id, &ev.id, outgoing));
 
     if !has_evidence {

@@ -3,9 +3,14 @@
 > **Roadmap**: see [`docs/ROADMAP.md`](docs/ROADMAP.md) for full gap analysis by category
 > (Architecture 85%, UX 70%, Performance 80%, Distribution 65%, Docs 60%, Integrations 55%).
 
-## Current dev: v0.31.0 (in progress on `dev` — Cargo.toml workspace = 0.30.0)
+## Current: v0.34.0 (released 2026-08-17 — Cargo.toml workspace = 0.34.0)
 
 Recent releases (authoritative: `git tag --sort=-v:refname | head` + `Cargo.toml`):
+
+- **v0.34.0** (released 2026-08-17) — artifact integrity: R_eff scores current evidence only (ADR-020, breaking) + git-delta provenance for code-claiming Evidence (PRD-082/#360) + identity/collision hardening (`update --status` gated, `reindex` duplicate-id detection, `unbacked_displacement` detector, anomalies 140 → 34). Security: RUSTSEC-2026-0204 + quinn-proto HIGH + serde_with.
+- **v0.33.0** (released 2026-06-04) — MCP worktree-aware routing (PRD-078) + CRITICAL #350 `@file` expansion + PROB-078 refuted.
+- **v0.32.1 / v0.32.0** (released 2026-05-21) — Windows binary hotfix; Epic #287 brownfield surface + PROB-074 stale-handle hardening.
+- **v0.31.0** (released 2026-05-12, sync PR #285) — Wave 9 quality closure.
 
 - **v0.30.0** (released 2026-05-06, sync PR #262) — PROB-060 slug-canonical identity marathon (PR #255..#274) + Phase 2.5 resolver wire-up.
 - **v0.29.0** (released 2026-05-05, sync PR #250) — verdict aggregator typed errors (PROB-049 H-class), claude --print dispatch refactor (PROB-050 A-4..A-15), CWE-426 binary substitution closed.

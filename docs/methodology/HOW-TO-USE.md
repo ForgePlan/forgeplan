@@ -212,7 +212,7 @@ Rule: the reviewer MUST find problems. 0 problems = review not counted.
 
 ### R_eff Scoring -- for decisions with evidence:
 
-R_eff = min(evidence_scores). Trust = weakest link.
+R_eff = min(evidence_scores). Trust = weakest link. The min ranges over current evidence only — terminal-status packs (`superseded`/`deprecated`) are excluded (ADR-020).
 
 **When**: there are EvidencePack artifacts with verdict and CL. Not needed if there is no formal evidence.
 

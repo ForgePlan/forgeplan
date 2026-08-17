@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeplan.dev/schemas/verification-verdict.v1.json",
+  "title": "ForgePlan VerificationVerdict v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "protocol_version",
+    "verdict_id",
+    "contract",
+    "evidence_bundle",
+    "verdict",
+    "criteria",
+    "policy_version",
+    "decided_at",
+    "decided_by",
+    "digest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "forgeplan.verification-verdict.v1"
+    },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^1\\."
+    },
+    "verdict_id": {
+      "type": "string"
+    },
+    "contract": {
+      "type": "string"
+    },
+    "evidence_bundle": {
+      "type": "string"
+    },
+    "verdict": {
+      "enum": [
+        "accepted",
+        "rejected",
+        "incomplete",
+        "blocked",
+        "requires_human_review",
+        "stale"
+      ]
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "verdict"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "pass",
+              "fail",
+              "missing",
+              "stale",
+              "review"
+            ]
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "policy_version": {
+      "type": "string"
+    },
+    "decided_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "decided_by": {
+      "type": "string"
+    },
+    "digest": {
+      "type": "string"
+    },
+    "extensions": {
+      "type": "object"
+    }
+  }
+}

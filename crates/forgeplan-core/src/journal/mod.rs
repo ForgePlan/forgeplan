@@ -62,7 +62,12 @@ pub async fn build_journal(
 
             if linked {
                 let item = parse_evidence_from_record(ev);
-                if item.valid_until.map(|dt| now > dt).unwrap_or(false) {
+                // ADR-020: a displaced (terminal) pack cannot be refreshed —
+                // its expiry must not keep the artifact flagged at-risk
+                // forever after an honest displacement.
+                if item.is_scoring_eligible()
+                    && item.valid_until.map(|dt| now > dt).unwrap_or(false)
+                {
                     has_stale = true;
                 }
                 items.push(item);

@@ -1,0 +1,15 @@
+{
+  "name": "forge-understand",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MVP: scan a whole repo with headless Claude Code and render an interactive HTML understanding map via the forge-diagram skill.",
+  "bin": {
+    "forge-understand": "./run.mjs"
+  },
+  "scripts": {
+    "start": "node run.mjs",
+    "dry": "node run.mjs --dry-run"
+  },
+  "license": "MIT"
+}

@@ -120,7 +120,7 @@ congruence_level: 3
 evidence_type: measurement
 ```
 
-(See [EvidencePack schema](../schemas/EVIDENCE.md) for details.)
+(Field semantics: this section; scoring participation: §Evidence Lifecycle and Scoring below.)
 
 ### Step 3: Link to the artifact
 ```bash
@@ -141,6 +141,64 @@ Refs: PRD-MMM"
 gh pr create --title "[Evidence] Add EVID-NNN for PRD-MMM" \
   --body "Retroactively captured evidence from merged feature. See EVID-NNN for test results."
 ```
+
+## Git Provenance for Code-Claiming Evidence (PRD-082 / #360)
+
+An EvidencePack that claims code changed may declare three extra fields in the same
+`## Structured Fields` block. **All three or none** — a partial claim is rejected as
+`Incomplete`:
+
+```markdown
+base_sha: 92154e19                        # state BEFORE the change
+result_sha: 808db24                       # state AFTER
+changed_paths: src/a.rs, tests/b.rs       # comma-separated
+```
+
+`forgeplan activate` (CLI and `forgeplan_activate` over MCP) re-derives the claim against
+the real git delta — `git diff --merge-base --name-only --no-renames -z base result` —
+instead of trusting the executor's self-report. Verify the artifact, not the claim.
+
+| Verdict | Meaning |
+|---|---|
+| `NotClaimed` | no provenance fields — every pack written before this feature; never a failure |
+| `Verified` | the claimed paths appear in the real delta |
+| `EmptyDelta` | the two SHAs produce **no** delta — green tests over nothing changed is a null result, not a pass |
+| `PathMismatch` | a claimed path is absent from the delta |
+| `Incomplete` | only some of the three fields are present |
+
+Gate mode lives in `.forgeplan/config.yaml`:
+
+```yaml
+integrity:
+  evidence_provenance_gate: warn   # block | warn | off  (default: warn)
+```
+
+- **`block`** — activation is refused; the artifact stays `draft`.
+- **`warn`** *(default)* — activation proceeds and the discrepancy is surfaced (CLI on stderr,
+  MCP inside the success payload).
+- **`off`** — the gate is skipped entirely.
+
+`forgeplan activate --force` bypasses the gate, the same escape hatch as the methodology
+gates. A git error (unresolvable SHA — hallucinated, or real but absent from a shallow
+clone) only ever **warns**, never blocks: the two cannot be told apart locally without a
+network fetch (ADR-019). The gate establishes that the claimed change *exists* — it does
+not run tests and says nothing about their quality.
+
+## Evidence Lifecycle and Scoring (ADR-020)
+
+Which packs feed `R_eff = min(evidence_scores)` depends on the pack's lifecycle status:
+
+| Evidence status | Participates in min()? | Why |
+|---|---|---|
+| `draft` | **yes** | a fresh measurement awaiting activation — the score gate runs before activation in the standard flow |
+| `active` | **yes** | current testimony; an active `refutes` pack zeroes the score |
+| `stale` | **yes** | not terminal — flagged for re-evaluation but not displaced; an expired `valid_until` separately decays the pack's score to 0.1 |
+| `superseded` | **no** | displaced by a successor (`supersede <old> --by <new>`) — history stays in the graph, but it no longer speaks for present reliability |
+| `deprecated` | **no** | retired (e.g. a duplicate deprecated with `--reason "superseded by EVID-y"`) |
+
+Every exclusion is logged in `forgeplan score` factors (`Skipped EVID-x (status: superseded)`) and marked in the breakdown (`excluded from min`) — displacement is auditable, never silent. If ALL linked packs are terminal, the artifact degrades to **no active evidence** (R_eff 0.0): recovery requires the replacement pack to be *linked* to the artifact, not just to exist.
+
+The honest way to clear a stale weak pack is displacement — link the re-verification evidence, then supersede the old pack. Editing a pack's verdict to raise a score is history falsification; the graph keeps the original pack precisely so you never have to.
 
 ## Technical Details
 
@@ -227,5 +285,5 @@ A: File a PROB or decision note explaining why, then decide: (1) reclassify as `
 - **PROB-035, PROB-039**: Silent failures from happy-path-only testing
 - **Hooks**: `.claude/hooks/pre-pr-evidence-check.sh`
 - **Health**: `forgeplan health` command
-- **Schema**: `docs/schemas/EVIDENCE.md` (EvidencePack structure)
+- **Schema**: §Structured Fields above (EvidencePack structure; a dedicated `docs/schemas/EVIDENCE.md` does not exist yet)
 

@@ -39,7 +39,7 @@ jobs:
     if: github.event_name == 'pull_request' && (github.base_ref == 'dev' || (github.base_ref == 'main' && !startsWith(github.head_ref, 'release/')))
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4.1.7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0  # Full history for git diff to work correctly
 
@@ -77,12 +77,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4.1.7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Check Rust enum vs bash validator drift
         run: |
           chmod +x scripts/check-kind-list-drift.sh
           scripts/check-kind-list-drift.sh
+
+  check-mcp-tool-count-drift:
+    name: Check MCP tool count drift
+    runs-on: ubuntu-latest
+    # In ci.yml (all PRs, no path filter) rather than forgeplan-health.yml
+    # (paths .forgeplan/**, crates/**): #421 showed the drift it guards lives
+    # in website/docs/CLAUDE.md/README/TODO, so a docs-only PR never ran it.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Self-test the detector's own regex
+        # #421: the extraction pattern had never been asserted, and a
+        # whitespace-only separator made it walk past `NN MCP-инструмента`
+        # (the idiomatic hyphenated Russian form) while printing "No drift".
+        # The pattern is tested before it is trusted.
+        run: SELF_TEST=1 scripts/check-mcp-tool-count.sh
+
+      - name: Check docs/site tool counts against src
+        # Fails CI if README/CLAUDE/landing/docs disagree with the actual
+        # #[tool(...)] count in src. Lessons learned 2026-05-04: an external
+        # reviewer caught 18+ stale references before the internal sweep.
+        run: scripts/check-mcp-tool-count.sh
 
   # PROB-060 Phase 2.3 (T4) — workspace audit of frontmatter validator coverage.
   #
@@ -113,7 +136,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4.1.7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Run validator audit on workspace
         run: |
@@ -126,10 +149,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4.1.7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable branch @ 2026-03-27 (no tag; verify with git ls-remote)
         with:
           components: clippy, rustfmt
 
@@ -194,10 +217,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4.1.7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable (pinned)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable branch @ 2026-03-27 (no tag; verify with git ls-remote)
 
       - name: Install protoc
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
@@ -234,7 +257,7 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538  # v2.33.60
+        uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094  # v2.85.1
         with:
           tool: cargo-nextest
 
@@ -258,10 +281,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4.1.7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable (pinned)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable branch @ 2026-03-27 (no tag; verify with git ls-remote)
 
       - name: Install protoc
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
@@ -304,7 +327,7 @@ jobs:
 
       - name: Upload smoke logs on failure
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v4.8.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: smoke-test-logs
           path: /tmp/forgeplan-smoke-*

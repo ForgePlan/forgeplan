@@ -11,6 +11,7 @@ description: "Replace an active artifact with a newer one - terminal transition 
 - A v2 RFC subsumes a v1 RFC: same problem, better architecture, the old plan no longer applies.
 - A PRD was split into two more focused PRDs, and one of them carries the continuation of the original scope.
 - A Spec was refactored and the old contract is no longer valid but must stay readable for history.
+- An **EvidencePack** was invalidated by later re-verification (e.g. an old `refutes` pack after the defect was fixed): link the new pack, then supersede the old one — the displaced pack leaves the parent artifact's R_eff min and the cached score is refreshed immediately.
 
 ## When NOT to use
 

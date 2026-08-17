@@ -51,6 +51,8 @@ Setup, hooks, and repository protection.
 | [MULTI-AGENT.md](operations/MULTI-AGENT.md) | **v0.24.0+ multi-agent dispatch** — `forgeplan_dispatch/claim/release/claims` MCP tools, file-overlap detection, skill routing |
 | [REPO-PROTECTION-GUIDE.md](operations/REPO-PROTECTION-GUIDE.md) | Branch protection, PR rules, destructive-action prevention |
 | [GIT-WORKFLOW.ru.md](operations/GIT-WORKFLOW.ru.md) | Full Git rules — branching lifecycle, PR pipeline, release process, worktrees |
+| [RELEASE-PROTOCOL.md](operations/RELEASE-PROTOCOL.md) ([ru](operations/RELEASE-PROTOCOL.ru.md)) | **Canonical release procedure** — the 10 steps for any `release/vX.Y.Z` cut, pre-conditions, and the mandatory post-merge sync-PR (RED LINE #9) |
+| `dependabot-triage-YYYY-MM-DD.md` | Per-release dependency-alert triage (RED LINE #10) — every open alert labelled addressed / scheduled / accepted-with-justification. One file per release window |
 | [SOURCE-PORTING.ru.md](operations/SOURCE-PORTING.ru.md) | Reference Code map — what was ported from `sources/{quint-code,git-adr,BMAD,OpenSpec,ccpm}` to our crates |
 | [PLAYBOOK-AUTHORING.ru.md](operations/PLAYBOOK-AUTHORING.ru.md) | **v0.26.0+ playbook authoring** — declarative YAML workflows, 5 delegation types, fallback hints, DAG ordering. **v0.27.0+ Subprocess lifecycle** section (real dispatchers, kill_on_drop, timeout policy, security model) per ADR-010/PRD-072 |
 | [INGEST-MAPPINGS.ru.md](operations/INGEST-MAPPINGS.ru.md) | **v0.26.0+ ingest mapping authoring** — translate plugin output to forge artifacts with hallucination-proof `## Sources` invariant (PRD-066/SPEC-004) |
@@ -99,7 +101,7 @@ forgeplan list -t adr            # list all ADRs
 forgeplan get ADR-003            # read one
 forgeplan validate PRD-024       # check quality
 forgeplan score PRD-024          # compute R_eff
-forgeplan scan-import            # rebuild LanceDB index from markdown
+forgeplan reindex                # rebuild LanceDB index from markdown
 ```
 
 **Fresh clone workflow:**
@@ -107,7 +109,7 @@ forgeplan scan-import            # rebuild LanceDB index from markdown
 ```bash
 git clone <repo> && cd forgeplan
 forgeplan init -y                # creates .forgeplan/lance/ locally (empty)
-forgeplan scan-import            # indexes tracked markdown into LanceDB
+forgeplan reindex                # syncs tracked markdown into LanceDB
 forgeplan list                   # verify — should see all artifacts
 ```
 
@@ -122,6 +124,6 @@ forgeplan list                   # verify — should see all artifacts
 ## Conventions
 
 - **All paths in documents are relative to repository root.**
-- **Artifact files in `.forgeplan/` are managed by the `forgeplan` CLI** — hand-editing works but may cause drift with the LanceDB index until `scan-import` runs.
+- **Artifact files in `.forgeplan/` are managed by the `forgeplan` CLI** — hand-editing works but may cause drift with the LanceDB index until `reindex` runs.
 - **Methodology docs here are authoritative** — if a tutorial and a schema disagree, the schema wins.
 - **Activated artifacts are immutable** — supersede via `forgeplan supersede`, do not rewrite history.

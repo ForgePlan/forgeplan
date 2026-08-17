@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeplan.dev/schemas/execution-receipt.v1.json",
+  "title": "ForgePlan ExecutionReceipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "protocol_version",
+    "execution_id",
+    "contract",
+    "actor",
+    "provider",
+    "status",
+    "started_at"
+  ],
+  "properties": {
+    "schema": {
+      "const": "forgeplan.execution-receipt.v1"
+    },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^1\\."
+    },
+    "execution_id": {
+      "type": "string"
+    },
+    "idempotency_key": {
+      "type": "string"
+    },
+    "contract": {
+      "type": "object",
+      "required": [
+        "id",
+        "version",
+        "digest"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "actor": {
+      "type": "object",
+      "required": [
+        "actor_id",
+        "actor_type"
+      ],
+      "properties": {
+        "actor_id": {
+          "type": "string"
+        },
+        "actor_type": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "instance_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "provider": {
+      "type": "object",
+      "required": [
+        "host"
+      ],
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "orchestrator": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "external": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "repository": {
+      "type": "object",
+      "properties": {
+        "base_sha": {
+          "type": "string"
+        },
+        "result_sha": {
+          "type": "string"
+        },
+        "changed_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "status": {
+      "enum": [
+        "registered",
+        "running",
+        "blocked",
+        "awaiting_review",
+        "completed",
+        "failed",
+        "cancelled",
+        "expired",
+        "superseded"
+      ]
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "extensions": {
+      "type": "object"
+    }
+  }
+}

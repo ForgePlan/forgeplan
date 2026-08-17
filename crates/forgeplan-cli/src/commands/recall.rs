@@ -83,6 +83,11 @@ pub async fn run(
                 serde_json::json!({
                     "id": r.id,
                     "category": category,
+                    // Issue #411: agents consume this payload and had NO way
+                    // to see provenance. Emitted UNSHORTENED — JSON has no
+                    // width budget, and truncating a machine-readable field
+                    // is data loss. `null` when unresolvable.
+                    "author": common::resolve_display_author(r.author.as_deref(), &r.body),
                     "created_at": r.created_at,
                     "text": plain,
                 })
@@ -103,10 +108,20 @@ pub async fn run(
         let plain = common::extract_plain_text(&r.body);
         let truncated: String = plain.chars().take(80).collect();
 
+        // Issue #411: recall already showed the "when" and not the "who",
+        // which is arbitrary — provenance IS the trust signal that decides
+        // whether a reader acts on a remembered fact. Rendered as a dim
+        // inline token rather than a column: recall rows are free-flow (no
+        // fixed widths), so this needs no alignment work — only the same
+        // shortening policy the list table uses.
+        let author = common::resolve_display_author(r.author.as_deref(), &r.body)
+            .map(|a| common::shorten_author(&a, common::AUTHOR_COL_MAX))
+            .unwrap_or_else(|| common::AUTHOR_MISSING.to_string());
         println!(
-            "{}  {}  {}  {}",
+            "{}  {}  {}  {}  {}",
             style(&r.id).bold(),
             style(format!("[{}]", category)).dim(),
+            style(&author).dim(),
             style(&date).dim(),
             truncated,
         );

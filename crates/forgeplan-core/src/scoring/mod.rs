@@ -1,6 +1,7 @@
 pub mod decay;
 pub mod evidence;
 pub mod fgr;
+pub mod provenance;
 pub mod reff;
 
 use std::collections::HashSet;
@@ -64,6 +65,36 @@ pub async fn sync_score_target(
     let report = reff::r_eff_recursive(id, store, &mut visited).await?;
     store.update_r_eff_score(id, report.r_eff).await?;
     Ok(report)
+}
+
+/// ADR-020: after an EVIDENCE pack is displaced (superseded/deprecated), the
+/// cached `r_eff_score` of every artifact it informs is stale — the pack just
+/// left their weakest-link min. Rescore each direct target so cached-score
+/// consumers (`get`, `list`, `tree`, search ranking, anomalies) serve the
+/// post-displacement value without waiting for a manual `forgeplan score`.
+///
+/// Best-effort by design (mutator-path philosophy of
+/// `sync_score_target_or_warn`): a target that fails to rescore is simply
+/// absent from the returned list — the displacement itself must never fail on
+/// a scoring hiccup. No-op for non-evidence artifacts. Transitive parents
+/// stay out of scope (see [`sync_score_target`] §3 — `score-all` covers them).
+pub async fn rescore_evidence_dependents(store: &LanceStore, evidence_id: &str) -> Vec<String> {
+    let mut rescored = Vec::new();
+    let Ok(Some(record)) = store.get_record(evidence_id).await else {
+        return rescored;
+    };
+    if !record.kind.eq_ignore_ascii_case("evidence") {
+        return rescored;
+    }
+    let outgoing = store.get_relations(evidence_id).await.unwrap_or_default();
+    for (target, rel) in outgoing {
+        if matches!(rel.as_str(), "informs" | "based_on" | "refines")
+            && sync_score_target(store, &target).await.is_ok()
+        {
+            rescored.push(target);
+        }
+    }
+    rescored
 }
 
 #[cfg(test)]

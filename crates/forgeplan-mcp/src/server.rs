@@ -3007,7 +3007,7 @@ impl ForgeplanServer {
     }
 
     #[tool(
-        description = "Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores).",
+        description = "Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores) over the artifact's CURRENT evidence — packs with a terminal status (superseded/deprecated) are excluded from the min (ADR-020) but stay listed with `excluded: true`. An active refutes pack still zeroes the score.",
         annotations(
             title = "Compute R_eff Score",
             read_only_hint = true,
@@ -3087,7 +3087,10 @@ impl ForgeplanServer {
             }
 
             let item = parse_evidence_from_record(ev);
-            let item_score = reff::r_eff(std::slice::from_ref(&item));
+            // ADR-020: report the pack's raw own-merit score; terminal-status
+            // packs stay listed but flagged `excluded` — they no longer feed
+            // the weakest-link min (r_eff filters them internally).
+            let item_score = reff::raw_evidence_score(&item);
             let expired = item
                 .valid_until
                 .map(|dt| Utc::now().naive_utc() > dt)
@@ -3099,6 +3102,8 @@ impl ForgeplanServer {
                 congruence_level: item.congruence_level,
                 score: item_score,
                 expired,
+                status: item.status.clone(),
+                excluded: !item.is_scoring_eligible(),
             });
             evidence_items.push(item);
         }
@@ -3752,7 +3757,10 @@ impl ForgeplanServer {
             .get_record(&canonical)
             .await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
-        let _pre_record = match pre_record {
+        // Retained (not `_`-discarded): a title change needs the ORIGINAL title
+        // to locate the old projection file for cleanup — see the rename block
+        // after the mutation helpers.
+        let original = match pre_record {
             Some(r) => r,
             // Surface the user's original input in the not-found message (mirrors
             // `forgeplan_get`) — most helpful when the id genuinely doesn't exist.
@@ -3763,6 +3771,32 @@ impl ForgeplanServer {
             return Ok(err_result(
                 "Nothing to update. Provide status, title, or body.",
             ));
+        }
+
+        // ADR-020 audit BLOCKER (CLI parity + gate integrity): status writes
+        // that carry lifecycle meaning must go through the lifecycle tools.
+        // `active` would bypass the validation/R_eff/provenance gates of
+        // forgeplan_activate; `superseded`/`deprecated` are score-relevant
+        // displacement (the pack leaves the R_eff min) and previously formed a
+        // one-call score-laundering vector with no successor, edge, journal,
+        // or transition validation. Only `draft` remains a raw write — it is
+        // score-neutral-or-lowering and doubles as the recovery path for an
+        // accidental terminal write.
+        if let Some(ref s) = p.status {
+            match s {
+                StatusKind::Active => {
+                    return Ok(err_result(&format!(
+                        "Direct status change to 'active' is not allowed — it would bypass the validation, R_eff and provenance gates.\nFix: forgeplan_activate id={canonical}"
+                    )));
+                }
+                StatusKind::Superseded | StatusKind::Deprecated => {
+                    return Ok(err_result(&format!(
+                        "Direct status change to '{}' is not allowed — displacement goes through the lifecycle.\nFix: forgeplan_supersede id={canonical} by=<NEW-ID>\nOr: forgeplan_deprecate id={canonical} reason=\"...\"",
+                        s.as_str()
+                    )));
+                }
+                StatusKind::Draft => {}
+            }
         }
 
         // DoS protection: enforce configurable input limits.
@@ -3830,6 +3864,25 @@ impl ForgeplanServer {
             projection::update_body_with_projection(&ctx, &canonical, body)
                 .await
                 .map_err(safe_mcp_error)?;
+        }
+
+        // A title change renames the projection file, so the OLD path must be
+        // removed or both survive carrying the same id — a duplicate-id
+        // collision produced by one sanctioned call. `update.rs` has cleaned
+        // this up since the PRD-073 audit; the MCP handler never got the same
+        // fix, so renames through MCP silently forked the artifact in two.
+        // Exact-path removal (not a prefix glob) so a sibling whose id is a
+        // prefix of this one is never clobbered, and AFTER the new file is in
+        // place so there is no orphan window — same ordering as the CLI.
+        if let Some(ref new_title) = p.title {
+            let _ = projection::remove_stale_projection_after_rename(
+                &ws,
+                &canonical,
+                &original.kind,
+                &original.title,
+                new_title,
+            )
+            .await;
         }
 
         // Re-fetch for the response payload.
@@ -4134,6 +4187,35 @@ impl ForgeplanServer {
             return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
 
+        // #360 / PRD-082: activate-time git-delta provenance gate (CLI parity).
+        // Runs on the just-synced body. `force` bypasses, matching the CLI and
+        // the methodology gates. `block` returns an error result the agent
+        // sees; `warn` (default) surfaces the discrepancy in the success payload
+        // (see `provenance_warning` woven into `msg` below) AND logs it
+        // server-side.
+        let mut provenance_warning: Option<String> = None;
+        if !p.force
+            && let Ok(Some(record)) = store.get_record(&p.id).await
+        {
+            use forgeplan_core::scoring::provenance::{self, GateDecision, GateMode};
+            let mode = forgeplan_core::workspace::load_config(&ws)
+                .map(|c| GateMode::from_config(&c.integrity.evidence_provenance_gate))
+                .unwrap_or(GateMode::Warn);
+            match provenance::evaluate_provenance_gate(&record.body, &ws, mode) {
+                GateDecision::Pass => {}
+                GateDecision::Warn(msg) => {
+                    tracing::warn!(target = "provenance", id = %p.id, "{msg}");
+                    provenance_warning = Some(msg);
+                }
+                GateDecision::Block(msg) => {
+                    return Ok(err_result(&format!(
+                        "{msg}\nFix: correct base_sha/result_sha/changed_paths, \
+                         or set force=true to override the provenance gate"
+                    )));
+                }
+            }
+        }
+
         match forgeplan_core::lifecycle::activate(&store, &p.id, p.force).await {
             Ok(result) => {
                 // PROB-057 / Round 9 HIGH-1: MCP parity — sync the cached R_eff
@@ -4182,6 +4264,11 @@ impl ForgeplanServer {
                 };
                 let safe_id = sanitize_for_hint(&ref_form);
                 let mut msg = format!("Activated {safe_id} (draft → active)");
+                // #360 / PRD-082: surface a `warn`-mode provenance discrepancy in
+                // the agent-visible payload, not only the server log.
+                if let Some(w) = &provenance_warning {
+                    msg.push_str(&format!("\n⚠ {w}"));
+                }
                 if result.forced {
                     msg.push_str(&format!(
                         "\nWarning: Activated with {} validation error{}",
@@ -4307,6 +4394,19 @@ impl ForgeplanServer {
                     "forgeplan_supersede",
                 )
                 .await;
+                // ADR-020: a displaced evidence pack just left the R_eff min
+                // of the artifacts it informs — refresh their cached scores
+                // (CLI parity; best-effort, never fails the supersede).
+                let rescored =
+                    forgeplan_core::scoring::rescore_evidence_dependents(&store, &p.id).await;
+                if !rescored.is_empty() {
+                    tracing::info!(
+                        "rescored {} dependent(s) of displaced evidence {}: {:?}",
+                        rescored.len(),
+                        p.id,
+                        rescored
+                    );
+                }
                 let safe_id = sanitize_for_hint(&p.id);
                 let safe_new = sanitize_for_hint(&p.by);
                 // PRD-071: single primary, real ID for first dependent.
@@ -4440,6 +4540,18 @@ impl ForgeplanServer {
                     "forgeplan_deprecate",
                 )
                 .await;
+                // ADR-020: refresh cached scores of artifacts the displaced
+                // evidence informs (CLI parity; best-effort).
+                let rescored =
+                    forgeplan_core::scoring::rescore_evidence_dependents(&store, &p.id).await;
+                if !rescored.is_empty() {
+                    tracing::info!(
+                        "rescored {} dependent(s) of displaced evidence {}: {:?}",
+                        rescored.len(),
+                        p.id,
+                        rescored
+                    );
+                }
                 let safe_id = sanitize_for_hint(&p.id);
                 // PRD-071: single primary action; surface first dependent.
                 let next_action = if dependents.is_empty() {

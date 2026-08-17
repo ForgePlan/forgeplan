@@ -483,9 +483,28 @@ fn update_changes_status() {
         .failure()
         .stderr(predicate::str::contains("forgeplan activate"));
 
-    // Non-active status changes still work
+    // ADR-020: terminal statuses are score-relevant displacement (a terminal
+    // evidence pack leaves the R_eff min), so they now go through the
+    // lifecycle verbs too — a raw metadata write was a one-call
+    // score-laundering vector (no successor, no edge, no transition
+    // validation, no journal entry). Pre-ADR-020 this assertion expected
+    // success; the redirect is the intended behavior change.
+    for terminal in ["deprecated", "superseded"] {
+        forgeplan()
+            .args(["update", "PRD-001", "--status", terminal])
+            .current_dir(tmp.path())
+            .assert()
+            .failure()
+            .stderr(
+                predicate::str::contains("forgeplan supersede")
+                    .and(predicate::str::contains("forgeplan deprecate")),
+            );
+    }
+
+    // draft stays a plain metadata write — score-neutral-or-lowering, and the
+    // recovery path after an accidental status change.
     forgeplan()
-        .args(["update", "PRD-001", "--status", "deprecated"])
+        .args(["update", "PRD-001", "--status", "draft"])
         .current_dir(tmp.path())
         .assert()
         .success()

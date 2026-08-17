@@ -100,6 +100,30 @@ pub struct IntegrityConfig {
     /// Max body length accepted via MCP forgeplan_new / forgeplan_update (DoS protection)
     #[serde(default = "default_mcp_max_body_len")]
     pub mcp_max_body_len: usize,
+
+    /// Activate-time git-delta provenance gate for code-claiming Evidence
+    /// (#360 / PRD-082). One of `block` | `warn` | `off`.
+    ///
+    /// When an EvidencePack carries `base_sha` / `result_sha` / `changed_paths`
+    /// and its claim does not hold against git (empty delta, missing path,
+    /// incomplete fields), this decides what `forgeplan_activate` does:
+    /// - `block` — refuse activation (the agent sees an error on both CLI and MCP);
+    /// - `warn` — activate but surface the discrepancy (CLI prints to stderr,
+    ///   MCP appends it to the success payload). Default: a new gate must not
+    ///   surprise existing flows on first rollout; flip to `block` once trusted;
+    /// - `off` — skip the check entirely.
+    ///
+    /// A pack with no provenance fields is never affected (verdict `NotClaimed`),
+    /// and a git error only ever warns, never blocks — an environment problem is
+    /// not a false claim, and ForgePlan does not own the worktree (ADR-019).
+    /// One consequence: under `block`, a base/result SHA that does not resolve
+    /// (a hallucinated or typo'd sha, or a real sha absent from a shallow clone)
+    /// warns rather than blocks — the two cannot be told apart locally without a
+    /// network fetch, and blocking legitimate shallow-clone CI is worse. The
+    /// canonical #360 case (an empty delta between two *resolvable* SHAs) is
+    /// still blocked.
+    #[serde(default = "default_evidence_provenance_gate")]
+    pub evidence_provenance_gate: String,
 }
 
 fn default_duplicate_threshold() -> f64 {
@@ -116,6 +140,9 @@ fn default_mcp_max_title_len() -> usize {
 }
 fn default_mcp_max_body_len() -> usize {
     1_048_576
+}
+fn default_evidence_provenance_gate() -> String {
+    "warn".to_string()
 }
 
 impl IntegrityConfig {
@@ -153,6 +180,15 @@ impl IntegrityConfig {
                 self.duplicate_pairs_limit
             );
         }
+        if !matches!(
+            self.evidence_provenance_gate.as_str(),
+            "block" | "warn" | "off"
+        ) {
+            anyhow::bail!(
+                "integrity.evidence_provenance_gate must be one of block|warn|off, got {:?}",
+                self.evidence_provenance_gate
+            );
+        }
         Ok(())
     }
 }
@@ -165,6 +201,7 @@ impl Default for IntegrityConfig {
             stub_marker_threshold: default_stub_marker_threshold(),
             mcp_max_title_len: default_mcp_max_title_len(),
             mcp_max_body_len: default_mcp_max_body_len(),
+            evidence_provenance_gate: default_evidence_provenance_gate(),
         }
     }
 }

@@ -692,6 +692,42 @@ pub async fn remove_projection_at(
     }
 }
 
+/// Remove the OLD projection file after a title change — but only if the title
+/// actually renamed the file.
+///
+/// A title edit that slugifies to the *same* filename (a case-only or
+/// punctuation-only change, or the identical title re-submitted) must NOT delete
+/// anything: the mutation path writes the new file at `slug(new_title)` first,
+/// and when `slug(old) == slug(new)` that is the very file we would then remove.
+/// `slugify` lowercases and collapses every non-alphanumeric run to `-`, so
+/// `"Auth system"`, `"Auth system!"` and `"auth system"` all map to
+/// `auth-system` — without this guard, `forgeplan_update --title` on any of
+/// those against an existing `auth-system` artifact deletes the markdown source
+/// of truth. `forgeplan_get` keeps working (the LanceDB row survives), so the
+/// loss is silent until the next `reindex` prunes the now-orphaned row —
+/// unrecoverable (ADR-003: markdown is the source of truth).
+///
+/// The comparison uses `projection_slug` — the same function that builds the
+/// on-disk filename from the title — so slug-equality is exactly file-path
+/// equality here (both paths share this artifact's id, kind and directory).
+///
+/// # Errors
+/// Same as [`remove_projection_at`]: invalid id/kind, or a filesystem error
+/// during removal.
+pub async fn remove_stale_projection_after_rename(
+    workspace: &Path,
+    id: &str,
+    kind: &str,
+    old_title: &str,
+    new_title: &str,
+) -> anyhow::Result<bool> {
+    if projection_slug(old_title) == projection_slug(new_title) {
+        // Same filename — the "old" file IS the file we just wrote. No-op.
+        return Ok(false);
+    }
+    remove_projection_at(workspace, id, kind, old_title).await
+}
+
 // =============================================================================
 // PRD-073 file-first mutation helpers
 // -----------------------------------------------------------------------------
@@ -915,6 +951,57 @@ pub async fn update_metadata_with_projection(
     Ok(())
 }
 
+/// ADR-012 / SPEC-005 identity fields.
+///
+/// Under the PRD-073 two-block layout these live in the **body's** own
+/// frontmatter, which makes them collateral damage of any body replacement —
+/// see [`carry_identity_forward`].
+const IDENTITY_FM_KEYS: &[&str] = &["slug", "predicted_number", "assigned_number"];
+
+/// Re-attach the ADR-012 identity fields from `old_body` when `new_body` does
+/// not carry them.
+///
+/// The identity triple lives inside the body's frontmatter block (PRD-073
+/// layout: synthetic projection block on top, canonical body below). A body
+/// replacement is therefore an *identity deletion* unless the fields are
+/// carried across — which is why a mature workspace ends up with no artifact
+/// carrying a slug at all: `forgeplan new` writes one, and the very next
+/// `update --body` that CLAUDE.md prescribes silently drops it.
+///
+/// Callers supply prose. Re-attaching here keeps every call site from having to
+/// remember, and is a no-op when the caller *did* supply identity (round-trip of
+/// a full document) or when the artifact never had one (legacy, pre-Phase-1.5).
+fn carry_identity_forward(old_body: &str, new_body: &str) -> String {
+    let Ok((old_fm, _)) = frontmatter::parse_frontmatter(old_body) else {
+        return new_body.to_string();
+    };
+    let carried: Vec<(&str, serde_yaml::Value)> = IDENTITY_FM_KEYS
+        .iter()
+        .filter_map(|k| old_fm.get(*k).map(|v| (*k, v.clone())))
+        .collect();
+    if carried.is_empty() {
+        return new_body.to_string();
+    }
+
+    // Start from whatever frontmatter the replacement itself declares so a
+    // caller round-tripping a full document keeps their own values.
+    let (mut fm, prose) = match frontmatter::parse_frontmatter(new_body) {
+        Ok((fm, prose)) => (fm, prose),
+        Err(_) => (Frontmatter::new(), new_body.to_string()),
+    };
+    let mut changed = false;
+    for (k, v) in carried {
+        if !fm.contains_key(k) {
+            fm.insert(k.to_string(), v);
+            changed = true;
+        }
+    }
+    if !changed {
+        return new_body.to_string();
+    }
+    frontmatter::render_frontmatter(&fm, &prose).unwrap_or_else(|_| new_body.to_string())
+}
+
 /// Replace artifact body with the supplied content. Unlike other mutation
 /// helpers, this does NOT call `sync_before_mutation` — the caller is
 /// explicitly overwriting whatever is on disk with a CLI/MCP-supplied body,
@@ -955,6 +1042,12 @@ pub async fn update_body_with_projection(
         }
     };
     let links = store.get_relations(id).await.unwrap_or_default();
+
+    // PROB-060 / ADR-012: preserve the identity triple the replacement would
+    // otherwise delete. Must happen before `derived_status` is parsed and
+    // before either write, so file and index agree on one body.
+    let carried = carry_identity_forward(&record.body, body);
+    let body: &str = &carried;
 
     // Audit-r7 F1 (CRITICAL): parse the new body's frontmatter and sync
     // the `status` column in LanceDB if it changed. Without this, callers
@@ -2148,6 +2241,108 @@ mod tests {
     }
 
     // ── PRD-057 Inc 2: agent identity + unknown-fm preservation ─────────
+
+    // ── #418: body replacement must not delete the ADR-012 identity ─────
+
+    const OLD_WITH_IDENTITY: &str = "---\nid: PRD-001\nslug: prd-auth-system\npredicted_number: 1\nassigned_number: 1\nstatus: Draft\n---\n\n## Problem\n\nold prose\n";
+
+    #[test]
+    fn carry_identity_forward_reattaches_triple_to_a_bare_body() {
+        // The exact shape CLAUDE.md prescribes right after `forgeplan new`:
+        // the caller sends prose only.
+        let out = carry_identity_forward(OLD_WITH_IDENTITY, "## Problem\n\nnew prose\n");
+        assert!(
+            out.contains("slug: prd-auth-system"),
+            "slug must survive:\n{out}"
+        );
+        assert!(out.contains("predicted_number: 1"));
+        assert!(out.contains("assigned_number: 1"));
+        assert!(
+            out.contains("new prose"),
+            "the new prose must be what lands"
+        );
+        assert!(!out.contains("old prose"), "old prose must not resurrect");
+        // Only identity is carried — not the old block's stale scaffolding.
+        assert!(!out.contains("status: Draft"));
+    }
+
+    #[test]
+    fn carry_identity_forward_is_noop_for_legacy_artifacts() {
+        // Pre-Phase-1.5 artifacts never had a slug; nothing to carry, and the
+        // body must come through byte-for-byte.
+        let old = "---\nid: PRD-001\nstatus: Draft\n---\n\nold\n";
+        let new = "## Problem\n\nplain\n";
+        assert_eq!(carry_identity_forward(old, new), new);
+    }
+
+    #[test]
+    fn carry_identity_forward_respects_caller_supplied_identity() {
+        // Round-tripping a full document: the caller's own values win.
+        let new =
+            "---\nslug: caller-chosen\npredicted_number: 9\nassigned_number: 9\n---\n\nprose\n";
+        assert_eq!(carry_identity_forward(OLD_WITH_IDENTITY, new), new);
+    }
+
+    #[test]
+    fn carry_identity_forward_survives_unparseable_old_body() {
+        // A body with no frontmatter at all must not panic or corrupt.
+        let new = "## Problem\n\nplain\n";
+        assert_eq!(carry_identity_forward("no frontmatter here\n", new), new);
+    }
+
+    // ── #419 BLOCKER: same-slug title change must not delete the file ────
+
+    #[tokio::test]
+    async fn rename_helper_removes_old_file_on_a_real_rename() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path();
+        let dir = ws.join("prds");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        // Both files exist (new already written by the mutation path).
+        tokio::fs::write(dir.join("PRD-001-old-title.md"), "x")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("PRD-001-new-title.md"), "x")
+            .await
+            .unwrap();
+
+        let removed =
+            remove_stale_projection_after_rename(ws, "PRD-001", "prd", "Old title", "New title")
+                .await
+                .unwrap();
+        assert!(removed, "a genuine rename must remove the stale file");
+        assert!(!dir.join("PRD-001-old-title.md").exists());
+        assert!(
+            dir.join("PRD-001-new-title.md").exists(),
+            "the new file must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_helper_is_a_noop_when_slug_is_unchanged() {
+        // The #419 BLOCKER: "Probe" -> "probe" (or "Probe!") slugifies to the
+        // same filename. The helper must NOT delete the just-written file.
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path();
+        let dir = ws.join("prds");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let f = dir.join("PRD-001-probe.md");
+        tokio::fs::write(&f, "the only copy").await.unwrap();
+
+        for (old, new) in [("Probe", "probe"), ("Probe", "Probe!"), ("Probe", "Probe")] {
+            let removed = remove_stale_projection_after_rename(ws, "PRD-001", "prd", old, new)
+                .await
+                .unwrap();
+            assert!(
+                !removed,
+                "same-slug edit {old:?}->{new:?} must be a no-op, not a delete"
+            );
+            assert!(
+                f.exists(),
+                "the artifact file must survive a same-slug edit {old:?}->{new:?}"
+            );
+        }
+    }
 
     #[test]
     fn filter_preserved_drops_known_keys() {

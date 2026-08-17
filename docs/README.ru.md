@@ -49,6 +49,8 @@ docs/
 | [MULTI-AGENT.md](operations/MULTI-AGENT.md) | **v0.24.0+ multi-agent dispatch** — MCP-инструменты `forgeplan_dispatch/claim/release/claims`, file-overlap detection, skill routing |
 | [REPO-PROTECTION-GUIDE.md](operations/REPO-PROTECTION-GUIDE.md) | Защита веток, правила PR, предотвращение деструктивных действий |
 | [GIT-WORKFLOW.ru.md](operations/GIT-WORKFLOW.ru.md) | Полные Git-правила — lifecycle веток, PR pipeline, процесс релиза, worktrees |
+| [RELEASE-PROTOCOL.ru.md](operations/RELEASE-PROTOCOL.ru.md) ([en](operations/RELEASE-PROTOCOL.md)) | **Канонический процесс релиза** — 10 шагов любого среза `release/vX.Y.Z`, pre-conditions и обязательный post-merge sync-PR (RED LINE #9) |
+| `dependabot-triage-YYYY-MM-DD.md` | Триаж алертов зависимостей на релиз (RED LINE #10) — каждый открытый алерт помечен addressed / scheduled / accepted-with-justification. По файлу на релизное окно |
 | [SOURCE-PORTING.ru.md](operations/SOURCE-PORTING.ru.md) | Reference Code map — что портировано из `sources/{quint-code,git-adr,BMAD,OpenSpec,ccpm}` в наши crates |
 | [PLAYBOOK-AUTHORING.ru.md](operations/PLAYBOOK-AUTHORING.ru.md) | **v0.26.0+ авторинг playbook'ов** — декларативные YAML-workflow, 5 типов делегации, fallback hints, DAG ordering. **v0.27.0+ Subprocess lifecycle** секция (real dispatchers, kill_on_drop, timeout policy, security model) per ADR-010/PRD-072 |
 | [INGEST-MAPPINGS.ru.md](operations/INGEST-MAPPINGS.ru.md) | **v0.26.0+ авторинг ingest mapping'ов** — перевод output плагинов в forge-артефакты с invariant'ом `## Sources` (PRD-066/SPEC-004) |
@@ -97,7 +99,7 @@ forgeplan list -t adr            # список всех ADR
 forgeplan get ADR-003            # прочитать один
 forgeplan validate PRD-024       # проверить качество
 forgeplan score PRD-024          # вычислить R_eff
-forgeplan scan-import            # пересобрать LanceDB-индекс из markdown
+forgeplan reindex                # пересобрать LanceDB-индекс из markdown
 ```
 
 **Процесс при свежем клонировании:**
@@ -105,7 +107,7 @@ forgeplan scan-import            # пересобрать LanceDB-индекс �
 ```bash
 git clone <repo> && cd forgeplan
 forgeplan init -y                # создаёт .forgeplan/lance/ локально (пустую)
-forgeplan scan-import            # индексирует отслеживаемые markdown в LanceDB
+forgeplan reindex                # синхронизирует отслеживаемые markdown в LanceDB
 forgeplan list                   # проверка — должны отображаться все артефакты
 ```
 
@@ -120,6 +122,6 @@ forgeplan list                   # проверка — должны отобр�
 ## Соглашения
 
 - **Все пути в документах указаны относительно корня репозитория.**
-- **Файлы артефактов в `.forgeplan/` управляются CLI `forgeplan`** — ручное редактирование работает, но может вызвать рассинхронизацию с индексом LanceDB до запуска `scan-import`.
+- **Файлы артефактов в `.forgeplan/` управляются CLI `forgeplan`** — ручное редактирование работает, но может вызвать рассинхронизацию с индексом LanceDB до запуска `reindex`.
 - **Документация методологии здесь является авторитетной** — если руководство и схема расходятся, приоритет у схемы.
 - **Активированные артефакты неизменяемы** — замена через `forgeplan supersede`, историю не переписывать.

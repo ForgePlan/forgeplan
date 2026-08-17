@@ -1,6 +1,6 @@
 ---
 title: "The full cycle on a single feature - from a one-liner in chat to a decision that opens itself for review a year later"
-description: "Six months ago, one line in chat: 'we need streaming for model responses.' Today, a connected set of six files marked active, with measured trust and explicit review conditions. The series capstone: the path from that line to a decision, in seven steps on one real task."
+description: "Six months ago, one line in chat: 'we need streaming for model responses.' Today, a connected set of five artifacts marked active, with measured trust and explicit review conditions. The series capstone: the path from that line to a decision, in seven steps on one real task."
 slug: full-cycle-on-one-feature
 lang: en
 publishedAt: 2026-05-24
@@ -19,7 +19,7 @@ translations:
 
 Six months ago, one message appeared in the Vault team chat: "we need streaming for model responses." The context: users were complaining that LLM responses took 5-10 seconds, and the interface looked dead. Competitors were already streaming tokens as they were generated; we had users staring at a loading spinner.
 
-Today the repository holds a connected set of six files: PRD-018, Spec-012, RFC-007, ADR-012, EVID-001, and DDR-014. All marked active. Each one has a measured trust score following the logic developed in the previous posts in this series. ADR-012 has an explicit review condition that has already triggered once.
+Today the repository holds a connected set of five artifacts: PRD-018, Spec-012, RFC-007, ADR-012 (DDR-style), and EVID-001. All marked active. Each one has a measured trust score following the logic developed in the previous posts in this series. ADR-012 has an explicit review condition that has already triggered once.
 
 I want to walk through this path step by step and show how the methods from the seven previous posts in the series come together into one coherent process on one real task. This isn't theory - it's a breakdown of seven steps and one invisible boundary: the line between "active" and "gone stale."
 
@@ -83,7 +83,7 @@ Version 1 (SSE) wins on the result-to-complexity ratio. Version 3 (HTTP/2 push) 
 
 ## Step 5. Recording the architectural decision
 
-`forgeplan new adr "Use SSE for streaming model responses"`. This creates `ADR-012` with six sections - the **DDR** (Decision-Driven Record) format described in post 4 of this series.
+`forgeplan new adr "Use SSE for streaming model responses"`. This creates `ADR-012` with six sections - the **DDR** (Detailed Decision Record) format described in post 4 of this series.
 
 - **Context**: streaming is needed for model responses; target metric - p95 first-token ≤ 800 ms; team of 4 engineers, infrastructure - standard HTTP stack.
 - **Alternatives considered**: SSE; WebSockets; HTTP/2 server push.
@@ -98,9 +98,9 @@ The developer picks up ADR-012, RFC-007 (describing the implementation in phases
 
 After going live - a load test in production. Measurements: p95 first-token - 220 ms. p99 - 380 ms. p99.9 - 750 ms. The "abandonment during response wait" metric drops from 12% to 3% over two weeks.
 
-`forgeplan new evidence "SSE streaming endpoint production benchmark"`. This creates `EVID-001` with three evaluation axes - what Forgeplan calls the **R_eff** (effective reliability) scoring: each piece of evidence is rated on Framing (F), Grounding (G), and Reliability (R), then penalized for congruence gap between where evidence was gathered and where the decision applies.
+`forgeplan new evidence "SSE streaming endpoint production benchmark"`. This creates `EVID-001` with three evaluation axes - what Forgeplan calls the **R_eff** (effective reliability) scoring: each piece of evidence is rated on Formality (F), Granularity (G), and Reliability (R), then penalized for congruence gap between where evidence was gathered and where the decision applies.
 
-- F = 8 (framing is strict, metrics clearly defined).
+- F = 8 (rigorously specified, metrics clearly defined).
 - G = 9 (detailed numbers, percentile breakdown).
 - R = 8 (our own measurement in production, no incentive to inflate).
 - CL3 - no penalty; measurement is in our own production on our own load.
