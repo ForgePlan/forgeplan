@@ -88,6 +88,21 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 ## Current status
 
+- **v0.34.0** (2026-08-17) — **artifact integrity**. R_eff scores an artifact's
+  **current** evidence only (ADR-020, breaking: terminal `superseded`/`deprecated`
+  packs leave the weakest-link min; active `refutes` still zeroes; draft still
+  counts) + **git-delta provenance** for code-claiming Evidence (PRD-082/#360:
+  `base_sha`/`result_sha`/`changed_paths` re-derived against the real delta;
+  config `integrity.evidence_provenance_gate` = block|warn|off, default warn) +
+  identity/collision class closed (`update --status superseded|deprecated|active`
+  now rejected — it was a one-call score-laundering vector; `reindex` reports
+  duplicate ids; new `unbacked_displacement` detector; anomalies 140 → 34).
+  Security: RUSTSEC-2026-0204 crossbeam-epoch (cargo-deny had been red on `dev`
+  for 11 days — RustSec is not mirrored into Dependabot), quinn-proto HIGH,
+  serde_with. Dependabot: lru LOW carried; 39 npm alerts scheduled (website-only).
+  Migration: run `forgeplan score --all`; expect a small number of artifacts whose
+  only evidence was retired to drop to 0 (1 of 89 here) — that is real debt the
+  old formula masked.
 - **v0.33.0** (2026-06-04) — MCP worktree-aware routing (PRD-078: optional
   `workspace` param on store-resolution tools — strict write-gate / soft read,
   closes PROB-072) + CRITICAL #350 fix (`@file` body expansion, no silent data
@@ -99,7 +114,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
   lru LOW carried; lancedb 0.30 / sha2 / notify / arrow-schema deferred to v0.34.
 - **v0.32.1** (2026-05-21) — hotfix: Windows binary build; v0.32.0: Epic #287
   brownfield extraction surface + PROB-074 stale-handle hardening.
-- **76 CLI commands**, **73 MCP tools**, **3095+ tests**, **0 warnings** on both feature configs
+- **81 CLI commands**, **73 MCP tools**, **3243 tests + 9 doc-tests** (CI `nextest`), **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**, **Epic #287 ✅** (brownfield). Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 (feature-gated, graceful fallback)
 
