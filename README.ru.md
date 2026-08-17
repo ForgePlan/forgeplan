@@ -14,7 +14,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-000.svg?style=flat-square)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/ForgePlan/forgeplan?include_prereleases&style=flat-square&color=orange)](https://github.com/ForgePlan/forgeplan/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/ForgePlan/forgeplan/ci.yml?branch=main&style=flat-square)](https://github.com/ForgePlan/forgeplan/actions)
-[![Artifacts](https://img.shields.io/badge/artifacts-138-blue?style=flat-square)](.forgeplan/)
+[![Artifacts](https://img.shields.io/badge/artifacts-394-blue?style=flat-square)](.forgeplan/)
 
 **[Сайт](https://forgeplan.dev)** ·
 **[Документация](docs/README.md)** ·
@@ -134,7 +134,7 @@ $ forgeplan activate PRD-001
 | **🎯 Quality scoring** | `R_eff` (доверие по weakest link) и `F-G-R` (formality, granularity, reliability) — автоматически. |
 | **🧭 Smart routing** | Анализирует задачу, подбирает depth и pipeline. Не надо документировать фикс тайпо. |
 | **🧠 ADI reasoning** | Abduction → Deduction → Induction. Требует 3+ гипотезы перед каждым решением. |
-| **🤖 MCP-native** | 37 инструментов для Claude Code, Cursor, Aider, Continue. Агенты говорят на языке методологии. |
+| **🤖 MCP-native** | 73 инструмента для Claude Code, Cursor, Aider, Continue. Агенты говорят на языке методологии. |
 | **🔍 Локальный семантический поиск** | fastembed (BGE-M3, 1024 dims). Без сети, без API-ключей, без утечек. |
 | **⏰ Evidence decay** | Истёк `valid_until` → артефакт помечается stale. Доверие честно угасает. |
 
@@ -198,10 +198,10 @@ $ forgeplan activate PRD-001
 
 <table>
 <tr>
-<td align="center"><b>138</b><br>tracked артефактов</td>
-<td align="center"><b>728+</b><br>тестов проходят</td>
-<td align="center"><b>33</b><br>CLI команды</td>
-<td align="center"><b>37</b><br>MCP tools</td>
+<td align="center"><b>394</b><br>tracked артефактов</td>
+<td align="center"><b>3243</b><br>тестов проходят</td>
+<td align="center"><b>81</b><br>CLI команда</td>
+<td align="center"><b>73</b><br>MCP tools</td>
 </tr>
 </table>
 
