@@ -60,10 +60,47 @@ ForgePlan/
 ├── templates/             ← markdown templates for each artifact kind
 ├── website/               ← official website (Astro + Starlight)
 ├── marketplace/           ← plugin marketplace (plugins + skills)
+├── design/                ← design assets (forgeplan-design-system/ — canonical DS; Pencil .pen files later)
 ├── scripts/               ← build + release + helper scripts
 ├── Formula/               ← Homebrew formula
 └── .local/                ← gitignored — local notes, research, sessions
 ```
+
+## Design system (single source of truth)
+
+**`design/forgeplan-design-system/`** — the canonical, portable ForgePlan design system package. **Consult it whenever the task involves UI, styling, branding, colors, typography, components, web pages, slides, diagrams, README visuals, or any user-facing surface** — before writing any CSS/HTML/component code.
+
+Package contents (self-contained, no build step, no external deps):
+
+| File | Purpose |
+|---|---|
+| `DESIGN-SYSTEM.ru.md` / `.en.md` | Canonical documentation: palette, contrast table, typography, spacing, components, accessibility, print, per-surface rules |
+| `tokens.css` | Drop-in CSS custom properties for dark + light themes (`data-theme` attribute) |
+| `tokens.graph.css` | Optional module for graph/map/canvas surfaces (relation edges, canvas strokes, composed-map zones, dot-grid) — load after `tokens.css` |
+| `tokens.json` | Machine-readable token contract with fact/proposal status per token |
+| `components.html` | Self-contained bilingual component reference with theme switcher — open in browser |
+| `cheatsheet.ru.html` / `.en.html` | A4 landscape quick references with print styles |
+
+Key invariants (details in the docs above):
+
+- **One accent:** `--forge-ember #FF6B35`. Legacy `--accent #FF5A1F` is deprecated — never use in new code.
+- **Light-theme text accent:** `--forge-ember-text #C94400` (orange fails WCAG as text on light bg; ember stays for fills/borders/focus).
+- **Radius 0 by default** (2px chips, 3px inline code, 50% avatars/dots only). No shadows — flatness via `1px solid var(--forge-line)`.
+- **Fonts:** Space Grotesk (UI/text) + Geist Mono (code, IDs, R_eff numbers, metadata).
+- **Layout:** `max-width 1280px`, `32px` gutter, sticky elements use `top: var(--header-h)` (88px full / 36px compact).
+- **Reuse rule:** to apply the system elsewhere, copy the whole `design/forgeplan-design-system/` directory and link `tokens.css`; do not re-derive values from `website/` source (the blog theme diverges — it is documented tech debt).
+
+`design/` is the home for **all** design assets:
+
+- `forgeplan-design-system/` — the canonical package above, plus `brand-assets/` (logo SVGs, favicons, icons)
+- `forgeplan-site.pen` — Pencil source file (site mockups + the design system as atomic-design components: Atoms → Molecules → Organisms → Layouts)
+- `visual-guides/` — approved raster methodology guides (design-system foundation, quick start, 9 thematic 16:9 sheets)
+- `command-map/` — command map by scenario (portrait + 16:9)
+- `source-materials/` — source briefs for the guide set
+- `MANIFEST.md` — exact file inventory
+- `snapshots/<ts>/` — CANVAS pipeline DS snapshot exports (when the pipeline runs)
+
+The design system follows **atomic design**: tokens → atoms → molecules → organisms → templates/layouts. Higher layers are composed from lower-layer components (refs, not copies).
 
 ## Language
 
@@ -100,3 +137,4 @@ If a future contributor joins, this section will be updated to reflect multi-aut
 - [`docs/methodology/FORGEPLAN-GUIDE.md`](docs/methodology/FORGEPLAN-GUIDE.md) — full methodology reference
 - [`docs/operations/AGENT-ENFORCEMENT.md`](docs/operations/AGENT-ENFORCEMENT.md) — agent rules and guardrails
 - [`website/README.md`](website/README.md) — website architecture notes
+- [`design/forgeplan-design-system/README.md`](design/forgeplan-design-system/README.md) — canonical design system package (tokens, components, cheatsheets)
