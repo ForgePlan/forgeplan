@@ -4,7 +4,7 @@ id: PROB-088
 kind: problem
 last_modified_at: 2026-09-02T14:42:16.076193+00:00
 last_modified_by: claude-code/2.1.220
-status: draft
+status: deprecated
 title: 'Release binaries ship without semantic-search: cargo-dist builds default features only'
 ---
 
@@ -172,5 +172,8 @@ Embedding 396 artifact(s) (title + body, chunk_size=2000)...
   когда этот дефект будет закрыт
 - PRD-071 — hint-контракт, который нарушает M2
 - `docs/operations/RELEASE-PROTOCOL` — место, где контракт дистрибуции обязан быть зафиксирован
+
+
+
 
 

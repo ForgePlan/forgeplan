@@ -7,6 +7,10 @@ links:
   relation: informs
 - target: ADR-022
   relation: informs
+- target: PROB-088
+  relation: informs
+- target: PROB-089
+  relation: informs
 status: active
 title: 'Five-target dist build with semantic-search: 4 of 5 fail, three distinct causes'
 ---
@@ -122,6 +126,8 @@ C-runtime (`_dup`, `strncpy`, `modf`, `_timezone`, `fopen_s`, `_dupenv_s`). Preb
 - PRD-083 — задача «измерить → решить → задокументировать»; это FR-002/FR-004
 - ADR-022 — решение, принятое на основании этого измерения
 - PR #455, run 33647382377
+
+
 
 
 
