@@ -82,6 +82,46 @@ fn embed_without_feature_returns_error_with_fix() {
         .stderr(predicate::str::contains("semantic-search"));
 }
 
+/// PROB-088 M2 / PRD-083 FR-006 — the `Fix:` line must be runnable by the
+/// audience that reaches it.
+///
+/// This error is reachable from a **prebuilt binary** (brew, install.sh,
+/// GitHub Releases). Such a user has no source tree, so `cargo build` is
+/// inert advice — it fails with "could not find Cargo.toml" and leaves them
+/// stuck. `cargo install --git` carries its own source and works from an
+/// empty directory.
+///
+/// The assertion is deliberately negative: it pins the property (no
+/// checkout-dependent command) rather than the exact wording, so rephrasing
+/// the message stays free while a regression to `cargo build` fails loudly.
+#[test]
+fn embed_fix_hint_is_runnable_without_a_checkout() {
+    let tmp = init_workspace();
+
+    let output = forgeplan()
+        .args(["embed"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
+
+    let fix_line = stderr
+        .lines()
+        .find(|l| l.trim_start().starts_with("Fix:"))
+        .unwrap_or_else(|| panic!("no `Fix:` line in embed refusal output:\n{stderr}"));
+
+    assert!(
+        !fix_line.contains("cargo build"),
+        "`Fix:` must not tell a binary-install user to run `cargo build` — \
+         they have no source tree. Got: {fix_line}"
+    );
+    assert!(
+        fix_line.contains("cargo install"),
+        "`Fix:` should offer a self-contained install command. Got: {fix_line}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // tree
 // ---------------------------------------------------------------------------

@@ -16,6 +16,25 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-da
 tap = "ForgePlan/homebrew-tap"
 # Publish jobs
 publish-jobs = ["homebrew"]
+# Cargo features compiled into the released binaries.
+#
+# PROB-088: this key was absent, so dist built with default features only —
+# and `semantic-search` is not a default. The consequence was that NO
+# published binary (brew, install.sh, GitHub Releases, any target) ever
+# carried vector search, from the introduction of cargo-dist onward. The
+# feature was gated, the fallback was graceful, and nobody noticed for
+# months because nothing ever said so out loud.
+#
+# Enabling this pulls fastembed -> ort 2.0.0-rc.12 -> ort-sys into the
+# release build. ort-sys uses the `download-binaries` profile, so each
+# target's build fetches a prebuilt ONNX Runtime at compile time.
+#
+# RISK: dist fails the ENTIRE workflow when any single target fails — in
+# v0.32.0 a windows-msvc break took the macOS and Linux publications down
+# with it. This must be proven green on all five targets in its own PR
+# before it goes anywhere near a release/v* branch (PRD-083 FR-001/FR-009).
+features = ["semantic-search"]
+
 # Binary aliases
 bin-aliases = { "forgeplan" = ["fpl"] }
 # Allow dirty CI files (we patched action versions v6→v4)

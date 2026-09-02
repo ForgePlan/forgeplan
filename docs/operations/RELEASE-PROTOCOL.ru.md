@@ -188,6 +188,26 @@ git push origin vX.Y.Z
 если нет — check что tag реально landed на remote
 (`git ls-remote --tags origin | grep vX.Y.Z`).
 
+**Проверить, что опубликованный бинарь несёт заявленные фичи.** Успешная
+публикация не доказывает правильный состав — PROB-088 просидел незамеченным
+месяцами именно потому, что бинари собирались и публиковались нормально,
+просто без `semantic-search`. Скачай один опубликованный артефакт и проверь
+маркер линковки, а не доверяй факту сборки:
+
+```bash
+# macOS: наличие libc++ <=> ONNX Runtime (fastembed) влинкован
+otool -L /path/to/downloaded/forgeplan | grep -q 'libc++' \
+  && echo "semantic-search: есть" || echo "semantic-search: ОТСУТСТВУЕТ"
+
+# Linux-эквивалент
+ldd /path/to/downloaded/forgeplan | grep -q 'libstdc++' \
+  && echo "semantic-search: есть" || echo "semantic-search: ОТСУТСТВУЕТ"
+```
+
+Сверь ответ с ключом `features` в `dist-workspace.toml` и с тем, что
+обещают пользователю install-доки. Если три источника расходятся — значит
+документация кому-то врёт; чинить до анонса.
+
 **Не удалять release branch.** Keep как immutable history (по project
 convention — см. `feedback_keep_branches`).
 

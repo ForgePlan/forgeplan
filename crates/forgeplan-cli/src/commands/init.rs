@@ -408,6 +408,7 @@ pub(crate) const GITIGNORE_END_MARKER: &str = "# === end forgeplan section ===";
 pub(crate) const GITIGNORE_CANONICAL_BODY: &str = "\
 .forgeplan/lance/
 .forgeplan/.fastembed_cache/
+.fastembed_cache/
 .forgeplan/session.yaml
 .forgeplan/state/
 .forgeplan/trash/

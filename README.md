@@ -90,6 +90,29 @@ git clone https://github.com/ForgePlan/forgeplan.git && cd forgeplan
 cargo install --path crates/forgeplan-cli
 ```
 
+### Semantic search is not in the prebuilt binaries
+
+The Homebrew, install-script and GitHub Release binaries are built with default
+features, and `semantic-search` is not one of them. On those builds
+`forgeplan embed` refuses and `forgeplan search --semantic` falls back to
+keyword search — correct behaviour, but worth knowing before you install rather
+than discovering it from an error.
+
+To get vector search (BGE-M3), install a build that carries the feature:
+
+```bash
+cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search
+```
+
+The model downloads on first use — **~2.1 GB**, once per machine, with a
+progress bar. It is cached in the platform cache directory
+(`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on
+Linux), shared across all your projects. Override with `FORGEPLAN_MODEL_CACHE`;
+note that `HF_HOME`, if you have it set, takes precedence over both.
+
+Everything else — routing, artifacts, scoring, validation, the graph, keyword
+search — works identically on every build.
+
 ## 60-Second Demo
 
 ```console
@@ -226,7 +249,7 @@ git checkout -b feat/my-feature
 
 | Feature | Default | Purpose |
 |---|---|---|
-| `semantic-search` | off | BGE-M3 vector search via `fastembed` (~150 MB model on first run) |
+| `semantic-search` | off | BGE-M3 vector search via `fastembed`. Model downloads on first use: **~2.1 GB**, cached per machine in the platform cache dir (override: `FORGEPLAN_MODEL_CACHE`). Off in every prebuilt binary — see [Install](#semantic-search-is-not-in-the-prebuilt-binaries) |
 | `test-helpers` | off | **Test fixtures only** — exposes `*_for_test` escape hatches on `LanceStore` that bypass the projection pipeline. **MUST NOT be enabled in production binaries.** Internally gated on `cfg(debug_assertions)` so release builds with the feature accidentally enabled still keep the ADR-003 lockdown. Downstream test crates that need direct DB seeding should enable it under `[dev-dependencies]` only (see `forgeplan-mcp/Cargo.toml` for the canonical example). |
 
 ## License
