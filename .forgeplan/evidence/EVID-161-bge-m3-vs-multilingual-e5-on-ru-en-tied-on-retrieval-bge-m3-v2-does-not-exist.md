@@ -5,7 +5,9 @@ kind: evidence
 links:
 - target: PROB-091
   relation: informs
-status: draft
+- target: ADR-023
+  relation: informs
+status: active
 title: 'bge-m3 vs multilingual-e5 on RU-EN: tied on retrieval; BGE-M3 v2 does not exist'
 ---
 
@@ -146,5 +148,7 @@ e5-large. Обоснование в другом: он не требует пр�
 - PROB-091 — сужение поддержки моделей; этот обзор даёт входные данные для приоритизации
 - PROB-089 — 2.1 GB первой загрузки, повод искать модель поменьше
 - PRD-084, RFC-013 — замена движка, после которой постобработка стала нашей
+
+
 
 

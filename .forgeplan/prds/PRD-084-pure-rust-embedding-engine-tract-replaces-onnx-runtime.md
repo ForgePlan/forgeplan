@@ -2,10 +2,7 @@
 depth: standard
 id: PRD-084
 kind: prd
-links:
-- target: EVID-159
-  relation: based_on
-status: draft
+status: active
 title: 'Pure-Rust embedding engine: tract replaces ONNX Runtime'
 ---
 
@@ -177,6 +174,9 @@ ONNX Runtime — движок на C++ — **вшивается в бинарь 
 - **PROB-088** — исходный дефект дистрибуции (deprecated, закрыт объявлением контракта)
 - **PROB-089** — дефекты кэша модели; механизм кэша переиспользуется без изменений
 - `dist-workspace.toml`, `docs/operations/RELEASE-PROTOCOL{,.ru}.md`
+
+
+
 
 
 

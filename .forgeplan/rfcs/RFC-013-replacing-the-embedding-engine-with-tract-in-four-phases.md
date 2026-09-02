@@ -7,7 +7,7 @@ links:
   relation: based_on
 - target: ADR-022
   relation: refines
-status: draft
+status: active
 title: Replacing the embedding engine with tract in four phases
 ---
 
@@ -187,6 +187,8 @@ Runtime. Замер в Phase 4; если рост окажется неприе�
 - EVID-159 — замер, на котором стоит вариант (a)
 - EVID-158 — замер, закрывший сборочный путь
 - ADR-022 — решение, пересматриваемое в Phase 4
+
+
 
 
 

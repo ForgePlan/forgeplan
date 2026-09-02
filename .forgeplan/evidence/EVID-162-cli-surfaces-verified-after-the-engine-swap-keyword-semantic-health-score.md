@@ -7,7 +7,9 @@ links:
   relation: informs
 - target: PROB-092
   relation: informs
-status: draft
+- target: ADR-023
+  relation: informs
+status: active
 title: 'CLI surfaces verified after the engine swap: keyword, semantic, health, score'
 ---
 
@@ -101,5 +103,7 @@ keyword проверили?». Оба пункта вскрыли реальны
 - EVID-160 — замер времени переиндексации на обоих движках
 - EVID-159 — спайк tract
 - PRD-084, RFC-013 — работа, к которой относится проверка
+
+
 
 

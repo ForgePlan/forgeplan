@@ -5,7 +5,9 @@ kind: evidence
 links:
 - target: PRD-084
   relation: informs
-status: draft
+- target: ADR-023
+  relation: informs
+status: active
 title: 'tract runs BGE-M3: identical vectors, 2x slower, all ops covered'
 ---
 
@@ -140,6 +142,9 @@ evidence_type: measurement
 - EVID-158 — замер, зафиксировавший провал сборочного пути с ONNX Runtime
 - PRD-084 — работа, опирающаяся на этот замер
 - PROB-088 — исходный дефект дистрибуции
+
+
+
 
 
 

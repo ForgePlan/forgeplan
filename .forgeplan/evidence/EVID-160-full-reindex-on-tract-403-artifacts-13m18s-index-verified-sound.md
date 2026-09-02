@@ -7,7 +7,9 @@ links:
   relation: informs
 - target: RFC-013
   relation: informs
-status: draft
+- target: ADR-023
+  relation: informs
+status: active
 title: 'Full reindex on tract: 403 artifacts, 13m18s, index verified sound'
 ---
 
@@ -97,6 +99,8 @@ evidence_type: measurement
 - EVID-159 — спайк, чей прогноз 2.01x эта проверка скорректировала до 2.83x
 - PRD-084, RFC-013 — работа, к которой относится замер
 - PROB-091 — сужение поддержки моделей, следствие той же замены
+
+
 
 
 
