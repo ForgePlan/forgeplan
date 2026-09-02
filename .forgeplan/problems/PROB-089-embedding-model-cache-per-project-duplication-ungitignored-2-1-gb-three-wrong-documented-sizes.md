@@ -4,7 +4,7 @@ id: PROB-089
 kind: problem
 last_modified_at: 2026-09-02T14:47:26.113848+00:00
 last_modified_by: claude-code/2.1.220
-status: draft
+status: deprecated
 title: 'Embedding model cache: per-project duplication, ungitignored 2.1 GB, three wrong documented sizes'
 ---
 
@@ -110,4 +110,7 @@ slug: prob-embedding-model-cache-per-project-duplication-ungitignored-2-1-gb-thr
   когда тот закрыт
 - PRD-083 — задача на решение, покрывает оба, GitHub #452
 - `dist-workspace.toml` — включение фичи сделает D1/D2/D3 массовыми
+
+
+
 
