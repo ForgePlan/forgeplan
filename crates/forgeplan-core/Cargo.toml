@@ -35,7 +35,7 @@ dirs = "6"
 bm25 = { version = "2.3.2", features = ["language_detection"] }
 sha2 = "0.11"
 tracing = "0.1"
-rand = "0.9"
+rand = "0.10"
 fs2.workspace = true
 schemars.workspace = true
 semver.workspace = true
