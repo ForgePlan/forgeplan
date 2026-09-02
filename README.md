@@ -170,7 +170,7 @@ $ forgeplan activate PRD-001
 | **🧭 Smart routing** | Analyzes your task, picks the right depth and artifact pipeline. No over-documenting typo fixes. |
 | **🧠 ADI reasoning** | Abduction → Deduction → Induction. Forces 3+ hypotheses before every decision. |
 | **🤖 MCP-native** | 73 tools for Claude Code, Cursor, Aider, Continue. Agents speak the methodology natively. |
-| **🔍 Local semantic search** | fastembed (BGE-M3, 1024 dims). No network, no API keys, no egress. |
+| **🔍 Local semantic search** | BGE-M3 (1024 dims) on `tract` — pure-Rust inference, no C++ runtime. No network, no API keys, no egress. |
 | **⏰ Evidence decay** | Expired `valid_until` → artifact goes stale. Trust decays honestly, nothing rots in the dark. |
 
 ## Artifacts at a glance
@@ -261,7 +261,7 @@ git checkout -b feat/my-feature
 
 | Feature | Default | Purpose |
 |---|---|---|
-| `semantic-search` | off | BGE-M3 vector search via `fastembed`. Model downloads on first use: **~2.1 GB**, cached per machine in the platform cache dir (override: `FORGEPLAN_MODEL_CACHE`). Off in every prebuilt binary — see [Install](#semantic-search-is-not-in-the-prebuilt-binaries) |
+| `semantic-search` | off | BGE-M3 vector search on the pure-Rust `tract` engine. Model downloads on first use: **~2.1 GB**, cached per machine in the platform cache dir (override: `FORGEPLAN_MODEL_CACHE`). Off in every prebuilt binary — see [Install](#semantic-search-is-not-in-the-prebuilt-binaries) |
 | `test-helpers` | off | **Test fixtures only** — exposes `*_for_test` escape hatches on `LanceStore` that bypass the projection pipeline. **MUST NOT be enabled in production binaries.** Internally gated on `cfg(debug_assertions)` so release builds with the feature accidentally enabled still keep the ADR-003 lockdown. Downstream test crates that need direct DB seeding should enable it under `[dev-dependencies]` only (see `forgeplan-mcp/Cargo.toml` for the canonical example). |
 
 ## License
@@ -278,7 +278,7 @@ MIT — see [LICENSE](LICENSE).
 
 <br>
 
-Built on top of [Quint-code](https://github.com/m0n0x41d/quint-code) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://github.com/Fission-AI/OpenSpec) · [FPF](https://github.com/ailev/FPF) · [LanceDB](https://lancedb.com/) · [fastembed](https://github.com/qdrant/fastembed)
+Built on top of [Quint-code](https://github.com/m0n0x41d/quint-code) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://github.com/Fission-AI/OpenSpec) · [FPF](https://github.com/ailev/FPF) · [LanceDB](https://lancedb.com/) · [tract](https://github.com/sonos/tract)
 
 <sub>Made with care by <a href="https://github.com/ForgePlan">@ForgePlan</a> · <a href="README.ru.md">Русская версия</a></sub>
 

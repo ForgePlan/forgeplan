@@ -236,6 +236,61 @@ pub fn find_snapshot(cache_dir: &Path, repo: &str) -> Option<PathBuf> {
         .find(|p| p.join("tokenizer.json").exists())
 }
 
+/// Files a snapshot needs before it can be loaded.
+///
+/// `model.onnx` is only the graph — BGE-M3 keeps its 2.1 GB of weights beside
+/// it in `model.onnx_data`, and tract reads that sibling implicitly when
+/// parsing. Fetching the graph without the weights produces a directory that
+/// looks present and fails at load, so the list is explicit rather than
+/// discovered.
+const REQUIRED_FILES: &[&str] = &[
+    "onnx/model.onnx",
+    "onnx/model.onnx_data",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "config.json",
+    "special_tokens_map.json",
+];
+
+/// Ensure the model is in the cache, downloading it if not, and return the
+/// snapshot directory.
+///
+/// Takes over what fastembed did for us. Downloads land in the shared cache
+/// from [`super::resolve_cache_dir`], so the machine keeps one copy rather
+/// than one per project (PROB-089) and an existing fastembed-era cache is
+/// reused as-is — the on-disk layout is HuggingFace's either way, so a user
+/// who already has the model does not download it again.
+#[cfg(feature = "hf-hub")]
+pub fn ensure_model(cache_dir: &Path, repo: &str, show_progress: bool) -> Result<PathBuf> {
+    if let Some(existing) = find_snapshot(cache_dir, repo) {
+        // Present, but possibly half-fetched from an interrupted run. Checking
+        // is far cheaper than the multi-gigabyte re-download it prevents.
+        if REQUIRED_FILES.iter().all(|f| existing.join(f).exists()) {
+            return Ok(existing);
+        }
+    }
+
+    let api =
+        hf_hub::api::sync::ApiBuilder::from_cache(hf_hub::Cache::new(cache_dir.to_path_buf()))
+            .with_progress(show_progress)
+            .build()
+            .context("could not initialise the HuggingFace client")?;
+
+    let model = api.model(repo.to_string());
+    for file in REQUIRED_FILES {
+        model
+            .get(file)
+            .with_context(|| format!("could not fetch `{file}` from {repo}"))?;
+    }
+
+    find_snapshot(cache_dir, repo).ok_or_else(|| {
+        anyhow::anyhow!(
+            "downloaded {repo} but no usable snapshot appeared under {}",
+            cache_dir.display()
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

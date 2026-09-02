@@ -26,7 +26,6 @@ async-trait.workspace = true
 reqwest = { version = "0.12.15", default-features = false, features = ["json", "rustls-tls"] }
 pulldown-cmark = "0.13"
 petgraph.workspace = true
-fastembed = { version = "5", optional = true }
 # RFC-013: pure-Rust inference. Compiles wherever our binary compiles, which is
 # the whole reason for the swap — no prebuilt to match against the build
 # environment (EVID-158).
@@ -35,6 +34,10 @@ tract-onnx = { version = "0.23", optional = true }
 # tokenizer.json. Matching tokenization exactly is what keeps the vectors
 # identical rather than merely similar.
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
+# Model download. fastembed used this internally; with fastembed gone we call
+# it directly. `rustls-tls` to match the stack `reqwest` already pulls in —
+# a second TLS implementation in one binary is pure weight.
+hf-hub = { version = "0.5", optional = true, default-features = false, features = ["ureq"] }
 # Model-cache resolution (`embed::resolve_cache_dir`). Only meaningful with
 # `semantic-search`, but kept unconditional: the resolver is compiled in both
 # feature configs so the first-run notice can name the target directory even
@@ -64,12 +67,13 @@ libc = "0.2"
 
 [features]
 default = []
-semantic-search = ["fastembed"]
-# RFC-013 Phase 2: the pure-Rust engine, built ALONGSIDE the ONNX Runtime path
-# so the two can be compared before either is removed. Enabling both at once is
-# the point during the transition — `tests/tract_parity.rs` needs them
-# together. Phase 3 folds this into `semantic-search` and drops fastembed.
-tract-engine = ["tract-onnx", "tokenizers"]
+# Vector search. Since RFC-013 this is the pure-Rust tract engine: it compiles
+# wherever our binary compiles, which is what lets the feature ship in the
+# release binaries at all (EVID-158 measured the ONNX Runtime path failing on
+# four of five targets). `tract-engine` is kept as the concrete name so the
+# parity tests can address the engine directly.
+semantic-search = ["tract-engine"]
+tract-engine = ["tract-onnx", "tokenizers", "hf-hub"]
 # Exposes test-only escape hatches (`*_for_test`) on `LanceStore` so
 # downstream test fixtures can seed the DB directly without going through
 # the projection pipeline they're not exercising. Production code MUST

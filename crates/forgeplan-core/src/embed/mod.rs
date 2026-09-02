@@ -178,26 +178,28 @@ fn compose_first_run_notice(cache: &Path, legacy: Option<PathBuf>) -> String {
     notice
 }
 
-#[cfg(feature = "semantic-search")]
+#[cfg(feature = "tract-engine")]
 mod inner {
-    use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+    use super::tract_engine::{TractEmbedder, ensure_model};
 
-    /// Resolve fastembed model enum from config string.
-    fn resolve_model(name: &str) -> EmbeddingModel {
-        match name {
-            "bge-m3" => EmbeddingModel::BGEM3,
-            "bge-small-en" => EmbeddingModel::BGESmallENV15,
-            "bge-base-en" => EmbeddingModel::BGEBaseENV15,
-            "bge-large-en" => EmbeddingModel::BGELargeENV15,
-            "multilingual-e5-small" => EmbeddingModel::MultilingualE5Small,
-            "multilingual-e5-base" => EmbeddingModel::MultilingualE5Base,
-            "multilingual-e5-large" => EmbeddingModel::MultilingualE5Large,
-            "nomic-embed-v1.5" => EmbeddingModel::NomicEmbedTextV15,
-            "all-minilm-l6" => EmbeddingModel::AllMiniLML6V2,
-            "jina-v2-en" => EmbeddingModel::JinaEmbeddingsV2BaseEN,
-            "jina-v2-code" => EmbeddingModel::JinaEmbeddingsV2BaseCode,
-            "embedding-gemma-300m" => EmbeddingModel::EmbeddingGemma300M,
-            _ => EmbeddingModel::BGEM3, // default fallback
+    /// Which HuggingFace repo backs a configured model name.
+    ///
+    /// **Deliberately narrower than the fastembed-era list.** That list mapped
+    /// twelve names, but the mapping was only half the story: fastembed also
+    /// knew each model's pooling strategy and ONNX file layout. Reproducing
+    /// twelve of those without being able to verify each one would mean
+    /// shipping vectors nobody has checked — and a wrong pooling strategy
+    /// does not fail, it returns plausible numbers (see the module note in
+    /// `tract_engine`).
+    ///
+    /// So the mapping covers what is verified against the oracle, and anything
+    /// else gets a clear error instead of a silent substitution. Widening it
+    /// is a contained follow-up: add the repo, confirm its pooling, capture
+    /// reference vectors, done.
+    fn resolve_repo(model_name: &str) -> Option<&'static str> {
+        match model_name {
+            "bge-m3" => Some("BAAI/bge-m3"),
+            _ => None,
         }
     }
 
@@ -222,9 +224,18 @@ mod inner {
     /// Default dimension (BGE-M3).
     pub const EMBEDDING_DIM: usize = 1024;
 
-    /// Wrapper around fastembed TextEmbedding.
+    /// Text embedder backed by the pure-Rust tract engine.
+    ///
+    /// The public shape is unchanged from the fastembed version on purpose
+    /// (RFC-013 invariant #2) — every caller in the CLI, the MCP server and
+    /// the store keeps working untouched, which keeps the blast radius of this
+    /// swap inside one module.
+    ///
+    /// `&mut self` on `embed` is likewise kept even though tract needs only
+    /// `&self`: relaxing it would be a silent API widening, and callers hold
+    /// `let mut embedder` today.
     pub struct Embedder {
-        model: TextEmbedding,
+        engine: TractEmbedder,
         model_name: String,
     }
 
@@ -238,22 +249,23 @@ mod inner {
         ///
         /// The model downloads on first use into the shared cache resolved by
         /// [`super::resolve_cache_dir`] — one copy per machine rather than one
-        /// per project, which is what the un-configured default produced.
-        /// Download progress is shown; a failure here is almost always a
-        /// network problem, so we say so instead of surfacing a bare
-        /// fastembed error.
+        /// per project. A failure here is almost always network or disk, so we
+        /// say that instead of surfacing a bare library error.
         pub fn with_model(model_name: &str) -> anyhow::Result<Self> {
-            let model_enum = resolve_model(model_name);
-            let cache_dir = super::resolve_cache_dir();
-
-            let model = TextEmbedding::try_new(
-                InitOptions::new(model_enum)
-                    .with_show_download_progress(true)
-                    .with_cache_dir(cache_dir.clone()),
-            )
-            .map_err(|e| {
+            let repo = resolve_repo(model_name).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Could not load the embedding model '{model_name}' \
+                    "Embedding model '{model_name}' is not available on this build.\n\
+                     Supported: bge-m3.\n\
+                     Fix: set `embedding.model: bge-m3` in .forgeplan/config.yaml"
+                )
+            })?;
+
+            let cache_dir = super::resolve_cache_dir();
+            let dim = embedding_dim(model_name);
+
+            let snapshot = ensure_model(&cache_dir, repo, true).map_err(|e| {
+                anyhow::anyhow!(
+                    "Could not obtain the embedding model '{model_name}' \
                      (cache: {cache}).\n\
                      First use downloads {size}; this needs network access and \
                      free disk space.\n\
@@ -265,8 +277,19 @@ mod inner {
                 )
             })?;
 
+            let engine = TractEmbedder::from_snapshot(&snapshot, model_name, dim).map_err(|e| {
+                anyhow::anyhow!(
+                    "The embedding model '{model_name}' is present at {} but \
+                     could not be loaded.\n\
+                     Underlying error: {e}\n\
+                     Fix: the cached copy may be incomplete — remove it and \
+                     rerun to fetch it again",
+                    snapshot.display()
+                )
+            })?;
+
             Ok(Self {
-                model,
+                engine,
                 model_name: model_name.to_string(),
             })
         }
@@ -278,32 +301,26 @@ mod inner {
 
         /// Embedding dimension for current model.
         pub fn dim(&self) -> usize {
-            embedding_dim(&self.model_name)
+            self.engine.dim()
         }
 
         /// Embed a single text.
         pub fn embed(&mut self, text: &str) -> anyhow::Result<Vec<f32>> {
-            let results = self.model.embed(vec![text], None)?;
-            results
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("Empty embedding result"))
+            self.engine.embed(text)
         }
 
         /// Embed multiple texts in batch.
         pub fn embed_batch(&mut self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
-            let texts_owned: Vec<String> = texts.iter().map(|t| t.to_string()).collect();
-            let results = self.model.embed(texts_owned, None)?;
-            Ok(results)
+            self.engine.embed_batch(texts)
         }
     }
 }
 
-#[cfg(feature = "semantic-search")]
+#[cfg(feature = "tract-engine")]
 pub use inner::*;
 
-/// Placeholder when semantic-search feature is not enabled.
-#[cfg(not(feature = "semantic-search"))]
+/// Placeholder when the embedding engine is not compiled in.
+#[cfg(not(feature = "tract-engine"))]
 pub const EMBEDDING_DIM: usize = 1024;
 
 #[cfg(test)]
