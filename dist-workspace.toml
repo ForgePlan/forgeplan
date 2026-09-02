@@ -35,6 +35,22 @@ publish-jobs = ["homebrew"]
 # before it goes anywhere near a release/v* branch (PRD-083 FR-001/FR-009).
 features = ["semantic-search"]
 
+# TEMPORARY — remove before merging this PR.
+#
+# By default dist only runs `plan` on pull requests, so a change to the
+# release build is NOT actually compiled until a version tag is pushed —
+# i.e. during a real release, when a failure takes the whole publication
+# down with it (v0.32.0: windows-msvc broke and macOS + Linux never
+# published). That is precisely the risk `features` above carries, since
+# ort-sys fetches a prebuilt ONNX Runtime per target at build time.
+#
+# `upload` makes the PR build all five targets for real, which is the only
+# way to get evidence before tagging. Upstream calls this out as useful for
+# cross-platform verification but slow, and recommends using it temporarily
+# — so this line goes away once the five-target run is green and recorded
+# (PRD-083 FR-002/FR-003).
+pr-run-mode = "upload"
+
 # Binary aliases
 bin-aliases = { "forgeplan" = ["fpl"] }
 # Allow dirty CI files (we patched action versions v6→v4)
