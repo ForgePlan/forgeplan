@@ -1,5 +1,10 @@
 use std::path::{Path, PathBuf};
 
+/// RFC-013 Phase 2 — pure-Rust inference, present alongside the ONNX Runtime
+/// path so the two can be compared before either is removed.
+#[cfg(feature = "tract-engine")]
+pub mod tract_engine;
+
 /// Approximate on-disk size of the default model (BGE-M3), measured on
 /// macOS 2026-08-29: `du -sh` over `models--BAAI--bge-m3` reported 2.1 GB.
 ///
@@ -15,6 +20,50 @@ pub const MODEL_DOWNLOAD_SIZE_HINT: &str = "~2.1 GB";
 /// scatters a multi-gigabyte cache into whatever directory the user
 /// happened to run from — and re-downloads it for every project.
 const FASTEMBED_DEFAULT_CACHE_DIR: &str = ".fastembed_cache";
+
+/// A long input built by repetition, sized past the 2000-char `chunk_size`
+/// callers apply, so the fixture exercises a realistic artifact body rather
+/// than a phrase. Built from a `const` rather than read off disk: a fixture
+/// whose input can change is not an oracle.
+const LONG_BODY_UNIT: &str = "The engine is linked at build time, so a prebuilt \
+    from someone else's machine has to match ours. It does not, on four targets \
+    out of five. ";
+
+/// Texts the embedding oracle is pinned on, shared by the generator and the
+/// test so the two cannot drift apart.
+///
+/// Chosen for where an engine swap is most likely to diverge rather than for
+/// coverage of ordinary prose:
+///
+/// - **ASCII vs Cyrillic** — different tokenizer paths through the same
+///   vocabulary; BGE-M3 is multilingual and our artifacts are Russian.
+/// - **empty string** — the degenerate case, where a tokenizer emits only
+///   special tokens and pooling has almost nothing to pool.
+/// - **emoji and mixed script** — multi-byte codepoints and script switching,
+///   the classic place an off-by-one in tokenization hides.
+/// - **long body** — a realistic artifact length, where accumulated numerical
+///   drift would show up if it were going to.
+/// - **whitespace-only** — looks empty but is not, and is trivially easy to
+///   normalise differently by accident.
+pub fn reference_cases() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "short_english",
+            "why is vector search missing from release binaries".to_string(),
+        ),
+        (
+            "short_russian",
+            "почему в релизных бинарях нет векторного поиска".to_string(),
+        ),
+        (
+            "mixed_script",
+            "ADR-022 решение: semantic-search остаётся вне prebuilt 🚀 (2.1 GB)".to_string(),
+        ),
+        ("empty", String::new()),
+        ("whitespace_only", "   \n\t  ".to_string()),
+        ("long_body", LONG_BODY_UNIT.repeat(16)),
+    ]
+}
 
 /// Resolve where embedding models are cached.
 ///

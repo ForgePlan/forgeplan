@@ -27,6 +27,14 @@ reqwest = { version = "0.12.15", default-features = false, features = ["json", "
 pulldown-cmark = "0.13"
 petgraph.workspace = true
 fastembed = { version = "5", optional = true }
+# RFC-013: pure-Rust inference. Compiles wherever our binary compiles, which is
+# the whole reason for the swap — no prebuilt to match against the build
+# environment (EVID-158).
+tract-onnx = { version = "0.23", optional = true }
+# The same tokenizer library fastembed uses internally, loaded from the same
+# tokenizer.json. Matching tokenization exactly is what keeps the vectors
+# identical rather than merely similar.
+tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
 # Model-cache resolution (`embed::resolve_cache_dir`). Only meaningful with
 # `semantic-search`, but kept unconditional: the resolver is compiled in both
 # feature configs so the first-run notice can name the target directory even
@@ -57,6 +65,11 @@ libc = "0.2"
 [features]
 default = []
 semantic-search = ["fastembed"]
+# RFC-013 Phase 2: the pure-Rust engine, built ALONGSIDE the ONNX Runtime path
+# so the two can be compared before either is removed. Enabling both at once is
+# the point during the transition — `tests/tract_parity.rs` needs them
+# together. Phase 3 folds this into `semantic-search` and drops fastembed.
+tract-engine = ["tract-onnx", "tokenizers"]
 # Exposes test-only escape hatches (`*_for_test`) on `LanceStore` so
 # downstream test fixtures can seed the DB directly without going through
 # the projection pipeline they're not exercising. Production code MUST
