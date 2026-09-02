@@ -72,6 +72,7 @@ pub mod scan_import;
 pub mod score;
 pub mod search;
 pub mod session;
+pub mod setup;
 pub mod setup_skill;
 pub mod stale;
 pub mod status;

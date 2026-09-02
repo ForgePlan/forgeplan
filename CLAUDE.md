@@ -114,7 +114,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
   lru LOW carried; lancedb 0.30 / sha2 / notify / arrow-schema deferred to v0.34.
 - **v0.32.1** (2026-05-21) — hotfix: Windows binary build; v0.32.0: Epic #287
   brownfield extraction surface + PROB-074 stale-handle hardening.
-- **81 CLI commands**, **73 MCP tools**, **3243 tests + 9 doc-tests** (CI `nextest`), **0 warnings** on both feature configs
+- **82 CLI commands**, **73 MCP tools**, **3243 tests + 9 doc-tests** (CI `nextest`), **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**, **Epic #287 ✅** (brownfield). Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 (feature-gated, graceful fallback)
 

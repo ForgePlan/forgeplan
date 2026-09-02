@@ -856,3 +856,129 @@ fn ci_assign_id_dry_run_no_candidates_emits_json() {
     assert!(parsed["assignments"].is_array());
     assert!(parsed["summary"].is_object());
 }
+
+// ---------------------------------------------------------------------------
+// setup — `fpl` alias + embedding model preparation
+// ---------------------------------------------------------------------------
+
+/// The alias step must work on a build with no embedding support, since that
+/// is exactly what the prebuilt binaries are (PROB-088 / ADR-022).
+#[test]
+fn setup_creates_the_fpl_alias_next_to_the_binary() {
+    let dir = TempDir::new().unwrap();
+    let exe = dir.path().join("forgeplan");
+    std::fs::copy(assert_cmd::cargo::cargo_bin("forgeplan"), &exe).unwrap();
+
+    Command::new(&exe)
+        .args(["setup", "--skip-model"])
+        .assert()
+        .success();
+
+    let alias = dir.path().join("fpl");
+    assert!(alias.exists(), "expected the alias at {}", alias.display());
+    assert_eq!(
+        std::fs::read_link(&alias).unwrap(),
+        exe,
+        "alias must point at the binary that created it, not a guessed path"
+    );
+}
+
+/// Running setup twice is a normal thing to do; the second run must not fail
+/// or report a fresh creation it did not perform.
+#[test]
+fn setup_is_idempotent() {
+    let dir = TempDir::new().unwrap();
+    let exe = dir.path().join("forgeplan");
+    std::fs::copy(assert_cmd::cargo::cargo_bin("forgeplan"), &exe).unwrap();
+
+    Command::new(&exe)
+        .args(["setup", "--skip-model"])
+        .assert()
+        .success();
+
+    Command::new(&exe)
+        .args(["setup", "--skip-model"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already in place"));
+}
+
+/// A user may already have their own `fpl` on PATH. Overwriting someone's
+/// binary because our command happened to want the name would be indefensible.
+#[test]
+fn setup_refuses_to_overwrite_an_existing_fpl() {
+    let dir = TempDir::new().unwrap();
+    let exe = dir.path().join("forgeplan");
+    std::fs::copy(assert_cmd::cargo::cargo_bin("forgeplan"), &exe).unwrap();
+
+    let alias = dir.path().join("fpl");
+    std::fs::write(&alias, b"someone elses tool").unwrap();
+
+    Command::new(&exe)
+        .args(["setup", "--skip-model"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read(&alias).unwrap(),
+        b"someone elses tool",
+        "a foreign file at the alias path must survive untouched"
+    );
+}
+
+/// On a build without the feature there is no model to fetch. Saying so beats
+/// either a silent no-op or a confident claim that something was prepared.
+#[test]
+#[cfg(not(feature = "semantic-search"))]
+fn setup_explains_itself_when_the_build_cannot_embed() {
+    let dir = TempDir::new().unwrap();
+    let exe = dir.path().join("forgeplan");
+    std::fs::copy(assert_cmd::cargo::cargo_bin("forgeplan"), &exe).unwrap();
+
+    Command::new(&exe)
+        .arg("setup")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no semantic-search feature"))
+        .stdout(predicate::str::contains("cargo install --git"));
+}
+
+/// PROB-088 lesson applied to our own flags: `-y` must never pull gigabytes.
+/// Agents and CI runners call `init -y` routinely; a 2.1 GB download there
+/// would be a denial of service on someone's build.
+#[test]
+fn init_non_interactive_never_mentions_or_fetches_the_model() {
+    let dir = TempDir::new().unwrap();
+
+    let out = forgeplan()
+        .args(["init", "-y"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_lowercase();
+    assert!(
+        !stdout.contains("download"),
+        "`init -y` must not start or announce a model download: {stdout}"
+    );
+}
+
+/// `--with-model` is explicit opt-in and has to be honoured on the
+/// non-interactive path too. This regressed once already: the flag parsed
+/// fine and did nothing, because `-y` returns early on its own code path and
+/// never reached the preparation step. Only an end-to-end run caught it.
+#[test]
+fn init_with_model_flag_is_accepted_on_the_non_interactive_path() {
+    let dir = TempDir::new().unwrap();
+
+    forgeplan()
+        .args(["init", "-y", "--with-model"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // On a default build there is nothing to download, so the assertion is
+    // about the flag being wired at all — it must not error, and the
+    // workspace must still be created.
+    assert!(dir.path().join(".forgeplan").is_dir());
+}
