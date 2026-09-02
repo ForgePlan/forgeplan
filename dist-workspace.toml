@@ -16,40 +16,38 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-da
 tap = "ForgePlan/homebrew-tap"
 # Publish jobs
 publish-jobs = ["homebrew"]
-# Cargo features compiled into the released binaries.
+# Cargo features compiled into the released binaries — DELIBERATELY ABSENT.
 #
-# PROB-088: this key was absent, so dist built with default features only —
-# and `semantic-search` is not a default. The consequence was that NO
-# published binary (brew, install.sh, GitHub Releases, any target) ever
-# carried vector search, from the introduction of cargo-dist onward. The
-# feature was gated, the fallback was graceful, and nobody noticed for
-# months because nothing ever said so out loud.
+# `semantic-search` is NOT shipped in the prebuilt binaries, and this comment
+# is the record of why, so the question stops being re-derived from scratch
+# (PROB-088 was reported precisely because nothing stated it).
 #
-# Enabling this pulls fastembed -> ort 2.0.0-rc.12 -> ort-sys into the
-# release build. ort-sys uses the `download-binaries` profile, so each
-# target's build fetches a prebuilt ONNX Runtime at compile time.
+# It was tried. PR #455 set `features = ["semantic-search"]` and
+# `pr-run-mode = "upload"` to compile all five targets for real. Result —
+# four of five failed, in three distinct ways:
 #
-# RISK: dist fails the ENTIRE workflow when any single target fails — in
-# v0.32.0 a windows-msvc break took the macOS and Linux publications down
-# with it. This must be proven green on all five targets in its own PR
-# before it goes anywhere near a release/v* branch (PRD-083 FR-001/FR-009).
-features = ["semantic-search"]
-
-# TEMPORARY — remove before merging this PR.
+#   aarch64-apple-darwin      PASS
+#   x86_64-apple-darwin       FAIL  ort ships no prebuilt ONNX Runtime for
+#                                   this target at all ("does not provide
+#                                   prebuilt binaries for the target")
+#   x86_64-unknown-linux-gnu  FAIL  undefined __isoc23_strtol/strtoll/strtoull
+#   aarch64-unknown-linux-gnu FAIL  — the prebuilt needs glibc >= 2.38, and
+#                                   dist links Linux inside an older-glibc
+#                                   container ON PURPOSE, for broad distro
+#                                   compatibility
+#   x86_64-pc-windows-msvc    FAIL  LNK1120: 66 unresolved externals from
+#                                   libort_sys (__imp__dup, __imp_strncpy,
+#                                   __imp___timezone …) — the prebuilt does
+#                                   not match this toolchain's CRT
 #
-# By default dist only runs `plan` on pull requests, so a change to the
-# release build is NOT actually compiled until a version tag is pushed —
-# i.e. during a real release, when a failure takes the whole publication
-# down with it (v0.32.0: windows-msvc broke and macOS + Linux never
-# published). That is precisely the risk `features` above carries, since
-# ort-sys fetches a prebuilt ONNX Runtime per target at build time.
+# Since dist fails the ENTIRE workflow when any single target fails, setting
+# this key does not degrade the release — it prevents it outright. Full
+# measurement: EVID-158. Decision and rejected alternatives: ADR-022.
 #
-# `upload` makes the PR build all five targets for real, which is the only
-# way to get evidence before tagging. Upstream calls this out as useful for
-# cross-platform verification but slow, and recommends using it temporarily
-# — so this line goes away once the five-target run is green and recorded
-# (PRD-083 FR-002/FR-003).
-pr-run-mode = "upload"
+# Do not re-add without changing what is underneath it (an ort release with
+# complete prebuilt coverage, building ONNX from source, or a separate
+# artifact limited to the targets that work). Re-verify with
+# `pr-run-mode = "upload"` before believing any of them.
 
 # Binary aliases
 bin-aliases = { "forgeplan" = ["fpl"] }

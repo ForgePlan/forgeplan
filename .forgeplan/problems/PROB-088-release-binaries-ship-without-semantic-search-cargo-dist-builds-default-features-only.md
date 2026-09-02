@@ -173,3 +173,4 @@ Embedding 396 artifact(s) (title + body, chunk_size=2000)...
 - PRD-071 — hint-контракт, который нарушает M2
 - `docs/operations/RELEASE-PROTOCOL` — место, где контракт дистрибуции обязан быть зафиксирован
 
+
