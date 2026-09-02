@@ -122,11 +122,26 @@ To get BGE-M3 vector search:
 
 ```bash
 cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search
+forgeplan setup
 ```
 
-The model downloads on first use — **~2.1 GB**, once per machine, with a
-progress bar. It is cached outside your projects, in the platform cache
-directory:
+`forgeplan setup` covers the two things `cargo install` cannot do for itself:
+
+- creates the **`fpl` alias** — brew and `install.sh` get it from cargo-dist's
+  `bin-aliases`, but cargo has no post-install hook, so a source install has
+  `forgeplan` and no `fpl`
+- downloads the **embedding model** up front, so your first semantic search
+  does not stall for minutes with no explanation
+
+Both steps are idempotent; `--skip-model` and `--skip-alias` opt out of either.
+An existing `fpl` on your PATH is never overwritten.
+
+`forgeplan init` also offers the download when run interactively. It never
+downloads under `-y` — agents and CI runners must not pull gigabytes by
+accident — so pass `--with-model` when a scripted install genuinely wants it.
+
+The model is **~2.1 GB**, downloaded once per machine with a progress bar, and
+cached outside your projects, in the platform cache directory:
 
 | Platform | Cache location |
 |---|---|

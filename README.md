@@ -98,17 +98,29 @@ features, and `semantic-search` is not one of them. On those builds
 keyword search — correct behaviour, but worth knowing before you install rather
 than discovering it from an error.
 
-To get vector search (BGE-M3), install a build that carries the feature:
+To get vector search (BGE-M3), install a build that carries the feature, then
+run the one-time setup:
 
 ```bash
 cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search
+forgeplan setup
 ```
 
-The model downloads on first use — **~2.1 GB**, once per machine, with a
-progress bar. It is cached in the platform cache directory
-(`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on
-Linux), shared across all your projects. Override with `FORGEPLAN_MODEL_CACHE`;
-note that `HF_HOME`, if you have it set, takes precedence over both.
+`forgeplan setup` does the two things a `cargo install` cannot do for itself:
+creates the `fpl` alias (brew and `install.sh` get it from cargo-dist; cargo has
+no post-install hook) and downloads the embedding model up front, so the first
+semantic search does not stall for minutes with no explanation. Both steps are
+idempotent, and `--skip-model` / `--skip-alias` opt out of either.
+
+The model is **~2.1 GB**, downloaded once per machine with a progress bar, and
+cached in the platform cache directory (`~/Library/Caches/forgeplan/models` on
+macOS, `~/.cache/forgeplan/models` on Linux) — shared across all your projects,
+not one copy per repository. Override with `FORGEPLAN_MODEL_CACHE`; note that
+`HF_HOME`, if you have it set, takes precedence over both.
+
+`forgeplan init` also offers the download when run interactively. It never
+downloads under `-y`, so agents and CI runners cannot pull gigabytes by
+accident; pass `--with-model` when a scripted install genuinely wants it.
 
 Everything else — routing, artifacts, scoring, validation, the graph, keyword
 search — works identically on every build.
@@ -223,7 +235,7 @@ Three entry points — pick the one that matches what you need right now.
 <tr>
 <td align="center"><b>394</b><br>tracked artifacts</td>
 <td align="center"><b>3243</b><br>tests passing</td>
-<td align="center"><b>81</b><br>CLI commands</td>
+<td align="center"><b>82</b><br>CLI commands</td>
 <td align="center"><b>73</b><br>MCP tools</td>
 </tr>
 </table>
