@@ -90,33 +90,35 @@ git clone https://github.com/ForgePlan/forgeplan.git && cd forgeplan
 cargo install --path crates/forgeplan-cli
 ```
 
-### Semantic search is not in the prebuilt binaries
+### First run: fetch the embedding model
 
-The Homebrew, install-script and GitHub Release binaries are built with default
-features, and `semantic-search` is not one of them. On those builds
-`forgeplan embed` refuses and `forgeplan search --semantic` falls back to
-keyword search — correct behaviour, but worth knowing before you install rather
-than discovering it from an error.
+Semantic search ships in every binary — Homebrew, the install script and the
+GitHub Release archives alike. The engine is `tract`, pure Rust, so there is no
+platform where the feature is present in the source but missing from the build.
 
-To get vector search (BGE-M3), install a build that carries the feature, then
-run the one-time setup:
+What is *not* in the binary is the model itself. Run once per machine:
 
 ```bash
-cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search
 forgeplan setup
 ```
 
-`forgeplan setup` does the two things a `cargo install` cannot do for itself:
-creates the `fpl` alias (brew and `install.sh` get it from cargo-dist; cargo has
-no post-install hook) and downloads the embedding model up front, so the first
-semantic search does not stall for minutes with no explanation. Both steps are
-idempotent, and `--skip-model` / `--skip-alias` opt out of either.
+That downloads BGE-M3 — **~2.1 GB**, with a progress bar — and, on a
+`cargo install`, creates the `fpl` alias that brew and `install.sh` get for
+free from cargo-dist. Both steps are idempotent; `--skip-model` and
+`--skip-alias` opt out of either.
 
-The model is **~2.1 GB**, downloaded once per machine with a progress bar, and
-cached in the platform cache directory (`~/Library/Caches/forgeplan/models` on
-macOS, `~/.cache/forgeplan/models` on Linux) — shared across all your projects,
-not one copy per repository. Override with `FORGEPLAN_MODEL_CACHE`; note that
-`HF_HOME`, if you have it set, takes precedence over both.
+The model is cached in the platform cache directory
+(`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on
+Linux) — shared across all your projects, not one copy per repository. Override
+with `FORGEPLAN_MODEL_CACHE`; `HF_HOME`, if you have it set, takes precedence
+over both.
+
+`forgeplan init` offers the same download interactively. It never downloads
+under `-y`, so agents and CI runners cannot pull gigabytes by accident; pass
+`--with-model` when a scripted install wants it.
+
+Until the model is present, `forgeplan search --semantic` falls back to keyword
+search and says so.
 
 `forgeplan init` also offers the download when run interactively. It never
 downloads under `-y`, so agents and CI runners cannot pull gigabytes by
@@ -261,7 +263,7 @@ git checkout -b feat/my-feature
 
 | Feature | Default | Purpose |
 |---|---|---|
-| `semantic-search` | off | BGE-M3 vector search on the pure-Rust `tract` engine. Model downloads on first use: **~2.1 GB**, cached per machine in the platform cache dir (override: `FORGEPLAN_MODEL_CACHE`). Off in every prebuilt binary — see [Install](#semantic-search-is-not-in-the-prebuilt-binaries) |
+| `semantic-search` | **on** in released binaries | BGE-M3 vector search on the pure-Rust `tract` engine. Model downloads on first use: **~2.1 GB**, cached per machine (override: `FORGEPLAN_MODEL_CACHE`) — see [Install](#first-run-fetch-the-embedding-model). Off by default in a plain `cargo build`. |
 | `test-helpers` | off | **Test fixtures only** — exposes `*_for_test` escape hatches on `LanceStore` that bypass the projection pipeline. **MUST NOT be enabled in production binaries.** Internally gated on `cfg(debug_assertions)` so release builds with the feature accidentally enabled still keep the ADR-003 lockdown. Downstream test crates that need direct DB seeding should enable it under `[dev-dependencies]` only (see `forgeplan-mcp/Cargo.toml` for the canonical example). |
 
 ## License

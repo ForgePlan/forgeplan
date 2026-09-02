@@ -107,34 +107,33 @@ cargo install forgeplan
 
 Download pre-built binaries from [GitHub Releases](https://github.com/ForgePlan/forgeplan/releases).
 
-### Semantic search needs a different build
+### First run: fetch the embedding model
 
-Every prebuilt binary above — Homebrew, the install script, the GitHub Release
-archives, and `cargo install forgeplan` from crates.io — is built with default
-features. `semantic-search` is **not** a default, so on those builds
-`forgeplan embed` refuses and `forgeplan search --semantic` falls back to BM25
-keyword search.
+Semantic search is compiled into every released binary — Homebrew, the install
+script and the GitHub Release archives alike. The engine is [`tract`](https://github.com/sonos/tract),
+pure Rust, so there is no platform where the feature exists in the source but
+not in the build.
 
-Everything else is identical: routing, artifacts, validation, scoring, the
-graph, and keyword search all work the same.
-
-To get BGE-M3 vector search:
+What the binary does *not* carry is the model itself. Run once per machine:
 
 ```bash
-cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search
 forgeplan setup
 ```
 
-`forgeplan setup` covers the two things `cargo install` cannot do for itself:
+It does two things:
 
-- creates the **`fpl` alias** — brew and `install.sh` get it from cargo-dist's
-  `bin-aliases`, but cargo has no post-install hook, so a source install has
-  `forgeplan` and no `fpl`
 - downloads the **embedding model** up front, so your first semantic search
   does not stall for minutes with no explanation
+- creates the **`fpl` alias** when you installed via `cargo install` — brew and
+  `install.sh` get it from cargo-dist's `bin-aliases`, but cargo has no
+  post-install hook, so a source install has `forgeplan` and no `fpl`
 
 Both steps are idempotent; `--skip-model` and `--skip-alias` opt out of either.
 An existing `fpl` on your PATH is never overwritten.
+
+Until the model is present, `forgeplan search --semantic` falls back to BM25
+keyword search and says so; everything else — routing, artifacts, validation,
+scoring, the graph — is unaffected.
 
 `forgeplan init` also offers the download when run interactively. It never
 downloads under `-y` — agents and CI runners must not pull gigabytes by

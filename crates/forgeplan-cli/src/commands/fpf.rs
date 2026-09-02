@@ -78,7 +78,7 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
     #[cfg(feature = "semantic-search")]
     let embeddings: Option<Vec<Vec<f32>>> = {
         println!(
-            "  Encoding {} sections with BGE-M3 (first run downloads model ~150MB)...",
+            "  Encoding {} sections with BGE-M3 (first run downloads the model, ~2.1 GB)...",
             chunks.len()
         );
         let mut embedder = forgeplan_core::embed::Embedder::new()?;

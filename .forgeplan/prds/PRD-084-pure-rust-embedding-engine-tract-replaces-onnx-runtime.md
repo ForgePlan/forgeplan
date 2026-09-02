@@ -178,3 +178,6 @@ ONNX Runtime — движок на C++ — **вшивается в бинарь 
 - **PROB-089** — дефекты кэша модели; механизм кэша переиспользуется без изменений
 - `dist-workspace.toml`, `docs/operations/RELEASE-PROTOCOL{,.ru}.md`
 
+
+
+

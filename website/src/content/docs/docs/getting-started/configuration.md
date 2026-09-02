@@ -140,15 +140,9 @@ Priority: **env var > config.yaml > default**.
 
 Configures the embedding model used for semantic search and the FPF KB vector index. Requires the `semantic-search` feature flag at build time.
 
-> **The prebuilt binaries do not include this feature.** Homebrew, `install.sh` and the GitHub Release archives are all built with default features, and `semantic-search` is not a default. On those builds this config block has no effect: `forgeplan embed` refuses and semantic search falls back to BM25 keyword search.
+> **Only `bge-m3` is currently supported.** The engine computes pooling itself, and pooling differs per model — BGE families pool on CLS, the E5 and MiniLM families pool on the mean. Running a mean-pooled model through CLS pooling does not fail; it returns plausible vectors computed the wrong way. So other names are rejected outright rather than silently mis-served. Widening the list is tracked in PROB-091.
 >
-> To get vector search, install a build that carries the feature:
->
-> ```bash
-> cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search
-> ```
->
-> The model downloads on first use — ~2.1 GB, once per machine, cached in the platform cache directory (`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on Linux). Override with `FORGEPLAN_MODEL_CACHE`; `HF_HOME`, if set, takes precedence over both.
+> The model downloads on first use — ~2.1 GB, once per machine, cached in the platform cache directory (`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on Linux). Override with `FORGEPLAN_MODEL_CACHE`; `HF_HOME`, if set, takes precedence over both. Run `forgeplan setup` to fetch it deliberately rather than on first search.
 
 ```yaml
 embedding:

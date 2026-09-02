@@ -11,6 +11,57 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Changed
+
+- **The embedding engine is now `tract` — pure Rust — and `semantic-search` ships in the
+  released binaries** (PRD-084, RFC-013, EVID-159/160/161; supersedes ADR-022). Until now no
+  published binary carried vector search at all: the engine was ONNX Runtime, linked at build
+  time from a prebuilt that has to match our build environment, and it matched on one release
+  target out of five (EVID-158). A Rust dependency compiles wherever our binary compiles, so
+  the whole class of mismatch disappears rather than being worked around.
+
+  What this means if you install from Homebrew, `install.sh` or a GitHub Release: semantic
+  search is present. Run `forgeplan setup` once per machine to fetch the model (~2.1 GB) —
+  the binary carries the engine, not the weights.
+
+  Vectors are unchanged. The replacement was verified against embeddings captured from the old
+  engine before it was removed, over six cases spanning Russian, English, mixed script, empty
+  and whitespace-only input, and a body past the truncation boundary: maximum deviation
+  7.0e-07, which is float32 precision. An existing index stays valid and needs no rebuild —
+  the same query returns the same artifacts, in the same order, with the same scores.
+
+- **⚠️ `embedding.model` accepts only `bge-m3` for now** (PROB-091). The previous twelve
+  values are rejected with a message naming the supported set rather than silently
+  substituted. The reason is worth stating plainly: pooling differs per model — BGE families
+  pool on the CLS token, the E5 and MiniLM families pool on the mean — and running a
+  mean-pooled model through CLS pooling does **not** fail. It returns plausible vectors
+  computed the wrong way, and search keeps working while quietly ranking nonsense. Widening
+  the list is contained work per model (repo, pooling, captured reference) and is tracked in
+  PROB-091.
+
+- **Indexing is slower; search is not meaningfully so.** Measured on 403 artifacts, same
+  corpus and machine, both engines run back to back (EVID-160): a full `forgeplan embed` takes
+  **13m18s against 4m42s** — 2.83x. A single search query encodes one short string, where the
+  difference is dominated by process start-up. Cold start did regress: `search --semantic`
+  takes ~2.0–2.7s against ~1.5s before, and reached 8.3s in one of three runs with the weights
+  evicted from the OS page cache, because tract parses the graph on every process launch.
+
+- **The model-size figure was wrong in five places** and is now stated from one constant. The
+  tree variously claimed ~150 MB and ~600 MB for a model that measures **2.1 GB** on disk.
+
+### Removed
+
+- `fastembed`, `ort` and `ort-sys` are gone from the dependency tree — verified through
+  `cargo tree` and `Cargo.lock`, since a dependency that merely stops being called still
+  carries the linking problem this change exists to remove. The release binary is **56.5 MB**,
+  10.7 MB *smaller* than the ONNX build.
+
+- The `libc++` linkage check in `RELEASE-PROTOCOL` is replaced rather than deleted. It read
+  "libc++ present ⇒ the feature is present", which inverts under pure Rust: that library is
+  legitimately absent from a binary that **does** carry semantic search. The note explains why
+  reviving it would report every correct build as broken.
+
+
 ## [0.34.0] - 2026-08-17
 
 Sprint headline: **Artifact integrity — R_eff now scores an artifact's *current* evidence only (breaking), code-claiming Evidence is verified against the real git delta, and the identity/collision class is closed across `update`, `reindex` and the anomaly detectors.**
