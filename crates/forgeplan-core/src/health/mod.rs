@@ -1239,7 +1239,13 @@ const GITIGNORE_DRIFT_PATTERNS: &[(&str, &str)] = &[
     ),
     (
         ".forgeplan/.fastembed_cache/",
-        "BGE-M3 embedding model cache — ~600 MB, per-machine",
+        "BGE-M3 embedding model cache — 2.1 GB measured, per-machine",
+    ),
+    (
+        ".fastembed_cache/",
+        "BGE-M3 model cache at the repo root — fastembed resolves its cache \
+         relative to the process CWD, so this is where a bare `forgeplan embed` \
+         actually writes (2.1 GB)",
     ),
     (
         ".forgeplan/session.yaml",

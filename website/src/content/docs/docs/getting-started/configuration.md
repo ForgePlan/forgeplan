@@ -138,7 +138,17 @@ Priority: **env var > config.yaml > default**.
 
 ## `embedding:` - Semantic Search
 
-Configures the embedding model used for semantic search and the FPF KB vector index. Requires the `semantic-search` feature flag at build time (included in official release binaries).
+Configures the embedding model used for semantic search and the FPF KB vector index. Requires the `semantic-search` feature flag at build time.
+
+> **The prebuilt binaries do not include this feature.** Homebrew, `install.sh` and the GitHub Release archives are all built with default features, and `semantic-search` is not a default. On those builds this config block has no effect: `forgeplan embed` refuses and semantic search falls back to BM25 keyword search.
+>
+> To get vector search, install a build that carries the feature:
+>
+> ```bash
+> cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search
+> ```
+>
+> The model downloads on first use — ~2.1 GB, once per machine, cached in the platform cache directory (`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on Linux). Override with `FORGEPLAN_MODEL_CACHE`; `HF_HOME`, if set, takes precedence over both.
 
 ```yaml
 embedding:
@@ -504,9 +514,9 @@ Use `forgeplan health` to confirm the LLM subsystem reports "ready".
 ### Embeddings fail to load / semantic search returns empty
 
 **Cause**: one of:
-- Forgeplan binary was built without the `semantic-search` feature (check `forgeplan --version`).
+- Forgeplan binary was built without the `semantic-search` feature — the usual case, since no prebuilt binary carries it. `forgeplan --version` does **not** report features; run `forgeplan embed` instead. A build without the feature refuses immediately with an install command; a build with it starts loading the model.
 - `embedding.model` was changed and `lance/` was not reindexed.
-- `.fastembed_cache/` is corrupted.
+- The model cache is corrupted.
 
 **Fix**:
 ```bash

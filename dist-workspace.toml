@@ -16,6 +16,39 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-da
 tap = "ForgePlan/homebrew-tap"
 # Publish jobs
 publish-jobs = ["homebrew"]
+# Cargo features compiled into the released binaries — DELIBERATELY ABSENT.
+#
+# `semantic-search` is NOT shipped in the prebuilt binaries, and this comment
+# is the record of why, so the question stops being re-derived from scratch
+# (PROB-088 was reported precisely because nothing stated it).
+#
+# It was tried. PR #455 set `features = ["semantic-search"]` and
+# `pr-run-mode = "upload"` to compile all five targets for real. Result —
+# four of five failed, in three distinct ways:
+#
+#   aarch64-apple-darwin      PASS
+#   x86_64-apple-darwin       FAIL  ort ships no prebuilt ONNX Runtime for
+#                                   this target at all ("does not provide
+#                                   prebuilt binaries for the target")
+#   x86_64-unknown-linux-gnu  FAIL  undefined __isoc23_strtol/strtoll/strtoull
+#   aarch64-unknown-linux-gnu FAIL  — the prebuilt needs glibc >= 2.38, and
+#                                   dist links Linux inside an older-glibc
+#                                   container ON PURPOSE, for broad distro
+#                                   compatibility
+#   x86_64-pc-windows-msvc    FAIL  LNK1120: 66 unresolved externals from
+#                                   libort_sys (__imp__dup, __imp_strncpy,
+#                                   __imp___timezone …) — the prebuilt does
+#                                   not match this toolchain's CRT
+#
+# Since dist fails the ENTIRE workflow when any single target fails, setting
+# this key does not degrade the release — it prevents it outright. Full
+# measurement: EVID-158. Decision and rejected alternatives: ADR-022.
+#
+# Do not re-add without changing what is underneath it (an ort release with
+# complete prebuilt coverage, building ONNX from source, or a separate
+# artifact limited to the targets that work). Re-verify with
+# `pr-run-mode = "upload"` before believing any of them.
+
 # Binary aliases
 bin-aliases = { "forgeplan" = ["fpl"] }
 # Allow dirty CI files (we patched action versions v6→v4)

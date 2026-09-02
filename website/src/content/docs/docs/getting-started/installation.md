@@ -107,6 +107,42 @@ cargo install forgeplan
 
 Download pre-built binaries from [GitHub Releases](https://github.com/ForgePlan/forgeplan/releases).
 
+### Semantic search needs a different build
+
+Every prebuilt binary above — Homebrew, the install script, the GitHub Release
+archives, and `cargo install forgeplan` from crates.io — is built with default
+features. `semantic-search` is **not** a default, so on those builds
+`forgeplan embed` refuses and `forgeplan search --semantic` falls back to BM25
+keyword search.
+
+Everything else is identical: routing, artifacts, validation, scoring, the
+graph, and keyword search all work the same.
+
+To get BGE-M3 vector search:
+
+```bash
+cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search
+```
+
+The model downloads on first use — **~2.1 GB**, once per machine, with a
+progress bar. It is cached outside your projects, in the platform cache
+directory:
+
+| Platform | Cache location |
+|---|---|
+| macOS | `~/Library/Caches/forgeplan/models` |
+| Linux | `~/.cache/forgeplan/models` |
+| Windows | `%LOCALAPPDATA%\forgeplan\models` |
+
+Override with `FORGEPLAN_MODEL_CACHE`. If you already have `HF_HOME` set, it
+takes precedence over both — that is fastembed's behaviour and we do not
+override it, so a shared HuggingFace cache stays authoritative.
+
+To check which kind of build you have, run `forgeplan embed`: a build without
+the feature refuses immediately and prints the install command above, while a
+build with it starts loading the model. `forgeplan --version` does not report
+features.
+
 ## MCP Server (for AI agents)
 
 Add to your project's `.mcp.json`:

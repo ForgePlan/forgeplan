@@ -2410,6 +2410,7 @@ dependencies = [
  "async-trait",
  "bm25",
  "chrono",
+ "dirs",
  "fastembed",
  "fs2",
  "futures",

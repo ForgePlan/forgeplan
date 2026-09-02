@@ -27,6 +27,11 @@ reqwest = { version = "0.12.15", default-features = false, features = ["json", "
 pulldown-cmark = "0.13"
 petgraph.workspace = true
 fastembed = { version = "5", optional = true }
+# Model-cache resolution (`embed::resolve_cache_dir`). Only meaningful with
+# `semantic-search`, but kept unconditional: the resolver is compiled in both
+# feature configs so the first-run notice can name the target directory even
+# when the embedder itself is absent.
+dirs = "6"
 bm25 = { version = "2.3.2", features = ["language_detection"] }
 sha2 = "0.11"
 tracing = "0.1"

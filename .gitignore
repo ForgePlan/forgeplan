@@ -15,6 +15,15 @@ target/
 .forgeplan/.fastembed_cache/
 .forgeplan/session.yaml
 
+# Embedding model cache — match at ANY depth, not just the two paths we
+# happened to think of. fastembed resolves its cache relative to the
+# process CWD, so a bare `forgeplan embed` from the repo root writes
+# `./.fastembed_cache/` — which the `.forgeplan/`-prefixed rules above do
+# NOT cover. That directory holds the BGE-M3 weights: 2.1 GB measured, so
+# a single `git add -A` would have committed 2.1 GB of model binaries.
+# Keep this leading-slash-free so it matches at every level.
+.fastembed_cache/
+
 # Node.js
 node_modules/
 

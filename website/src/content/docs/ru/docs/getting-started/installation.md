@@ -107,6 +107,41 @@ cargo install forgeplan
 
 Загрузите предварительно собранные бинарные файлы из [Релизов GitHub](https://github.com/ForgePlan/forgeplan/releases).
 
+### Для семантического поиска нужна другая сборка
+
+Все готовые бинарники выше — Homebrew, install-скрипт, архивы GitHub Releases и
+`cargo install forgeplan` с crates.io — собираются с default-фичами.
+`semantic-search` в их число **не входит**, поэтому на таких сборках
+`forgeplan embed` откажется работать, а `forgeplan search --semantic`
+деградирует в keyword-поиск BM25.
+
+Всё остальное работает одинаково: маршрутизация, артефакты, валидация,
+скоринг, граф и keyword-поиск.
+
+Чтобы получить векторный поиск BGE-M3:
+
+```bash
+cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search
+```
+
+Модель скачивается при первом использовании — **~2.1 GB**, один раз на машину,
+с прогресс-баром. Кэш хранится вне ваших проектов, в платформенном
+кэш-каталоге:
+
+| Платформа | Расположение кэша |
+|---|---|
+| macOS | `~/Library/Caches/forgeplan/models` |
+| Linux | `~/.cache/forgeplan/models` |
+| Windows | `%LOCALAPPDATA%\forgeplan\models` |
+
+Переопределяется переменной `FORGEPLAN_MODEL_CACHE`. Если у вас выставлена
+`HF_HOME`, приоритет за ней — это поведение fastembed, и мы его сознательно не
+переопределяем, чтобы общий кэш HuggingFace оставался главным.
+
+Проверить, какая у вас сборка, можно командой `forgeplan embed`: сборка без
+функции сразу откажется и напечатает команду установки, сборка с функцией
+начнёт загружать модель. `forgeplan --version` состав функций не показывает.
+
 ## MCP Server (для AI-агентов)
 
 Добавьте в файл `.mcp.json` вашего проекта:
