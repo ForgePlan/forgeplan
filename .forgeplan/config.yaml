@@ -12,7 +12,7 @@ llm:
   # temperature: 0.3
   # reason_temperature: 0.3
   provider: claude-code
-  model: claude-opus-4-8
+  model: claude-opus-5
   # provider: gemini
   # model: gemini-3.1-pro-preview
   # api_key_env: GEMINI_API_KEY
