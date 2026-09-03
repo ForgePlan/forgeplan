@@ -380,7 +380,7 @@ pub async fn open_driver()
 pub async fn sync_score_target_or_warn(store: &LanceStore, id: &str) {
     if let Err(e) = forgeplan_core::scoring::sync_score_target(store, id).await {
         eprintln!("  Warning: could not auto-recompute R_eff for {id}: {e}");
-        eprintln!("Fix: forgeplan score-all");
+        eprintln!("Fix: forgeplan score --all");
     }
 }
 

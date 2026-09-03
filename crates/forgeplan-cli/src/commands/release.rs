@@ -79,13 +79,32 @@ pub async fn run(id: &str, agent: Option<&str>, force: bool, json: bool) -> anyh
             Ok(())
         }
         Err(ClaimError::NotHeldByRequester { held_by, .. }) => {
-            // PRD-071: error path — direct user to the only safe escape hatch.
-            // PROB-060 (W1.B, CD-5) — emit ref_form so the override command
-            // stays canonical for commit `Refs:`.
+            // PROB-095: this used to offer `--force` as the primary fix and
+            // call it "the only safe escape hatch". It is neither.
+            //
+            // `--force` is the ORCHESTRATOR override: it drops the claim
+            // regardless of who holds it. PRD-071 obliges an agent to run
+            // `Fix:` as given, so pointing a peer agent at it meant the hint
+            // contract instructed agents to break the very coordination they
+            // had just collided with — one obedient agent away from two
+            // writers in one artifact.
+            //
+            // The overwhelmingly common cause is far duller: the caller IS the
+            // holder and simply did not say so, because `release` defaults to
+            // `cli/<version>` rather than inheriting the `claim --agent`
+            // identity. So the primary fix names the holder; force stays
+            // reachable as an explicit `Or:` for the orchestrator that really
+            // does mean to take it.
+            //
+            // PROB-060 (W1.B, CD-5) — emit ref_form so both commands stay
+            // canonical for commit `Refs:`.
             let fix_hints: Vec<Hint> = vec![
-                Hint::warning(format!("Claim held by {held_by}, not requester"))
-                    .with_action(format!("forgeplan release {ref_form} --force")),
+                Hint::warning(format!(
+                    "Claim held by {held_by} — release as that identity"
+                ))
+                .with_action(format!("forgeplan release {ref_form} --agent {held_by}")),
             ];
+            let override_cmd = format!("forgeplan release {ref_form} --force");
 
             if json {
                 let body = serde_json::json!({
@@ -93,6 +112,7 @@ pub async fn run(id: &str, agent: Option<&str>, force: bool, json: bool) -> anyh
                     "id": id,
                     "held_by": held_by,
                     "_next_action": hints::primary_action(&fix_hints),
+                    "_alternative_action": override_cmd,
                 });
                 println!("{}", serde_json::to_string_pretty(&body)?);
             } else {
@@ -100,6 +120,9 @@ pub async fn run(id: &str, agent: Option<&str>, force: bool, json: bool) -> anyh
                 if let Some(fix) = hints::primary_action(&fix_hints) {
                     eprintln!("Fix: {}", fix);
                 }
+                eprintln!(
+                    "Or: {override_cmd}  (orchestrator override — drops another agent's claim)"
+                );
             }
             std::process::exit(1);
         }

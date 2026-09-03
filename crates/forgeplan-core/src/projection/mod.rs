@@ -3955,6 +3955,55 @@ mod tests {
         );
     }
 
+    /// PROB-093, on the path the CLI actually takes.
+    ///
+    /// A store-level test of `update_body` passed while the real `forgeplan
+    /// update --body` still served the old vector — the unit test called the
+    /// store directly and missed whatever the projection layer does around it.
+    /// This one drives `update_body_with_projection`, which is what
+    /// `commands/update.rs:151` calls.
+    #[tokio::test]
+    async fn update_body_with_projection_retires_the_previous_vector() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        let a = art("PRD-943", "prd");
+        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+            .await
+            .unwrap();
+        store
+            .update_embedding("PRD-943", &vec![0.25f32; 1024])
+            .await
+            .unwrap();
+        assert!(
+            store
+                .get_record("PRD-943")
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding
+                .is_some(),
+            "precondition: a vector must exist before the rewrite"
+        );
+
+        update_body_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-943",
+            "## Different\n\nEntirely unrelated subject matter.",
+        )
+        .await
+        .unwrap();
+
+        let rec = store.get_record("PRD-943").await.unwrap().unwrap();
+        assert!(
+            rec.embedding.is_none(),
+            "the vector of the previous body must not survive the CLI's own \
+             update path — it made the artifact match text it no longer contains"
+        );
+    }
+
     /// R1 audit HIGH-3 (code-review): explicit happy-path test for
     /// `update_body_with_projection`. The pre-existing `wave1a_*` suite
     /// covered invalid-id and missing-row, but no test asserted that the

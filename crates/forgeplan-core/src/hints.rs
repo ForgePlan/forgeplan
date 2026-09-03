@@ -114,7 +114,7 @@ pub fn format_hints(hints: &[Hint]) -> String {
 /// reconciliation up the dependency chain, which is `forgeplan score-all`'s
 /// responsibility (PRD-075 §Non-Goals — bounded mutator latency).
 pub fn reconcile_parents_hint() -> Hint {
-    Hint::info("Reconcile parents up the chain").with_action("forgeplan score-all".to_string())
+    Hint::info("Reconcile parents up the chain").with_action("forgeplan score --all".to_string())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

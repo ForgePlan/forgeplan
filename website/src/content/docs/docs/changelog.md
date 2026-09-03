@@ -23,6 +23,105 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-04
+
+Sprint headline: **Things that reported success while verifying nothing.** Every defect here behaved correctly - search returned plausible results, hints were runnable, the release built green - which is exactly what hid them.
+
+Scope note for scripted consumers: **one new CLI flag** (`setup --skip-hooks`), **two new config keys** (`llm.timeout_seconds`, `llm.reason_timeout_seconds`), no new MCP tool (still 73). Two output changes worth knowing about: `embed` now prints `N embedded, M already current, K failed`, and `forgeplan setup` now **writes git hooks into your repository** - that side effect is why this is a minor bump rather than a patch.
+
+### Fixed
+
+- **`git pull` left the semantic index describing the state before it** (PROB-097, EVID-167).
+  Measured on three real clones through a bare repo, not reasoned about: after a colleague
+  rewrote a note and pushed, `git pull` followed by a search returned the **deleted** content at
+  0.81. `git-sync` fixed it and always could - the defect was that the command is documented
+  **nowhere**: zero matches in CLAUDE.md, `docs/`, `docs/operations/` and the shipped `/forge`
+  skill. `forgeplan setup` now installs `post-merge` and `post-checkout` hooks, so a plain
+  `git pull` retires the stale vector by itself and names what remains.
+
+- **`forgeplan link` emitted `Next: forgeplan score-all`, a command that has never existed**
+  (#348). The real one is `forgeplan score --all`. PRD-071 obliges an agent to run `Next:`
+  verbatim, so this spent a turn on an error every time.
+
+  Worth recording why it survived for months: **a test asserted the broken hint.**
+  `cli_reff_cache_invalidation.rs` required exactly `Next: forgeplan score-all`, so anyone
+  fixing it got a red test and reverted. A test pinning a wrong contract is worse than no test -
+  it actively defends the defect.
+
+- **Semantic search served vectors of text an artifact no longer contained** (PROB-093,
+  EVID-164). Two failure modes, one root cause: nothing on the write path touched the
+  embedding. A rewritten artifact kept matching its old body - measured on a note rewritten
+  from submarine navigation to sourdough baking, the *deleted* subject still scored **0.80**
+  (unchanged to the hundredth) while the actual content scored 0.62. The artifact matched what
+  it did not say better than what it did.
+
+  `update_body` now retires that vector. Cleared rather than recomputed: a null vector is a
+  state the tools can see and report; a wrong one is detectable by nothing.
+
+- **`forgeplan embed` re-encoded all 400+ records to index one** - 13m18s here, which is
+  exactly why a manual step nobody was reminded about did not get run. It now skips records
+  whose vector exists and whose content hash still matches. The machinery for this had been in
+  place and inert: `compute_body_hash` was defined and **called from nowhere**, so the
+  `body_hash` column stayed null and there was nothing to compare against.
+
+- **`forgeplan search --semantic` now says what it could not see** - the count of artifacts
+  with no vector, in both text and JSON (`unindexed_artifacts`). Printed after a non-empty
+  result list on purpose: "no results" prompts doubt, ten results with a silent hole read as
+  the whole answer.
+
+- **The claim hint told agents to take each other's claims** (PROB-095, EVID-165). On an
+  ownership mismatch, `Fix:` offered `--force` - the orchestrator override that drops a claim
+  regardless of holder. PRD-071 obliges an agent to run `Fix:` verbatim, so the hint contract
+  instructed peer agents to break the coordination they had just collided with. `Fix:` now
+  names the holder (`--agent <held_by>`); force moved to an explicit `Or:` line. The lock
+  itself was never broken - this was a working lock shipped with instructions for picking it.
+
+- **The `/forge` skill described memory as a key-value store** (PROB-094, EVID-165). It is
+  not, and two of its three documented commands failed outright (`remember "key" "value"`,
+  `recall --list`). `setup-skill` ships that file to every user. Rewritten against the real
+  contract: save a sentence, find it by a word inside it, list everything with a bare `recall`.
+
+- **`forgeplan reason` could not complete on a correct configuration** (PROB-096, EVID-166).
+  ADI is REQUIRED at Deep and Critical depth, and it died on a hardcoded 120s budget while the
+  error blamed the config. Measured before choosing a replacement: an 18s floor for a one-word
+  round trip, **237s** for a real ADI prompt, **303s** end to end. Short by 2–3x, not
+  marginally.
+
+### Added
+
+- **`scripts/check-doc-command-drift.sh` now scans emitted hints, not just documentation.**
+  It could never have caught #348: that string lives in Rust source. It now checks the surfaces
+  PRD-071 actually defines - `with_action`, and `Next:`/`Fix:`/`Or:` lines.
+
+  The first run reported **18 drifts**; after checking the checker, **1** was real. Thirteen were
+  it not understanding nested subcommands (`--yes` belongs to `playbook run`, and it asked
+  `playbook`), four were prose from comments read as command names. The number 18 was worth
+  nothing until the tool had been verified - **17 of 18 findings were defects in the tool, not
+  the code**. Now 83 checks, 0 drifts.
+
+- **Git hooks via `forgeplan setup`** - `post-merge` and `post-checkout`. They resolve the hooks
+  directory with `git rev-parse --git-path hooks` rather than assuming `.git/hooks` (in a
+  worktree `.git` is a file, and `core.hooksPath` can redirect); they never overwrite a hook they
+  did not write; they cannot fail the git operation; and they deliberately do **not** run `embed`,
+  because a pull that stalls for minutes on a 2.1 GB model is worse than the problem. `--skip-hooks`
+  opts out. Cost measured first: `git-sync` is 1.4s on 411 artifacts.
+
+- **`llm.timeout_seconds` and `llm.reason_timeout_seconds`** in `config.yaml`. The general
+  budget stays 120s - short calls were never the problem and a wedged `route` should still
+  fail in seconds. ADI defaults to 600s. The original reasoning behind the hardcoded value
+  holds: production behaviour is still not driven by environment variables, because
+  `config.yaml` is committed and reviewed. Verified: `reason` completes in 5m03s.
+
+- **`scripts/cli-surface-exercise.sh`** - all 82 commands on a real binary in a throwaway
+  workspace, asserting on output rather than exit status. `smoke-test.sh` covered 21; the gap
+  is where PROB-093 lived. Commands needing a model or an LLM key report `EXTERNAL`, kept
+  separate from `PASS`, because folding them in is how a harness starts lying.
+
+- **`scripts/check-doc-command-drift.sh`** - every `forgeplan …` example in CLAUDE.md and the
+  shipped skill must name a real subcommand with real flags. 59 examples, 0 drifts. Both run
+  in CI now: a gate that does not run is how PROB-093 survived months of green boards.
+
+
 ## [0.35.0] - 2026-09-03
 
 Sprint headline: **Semantic search actually ships. The embedding engine is now `tract` - pure Rust - and `semantic-search` is compiled into all five release binaries for the first time.**
