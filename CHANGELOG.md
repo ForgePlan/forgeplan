@@ -11,6 +11,16 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-03
+
+Sprint headline: **Semantic search actually ships. The embedding engine is now `tract` — pure Rust — and `semantic-search` is compiled into all five release binaries for the first time.**
+
+Until this release, no published binary carried vector search at all. Not Homebrew, not `install.sh`, not any GitHub Release, on any target, for the entire life of the cargo-dist pipeline. The feature existed in the source and was absent from every build, and it failed silently: search fell back to keyword matching and said so in a line that was easy to miss.
+
+The cause was structural rather than a bug. ONNX Runtime is C++, linked at build time from a prebuilt someone else compiled, which has to match our build environment — and it matched on **one target out of five** (EVID-158). Since cargo-dist publishes nothing when any target fails, enabling the feature did not degrade the release; it cancelled it. A pure-Rust engine compiles wherever our binary compiles, so the whole mismatch class is removed by construction rather than worked around per platform. EVID-163 confirmed **5 of 5** by measurement.
+
+Scope note for scripted consumers: **one new CLI command** (`forgeplan setup`), no new MCP tool (still 73). One **breaking** change — `embedding.model` now accepts only `bge-m3`. No data migration: dimension, ordering and scores are unchanged, so existing indexes stay valid.
+
 ### Changed
 
 - **The embedding engine is now `tract` — pure Rust — and `semantic-search` ships in the
