@@ -88,6 +88,24 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 ## Current status
 
+- **v0.35.0** (2026-09-03) — **semantic search actually ships**. Движок эмбеддингов
+  переехал на `tract` (чистый Rust), и `semantic-search` впервые попал во все пять
+  релизных бинарей (PRD-084 / RFC-013 / ADR-023, supersedes ADR-022). До этого
+  вектор-поиска не было **ни в одном** опубликованном бинаре: ONNX Runtime линковался
+  из чужого prebuilt, который обязан совпасть со средой сборки, и совпадал на 1 таргете
+  из 5 (EVID-158); cargo-dist не публикует ничего, если падает хоть один. Rust-зависимость
+  компилируется везде, где компилируется наш бинарь — класс отказов снят по построению,
+  подтверждено 5/5 (EVID-163). Векторы идентичны старому движку (max 7.0e-07 на шести
+  эталонных случаях), индексы валидны, миграции нет. Бинарь **56.5 MB** против 67.2.
+  **Breaking**: `embedding.model` принимает только `bge-m3` — пулинг зависит от модели,
+  а прогон mean-модели через CLS-пулинг не падает, он тихо считает не то (PROB-091).
+  Цена: индексация 2.83x медленнее, холодный старт хуже (~2.0–2.7s, до 8.3s).
+  Плюс `forgeplan setup` (модель + `fpl` alias), PROB-092 (`fpf ingest` не находил корпус
+  ни у кого), три «неавтоматических» шага установки подняты в начало доков.
+  Security: RUSTSEC-2026-0258 h2 — `security` был красным на `dev` три мержа подряд,
+  RustSec **опять** не в фиде Dependabot (второй раз после v0.34.0). Два не работавших
+  гейта закрыты: CI не компилировал `semantic-search` вовсе, и сайт не собирался с v0.34.0.
+  Dependabot: lru LOW carried; 31 alert, все кроме одного — npm сайта, scheduled.
 - **v0.34.0** (2026-08-17) — **artifact integrity**. R_eff scores an artifact's
   **current** evidence only (ADR-020, breaking: terminal `superseded`/`deprecated`
   packs leave the weakest-link min; active `refutes` still zeroes; draft still
@@ -112,9 +130,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
   activity hint-loop) + PROB-075 stale-cache hardening + PROB-070 supply-chain
   (SHA-pinned actions). Security: openssl 0.10.80 (alert #34). Dependabot:
   lru LOW carried; lancedb 0.30 / sha2 / notify / arrow-schema deferred to v0.34.
-- **v0.32.1** (2026-05-21) — hotfix: Windows binary build; v0.32.0: Epic #287
-  brownfield extraction surface + PROB-074 stale-handle hardening.
-- **82 CLI commands**, **73 MCP tools**, **3243 tests + 9 doc-tests** (CI `nextest`), **0 warnings** on both feature configs
+- **82 CLI commands** (+`setup`; прежние «82» считали авто-`help` от clap), **73 MCP tools**, **3268 tests + 9 doc-tests** (CI `nextest`), **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**, **Epic #287 ✅** (brownfield). Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 on `tract` (pure-Rust inference — RFC-013; feature-gated, graceful fallback)
 
