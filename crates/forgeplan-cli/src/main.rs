@@ -568,6 +568,10 @@ enum Commands {
         /// Skip creating the `fpl` alias.
         #[arg(long)]
         skip_alias: bool,
+        /// Skip installing the git hooks that keep the index in step with
+        /// `git pull` and branch switches (PROB-097).
+        #[arg(long)]
+        skip_hooks: bool,
     },
     /// FPF Knowledge Base — dashboard, ingest, search, sections
     #[command(subcommand)]
@@ -1371,7 +1375,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Setup {
             skip_model,
             skip_alias,
-        } => commands::setup::run(skip_model, skip_alias).await,
+            skip_hooks,
+        } => commands::setup::run(skip_model, skip_alias, skip_hooks).await,
         Commands::Fpf(sub) => match sub {
             FpfCommands::Dashboard => commands::fpf::run_dashboard().await,
             FpfCommands::Ingest { path } => commands::fpf::run_ingest(path.as_deref()).await,
