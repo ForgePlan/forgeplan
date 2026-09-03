@@ -34,22 +34,22 @@ publish-jobs = ["homebrew"]
 # PRD-084) records the decision; EVID-159 records the measurement that
 # vectors are unchanged.
 #
+# Proven on all five targets before merge (EVID-163, PR #458, run
+# 33748565707): every one of them built, including the three that previously
+# failed for three different reasons. Verified with `pr-run-mode = "upload"`,
+# which was removed again afterwards — it triples PR time and exists only to
+# obtain that proof.
+#
+# Cost worth knowing: tract compiles slower than the prebuilt linked. The
+# x86_64-apple-darwin job took 42m49s against 12-17m for the others. Release
+# workflows are correspondingly longer.
+#
 # A green build still does not prove the feature is present — that is how
 # PROB-088 survived months. Verify the published artifact per RELEASE-PROTOCOL
 # step 9, and note the old `libc++` linkage marker no longer applies: pure Rust
 # means that library is legitimately absent from a binary that DOES carry the
 # feature.
 features = ["semantic-search"]
-
-# TEMPORARY — remove before merging this PR.
-#
-# dist only runs `plan` on pull requests, so a change to the release build is
-# not actually compiled until a version tag is pushed — during a real release,
-# where one failing target takes the whole publication with it. `upload` builds
-# all five targets on the PR instead, which is the only way to get evidence
-# before tagging. Upstream documents it as useful for cross-platform
-# verification but slow, and recommends applying it temporarily.
-pr-run-mode = "upload"
 
 # Binary aliases
 bin-aliases = { "forgeplan" = ["fpl"] }
