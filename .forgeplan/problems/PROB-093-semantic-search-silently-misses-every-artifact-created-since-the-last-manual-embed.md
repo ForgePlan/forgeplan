@@ -7,7 +7,7 @@ links:
   relation: references
 - target: ADR-023
   relation: references
-status: draft
+status: deprecated
 title: Semantic search silently misses every artifact created since the last manual embed
 ---
 
@@ -174,6 +174,9 @@ $ forgeplan search "Pure-Rust embedding engine — semantic search ships in the 
 - **ADR-023**, **PRD-084**, **RFC-013** — замена движка на tract
 - **EVID-160** — замер 13м18с, из которого следует цена полного пересчёта
 - **PROB-091** — сужение поддержки моделей (другой открытый долг того же релиза)
+
+
+
 
 
 

@@ -5,7 +5,7 @@ kind: problem
 links:
 - target: PROB-094
   relation: references
-status: draft
+status: deprecated
 title: release Fix-hint teaches --force, training agents to steal another agent's claim
 ---
 
@@ -100,5 +100,8 @@ identity, что и `claim` в этой сессии. Устраняет кла�
 - **PRD-071** — контракт подсказок, требующий, чтобы `Fix:` был исполним;
   здесь он исполним и при этом вреден
 - **PROB-094** — соседний дефект документации в том же CLAUDE.md
+
+
+
 
 

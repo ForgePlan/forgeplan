@@ -11,6 +11,64 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Semantic search served vectors of text an artifact no longer contained** (PROB-093,
+  EVID-164). Two failure modes, one root cause: nothing on the write path touched the
+  embedding. A rewritten artifact kept matching its old body — measured on a note rewritten
+  from submarine navigation to sourdough baking, the *deleted* subject still scored **0.80**
+  (unchanged to the hundredth) while the actual content scored 0.62. The artifact matched what
+  it did not say better than what it did.
+
+  `update_body` now retires that vector. Cleared rather than recomputed: a null vector is a
+  state the tools can see and report; a wrong one is detectable by nothing.
+
+- **`forgeplan embed` re-encoded all 400+ records to index one** — 13m18s here, which is
+  exactly why a manual step nobody was reminded about did not get run. It now skips records
+  whose vector exists and whose content hash still matches. The machinery for this had been in
+  place and inert: `compute_body_hash` was defined and **called from nowhere**, so the
+  `body_hash` column stayed null and there was nothing to compare against.
+
+- **`forgeplan search --semantic` now says what it could not see** — the count of artifacts
+  with no vector, in both text and JSON (`unindexed_artifacts`). Printed after a non-empty
+  result list on purpose: "no results" prompts doubt, ten results with a silent hole read as
+  the whole answer.
+
+- **The claim hint told agents to take each other's claims** (PROB-095, EVID-165). On an
+  ownership mismatch, `Fix:` offered `--force` — the orchestrator override that drops a claim
+  regardless of holder. PRD-071 obliges an agent to run `Fix:` verbatim, so the hint contract
+  instructed peer agents to break the coordination they had just collided with. `Fix:` now
+  names the holder (`--agent <held_by>`); force moved to an explicit `Or:` line. The lock
+  itself was never broken — this was a working lock shipped with instructions for picking it.
+
+- **The `/forge` skill described memory as a key-value store** (PROB-094, EVID-165). It is
+  not, and two of its three documented commands failed outright (`remember "key" "value"`,
+  `recall --list`). `setup-skill` ships that file to every user. Rewritten against the real
+  contract: save a sentence, find it by a word inside it, list everything with a bare `recall`.
+
+- **`forgeplan reason` could not complete on a correct configuration** (PROB-096, EVID-166).
+  ADI is REQUIRED at Deep and Critical depth, and it died on a hardcoded 120s budget while the
+  error blamed the config. Measured before choosing a replacement: an 18s floor for a one-word
+  round trip, **237s** for a real ADI prompt, **303s** end to end. Short by 2–3x, not
+  marginally.
+
+### Added
+
+- **`llm.timeout_seconds` and `llm.reason_timeout_seconds`** in `config.yaml`. The general
+  budget stays 120s — short calls were never the problem and a wedged `route` should still
+  fail in seconds. ADI defaults to 600s. The original reasoning behind the hardcoded value
+  holds: production behaviour is still not driven by environment variables, because
+  `config.yaml` is committed and reviewed. Verified: `reason` completes in 5m03s.
+
+- **`scripts/cli-surface-exercise.sh`** — all 82 commands on a real binary in a throwaway
+  workspace, asserting on output rather than exit status. `smoke-test.sh` covered 21; the gap
+  is where PROB-093 lived. Commands needing a model or an LLM key report `EXTERNAL`, kept
+  separate from `PASS`, because folding them in is how a harness starts lying.
+
+- **`scripts/check-doc-command-drift.sh`** — every `forgeplan …` example in CLAUDE.md and the
+  shipped skill must name a real subcommand with real flags. 59 examples, 0 drifts. Both run
+  in CI now: a gate that does not run is how PROB-093 survived months of green boards.
+
 ## [0.35.0] - 2026-09-03
 
 Sprint headline: **Semantic search actually ships. The embedding engine is now `tract` — pure Rust — and `semantic-search` is compiled into all five release binaries for the first time.**

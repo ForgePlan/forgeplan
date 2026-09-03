@@ -5,7 +5,7 @@ kind: problem
 links:
 - target: PROB-093
   relation: references
-status: draft
+status: deprecated
 title: 'forgeplan reason unusable with the default claude-code provider: 120s budget is hardcoded'
 ---
 
@@ -132,4 +132,7 @@ Error: LLM call failed
 - **PRD-020** — LLM-first routing, где живёт провайдерный слой
 - **PROB-093**, **PROB-094**, **PROB-095** — найдены в той же ревизии
   поверхностей CLI
+
+
+
 

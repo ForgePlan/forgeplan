@@ -5,7 +5,7 @@ kind: problem
 links:
 - target: PROB-093
   relation: references
-status: draft
+status: deprecated
 title: CLAUDE.md documents 'recall --list' — the flag does not exist
 ---
 
@@ -81,4 +81,7 @@ error: unexpected argument '--list' found
 - **PROB-093**, **PROB-095**, **PROB-096** — найдены в той же ревизии
 - **PRD-071** — контракт вывода для агентов; здесь нарушена его предпосылка:
   документация обещает интерфейс, которого нет
+
+
+
 
