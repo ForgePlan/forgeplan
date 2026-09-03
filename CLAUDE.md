@@ -764,8 +764,14 @@ forgeplan activate PRD-NNN                               # draft → active
 forgeplan dispatch --agents 3 --json    # планер conflict-free buckets (НЕ спавнер!)
 forgeplan claim PRD-NNN --agent <subagent-name> --ttl-minutes 60
 # … работа …
-forgeplan release PRD-NNN
+forgeplan release PRD-NNN --agent <subagent-name>   # ТОТ ЖЕ agent, что и в claim
 ```
+
+🔴 **`release` обязан назваться тем же именем, что и `claim`** (PROB-095). Без
+`--agent` он представляется как `cli/<version>`, не совпадает с владельцем и
+отказывает. **`--force` в этом случае — неверный ответ**: он снимает захват
+независимо от владельца, то есть отбирает чужую работу. Это escape hatch
+оркестратора, а не способ освободить свой собственный захват.
 
 `dispatch` возвращает план, **спавнит main thread / orchestrator** через `Agent({subagent_type, prompt})` (несколько `Agent`-блоков в одном сообщении = параллель). `SendMessage` — НЕ спавнер; адресует только уже запущенные процессы.
 

@@ -180,11 +180,16 @@ Match the user's question to a section and read only that file (lazy load, save 
 
 ## Cross-session memory
 
-Forgeplan persists context between sessions:
+Forgeplan persists context between sessions. It is **not** a key-value store —
+you save a sentence, and you find it by searching its text:
 
-- **Store**: `forgeplan remember "key" "value"` — save key-value pair
-- **Retrieve**: `forgeplan recall "key"` — fetch previously stored
-- **List**: `forgeplan recall --list` — show all keys
+- **Store**: `forgeplan remember "<text>" --category <fact|convention|procedure|insight>`
+- **Search**: `forgeplan recall "<query>"` — substring match over title and body
+- **List all**: `forgeplan recall` — no query lists everything
+- **Promote**: `forgeplan promote <mem-id> --kind note` — turn a memory into an artifact
+
+The id is derived from the text (`mem-we-picked-tract-over-onnx`), so write the
+sentence you would want to find later, not a short label.
 
 Use for: architecture decisions spanning sessions, team conventions, known gotchas,
 progress checkpoints on long tasks.
