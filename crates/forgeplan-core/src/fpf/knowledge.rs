@@ -176,9 +176,86 @@ fn parse_section_header(content: &str, file_path: &Path) -> (String, String) {
     (section_id, title)
 }
 
+/// Skill directories that may hold the FPF sections, newest name first.
+///
+/// A list rather than one path because the skill has already been renamed once
+/// and the single hardcoded name silently stopped resolving (PROB-092): the
+/// code looked for `fpf-simple` while the marketplace shipped `fpf-knowledge`,
+/// so `fpf ingest` failed for everyone and `fpf search` degraded to "no
+/// matches" — a correct-looking answer to a question that was never asked.
+///
+/// Order matters: the first existing directory wins, so put the current name
+/// ahead of the historical ones.
+const FPF_SKILL_DIRS: &[&str] = &[
+    ".claude/skills/fpf-knowledge/sections",
+    ".claude/skills/fpf/sections",
+    // Historical name, kept so an older install keeps working.
+    ".claude/skills/fpf-simple/sections",
+];
+
 /// Default path to FPF sections (Claude Code skill directory).
+///
+/// Returns the first candidate that exists. `None` means no FPF knowledge base
+/// is installed — the caller should say that plainly rather than reporting an
+/// empty search result.
 pub fn default_fpf_path() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let path = PathBuf::from(home).join(".claude/skills/fpf-simple/sections");
-    if path.exists() { Some(path) } else { None }
+    let home = PathBuf::from(std::env::var("HOME").ok()?);
+    FPF_SKILL_DIRS
+        .iter()
+        .map(|rel| home.join(rel))
+        .find(|p| p.exists())
+}
+
+/// The paths [`default_fpf_path`] searches, for error messages that need to
+/// tell the user where to look.
+pub fn fpf_search_paths() -> Vec<String> {
+    FPF_SKILL_DIRS.iter().map(|s| format!("~/{s}")).collect()
+}
+
+#[cfg(test)]
+mod skill_path_tests {
+    use super::*;
+
+    /// PROB-092: the resolver hardcoded one skill name, the skill was renamed,
+    /// and `fpf ingest` silently stopped finding anything for everyone. Pinning
+    /// the current name means a future rename fails this test instead of
+    /// degrading `fpf search` into a plausible "no matches".
+    #[test]
+    fn current_skill_name_is_searched_first() {
+        assert_eq!(
+            FPF_SKILL_DIRS.first().copied(),
+            Some(".claude/skills/fpf-knowledge/sections"),
+            "the name the marketplace actually ships must be tried first"
+        );
+    }
+
+    /// The historical name stays in the list so an older install keeps working.
+    /// Dropping it would break users mid-upgrade for no gain.
+    #[test]
+    fn historical_name_is_still_accepted() {
+        assert!(
+            FPF_SKILL_DIRS.contains(&".claude/skills/fpf-simple/sections"),
+            "removing the old name strands installs that still use it"
+        );
+    }
+
+    /// The error message is built from this list, so it must be non-empty and
+    /// user-readable — an error that says "looked in: " helps nobody.
+    #[test]
+    fn search_paths_are_reportable() {
+        let paths = fpf_search_paths();
+        assert!(!paths.is_empty());
+        assert!(
+            paths.iter().all(|p| p.starts_with("~/")),
+            "paths are shown to a human; keep them home-relative: {paths:?}"
+        );
+    }
+
+    /// Resolution must not panic when HOME is missing or nothing is installed —
+    /// this runs on machines without the skill, including CI.
+    #[test]
+    fn resolution_returns_none_rather_than_failing() {
+        // Whatever this machine has, the call itself must be total.
+        let _ = default_fpf_path();
+    }
 }

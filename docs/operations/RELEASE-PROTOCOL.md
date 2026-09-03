@@ -201,14 +201,17 @@ fine, just without `semantic-search`. Download one published artifact and
 check the linkage marker rather than trusting the build:
 
 ```bash
-# macOS: libc++ present <=> ONNX Runtime (fastembed) linked in
-otool -L /path/to/downloaded/forgeplan | grep -q 'libc++' \
-  && echo "semantic-search: present" || echo "semantic-search: ABSENT"
-
-# Linux equivalent
-ldd /path/to/downloaded/forgeplan | grep -q 'libstdc++' \
-  && echo "semantic-search: present" || echo "semantic-search: ABSENT"
+# Ask the binary. Refusing means the feature is absent; anything else
+# (a progress bar, an embedding run) means it is present.
+/path/to/downloaded/forgeplan embed 2>&1 | head -3
 ```
+
+**The old linkage check no longer works and must not be revived.** Until
+RFC-013 the marker was `libc++` in `otool -L`, present because the C++
+ONNX Runtime was linked in. The engine is now `tract` — pure Rust — so
+that library is legitimately absent from a binary that *does* carry the
+feature. Kept here as a warning rather than deleted: reintroducing it
+would report every correct build as broken.
 
 Reconcile the answer against `features` in `dist-workspace.toml` and
 against what the install docs promise users. If the three disagree, the

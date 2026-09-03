@@ -7,7 +7,9 @@ links:
   relation: based_on
 - target: PRD-083
   relation: based_on
-status: active
+- target: ADR-023
+  relation: supersedes
+status: superseded
 title: Semantic search stays out of the prebuilt binaries
 ---
 
@@ -188,6 +190,8 @@ PROB-088: фича отсутствует, документация утверж
 - EVID-158 — измерение, на котором стоит это решение
 - PRD-071 — hint-контракт
 - PR #455, GitHub Actions run 33647382377
+
+
 
 
 

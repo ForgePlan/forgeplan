@@ -6725,7 +6725,7 @@ impl ForgeplanServer {
     // ── FPF Knowledge Base tools ────────────────────────────────
 
     #[tool(
-        description = "Search FPF (First Principles Framework) knowledge base. Default is keyword search. Pass `semantic: true` for vector similarity search via BGE-M3 embeddings (requires the `semantic-search` build feature). When `semantic: true` but the feature is not compiled in, the query gracefully falls back to keyword search and the response includes a `warning` field. Note: the first invocation with `semantic: true` may take 10–30 seconds if the BGE-M3 model needs to be downloaded (~150MB). Params: query (required, 1..=8192 chars), limit (default 5, max 50), semantic (default false).",
+        description = "Search FPF (First Principles Framework) knowledge base. Default is keyword search. Pass `semantic: true` for vector similarity search via BGE-M3 embeddings (requires the `semantic-search` build feature). When `semantic: true` but the feature is not compiled in, the query gracefully falls back to keyword search and the response includes a `warning` field. Note: the first invocation with `semantic: true` may take several minutes if the BGE-M3 model needs to be downloaded (~2.1 GB). Params: query (required, 1..=8192 chars), limit (default 5, max 50), semantic (default false).",
         annotations(
             title = "FPF Semantic Search",
             read_only_hint = true,

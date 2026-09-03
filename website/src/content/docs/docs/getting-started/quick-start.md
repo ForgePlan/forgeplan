@@ -28,8 +28,14 @@ Verify it works:
 
 ```bash
 forgeplan --version
-# forgeplan 0.18.0
 ```
+
+:::caution[Do the three post-install steps first]
+Installing the binary is not the whole setup. The embedding model, the FPF
+knowledge base and the agent plugins each need one command, and skipping any
+of them degrades results **silently** — nothing errors out. See
+[three things installing the binary does not do](/docs/getting-started/installation/#read-this-first-three-things-installing-the-binary-does-not-do).
+:::
 
 ## 1. Initialize a workspace
 
