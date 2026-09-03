@@ -51,6 +51,17 @@ if ! command -v "$BIN" >/dev/null 2>&1 && [ ! -x "$BIN" ]; then
   exit 2
 fi
 
+# Resolve to an absolute path BEFORE the `cd` into the throwaway workspace.
+# A relative `--bin target/debug/forgeplan` — which is exactly what CI passes —
+# stops resolving the moment we change directory, and every command then fails
+# with exit 127. The existence check above happens pre-`cd`, so it passes and
+# the breakage looks like 66 broken commands rather than one broken path.
+case "$BIN" in
+  /*) ;;
+  */*) BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")" ;;
+  *)  ;;  # bare name on PATH — leave it for the shell to resolve
+esac
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/fpl-surface.XXXXXX")"
 LOG="$WORK/transcript.log"
 RESULTS="$WORK/results.tsv"
@@ -260,12 +271,18 @@ run phase-advance PRD-002 --to code; expect_external phase-advance "code|advance
 # ---------------------------------------------------------------------------
 # 9. Memory
 # ---------------------------------------------------------------------------
-run remember "retries are capped at five attempts" --category convention; expect_external remember "Saved|remember|stored|mem-"
-run recall "retry-cap";         expect_external recall "retry|cap|No |0 "
-# `recall --list` is documented in CLAUDE.md but the flag does not exist.
-# Left as an explicit finding rather than silently corrected to the working
-# form — the harness must report what the docs tell an agent to run.
-run recall --list;              expect "recall --list (documented in CLAUDE.md)" "Recall"
+# Memory is a text store with substring search, NOT a key-value store — the
+# /forge skill claimed otherwise and shipped that claim to every user
+# (PROB-094). Exercise the real contract: save a sentence, find it by a word
+# inside it, and list everything with a bare `recall`.
+run remember "retries are capped at five attempts" --category convention
+expect_external remember "Saved|Remembered|remember|stored|mem-"
+run recall "capped";            expect "recall finds by substring" "retries are capped"
+run recall;                     expect "recall with no query lists all" "retries are capped"
+
+# Whether the DOCS match this is a separate question with its own tool —
+# scripts/check-doc-command-drift.sh. Asserting documentation here would put
+# two different failures behind one signal.
 
 # ---------------------------------------------------------------------------
 # 10. Tags
