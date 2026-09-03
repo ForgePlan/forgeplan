@@ -192,6 +192,21 @@ impl ArtifactRecord {
     }
 }
 
+/// Fingerprint of the exact text that feeds the embedding: title, then body.
+///
+/// Title is included deliberately. `ArtifactRecord::embedding_text` embeds
+/// title + body, so a title-only edit changes the vector's meaning and must
+/// invalidate it; hashing the body alone would call that "unchanged".
+///
+/// Used by `forgeplan embed` to skip records whose content has not moved since
+/// their vector was computed (PROB-093). Before that, [`compute_body_hash`]
+/// existed but was called from nowhere, so the `body_hash` column stayed null
+/// and there was nothing to compare against — which is why `embed` had to
+/// recompute all 400+ records to index one new artifact.
+pub fn compute_content_hash(title: &str, body: &str) -> String {
+    compute_body_hash(&format!("{title}\n{body}"))
+}
+
 /// Compute a simple fingerprint hash for artifact body content.
 ///
 /// Uses a lightweight approach (length + byte sum) to avoid adding sha2 dependency.
@@ -1676,6 +1691,28 @@ impl LanceStore {
         Ok(())
     }
 
+    /// Stamp the content hash a vector was computed from.
+    ///
+    /// Public for the same reason [`Self::update_embedding`] is, and it is not
+    /// an ADR-003 bypass: both write **derived index metadata**, never artifact
+    /// content. The markdown file stays the source of truth — nothing here can
+    /// change what an artifact says. That is why neither appears in the
+    /// `FORBIDDEN_METHODS` list guarded by `tests/adr_003_invariant.rs`.
+    ///
+    /// Written by `forgeplan embed` right after the vector, so the next run can
+    /// tell an already-current record from one that moved (PROB-093).
+    pub async fn update_body_hash(&self, id: &str, hash: &str) -> anyhow::Result<()> {
+        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let escaped = hash.replace('\'', "''");
+        self.artifacts
+            .update()
+            .only_if(predicate)
+            .column("body_hash", format!("'{}'", escaped))
+            .execute()
+            .await?;
+        Ok(())
+    }
+
     /// Find artifacts where `valid_until` is set and is earlier than the current date.
     pub async fn find_stale(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
         let today = chrono::Utc::now().date_naive();
@@ -1724,16 +1761,43 @@ impl LanceStore {
     }
 
     /// Update the body column of an artifact.
+    /// Replace an artifact's body, and retire the vector computed from the old one.
+    ///
+    /// PROB-093: this used to write `body` and `updated_at` only, leaving the
+    /// embedding untouched. The vector then described text the artifact no
+    /// longer contained — measured on a note rewritten from submarines to bread
+    /// baking, the deleted subject still scored 0.80 (unchanged to the
+    /// hundredth) while the actual content scored 0.62. The artifact matched
+    /// what it did not say better than what it did.
+    ///
+    /// The vector is **cleared**, not recomputed here: `store` has no embedder,
+    /// and encoding is feature-gated. A null vector is a state `embed`,
+    /// `search` and `health` can see and report; a wrong vector is not
+    /// detectable by anything. `body_hash` is stamped so the subsequent
+    /// `forgeplan embed` re-encodes this record alone rather than all of them.
     pub(crate) async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let predicate = format!("id = '{}'", id.replace('\'', "''"));
         let escaped_body = body.replace('\'', "''");
+
+        // The hash covers title + body, so read the current title rather than
+        // hashing the body alone — otherwise a later title edit would leave a
+        // matching hash and the stale vector would survive again.
+        let title = self
+            .get_artifact(id)
+            .await?
+            .map(|a| a.title)
+            .unwrap_or_default();
+        let new_hash = compute_content_hash(&title, body);
+
         // LanceDB coerces string literals to the column's schema type (LargeUtf8).
         self.artifacts
             .update()
             .only_if(predicate)
             .column("updated_at", format!("'{}'", now))
             .column("body", format!("'{}'", escaped_body))
+            .column("body_hash", format!("'{}'", new_hash))
+            .column("embedding", "NULL")
             .execute()
             .await?;
         Ok(())
@@ -4123,6 +4187,112 @@ mod tests {
         let rev = store.list_by_tag("reviewed").await.unwrap();
         assert_eq!(rev.len(), 1);
         assert_eq!(rev[0].id, "PRD-121");
+    }
+
+    /// PROB-093 regression. The defect this pins is not "the vector is old" —
+    /// it is that a rewritten artifact kept matching text it no longer
+    /// contained, *better* than text it did. Measured before the fix: a note
+    /// rewritten from submarines to bread baking still scored 0.80 on the
+    /// deleted subject (unchanged to the hundredth) against 0.62 on the actual
+    /// content.
+    #[tokio::test]
+    async fn update_body_retires_the_vector_of_the_previous_text() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&sample_artifact("PRD-300"))
+            .await
+            .unwrap();
+        store
+            .update_embedding("PRD-300", &vec![0.5f32; 1024])
+            .await
+            .unwrap();
+        assert!(
+            store
+                .get_record("PRD-300")
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding
+                .is_some(),
+            "precondition: the record must carry a vector before the rewrite"
+        );
+
+        store
+            .update_body("PRD-300", "Completely different subject matter.")
+            .await
+            .unwrap();
+
+        let after = store.get_record("PRD-300").await.unwrap().unwrap();
+        assert!(
+            after.embedding.is_none(),
+            "a vector describing the previous body must not survive the rewrite — \
+             a missing vector is reportable, a wrong one is not"
+        );
+        assert_eq!(
+            after.body_hash.as_deref(),
+            Some(compute_content_hash(&after.title, &after.body).as_str()),
+            "the hash must track the new content so `embed` re-encodes this \
+             record alone rather than all of them"
+        );
+    }
+
+    /// The hash must cover the title, because `embedding_text` embeds title +
+    /// body — hashing the body alone would call a title-only edit "unchanged"
+    /// and leave the stale vector in place, reintroducing PROB-093 by a side door.
+    #[test]
+    fn content_hash_changes_when_only_the_title_moves() {
+        let a = compute_content_hash("Submarine navigation", "same body");
+        let b = compute_content_hash("Sourdough fermentation", "same body");
+        assert_ne!(a, b, "a title-only edit must invalidate the vector");
+
+        let c = compute_content_hash("Submarine navigation", "different body");
+        assert_ne!(a, c, "a body-only edit must invalidate the vector");
+        assert_eq!(
+            a,
+            compute_content_hash("Submarine navigation", "same body"),
+            "identical content must produce an identical hash, or `embed` \
+             re-encodes everything every run and the incremental path is dead"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_artifact_stamps_a_content_hash() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let artifact = sample_artifact("PRD-301");
+        store.create_artifact(&artifact).await.unwrap();
+
+        let rec = store.get_record("PRD-301").await.unwrap().unwrap();
+        assert_eq!(
+            rec.body_hash.as_deref(),
+            Some(compute_content_hash(&artifact.title, &artifact.body).as_str()),
+            "written as null before PROB-093, which left `embed` nothing to \
+             compare and forced a full recompute to index one new artifact"
+        );
+        assert!(
+            rec.embedding.is_none(),
+            "a fresh artifact has no vector yet — hash present + vector absent \
+             is exactly the state `embed` must recognise as work to do"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_body_hash_writes_the_stamp() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&sample_artifact("PRD-302"))
+            .await
+            .unwrap();
+
+        store
+            .update_body_hash("PRD-302", "abc123-deadbeef")
+            .await
+            .unwrap();
+
+        let rec = store.get_record("PRD-302").await.unwrap().unwrap();
+        assert_eq!(rec.body_hash.as_deref(), Some("abc123-deadbeef"));
     }
 
     #[tokio::test]

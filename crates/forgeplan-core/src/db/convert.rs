@@ -43,7 +43,14 @@ pub(crate) fn artifact_to_batch_with_schema(
             Arc::new(StringArray::from(vec![artifact.valid_until.as_deref()])),
             Arc::new(StringArray::from(vec![now])),
             Arc::new(StringArray::from(vec![now])),
-            Arc::new(StringArray::from(vec![Option::<&str>::None])),
+            // body_hash — stamped at creation so `embed` can tell "never
+            // embedded" (hash present, vector null) from "already current"
+            // (hash matches, vector present). Written as null before PROB-093,
+            // which left `embed` with nothing to compare and forced a full
+            // recompute of every record to index one new artifact.
+            Arc::new(StringArray::from(vec![
+                crate::db::store::compute_content_hash(&artifact.title, &artifact.body),
+            ])),
             embedding_col,
             Arc::new(tags_col),
         ],
