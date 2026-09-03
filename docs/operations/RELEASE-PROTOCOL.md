@@ -194,6 +194,29 @@ automatically. Verify the Actions tab shows the tag workflow kicking
 off; if it doesn't, check that the tag actually landed on the remote
 (`git ls-remote --tags origin | grep vX.Y.Z`).
 
+**Verify the published binary carries the features it is supposed to.**
+Successful publication does not prove correct composition — PROB-088 sat
+undetected for months precisely because the binaries built and shipped
+fine, just without `semantic-search`. Download one published artifact and
+check the linkage marker rather than trusting the build:
+
+```bash
+# Ask the binary. Refusing means the feature is absent; anything else
+# (a progress bar, an embedding run) means it is present.
+/path/to/downloaded/forgeplan embed 2>&1 | head -3
+```
+
+**The old linkage check no longer works and must not be revived.** Until
+RFC-013 the marker was `libc++` in `otool -L`, present because the C++
+ONNX Runtime was linked in. The engine is now `tract` — pure Rust — so
+that library is legitimately absent from a binary that *does* carry the
+feature. Kept here as a warning rather than deleted: reintroducing it
+would report every correct build as broken.
+
+Reconcile the answer against `features` in `dist-workspace.toml` and
+against what the install docs promise users. If the three disagree, the
+docs are lying to somebody — fix before announcing.
+
 **Do not delete the release branch.** Keep it as immutable history (per
 project convention — see `feedback_keep_branches`).
 

@@ -27,7 +27,7 @@ The system is distributed as a single binary (brew, install.sh, cargo) and a std
 - ADI reasoning cycles (3+ hypothesis generation)
 - Lifecycle state machine (draft → active → superseded/deprecated/stale)
 - Typed dependency graph with link traversal
-- Local semantic search (BGE-M3, fastembed, offline)
+- Local semantic search (BGE-M3 on tract, pure-Rust, offline)
 - MCP server (stdio transport, 73 tools)
 - Multi-agent dispatch: file-overlap detection, skill-based routing, parallel/serial bucketing
 - Playbook runtime for orchestrating external plugin delegations

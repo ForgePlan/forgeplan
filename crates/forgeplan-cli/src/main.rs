@@ -112,6 +112,13 @@ enum Commands {
         /// loss vector; opt out only when you've already exported.
         #[arg(long)]
         no_backup: bool,
+        /// Download the embedding model without asking.
+        ///
+        /// Interactive runs are asked (default no); `--yes` never downloads,
+        /// so agents and CI cannot pull ~2.1 GB by accident. Use this when a
+        /// scripted install genuinely wants semantic search ready up front.
+        #[arg(long)]
+        with_model: bool,
     },
     /// Create a new artifact from template
     New {
@@ -545,6 +552,23 @@ enum Commands {
     },
     /// Install /forge skill for Claude Code
     SetupSkill,
+    /// One-time per-machine preparation: `fpl` alias + embedding model
+    ///
+    /// `cargo install` has no post-install hook and does not create the `fpl`
+    /// alias that brew and install.sh get from cargo-dist's `bin-aliases`, so
+    /// a source install has `forgeplan` but no `fpl`. This creates it, and
+    /// downloads the ~2.1 GB embedding model up front rather than letting the
+    /// first semantic search stall for minutes with no explanation.
+    ///
+    /// Idempotent, and neither step is required for ForgePlan to work.
+    Setup {
+        /// Skip the embedding-model download.
+        #[arg(long)]
+        skip_model: bool,
+        /// Skip creating the `fpl` alias.
+        #[arg(long)]
+        skip_alias: bool,
+    },
     /// FPF Knowledge Base — dashboard, ingest, search, sections
     #[command(subcommand)]
     Fpf(FpfCommands),
@@ -1104,7 +1128,8 @@ async fn main() -> anyhow::Result<()> {
             yes,
             scan,
             no_backup,
-        } => commands::init::run(force, yes, scan, no_backup).await,
+            with_model,
+        } => commands::init::run(force, yes, scan, no_backup, with_model).await,
         Commands::New {
             kind,
             title,
@@ -1343,6 +1368,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::Renew { id, reason, until } => commands::renew::run(&id, &reason, &until).await,
         Commands::Reopen { id, reason } => commands::reopen::run(&id, &reason).await,
         Commands::SetupSkill => commands::setup_skill::run().await,
+        Commands::Setup {
+            skip_model,
+            skip_alias,
+        } => commands::setup::run(skip_model, skip_alias).await,
         Commands::Fpf(sub) => match sub {
             FpfCommands::Dashboard => commands::fpf::run_dashboard().await,
             FpfCommands::Ingest { path } => commands::fpf::run_ingest(path.as_deref()).await,

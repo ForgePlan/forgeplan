@@ -90,6 +90,56 @@ git clone https://github.com/ForgePlan/forgeplan.git && cd forgeplan
 cargo install --path crates/forgeplan-cli
 ```
 
+### After installing: three steps that are not automatic
+
+The binary gives you routing, artifacts, validation, scoring, the graph and
+keyword search. Three more capabilities need one command each — and **each one
+fails quietly if you skip it**. Nothing crashes; you just get a worse answer
+with no sign that you did.
+
+| Step | Command | Cost of skipping |
+|---|---|---|
+| **1. Embedding model** (~2.1 GB) | `forgeplan setup` | `search --semantic` degrades to keyword matching |
+| **2. FPF knowledge base** | `/plugin install fpf@ForgePlan-marketplace`, then `forgeplan fpf ingest` | `fpf search` returns "no matches"; `reason --fpf` loses its grounding |
+| **3. Agent harness** | 5 marketplace plugins ([list](https://forgeplan.dev/docs/getting-started/installation/)) | `/smith`, `/forge-cycle`, `/audit` do not exist |
+
+**1 — the model.** Semantic search ships in every binary; the engine is
+`tract`, pure Rust, so there is no platform where the feature is in the source
+but missing from the build. What is *not* in the binary is the 2.1 GB of
+weights. `forgeplan setup` downloads them with a progress bar and, on a
+`cargo install`, creates the `fpl` alias that brew and `install.sh` get for
+free from cargo-dist. Both steps are idempotent; `--skip-model` and
+`--skip-alias` opt out of either.
+
+Weights are cached in the platform cache directory
+(`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on
+Linux) — shared across all your projects, not one copy per repository. Override
+with `FORGEPLAN_MODEL_CACHE`; `HF_HOME`, if set, takes precedence over both.
+
+`forgeplan init` offers the same download interactively. It never downloads
+under `-y`, so agents and CI runners cannot pull gigabytes by accident; pass
+`--with-model` when a scripted install wants it. Until the model is present,
+`forgeplan search --semantic` falls back to keyword search and says so — easy
+to miss, and keyword search will not find "how do we handle auth failures" in a
+document that says "retry policy for rejected credentials". To see which state
+you are in, run `forgeplan embed`; `forgeplan --version` does not report it.
+
+**2 — FPF.** The First Principles Framework spec is a 204-section corpus that
+ships as a separate skill, not inside the binary. It is what `forgeplan reason`
+uses for ADI reasoning — the step that makes an artifact produce real
+alternatives instead of restating your first idea, required at Standard depth
+and above. Skipping ingest gives a closed loop that looks like a working
+system: search says "no matches, run ingest", and an empty corpus is
+indistinguishable from a missing one. `forgeplan fpf status` tells them apart.
+
+**3 — the harness.** Everything above works from a plain shell, but Forgeplan
+is designed to be driven by an agent, and the driving commands live in
+marketplace plugins. Without them you have a well-organised filing system and
+nobody to run it.
+
+Everything else — routing, artifacts, scoring, validation, the graph, keyword
+search — works identically on every build.
+
 ## 60-Second Demo
 
 ```console
@@ -135,7 +185,7 @@ $ forgeplan activate PRD-001
 | **🧭 Smart routing** | Analyzes your task, picks the right depth and artifact pipeline. No over-documenting typo fixes. |
 | **🧠 ADI reasoning** | Abduction → Deduction → Induction. Forces 3+ hypotheses before every decision. |
 | **🤖 MCP-native** | 73 tools for Claude Code, Cursor, Aider, Continue. Agents speak the methodology natively. |
-| **🔍 Local semantic search** | fastembed (BGE-M3, 1024 dims). No network, no API keys, no egress. |
+| **🔍 Local semantic search** | BGE-M3 (1024 dims) on `tract` — pure-Rust inference, no C++ runtime. No network, no API keys, no egress. |
 | **⏰ Evidence decay** | Expired `valid_until` → artifact goes stale. Trust decays honestly, nothing rots in the dark. |
 
 ## Artifacts at a glance
@@ -199,8 +249,8 @@ Three entry points — pick the one that matches what you need right now.
 <table>
 <tr>
 <td align="center"><b>394</b><br>tracked artifacts</td>
-<td align="center"><b>3243</b><br>tests passing</td>
-<td align="center"><b>81</b><br>CLI commands</td>
+<td align="center"><b>3268</b><br>tests passing</td>
+<td align="center"><b>82</b><br>CLI commands</td>
 <td align="center"><b>73</b><br>MCP tools</td>
 </tr>
 </table>
@@ -226,7 +276,7 @@ git checkout -b feat/my-feature
 
 | Feature | Default | Purpose |
 |---|---|---|
-| `semantic-search` | off | BGE-M3 vector search via `fastembed` (~150 MB model on first run) |
+| `semantic-search` | **on** in released binaries | BGE-M3 vector search on the pure-Rust `tract` engine. Model downloads on first use: **~2.1 GB**, cached per machine (override: `FORGEPLAN_MODEL_CACHE`) — see [Install](#first-run-fetch-the-embedding-model). Off by default in a plain `cargo build`. |
 | `test-helpers` | off | **Test fixtures only** — exposes `*_for_test` escape hatches on `LanceStore` that bypass the projection pipeline. **MUST NOT be enabled in production binaries.** Internally gated on `cfg(debug_assertions)` so release builds with the feature accidentally enabled still keep the ADR-003 lockdown. Downstream test crates that need direct DB seeding should enable it under `[dev-dependencies]` only (see `forgeplan-mcp/Cargo.toml` for the canonical example). |
 
 ## License
@@ -243,7 +293,7 @@ MIT — see [LICENSE](LICENSE).
 
 <br>
 
-Built on top of [Quint-code](https://github.com/m0n0x41d/quint-code) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://github.com/Fission-AI/OpenSpec) · [FPF](https://github.com/ailev/FPF) · [LanceDB](https://lancedb.com/) · [fastembed](https://github.com/qdrant/fastembed)
+Built on top of [Quint-code](https://github.com/m0n0x41d/quint-code) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://github.com/Fission-AI/OpenSpec) · [FPF](https://github.com/ailev/FPF) · [LanceDB](https://lancedb.com/) · [tract](https://github.com/sonos/tract)
 
 <sub>Made with care by <a href="https://github.com/ForgePlan">@ForgePlan</a> · <a href="README.ru.md">Русская версия</a></sub>
 

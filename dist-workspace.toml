@@ -16,6 +16,41 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-da
 tap = "ForgePlan/homebrew-tap"
 # Publish jobs
 publish-jobs = ["homebrew"]
+# Cargo features compiled into the released binaries.
+#
+# `semantic-search` is back, and the reason it can be is that what sits
+# underneath it changed. ADR-022 excluded it because the engine was ONNX
+# Runtime — C++, linked at build time from a prebuilt that has to match our
+# build environment. EVID-158 measured that matching happen on one target out
+# of five: no prebuilt exists at all for Intel macOS, both Linux targets want
+# glibc >= 2.38 while dist links in an older-glibc container on purpose, and
+# windows-msvc failed with 66 unresolved CRT symbols. Since dist publishes
+# nothing when any single target fails, the key did not degrade the release —
+# it prevented it.
+#
+# RFC-013 replaced the engine with `tract`, which is pure Rust. A Rust
+# dependency compiles wherever our binary compiles; there is no prebuilt to
+# match and therefore no class of mismatch to hit. Superseding ADR (see
+# PRD-084) records the decision; EVID-159 records the measurement that
+# vectors are unchanged.
+#
+# Proven on all five targets before merge (EVID-163, PR #458, run
+# 33748565707): every one of them built, including the three that previously
+# failed for three different reasons. Verified with `pr-run-mode = "upload"`,
+# which was removed again afterwards — it triples PR time and exists only to
+# obtain that proof.
+#
+# Cost worth knowing: tract compiles slower than the prebuilt linked. The
+# x86_64-apple-darwin job took 42m49s against 12-17m for the others. Release
+# workflows are correspondingly longer.
+#
+# A green build still does not prove the feature is present — that is how
+# PROB-088 survived months. Verify the published artifact per RELEASE-PROTOCOL
+# step 9, and note the old `libc++` linkage marker no longer applies: pure Rust
+# means that library is legitimately absent from a binary that DOES carry the
+# feature.
+features = ["semantic-search"]
+
 # Binary aliases
 bin-aliases = { "forgeplan" = ["fpl"] }
 # Allow dirty CI files (we patched action versions v6→v4)

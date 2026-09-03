@@ -138,7 +138,11 @@ Priority: **env var > config.yaml > default**.
 
 ## `embedding:` - Semantic Search
 
-Configures the embedding model used for semantic search and the FPF KB vector index. Requires the `semantic-search` feature flag at build time (included in official release binaries).
+Configures the embedding model used for semantic search and the FPF KB vector index. Requires the `semantic-search` feature flag at build time.
+
+> **Only `bge-m3` is currently supported.** The engine computes pooling itself, and pooling differs per model — BGE families pool on CLS, the E5 and MiniLM families pool on the mean. Running a mean-pooled model through CLS pooling does not fail; it returns plausible vectors computed the wrong way. So other names are rejected outright rather than silently mis-served. Widening the list is tracked in PROB-091.
+>
+> The model downloads on first use — ~2.1 GB, once per machine, cached in the platform cache directory (`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on Linux). Override with `FORGEPLAN_MODEL_CACHE`; `HF_HOME`, if set, takes precedence over both. Run `forgeplan setup` to fetch it deliberately rather than on first search.
 
 ```yaml
 embedding:
@@ -504,9 +508,9 @@ Use `forgeplan health` to confirm the LLM subsystem reports "ready".
 ### Embeddings fail to load / semantic search returns empty
 
 **Cause**: one of:
-- Forgeplan binary was built without the `semantic-search` feature (check `forgeplan --version`).
+- Forgeplan binary was built without the `semantic-search` feature — the usual case, since no prebuilt binary carries it. `forgeplan --version` does **not** report features; run `forgeplan embed` instead. A build without the feature refuses immediately with an install command; a build with it starts loading the model.
 - `embedding.model` was changed and `lance/` was not reindexed.
-- `.fastembed_cache/` is corrupted.
+- The model cache is corrupted.
 
 **Fix**:
 ```bash

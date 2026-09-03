@@ -4575,7 +4575,7 @@ mod tests {
 
     /// FIX-A: real end-to-end semantic roundtrip via actual BGE-M3 model.
     ///
-    /// This test is `#[ignore]` because it downloads ~150MB on first run and
+    /// This test is `#[ignore]` because it downloads ~2.1 GB on first run and
     /// exercises the full encoder stack. Run manually with:
     ///
     /// ```text
@@ -4588,7 +4588,7 @@ mod tests {
     /// → ranked results. Every other FPF vector test uses synthetic vectors.
     #[cfg(feature = "semantic-search")]
     #[tokio::test]
-    #[ignore = "requires BGE-M3 model download (~150MB); run with --features semantic-search -- --ignored"]
+    #[ignore = "requires BGE-M3 model download (~2.1 GB); run with --features semantic-search -- --ignored"]
     async fn real_semantic_roundtrip_with_bge_m3() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp).await;

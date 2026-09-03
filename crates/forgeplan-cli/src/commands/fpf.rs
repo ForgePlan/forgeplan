@@ -41,8 +41,16 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
 
     let fpf_path = match path {
         Some(p) => PathBuf::from(p),
-        None => knowledge::default_fpf_path()
-            .ok_or_else(|| anyhow::anyhow!("FPF spec not found. Use --path to specify location"))?,
+        None => knowledge::default_fpf_path().ok_or_else(|| {
+            // Name the places we looked. "Not found" without a list sends the
+            // user hunting for a path that is only written in the source.
+            anyhow::anyhow!(
+                "No FPF knowledge base found. Looked in:\n  {}\n\
+                 Install the `fpf` skill, or point at the sections directly.\n\
+                 Fix: forgeplan fpf ingest --path <dir-with-fpf-sections>",
+                knowledge::fpf_search_paths().join("\n  ")
+            )
+        })?,
     };
 
     println!("  Ingesting FPF spec from {}...", fpf_path.display());
@@ -78,7 +86,7 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
     #[cfg(feature = "semantic-search")]
     let embeddings: Option<Vec<Vec<f32>>> = {
         println!(
-            "  Encoding {} sections with BGE-M3 (first run downloads model ~150MB)...",
+            "  Encoding {} sections with BGE-M3 (first run downloads the model, ~2.1 GB)...",
             chunks.len()
         );
         let mut embedder = forgeplan_core::embed::Embedder::new()?;
@@ -323,7 +331,10 @@ pub async fn run_status() -> anyhow::Result<()> {
             count_md_files(p).await
         }
         None => {
-            println!("  Source:    not found (set fpf.path in config or install fpf-simple skill)");
+            println!(
+                "  Source:    not found — install the `fpf` skill, or run \
+                 `forgeplan fpf ingest --path <dir>`"
+            );
             0
         }
     };

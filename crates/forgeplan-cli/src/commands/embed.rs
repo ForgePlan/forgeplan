@@ -15,6 +15,13 @@ pub async fn run() -> anyhow::Result<()> {
         .map(|e| e.chunk_size)
         .unwrap_or(2000);
 
+    // Tell the user about a multi-gigabyte download BEFORE it starts, not
+    // after they notice the process sitting there. Silent when the model is
+    // already cached.
+    if let Some(notice) = forgeplan_core::embed::first_run_notice() {
+        ui::info(&notice);
+    }
+
     ui::info("Loading embedding model...");
     let mut embedder = Embedder::new()?;
 
@@ -77,10 +84,21 @@ pub async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Refusal path for builds without the `semantic-search` feature.
+///
+/// The remediation MUST be runnable by the audience that actually sees this:
+/// someone who installed a prebuilt binary (brew / install.sh / GitHub
+/// Releases) and has no checkout on disk. `cargo build` was the previous
+/// advice and it is inert for them — it needs a source tree they do not have.
+/// `cargo install --git` fetches the source itself, so it works from an empty
+/// directory. PRD-071 requires `Fix:` to be runnable as-is; PROB-088 M2
+/// recorded the violation.
 #[cfg(not(feature = "semantic-search"))]
 pub async fn run() -> anyhow::Result<()> {
     anyhow::bail!(
-        "Embedding not available. Rebuild with: cargo build --features semantic-search\n\
-         Fix: cargo build --features semantic-search"
+        "Embedding not available — this build was compiled without the \
+         semantic-search feature.\n\
+         Install a build that includes it (downloads the model on first use):\n\
+         Fix: cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search"
     );
 }

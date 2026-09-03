@@ -11,6 +11,146 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-03
+
+Sprint headline: **Semantic search actually ships. The embedding engine is now `tract` — pure Rust — and `semantic-search` is compiled into all five release binaries for the first time.**
+
+Until this release, no published binary carried vector search at all. Not Homebrew, not `install.sh`, not any GitHub Release, on any target, for the entire life of the cargo-dist pipeline. The feature existed in the source and was absent from every build, and it failed silently: search fell back to keyword matching and said so in a line that was easy to miss.
+
+The cause was structural rather than a bug. ONNX Runtime is C++, linked at build time from a prebuilt someone else compiled, which has to match our build environment — and it matched on **one target out of five** (EVID-158). Since cargo-dist publishes nothing when any target fails, enabling the feature did not degrade the release; it cancelled it. A pure-Rust engine compiles wherever our binary compiles, so the whole mismatch class is removed by construction rather than worked around per platform. EVID-163 confirmed **5 of 5** by measurement.
+
+Scope note for scripted consumers: **one new CLI command** (`forgeplan setup`), no new MCP tool (still 73). One **breaking** change — `embedding.model` now accepts only `bge-m3`. No data migration: dimension, ordering and scores are unchanged, so existing indexes stay valid.
+
+### Changed
+
+- **The embedding engine is now `tract` — pure Rust — and `semantic-search` ships in the
+  released binaries** (PRD-084, RFC-013, EVID-159/160/161; supersedes ADR-022). Until now no
+  published binary carried vector search at all: the engine was ONNX Runtime, linked at build
+  time from a prebuilt that has to match our build environment, and it matched on one release
+  target out of five (EVID-158). A Rust dependency compiles wherever our binary compiles, so
+  the whole class of mismatch disappears rather than being worked around.
+
+  What this means if you install from Homebrew, `install.sh` or a GitHub Release: semantic
+  search is present. Run `forgeplan setup` once per machine to fetch the model (~2.1 GB) —
+  the binary carries the engine, not the weights.
+
+  Vectors are unchanged. The replacement was verified against embeddings captured from the old
+  engine before it was removed, over six cases spanning Russian, English, mixed script, empty
+  and whitespace-only input, and a body past the truncation boundary: maximum deviation
+  7.0e-07, which is float32 precision. An existing index stays valid and needs no rebuild —
+  the same query returns the same artifacts, in the same order, with the same scores.
+
+- **⚠️ `embedding.model` accepts only `bge-m3` for now** (PROB-091). The previous twelve
+  values are rejected with a message naming the supported set rather than silently
+  substituted. The reason is worth stating plainly: pooling differs per model — BGE families
+  pool on the CLS token, the E5 and MiniLM families pool on the mean — and running a
+  mean-pooled model through CLS pooling does **not** fail. It returns plausible vectors
+  computed the wrong way, and search keeps working while quietly ranking nonsense. Widening
+  the list is contained work per model (repo, pooling, captured reference) and is tracked in
+  PROB-091.
+
+- **Indexing is slower; search is not meaningfully so.** Measured on 403 artifacts, same
+  corpus and machine, both engines run back to back (EVID-160): a full `forgeplan embed` takes
+  **13m18s against 4m42s** — 2.83x. A single search query encodes one short string, where the
+  difference is dominated by process start-up. Cold start did regress: `search --semantic`
+  takes ~2.0–2.7s against ~1.5s before, and reached 8.3s in one of three runs with the weights
+  evicted from the OS page cache, because tract parses the graph on every process launch.
+
+- **The model-size figure was wrong in five places** and is now stated from one constant. The
+  tree variously claimed ~150 MB and ~600 MB for a model that measures **2.1 GB** on disk.
+
+### Removed
+
+- `fastembed`, `ort` and `ort-sys` are gone from the dependency tree — verified through
+  `cargo tree` and `Cargo.lock`, since a dependency that merely stops being called still
+  carries the linking problem this change exists to remove. The release binary is **56.5 MB**,
+  10.7 MB *smaller* than the ONNX build.
+
+- The `libc++` linkage check in `RELEASE-PROTOCOL` is replaced rather than deleted. It read
+  "libc++ present ⇒ the feature is present", which inverts under pure Rust: that library is
+  legitimately absent from a binary that **does** carry semantic search. The note explains why
+  reviving it would report every correct build as broken.
+
+### Added
+
+- **`forgeplan setup`** — one command, run once per machine, that fetches the embedding model
+  and creates the `fpl` alias. The alias half matters only for `cargo install`: brew and
+  `install.sh` get it from cargo-dist's `bin-aliases`, but cargo has no post-install hook, so
+  a source install used to end up with `forgeplan` and no `fpl`. Both halves are idempotent,
+  `--skip-model` and `--skip-alias` opt out of either, and an existing `fpl` on your PATH is
+  never overwritten.
+
+- **The three non-automatic setup steps are now at the top of the install docs** (README plus
+  both locales). Installing the binary does not fetch the model, does not install the FPF
+  corpus, and does not install the agent plugins — and all three failures are silent. Each now
+  carries what it costs to skip, because "search returned results" and "search returned the
+  right results" look identical from the outside.
+
+- **CI builds the website.** Six workflows, none of which touched `website/`, which is how a
+  malformed frontmatter block broke `astro build` on `dev` from v0.34.0 onward without
+  anything going red. No path filter, for the same reason already recorded on the MCP
+  tool-count gate (#421): scoping a docs gate to docs paths means the PR that breaks it is the
+  PR that skips it.
+
+- **CI compiles the `semantic-search` config.** The default config never built the embedding
+  code — so the correctness oracle was not merely skipped in CI, it was never compiled, and a
+  change that broke the engine would have gone green on every check. `cargo check` and
+  `cargo clippy` now run with the feature. Running the oracle still needs the 2.1 GB model and
+  stays a deliberate local gate; the test file says so in its own module doc rather than
+  leaving a reviewer to assume CI covers it.
+
+### Fixed
+
+- **`forgeplan fpf ingest` could not find the knowledge base** (PROB-092). The resolver looked
+  for `~/.claude/skills/fpf-simple/sections`; the marketplace ships the skill as
+  `fpf-knowledge`, and no `fpf-simple` directory exists anywhere. The loop closed neatly —
+  `fpf search` answered "no matches, run ingest", and ingest answered "spec not found, install
+  fpf-simple". Escaping it required knowing about `--path` *and* the right path, which was
+  written only in the source. The resolver now takes a list of candidate names (current first,
+  the historical one still accepted so older installs keep working) and the error names every
+  directory it looked in. Predates this release's engine work; found while re-verifying CLI
+  surfaces after the swap.
+
+  The docs were worse than silent: both locales claimed the FPF spec is "bundled inside the
+  Forgeplan binary". It is not and never was.
+
+- **The model cache was duplicated per project** (PROB-089). Weights now live once in the
+  platform cache directory and are shared across every workspace, rather than one 2.1 GB copy
+  per repository.
+
+### Security
+
+- **`h2` 0.4.13 → 0.4.19** (RUSTSEC-2026-0258): empty DATA frames were queued without limit,
+  so an undrained stream could grow unboundedly or panic on length overflow. Low severity,
+  reached only transitively through `reqwest` → `hyper`. Named update; 230 other dependencies
+  untouched.
+
+  Worth recording *how* this was found, because it is the second occurrence: the `security`
+  workflow had been failing on `dev` across three consecutive merges, and nobody was notified,
+  because **RustSec advisories are not mirrored into the Dependabot feed**. `cargo-deny` is a
+  separate gate and has to be run deliberately. The same blind spot hid RUSTSEC-2026-0204 for
+  11 days before v0.34.0.
+
+- **`chacha20` 0.10.1 → 0.10.2** — 0.10.1 was yanked from crates.io. Not an advisory, a
+  separate `cargo-deny` failure class, and it kept `security` red on `dev` *after* the h2 fix
+  had already landed.
+
+  It survived the first pass because the local check was weaker than the CI one: CI runs
+  `cargo deny --all-features`, and `chacha20` is not in the default feature tree, so a plain
+  `cargo deny check` reported all four gates green while CI failed. **Reproducing a CI gate
+  means running the command CI runs, flags included** — a green local run of a different
+  command proves nothing about the red remote one.
+
+- Dependabot at release time (RED-LINE #10): 31 open alerts — 6 high, 15 moderate, 10 low.
+  All but one are npm packages used solely by the marketing website (`astro`, `vite`, `sharp`,
+  `mermaid`, `dompurify`, `esbuild`, `js-yaml`, `nanoid`, `@babel/core`, `postcss-selector-parser`,
+  `@astrojs/rss`) and reach no shipped binary; **scheduled**, not addressed here, to avoid a
+  blanket `npm update` that has broken the site build before (peer-major conflict between
+  `@tailwindcss/vite` and `astro`). The one Rust alert, `lru` (LOW), is **carried** for the
+  third release running. All four `cargo-deny` gates — advisories, bans, licenses, sources —
+  pass.
+
+
 ## [0.34.0] - 2026-08-17
 
 Sprint headline: **Artifact integrity — R_eff now scores an artifact's *current* evidence only (breaking), code-claiming Evidence is verified against the real git delta, and the identity/collision class is closed across `update`, `reindex` and the anomaly detectors.**

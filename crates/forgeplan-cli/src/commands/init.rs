@@ -21,7 +21,13 @@ use crate::ui;
 /// Default project name fallback (unified for both paths).
 const DEFAULT_PROJECT_NAME: &str = "my-project";
 
-pub async fn run(force: bool, non_interactive: bool, scan: bool, no_backup: bool) -> Result<()> {
+pub async fn run(
+    force: bool,
+    non_interactive: bool,
+    scan: bool,
+    no_backup: bool,
+    with_model: bool,
+) -> Result<()> {
     let cwd = env::current_dir()?;
 
     // Check if already initialized
@@ -141,6 +147,13 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool, no_backup: bool
             let workspace = cwd.join(FORGEPLAN_DIR);
             run_scan_import(&cwd, &workspace).await?;
         }
+
+        // The non-interactive path returns here, so this call has to be
+        // repeated rather than left to the shared tail below. `--with-model`
+        // is explicit opt-in and must be honoured even under `-y`; without
+        // this line the flag silently did nothing, which an E2E run caught
+        // and no unit test would have.
+        maybe_prepare_semantic(non_interactive, with_model);
 
         emit_recommendation_hints(&cwd);
         // PRD-071 contract: hint at the next step in the workflow.
@@ -353,6 +366,8 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool, no_backup: bool
         run_scan_import(&cwd, &workspace).await?;
     }
 
+    maybe_prepare_semantic(non_interactive, with_model);
+
     emit_recommendation_hints(&cwd);
     // PRD-071 contract: deterministic Next: line for agents (CLI text contract).
     let hints_vec = vec![
@@ -362,6 +377,64 @@ pub async fn run(force: bool, non_interactive: bool, scan: bool, no_backup: bool
     print!("{}", hints::render_next_action_line(&hints_vec));
 
     Ok(())
+}
+
+/// Offer to fetch the embedding model while the user is still here.
+///
+/// The alternative is worse: the first `search --semantic` silently downloads
+/// ~2.1 GB mid-task, looking like a hang. Asking now costs one prompt and makes
+/// the wait a decision instead of a surprise.
+///
+/// Three paths, deliberately different:
+///
+/// - `--with-model` — fetch, no question. For scripted installs that DO want it.
+/// - `--yes` / non-interactive — never fetch. Agents and CI runners must not
+///   pull gigabytes because someone ran `init -y` in a container.
+/// - interactive — ask, default no. A user who wants keyword search only should
+///   not have to know a flag to avoid a 2 GB download.
+///
+/// Failure here is never fatal: the workspace is already initialised, and
+/// everything except semantic search works without the model.
+fn maybe_prepare_semantic(non_interactive: bool, with_model: bool) {
+    use crate::commands::setup;
+
+    if !setup::has_semantic_search() {
+        // Nothing to offer — this build cannot embed at all. Saying so beats a
+        // prompt that leads to a refusal.
+        return;
+    }
+
+    let wants_model = if with_model {
+        true
+    } else if non_interactive {
+        false
+    } else {
+        cliclack::confirm(format!(
+            "Download the embedding model for semantic search? ({} once per machine)",
+            forgeplan_core::embed::MODEL_DOWNLOAD_SIZE_HINT
+        ))
+        .initial_value(false)
+        .interact()
+        .unwrap_or(false)
+    };
+
+    if !wants_model {
+        if !non_interactive {
+            crate::ui::info(
+                "Skipped. Keyword search works now; run `forgeplan setup` when you want vectors.",
+            );
+        }
+        return;
+    }
+
+    match setup::warm_model() {
+        Ok(true) => crate::ui::success("Embedding model ready."),
+        Ok(false) => {}
+        Err(e) => crate::ui::warning(&format!(
+            "Could not fetch the embedding model: {e}\n\
+             The workspace is fine — retry later with `forgeplan setup`."
+        )),
+    }
 }
 
 /// Initialize workspace + LanceDB with rollback on failure.
@@ -408,6 +481,7 @@ pub(crate) const GITIGNORE_END_MARKER: &str = "# === end forgeplan section ===";
 pub(crate) const GITIGNORE_CANONICAL_BODY: &str = "\
 .forgeplan/lance/
 .forgeplan/.fastembed_cache/
+.fastembed_cache/
 .forgeplan/session.yaml
 .forgeplan/state/
 .forgeplan/trash/

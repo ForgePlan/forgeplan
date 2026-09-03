@@ -34,12 +34,26 @@ forgeplan fpf ingest [OPTIONS]
   -V, --version      Print version
 ```
 
-By default, `fpf ingest` reads the FPF spec bundled inside the Forgeplan binary. Pass `--path` to ingest from an external sections directory instead - useful for local FPF spec development or testing a patched corpus.
+**The FPF spec is not bundled in the binary** — it ships as a Claude Code skill and has to be installed separately. Without it there is nothing to ingest, and `fpf search` will keep returning "no matches", which reads like an empty corpus rather than a missing one.
+
+By default `fpf ingest` looks for the sections in your skills directory, newest name first:
+
+```text
+~/.claude/skills/fpf-knowledge/sections
+~/.claude/skills/fpf/sections
+~/.claude/skills/fpf-simple/sections     # historical name, still accepted
+```
+
+Install the `fpf` skill from the [marketplace](https://github.com/ForgePlan/marketplace) to get it. Pass `--path` to ingest from anywhere else — a checkout of the spec, a patched corpus, or the skill directory inside a marketplace clone:
+
+```bash
+forgeplan fpf ingest --path <marketplace>/plugins/fpf/skills/fpf-knowledge/sections
+```
 
 ## Examples
 
 ```bash
-# First-time setup - uses bundled spec
+# First-time setup - uses the installed skill
 forgeplan init -y
 forgeplan fpf ingest
 
@@ -53,7 +67,7 @@ forgeplan fpf ingest --path ./fpf-sections/
 
 ## What happens
 
-1. Forgeplan locates the bundled FPF spec (ships inside the binary).
+1. Forgeplan locates the FPF sections — the installed skill, or whatever `--path` points at.
 2. Sections are parsed into structured chunks (ID, title, part, body).
 3. Embeddings are generated via BGE-M3 (feature-gated - falls back gracefully if `semantic-search` is disabled).
 4. LanceDB writes one row per section into the `fpf_kb` table.
