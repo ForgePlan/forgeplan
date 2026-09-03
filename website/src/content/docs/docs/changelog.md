@@ -23,6 +23,143 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Changed
+
+- **The embedding engine is now `tract` - pure Rust - and `semantic-search` ships in the
+  released binaries** (PRD-084, RFC-013, EVID-159/160/161; supersedes ADR-022). Until now no
+  published binary carried vector search at all: the engine was ONNX Runtime, linked at build
+  time from a prebuilt that has to match our build environment, and it matched on one release
+  target out of five (EVID-158). A Rust dependency compiles wherever our binary compiles, so
+  the whole class of mismatch disappears rather than being worked around.
+
+  What this means if you install from Homebrew, `install.sh` or a GitHub Release: semantic
+  search is present. Run `forgeplan setup` once per machine to fetch the model (~2.1 GB) -
+  the binary carries the engine, not the weights.
+
+  Vectors are unchanged. The replacement was verified against embeddings captured from the old
+  engine before it was removed, over six cases spanning Russian, English, mixed script, empty
+  and whitespace-only input, and a body past the truncation boundary: maximum deviation
+  7.0e-07, which is float32 precision. An existing index stays valid and needs no rebuild -
+  the same query returns the same artifacts, in the same order, with the same scores.
+
+- **⚠️ `embedding.model` accepts only `bge-m3` for now** (PROB-091). The previous twelve
+  values are rejected with a message naming the supported set rather than silently
+  substituted. The reason is worth stating plainly: pooling differs per model - BGE families
+  pool on the CLS token, the E5 and MiniLM families pool on the mean - and running a
+  mean-pooled model through CLS pooling does **not** fail. It returns plausible vectors
+  computed the wrong way, and search keeps working while quietly ranking nonsense. Widening
+  the list is contained work per model (repo, pooling, captured reference) and is tracked in
+  PROB-091.
+
+- **Indexing is slower; search is not meaningfully so.** Measured on 403 artifacts, same
+  corpus and machine, both engines run back to back (EVID-160): a full `forgeplan embed` takes
+  **13m18s against 4m42s** - 2.83x. A single search query encodes one short string, where the
+  difference is dominated by process start-up. Cold start did regress: `search --semantic`
+  takes ~2.0–2.7s against ~1.5s before, and reached 8.3s in one of three runs with the weights
+  evicted from the OS page cache, because tract parses the graph on every process launch.
+
+- **The model-size figure was wrong in five places** and is now stated from one constant. The
+  tree variously claimed ~150 MB and ~600 MB for a model that measures **2.1 GB** on disk.
+
+### Removed
+
+- `fastembed`, `ort` and `ort-sys` are gone from the dependency tree - verified through
+  `cargo tree` and `Cargo.lock`, since a dependency that merely stops being called still
+  carries the linking problem this change exists to remove. The release binary is **56.5 MB**,
+  10.7 MB *smaller* than the ONNX build.
+
+- The `libc++` linkage check in `RELEASE-PROTOCOL` is replaced rather than deleted. It read
+  "libc++ present ⇒ the feature is present", which inverts under pure Rust: that library is
+  legitimately absent from a binary that **does** carry semantic search. The note explains why
+  reviving it would report every correct build as broken.
+
+
+## [0.34.0] - 2026-08-17
+
+Sprint headline: **Artifact integrity - R_eff now scores an artifact's *current* evidence only (breaking), code-claiming Evidence is verified against the real git delta, and the identity/collision class is closed across `update`, `reindex` and the anomaly detectors.**
+
+Scope note for scripted consumers: this release adds **no new CLI command, no new CLI flag and no new MCP tool** (still 73). The new user-facing surface is one **config key** (`integrity.evidence_provenance_gate`), three optional **EvidencePack body fields** (`base_sha` / `result_sha` / `changed_paths`), and the behaviour changes listed under **Changed** - two of which alter existing scores and one of which rejects a previously-accepted command.
+
+### Added
+
+- **Git-delta provenance for code-claiming Evidence** (PRD-082, #360, PRs #423 + #428, EVID-150/151) - an EvidencePack may declare `base_sha`, `result_sha` and `changed_paths` alongside `verdict` / `congruence_level`, and `forgeplan activate` re-derives the claim against the real git delta (`git diff --merge-base --name-only --no-renames -z`) instead of trusting the executor's self-report. Verify the artifact, not the claim. Five verdicts: `NotClaimed` (no provenance fields - every pack written before this release; never a failure), `Verified`, `EmptyDelta`, `PathMismatch`, `Incomplete`. The central case is deliberately strict: **green tests over an empty delta are a null result, not a pass.** Both refs are validated against argument injection (CWE-88). The gate does not run tests and does not own the worktree (ADR-019) - it establishes that the claimed change exists, nothing about its quality.
+- **`integrity.evidence_provenance_gate` config key** - `block` (refuse activation, artifact stays `draft`) / `warn` (activate and surface the discrepancy - CLI on stderr, MCP inside the success payload) / `off`. Default **`warn`**, so an existing workspace sees advice, not a wall. `activate --force` bypasses it. An unresolvable SHA - hallucinated, or real but absent from a shallow clone - only ever warns: the two cannot be told apart locally without a network fetch (ADR-019).
+- **`unbacked_displacement` anomaly detector** (#437) - flags a `refutes`/`weakens` pack that went terminal with **no** `supersedes` successor while an artifact it informs is still live. Honest displacement carries the successor edge and stays quiet; deprecating a duplicate `supports` pack stays quiet.
+- **Duplicate-id collision detection in `reindex`** (#394, PR #429) - two `.md` files claiming the same frontmatter `id` are now reported loudly (both paths, a resolution hint, and a count in the summary line) instead of one silently overwriting the other in `read_dir` order. Deliberately non-fatal: a fresh `git clone && forgeplan reindex` on a repo that already carries a collision still completes - the silence was the bug, not the completion.
+- **`GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` author tier + Memory as a graph citizen** (PR #412) - memory entries resolve through the normal id path and carry a real author in listings.
+
+### Changed
+
+- **BREAKING - R_eff scores an artifact's *current* evidence only** (ADR-020, #436, PR #437, EVID-154). The weakest-link `min()` now excludes packs with a terminal lifecycle status (`superseded` / `deprecated`). Previously a displaced `refutes` pack pinned R_eff to **0 forever**: no honest recovery existed after a fix was re-verified, which pressured agents into editing historical verdicts rather than the code. Displacement is auditable - skips are logged in `factors`, and the pack stays listed (`excluded from min` in CLI text, `excluded: true` + `status` in JSON/MCP). All-terminal degrades to "no active evidence"; recovery requires the replacement pack to be **linked**, not merely to exist. **Draft evidence still counts** (it is the normal pre-activation state of a fresh measurement) and an **active `refutes` still zeroes the score** - eligibility changed, aggregation did not.
+
+  *Migration:* scores are correct after this change; the previous values were silently wrong - they answered "worst thing ever recorded", not "current reliability". Cached `r_eff_score` recovers on the next `forgeplan score` of the artifact, and `supersede`/`deprecate` of an evidence pack now rescores the artifacts it informs automatically. **Measured impact on this repo: 82 of 89 scored artifacts land at R_eff ≥ 0.5, and exactly one (PRD-005) drops to 0.00** - its only pack was `deprecated` years ago, so the new score reveals a real documentation debt that the old formula had been masking. Expect the same shape in your workspace: a small number of artifacts whose evidence was retired without replacement.
+
+  Aligns the evidence path with the dependency path (ADR-002, which is unchanged and still governs dependencies) and with the source methodologies - quint-code filters `Verdict != "superseded"` out of its weakest-link summary (`decision.go:818`, citing FPF F.10:6.1), and FPF's Window discipline scopes a refutation to its own Window with Refresh as the recovery path.
+
+- **BREAKING - `update --status superseded|deprecated|active` is rejected** (CLI and MCP, PR #437). Once terminal status became score-relevant, a raw metadata write became a one-call score-laundering vector: it bypassed transition validation, required no successor, created no `supersedes` edge and left no journal entry (over MCP it was even accepted from `draft`). Both surfaces now redirect to the lifecycle verbs - `forgeplan supersede <id> --by <new>` / `forgeplan deprecate <id> --reason "…"` / `forgeplan activate <id>`. `--status draft` remains a plain metadata write; it is score-neutral and doubles as the recovery path after an accidental status change.
+- **`supersede` / `deprecate` of an evidence pack rescores the artifacts it informs** (PR #437) - no stale-cache window between displacement and the recovered score.
+- **Anomaly detectors stop crying wolf** (PR #433) - `mistyped_based_on` no longer fires on evidence→**evidence** `based_on`, which is legitimate precedent lineage; its description no longer claims a "CL penalty cascade" (`based_on` and `informs` score identically, both CL2 - the old wording was simply false). `weakest_link_unresolvable` is scoped to decision kinds, so evidence and notes - whose `R_eff=0` is inherent, not a resolvable weak link - no longer fire. **On this repo: 140 → 34 anomalies, 0 high, 0 medium**, and every survivor is a genuine active decision artifact at R_eff 0.
+- **`health` no longer flags terminal artifacts as At Risk** (PR #431) - a `deprecated`/`superseded` artifact is closed: its R_eff is frozen and the suggested `forgeplan score <id>` next-action could never clear it.
+- **Artifact identity survives `update`** (#418, PR #424) - the identity triple (`slug` / `predicted_number` / `assigned_number`) is written to the canonical frontmatter block and carried forward across body updates instead of being destroyed with the template-derived second block.
+
+### Fixed
+
+- **Silent data loss on same-slug title edits** (#419, PR #424) - `update --title` computed the old projection path and deleted the file it had just written when the new title slugified identically (case- or punctuation-only edits). The rename-aware helper now no-ops in that case.
+- **Two live duplicate-id collisions in this repo** (PRs #430, #434) - `PRD-012` (an unfilled template stub shadowing the active artifact) and `EVID-143`/`EVID-149`/`EVID-150` (independent branches minting the same predicted number). Resolved by git-first precedence with the later pack re-minted; the graph now carries 0 collisions across 394 artifacts.
+- **MCP tool-count drift detector was blind to hyphenated Russian text and docs-only PRs** (#421, PR #425) - it reported green while a scanned RU page stated a stale count.
+- **ADR-013 was invisible to the graph** (PR #432) - the CI security-gate decision had no YAML frontmatter, so `forgeplan get ADR-013` returned not-found and `reindex` logged a parse error. Recovered, evidenced (EVID-153) and activated.
+- **`forgeplan health` counted terminal artifacts toward evidence coverage** - `gaps`, `journal` and `context` now reason over the same non-terminal population as the scorer, so an all-displaced artifact classifies as "no active evidence" instead of "weak evidence", and a displaced expired pack no longer pins `has_stale` forever (PR #437).
+
+### Security
+
+- **RUSTSEC-2026-0204** - `crossbeam-epoch` 0.9.18 → **0.9.20**. Invalid pointer dereference in the `fmt::Pointer` impl for `Atomic`/`Shared`; reaches the tree twice transitively (`tera → globwalk → ignore` and `fastembed → image → exr → rayon-core`). This had been **failing the `security` (cargo-deny) workflow on `dev` since 2026-08-06** across five consecutive runs. Worth stating plainly: **RustSec is not mirrored into GitHub's Dependabot feed**, so the alerts UI showed nothing the whole time - for a Rust project, cargo-deny is a separate, non-optional gate.
+- **GHSA-4w2j-m93h-cj5j (HIGH)** - `quinn-proto` 0.11.14 → **0.11.16**. Remote memory exhaustion via unbounded out-of-order stream reassembly; transitive through `reqwest → quinn`.
+- **GHSA-7gcf-g7xr-8hxj** - `serde_with` 3.18.0 → **3.22.0**. `KeyValueMap` serialization panic on an empty sequence; transitive through `lancedb`.
+- **Score-laundering vector closed** - see the `update --status` rejection under **Changed**, plus the new `unbacked_displacement` detector for the successor-free `deprecate` channel that remains legitimately open.
+- **Dependabot triage (RED LINE #10)** - 42 open alerts at cut time (12 HIGH / 20 MEDIUM / 10 LOW). Rust: 2 **addressed** above; `lru` LOW **accepted-with-justification** (pinned at 0.12.x by `tantivy 0.24.2`, fix needs a major bump only tantivy can take; Forgeplan never constructs an `lru` cache or calls `IterMut`). npm: all 39 **scheduled** - they are confined to `website/`, the statically generated docs portal that ships no server and is part of no released artifact, and a blanket `npm update` there is a known build-breaker (peer-major vite conflict, PR #401), so it needs its own PR with a full site build. Full reasoning: [`docs/operations/dependabot-triage-2026-08-17.md`](docs/operations/dependabot-triage-2026-08-17.md).
+
+### Internal
+
+- **ADR-020** records the scoring decision (refines ADR-002, which survives unchanged), including the anti-laundering bounds across all four displacement channels - gated `update`, successor-carrying `supersede`, detector-bounded `deprecate`, and the pre-existing `unlink` residual deferred to vNext FPV-06.
+- **Adversarial audits shaped this release.** The ADR-020 change was audited (3 lenses, every finding skeptic-verified) at **14 confirmed / 4 refuted**, and the confirmed set - including the `update --status` BLOCKER - was closed before the branch was ever pushed. Earlier, an audit of the #394 fix caught a dangling `Refs:` pointer, and a health-debt triage caught that three "obvious" `based_on` fixes would have corrupted the graph.
+- **Documentation.** The R_eff semantics propagated to CLAUDE.md, six methodology documents (EN + RU) and five website pages (EN + RU); the provenance fields and the new config key are documented in EVIDENCE-PROTOCOL (EN + RU), the evidence template, CLAUDE.md and the website configuration reference. `RELEASE-PROTOCOL` and the `dependabot-triage-*` convention were missing from `docs/README(.ru).md` and are now indexed.
+- **vNext design pack imported** (PR #426, EPIC-009, ADR-019) - 91 files under `docs/vnext/engineering-contract-layer/` describing the engineering-contract layer (WorkContract → ExecutionReceipt → EvidenceBundle → VerificationVerdict). Imported as reference material only: its own 13-agent adversarial audit returned **NEEDS_REWORK** (EVID-149), so no FPV issues were filed and neither EPIC-009 nor ADR-019 is activated - ADR-019 declares `contradicts ADR-009`, which is a human decision.
+- **Task List Discipline** added to CLAUDE.md (PR #427) - in-flight work becomes a task before code is touched, findings become artifacts rather than prose, and `completed` means the verification was re-run, not that an agent reported success.
+- **PROB-085 / EVID-155** - core tests mutate the process cwd (`config/types.rs`, 16 `set_current_dir` calls) and race `git::tests`, which read `Path::new(".")`. Differential proof: parallel run fails, `--test-threads=1` gives 51/51. Test-only, CI-green; filed so it is not re-diagnosed as a regression.
+- **GitHub Actions pinned with truthful SHA comments** (PR #409); `notify` 8 upgrade (PR #408); workflow SHA comment corrections (PR #407); `sha2` 0.11 (PR #319).
+- **Counts at this release:** 81 CLI commands, 73 MCP tools, 3243 tests + 9 doc-tests (CI `nextest`, 7 skipped), 394 tracked artifacts.
+
+## [0.33.0] - 2026-06-04
+
+Sprint headline: **MCP worktree-aware routing (PRD-078) + read-after-write correctness investigation (PROB-078 refuted) + dogfood-driven CLI hardening.**
+
+### Added
+
+- **Worktree-aware MCP routing** (PRD-078 / ADR-015 / ADR-016) - `forgeplan_get`, `forgeplan_update`, and the other store-resolution MCP tools accept an optional absolute `workspace` parameter so an agent running in a linked git worktree reads/writes the correct `.forgeplan/`. Writes use a strict multi-worktree detection gate (structured `-32602` error when ambiguous); reads fall back softly. Closes PROB-072 (sub-agents writing to the wrong repo).
+- **Duplicate-id detector in `scan-import`** - surfaces colliding artifact ids (same `KIND-NNN` across multiple files) as a warning instead of silently importing one and dropping the other.
+- **`claude-code` LLM provider** (ADR-017) - an opt-in, keyless LLM provider that reuses your local `claude login` session via `claude --print`, so the in-Claude-Code workflow needs no second paid API key. **Personal/local use only** - it draws from your Claude plan under Anthropic's Terms (not free), each call is a new headless session (auth, not context), and ForgePlan does not spoof the Claude Code client identity. Guarded: prompt fed via stdin (dash-leading prompts inert), charset-gated model (argv-injection defence), recursion guard, env hygiene, no auto-tool grant. Never auto-selected - set `provider: claude-code` explicitly. Prefer `ollama` for key-free local use without the ToS boundary. See `docs/operations/LLM-PROVIDERS.md`.
+
+### Fixed
+
+- **CRITICAL silent data loss (#350)** - `forgeplan_update` / `forgeplan_discover_finding` with `body=@/path/file.md` stored the literal `@path` string instead of the file's content; the loss was invisible until a later `forgeplan_get`. The MCP tools now expand `@file` to its content (CLI parity) and error loudly on a missing file.
+- **`claim` without `--agent` always failed** - the default agent-id `cli/<version>` contained a `/`, which the agent-id validator rejects. Default is now `cli-<version>`.
+- **`progress <id> --json` ignored the id** - the JSON path returned all artifacts; it now scopes to the requested id.
+- **`playbook validate <name>` did not resolve playbook names** - it required a full path (unlike `show`/`run`). Names now resolve via the same discovery.
+- **`order` mislabeled non-active artifacts** - deprecated/superseded artifacts printed as `(draft, …)`; they now show their real status.
+- **`activity` / `activity-stats` hint loop** - the "try a wider window" hint unconditionally suggested `--since-hours 720` even at the maximum window, looping hint-following agents; it is now suppressed at the max window.
+- **Stale-cache hardening (PROB-075)** - bounded retry budget + exponential backoff on transient LanceDB staleness, a refresh rate-limit/debounce, and a typed `lancedb::Error` downcast so artifact bodies echoing a "Not found:" marker no longer trigger spurious refreshes.
+
+### Security
+
+- **openssl 0.10.79 → 0.10.80** (Dependabot alert #34, MEDIUM) - potential out-of-bounds write in `CipherCtxRef::cipher_update_inplace`.
+- **Supply-chain hardening (PROB-070)** - all GitHub Actions `uses:` pinned to 40-char commit SHAs; CI-gate `continue-on-error` theatre removed.
+
+### Internal
+
+- **PROB-078 (MCP read-after-write staleness) investigated and REFUTED** - the reported "stale body after your own write in the same session" was an artifact of an unreliable hand-rolled stdio-printf repro client, not a product bug. Read-after-write is correct at every layer, proven by 7 new regression tests across three layers: store-level reopened-handle, in-process MCP (`McpFixture`, incl. a two-store probe), and the **real `forgeplan-mcp` binary over real stdio** via the rmcp child-process transport (incl. a byte-exact replica of the original repro). These tests are permanent read-after-write guards and replace a previously weak Journey-1 e2e assertion (content-match, not non-empty).
+- **Latency measured (PROB-073)** - multi-worktree detection ~12 ms p95; create-roundtrip hot spot is the LanceDB commit (~7 ms). Accepted as documented behavior for v0.33; no code change.
+- **Dependabot triage (RED LINE #10)** - openssl fixed (above); `lru` LOW (alert #3) carried accepted-with-justification (requirement pins 0.12.x; the 0.16.3 fix needs an out-of-scope major bump; no exploit path in our usage). Deferred to v0.34: lancedb 0.30 (storage core - untested major bump, highest regression risk), sha2 0.11, notify 8, arrow-schema 58. schemars 1.x remains a separate scoped sprint (#318).
+
 ## [0.32.1] - 2026-05-21
 
 **Hotfix release.** v0.32.0 shipped with a Cargo.toml regression that prevented Windows binary publication via cargo-dist. macOS / Linux binaries also did not publish because cargo-dist exits the entire workflow when any target fails. No semantic / behaviour changes - purely a build-time dependency placement fix.

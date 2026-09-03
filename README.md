@@ -90,39 +90,52 @@ git clone https://github.com/ForgePlan/forgeplan.git && cd forgeplan
 cargo install --path crates/forgeplan-cli
 ```
 
-### First run: fetch the embedding model
+### After installing: three steps that are not automatic
 
-Semantic search ships in every binary — Homebrew, the install script and the
-GitHub Release archives alike. The engine is `tract`, pure Rust, so there is no
-platform where the feature is present in the source but missing from the build.
+The binary gives you routing, artifacts, validation, scoring, the graph and
+keyword search. Three more capabilities need one command each — and **each one
+fails quietly if you skip it**. Nothing crashes; you just get a worse answer
+with no sign that you did.
 
-What is *not* in the binary is the model itself. Run once per machine:
+| Step | Command | Cost of skipping |
+|---|---|---|
+| **1. Embedding model** (~2.1 GB) | `forgeplan setup` | `search --semantic` degrades to keyword matching |
+| **2. FPF knowledge base** | `/plugin install fpf@ForgePlan-marketplace`, then `forgeplan fpf ingest` | `fpf search` returns "no matches"; `reason --fpf` loses its grounding |
+| **3. Agent harness** | 5 marketplace plugins ([list](https://forgeplan.dev/docs/getting-started/installation/)) | `/smith`, `/forge-cycle`, `/audit` do not exist |
 
-```bash
-forgeplan setup
-```
-
-That downloads BGE-M3 — **~2.1 GB**, with a progress bar — and, on a
+**1 — the model.** Semantic search ships in every binary; the engine is
+`tract`, pure Rust, so there is no platform where the feature is in the source
+but missing from the build. What is *not* in the binary is the 2.1 GB of
+weights. `forgeplan setup` downloads them with a progress bar and, on a
 `cargo install`, creates the `fpl` alias that brew and `install.sh` get for
 free from cargo-dist. Both steps are idempotent; `--skip-model` and
 `--skip-alias` opt out of either.
 
-The model is cached in the platform cache directory
+Weights are cached in the platform cache directory
 (`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on
 Linux) — shared across all your projects, not one copy per repository. Override
-with `FORGEPLAN_MODEL_CACHE`; `HF_HOME`, if you have it set, takes precedence
-over both.
+with `FORGEPLAN_MODEL_CACHE`; `HF_HOME`, if set, takes precedence over both.
 
 `forgeplan init` offers the same download interactively. It never downloads
 under `-y`, so agents and CI runners cannot pull gigabytes by accident; pass
-`--with-model` when a scripted install wants it.
+`--with-model` when a scripted install wants it. Until the model is present,
+`forgeplan search --semantic` falls back to keyword search and says so — easy
+to miss, and keyword search will not find "how do we handle auth failures" in a
+document that says "retry policy for rejected credentials". To see which state
+you are in, run `forgeplan embed`; `forgeplan --version` does not report it.
 
-Until the model is present, `forgeplan search --semantic` falls back to keyword
-search and says so.
+**2 — FPF.** The First Principles Framework spec is a 204-section corpus that
+ships as a separate skill, not inside the binary. It is what `forgeplan reason`
+uses for ADI reasoning — the step that makes an artifact produce real
+alternatives instead of restating your first idea, required at Standard depth
+and above. Skipping ingest gives a closed loop that looks like a working
+system: search says "no matches, run ingest", and an empty corpus is
+indistinguishable from a missing one. `forgeplan fpf status` tells them apart.
 
-`forgeplan init` also offers the download when run interactively. It never
-downloads under `-y`, so agents and CI runners cannot pull gigabytes by
-accident; pass `--with-model` when a scripted install genuinely wants it.
+**3 — the harness.** Everything above works from a plain shell, but Forgeplan
+is designed to be driven by an agent, and the driving commands live in
+marketplace plugins. Without them you have a well-organised filing system and
+nobody to run it.
 
 Everything else — routing, artifacts, scoring, validation, the graph, keyword
 search — works identically on every build.
