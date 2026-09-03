@@ -2,7 +2,7 @@
 depth: tactical
 id: PROB-092
 kind: problem
-status: draft
+status: deprecated
 title: 'FPF knowledge base unreachable by default: code looks for fpf-simple, marketplace ships fpf-knowledge'
 ---
 
@@ -92,5 +92,7 @@ forgeplan fpf ingest --path <marketplace>/plugins/fpf/skills/fpf-knowledge/secti
 - EVID-162 — верификация поверхностей, при которой дефект найден
 - PRD-071 — контракт хинтов, нарушаемый строкой `fpf.rs:326`
 - PROB-088 — тот же класс: корректный fallback, скрывающий неработающую функцию
+
+
 
 
