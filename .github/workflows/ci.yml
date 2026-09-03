@@ -84,6 +84,34 @@ jobs:
           chmod +x scripts/check-kind-list-drift.sh
           scripts/check-kind-list-drift.sh
 
+  website-build:
+    name: Website build
+    runs-on: ubuntu-latest
+    # Nothing built the site in CI, so a malformed YAML frontmatter block in
+    # ru/docs/mcp/forgeplan_score.md (from the v0.34.0 ADR-020 doc sync) sat
+    # broken on `dev` until someone happened to run `npm run build` locally.
+    # A docs site that does not build is a docs site that is not published.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903  # v6.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install
+        working-directory: website
+        run: npm ci
+
+      # Catches the whole class: bad frontmatter, broken content collections,
+      # dead internal links that Astro resolves at build time.
+      - name: Build
+        working-directory: website
+        run: npm run build
+
   check-mcp-tool-count-drift:
     name: Check MCP tool count drift
     runs-on: ubuntu-latest
