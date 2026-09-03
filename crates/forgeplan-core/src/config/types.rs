@@ -279,6 +279,27 @@ pub struct LlmConfig {
     /// Temperature override for `reason` command (structured ADI output benefits from lower temp)
     #[serde(default)]
     pub reason_temperature: Option<f32>,
+    /// Seconds to wait for an LLM response before giving up.
+    ///
+    /// PROB-096: this was hardcoded at 120s and explicitly non-configurable,
+    /// on the sound principle that production behaviour should not be driven
+    /// by environment variables. Living in `config.yaml` keeps that principle
+    /// — the file is committed and reviewed — while letting a slower provider
+    /// or a bigger artifact be accommodated without a rebuild.
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+    /// Timeout override for `reason` (ADI), which is a different animal.
+    ///
+    /// Measured 2026-09-03 on `claude-code` / `claude-opus-4-8`: a real ADI
+    /// pass over a moderate Problem card took **237s** and produced ~20 KB —
+    /// against the 120s general budget, so ADI could not complete at all. The
+    /// floor is high too: a one-word `claude --print` round trip costs 18s
+    /// before any reasoning happens.
+    ///
+    /// Left as a separate knob rather than raising the shared one: a hung
+    /// `route` or `capture` should still fail in seconds, not minutes.
+    #[serde(default)]
+    pub reason_timeout_seconds: Option<u64>,
 }
 
 fn default_provider() -> String {
@@ -297,6 +318,22 @@ fn default_temperature() -> f32 {
     0.7
 }
 
+/// General LLM budget. Unchanged from the previous hardcoded value — short
+/// calls (`route`, `capture`, `generate`) were never the problem.
+fn default_timeout_seconds() -> u64 {
+    120
+}
+
+/// Fallback budget for `reason` when the config does not override it.
+///
+/// Grounded in measurement, not preference: a real ADI pass took 237s
+/// (2026-09-03, `claude-code` / `claude-opus-4-8`, ~20 KB of output). 600s is
+/// ~2.5x that, so a larger artifact or a slower day still completes, while a
+/// genuinely wedged call still dies rather than hanging forever.
+pub fn default_reason_timeout_seconds() -> u64 {
+    600
+}
+
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
@@ -307,6 +344,8 @@ impl Default for LlmConfig {
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
             reason_temperature: None,
+            timeout_seconds: default_timeout_seconds(),
+            reason_timeout_seconds: None,
         }
     }
 }
@@ -987,5 +1026,58 @@ mod integrity_tests {
         let cfg = IntegrityConfig::default();
         let bad_body_len = cfg.mcp_max_body_len + 1;
         assert!(bad_body_len > cfg.mcp_max_body_len);
+    }
+
+    /// PROB-096: `reason` gets its own budget because ADI is not a short call.
+    /// Measured 237s for a real pass against the 120s general budget — so the
+    /// step the methodology calls REQUIRED could not complete on a correct
+    /// configuration, and the error blamed the config.
+    #[test]
+    fn reason_budget_exceeds_the_general_one() {
+        let general = default_timeout_seconds();
+        let reason = default_reason_timeout_seconds();
+        assert!(
+            reason > general,
+            "ADI needs more headroom than a short call: reason={reason}s vs general={general}s"
+        );
+        assert!(
+            reason >= 237,
+            "the fallback must clear the measured 237s ADI pass, got {reason}s"
+        );
+        assert_eq!(
+            general, 120,
+            "the general budget is deliberately unchanged — short calls were \
+             never the problem, and a hung `route` should still fail fast"
+        );
+    }
+
+    /// The override lives in `config.yaml`, not the environment. That keeps the
+    /// original reasoning behind the hardcoded value intact — no production
+    /// behaviour driven by a shell variable — while letting a slower provider
+    /// be accommodated without a rebuild.
+    #[test]
+    fn llm_timeouts_are_configurable_and_default_sanely() {
+        let cfg = LlmConfig::default();
+        assert_eq!(cfg.timeout_seconds, 120);
+        assert!(
+            cfg.reason_timeout_seconds.is_none(),
+            "unset means `fall back to the measured default`, not `use the general budget`"
+        );
+
+        let parsed: LlmConfig = serde_yaml::from_str(
+            "provider: claude-code\nmodel: x\ntimeout_seconds: 45\nreason_timeout_seconds: 900\n",
+        )
+        .expect("both budgets must be settable from config.yaml");
+        assert_eq!(parsed.timeout_seconds, 45);
+        assert_eq!(parsed.reason_timeout_seconds, Some(900));
+    }
+
+    /// A config written before these fields existed must still load.
+    #[test]
+    fn llm_config_without_timeout_fields_still_parses() {
+        let parsed: LlmConfig = serde_yaml::from_str("provider: openai\nmodel: gpt-4\n")
+            .expect("pre-PROB-096 configs must not break on upgrade");
+        assert_eq!(parsed.timeout_seconds, default_timeout_seconds());
+        assert_eq!(parsed.reason_timeout_seconds, None);
     }
 }

@@ -259,6 +259,12 @@ pub async fn reason(
     reason_config.temperature = config
         .reason_temperature
         .unwrap_or_else(|| config.temperature.min(0.3));
+    // PROB-096: ADI is not a short call. Measured 237s against the 120s
+    // general budget, so `reason` used to fail by timeout on a correct
+    // configuration — and the error pointed at the config, which was fine.
+    reason_config.timeout_seconds = config
+        .reason_timeout_seconds
+        .unwrap_or_else(crate::config::types::default_reason_timeout_seconds);
     let client = LlmClient::new(reason_config);
 
     let mut prompt = format!(

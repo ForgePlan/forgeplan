@@ -111,8 +111,11 @@ pub struct LlmClient {
 
 impl LlmClient {
     pub fn new(config: LlmConfig) -> Self {
+        // PROB-096: was hardcoded at 120s. Callers that need a different
+        // budget — `reason` above all — set `timeout_seconds` on their config
+        // clone, the same seam `reason_temperature` already uses.
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(config.timeout_seconds))
             .build()
             .unwrap_or_default();
         Self { config, http }
@@ -277,15 +280,21 @@ impl LlmClient {
     }
 
     /// Per-invocation subprocess timeout for the claude-code provider.
-    /// Mirrors the HTTP client's 120s budget so behavior is uniform across
+    /// Mirrors the HTTP client's budget so behavior is uniform across
     /// providers.
+    ///
+    /// PROB-096: previously a hardcoded 120s, deliberately non-configurable so
+    /// that no production behaviour was driven by the environment. That
+    /// principle is intact — the budget now comes from `config.yaml`, which is
+    /// committed and reviewed, not from a shell variable. What changed is that
+    /// 120s was measurably too small for the one call that needs it most: a
+    /// real ADI pass took 237s on this provider, so `reason` could not complete
+    /// at all while short calls were never affected.
     ///
     /// CR-3 test seam: in `#[cfg(test)]` builds ONLY, a
     /// `FORGEPLAN_CLAUDE_CODE_TIMEOUT_MS` env override shortens the budget so
-    /// the timeout-path test does not have to wait 120s (or hang). Release
-    /// builds ignore the env entirely — the 120s production budget is not
-    /// configurable, mirroring the binary-resolution `#[cfg(test)]` gate
-    /// discipline (no prod behavior driven by env).
+    /// the timeout-path test does not have to wait for it. Release builds
+    /// ignore the env entirely.
     fn config_timeout(&self) -> std::time::Duration {
         #[cfg(test)]
         if let Ok(ms) = std::env::var("FORGEPLAN_CLAUDE_CODE_TIMEOUT_MS")
@@ -293,7 +302,7 @@ impl LlmClient {
         {
             return std::time::Duration::from_millis(ms);
         }
-        std::time::Duration::from_secs(120)
+        std::time::Duration::from_secs(self.config.timeout_seconds)
     }
 
     /// OpenAI-compatible endpoint (OpenAI, Gemini, Ollama, custom).

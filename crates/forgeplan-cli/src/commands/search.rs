@@ -184,6 +184,38 @@ async fn run_keyword(query: &str, kind: Option<&str>, json: bool) -> anyhow::Res
     Ok(())
 }
 
+/// How many artifacts carry no vector, and are therefore invisible to a
+/// semantic query no matter how well it is phrased.
+///
+/// PROB-093: a semantic search over a partially-indexed workspace returns a
+/// smaller world and says nothing about it. That is the failure mode the whole
+/// problem is about — not an error, a plausible answer with the relevant
+/// artifact quietly missing. Reporting the count turns "no match" into "no
+/// match among the N I could see".
+///
+/// Cost is one read of the record list; no inference. Failure here must never
+/// fail the search — an unavailable count is a missing warning, not a missing
+/// result — so this returns 0 rather than propagating.
+#[cfg(feature = "semantic-search")]
+async fn unindexed_count(store: &forgeplan_core::db::store::LanceStore) -> usize {
+    match store.list_records(None).await {
+        Ok(records) => records.iter().filter(|r| r.embedding.is_none()).count(),
+        Err(_) => 0,
+    }
+}
+
+/// Emit the "N artifacts are not indexed" warning, when there are any.
+#[cfg(feature = "semantic-search")]
+fn warn_unindexed(n: usize) {
+    if n == 0 {
+        return;
+    }
+    ui::info(&format!(
+        "{n} artifact(s) have no embedding and cannot appear in semantic results. \
+         Run `forgeplan embed` — it now only encodes what changed."
+    ));
+}
+
 /// Semantic-only search (vector similarity).
 async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyhow::Result<()> {
     #[cfg(feature = "semantic-search")]
@@ -205,6 +237,9 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
             all_hits.into_iter().take(10).collect()
         };
 
+        // PROB-093: how much of the workspace this query could not reach.
+        let unindexed = unindexed_count(&store).await;
+
         if hits.is_empty() {
             // PRD-071: surface a primary fix-action.
             let next_hints: Vec<Hint> = vec![
@@ -214,11 +249,13 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
             if json {
                 let payload = serde_json::json!({
                     "results": [],
+                    "unindexed_artifacts": unindexed,
                     "_next_action": hints::primary_action(&next_hints),
                 });
                 println!("{}", serde_json::to_string_pretty(&payload)?);
             } else {
                 ui::info(&format!("No semantic results for \"{}\"", query));
+                warn_unindexed(unindexed);
                 print!("{}", hints::render_next_action_line(&next_hints));
             }
             return Ok(());
@@ -246,6 +283,7 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
                 .collect();
             let payload = serde_json::json!({
                 "results": json_data,
+                "unindexed_artifacts": unindexed,
                 "_next_action": hints::primary_action(&next_hints),
             });
             println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -267,6 +305,12 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
                 sanitize_for_hint(&h.record.title)
             );
         }
+
+        // Deliberately printed AFTER a non-empty result list, where it matters
+        // most: results on screen read as the whole answer. "Found 10" plus a
+        // silent hole is more misleading than "found nothing".
+        println!();
+        warn_unindexed(unindexed);
 
         print!("{}", hints::render_next_action_line(&next_hints));
 

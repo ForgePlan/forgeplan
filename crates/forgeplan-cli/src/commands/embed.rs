@@ -44,12 +44,35 @@ pub async fn run() -> anyhow::Result<()> {
 
     let mut ok = 0usize;
     let mut err = 0usize;
+    let mut skipped = 0usize;
 
     for record in &records {
+        // PROB-093: only encode what actually moved. A record is current when
+        // it already carries a vector AND its content hash still matches.
+        // Before this, `embed` recomputed all 400+ records to index one new
+        // artifact — 13m18s on this workspace, which is why the step people
+        // were supposed to run manually did not get run.
+        let current_hash =
+            forgeplan_core::db::store::compute_content_hash(&record.title, &record.body);
+        if record.embedding.is_some() && record.body_hash.as_deref() == Some(current_hash.as_str())
+        {
+            skipped += 1;
+            continue;
+        }
+
         let text = record.embedding_text(chunk_size);
         match embedder.embed(&text) {
             Ok(vec) => {
                 store.update_embedding(&record.id, &vec).await?;
+                store
+                    .update_body_hash(&record.id, &current_hash)
+                    .await
+                    // The vector is written; a failed hash stamp only costs a
+                    // redundant re-encode next run, so it must not fail the
+                    // command and lose the work already done.
+                    .unwrap_or_else(|e| {
+                        eprintln!("  warn {} — hash not stamped: {}", record.id, e)
+                    });
                 // SEC-H1 (CWE-117 / CWE-150): titles are attacker-
                 // controllable via frontmatter; sanitize before TTY
                 // emission to neutralise ANSI/bidi/control bytes.
@@ -68,7 +91,10 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
-    println!("\nDone: {} embedded, {} failed.", ok, err);
+    println!(
+        "\nDone: {} embedded, {} already current, {} failed.",
+        ok, skipped, err
+    );
     let hint_list = if err > 0 {
         vec![
             Hint::warning(format!("{} artifact(s) failed to embed", err))

@@ -369,6 +369,22 @@ jobs:
       - name: Run smoke test
         run: bash scripts/smoke-test.sh --verbose
 
+      # Every `forgeplan …` example in CLAUDE.md and the shipped /forge skill
+      # must name a real subcommand with real flags. PROB-094: the skill
+      # documented `recall --list` and `remember "key" "value"` — neither
+      # exists, and `setup-skill` distributes that file to every user. Cheap
+      # (no execution), so it runs on every PR.
+      - name: Check documented commands against the binary
+        run: bash scripts/check-doc-command-drift.sh --bin target/debug/forgeplan
+
+      # The full 82-command surface on a real binary. `smoke-test.sh` covers
+      # 21 of them; the gap is where PROB-093 lived — `search` was exercised
+      # for years while nobody asked whether a newly created artifact could be
+      # found by it. Commands needing a model or an LLM key report EXTERNAL
+      # here rather than PASS, so a green run does not overclaim.
+      - name: Exercise the whole CLI surface
+        run: bash scripts/cli-surface-exercise.sh --bin target/debug/forgeplan
+
       - name: Upload smoke logs on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
