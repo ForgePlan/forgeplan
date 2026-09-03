@@ -206,6 +206,22 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets
 
+      # The embedding engine lives behind `semantic-search`, so the default
+      # config above never compiles it — including the correctness oracle in
+      # `tests/embedding_reference.rs`. Without this step a change that breaks
+      # the engine passes CI completely green, which is the exact silent
+      # failure the oracle exists to prevent (PRD-084 / ADR-023).
+      #
+      # This proves the feature config COMPILES. It does not run the oracle —
+      # that needs the 2.1 GB model, which is not worth downloading per run.
+      # See the note in tests/embedding_reference.rs about where that gate
+      # actually lives.
+      - name: cargo check (semantic-search)
+        run: cargo check --workspace --all-targets --features semantic-search
+
+      - name: cargo clippy (semantic-search)
+        run: cargo clippy --workspace --all-targets --features semantic-search
+
       - name: sccache stats
         if: always() && env.RUSTC_WRAPPER == 'sccache'
         run: sccache --show-stats || true
