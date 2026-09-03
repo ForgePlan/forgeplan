@@ -61,6 +61,75 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   legitimately absent from a binary that **does** carry semantic search. The note explains why
   reviving it would report every correct build as broken.
 
+### Added
+
+- **`forgeplan setup`** — one command, run once per machine, that fetches the embedding model
+  and creates the `fpl` alias. The alias half matters only for `cargo install`: brew and
+  `install.sh` get it from cargo-dist's `bin-aliases`, but cargo has no post-install hook, so
+  a source install used to end up with `forgeplan` and no `fpl`. Both halves are idempotent,
+  `--skip-model` and `--skip-alias` opt out of either, and an existing `fpl` on your PATH is
+  never overwritten.
+
+- **The three non-automatic setup steps are now at the top of the install docs** (README plus
+  both locales). Installing the binary does not fetch the model, does not install the FPF
+  corpus, and does not install the agent plugins — and all three failures are silent. Each now
+  carries what it costs to skip, because "search returned results" and "search returned the
+  right results" look identical from the outside.
+
+- **CI builds the website.** Six workflows, none of which touched `website/`, which is how a
+  malformed frontmatter block broke `astro build` on `dev` from v0.34.0 onward without
+  anything going red. No path filter, for the same reason already recorded on the MCP
+  tool-count gate (#421): scoping a docs gate to docs paths means the PR that breaks it is the
+  PR that skips it.
+
+- **CI compiles the `semantic-search` config.** The default config never built the embedding
+  code — so the correctness oracle was not merely skipped in CI, it was never compiled, and a
+  change that broke the engine would have gone green on every check. `cargo check` and
+  `cargo clippy` now run with the feature. Running the oracle still needs the 2.1 GB model and
+  stays a deliberate local gate; the test file says so in its own module doc rather than
+  leaving a reviewer to assume CI covers it.
+
+### Fixed
+
+- **`forgeplan fpf ingest` could not find the knowledge base** (PROB-092). The resolver looked
+  for `~/.claude/skills/fpf-simple/sections`; the marketplace ships the skill as
+  `fpf-knowledge`, and no `fpf-simple` directory exists anywhere. The loop closed neatly —
+  `fpf search` answered "no matches, run ingest", and ingest answered "spec not found, install
+  fpf-simple". Escaping it required knowing about `--path` *and* the right path, which was
+  written only in the source. The resolver now takes a list of candidate names (current first,
+  the historical one still accepted so older installs keep working) and the error names every
+  directory it looked in. Predates this release's engine work; found while re-verifying CLI
+  surfaces after the swap.
+
+  The docs were worse than silent: both locales claimed the FPF spec is "bundled inside the
+  Forgeplan binary". It is not and never was.
+
+- **The model cache was duplicated per project** (PROB-089). Weights now live once in the
+  platform cache directory and are shared across every workspace, rather than one 2.1 GB copy
+  per repository.
+
+### Security
+
+- **`h2` 0.4.13 → 0.4.19** (RUSTSEC-2026-0258): empty DATA frames were queued without limit,
+  so an undrained stream could grow unboundedly or panic on length overflow. Low severity,
+  reached only transitively through `reqwest` → `hyper`. Named update; 230 other dependencies
+  untouched.
+
+  Worth recording *how* this was found, because it is the second occurrence: the `security`
+  workflow had been failing on `dev` across three consecutive merges, and nobody was notified,
+  because **RustSec advisories are not mirrored into the Dependabot feed**. `cargo-deny` is a
+  separate gate and has to be run deliberately. The same blind spot hid RUSTSEC-2026-0204 for
+  11 days before v0.34.0.
+
+- Dependabot at release time (RED-LINE #10): 31 open alerts — 6 high, 15 moderate, 10 low.
+  All but one are npm packages used solely by the marketing website (`astro`, `vite`, `sharp`,
+  `mermaid`, `dompurify`, `esbuild`, `js-yaml`, `nanoid`, `@babel/core`, `postcss-selector-parser`,
+  `@astrojs/rss`) and reach no shipped binary; **scheduled**, not addressed here, to avoid a
+  blanket `npm update` that has broken the site build before (peer-major conflict between
+  `@tailwindcss/vite` and `astro`). The one Rust alert, `lru` (LOW), is **carried** for the
+  third release running. All four `cargo-deny` gates — advisories, bans, licenses, sources —
+  pass.
+
 
 ## [0.34.0] - 2026-08-17
 
