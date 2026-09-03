@@ -143,6 +143,16 @@ Scope note for scripted consumers: **one new CLI command** (`forgeplan setup`), 
   separate gate and has to be run deliberately. The same blind spot hid RUSTSEC-2026-0204 for
   11 days before v0.34.0.
 
+- **`chacha20` 0.10.1 → 0.10.2** - 0.10.1 was yanked from crates.io. Not an advisory, a
+  separate `cargo-deny` failure class, and it kept `security` red on `dev` *after* the h2 fix
+  had already landed.
+
+  It survived the first pass because the local check was weaker than the CI one: CI runs
+  `cargo deny --all-features`, and `chacha20` is not in the default feature tree, so a plain
+  `cargo deny check` reported all four gates green while CI failed. **Reproducing a CI gate
+  means running the command CI runs, flags included** - a green local run of a different
+  command proves nothing about the red remote one.
+
 - Dependabot at release time (RED-LINE #10): 31 open alerts - 6 high, 15 moderate, 10 low.
   All but one are npm packages used solely by the marketing website (`astro`, `vite`, `sharp`,
   `mermaid`, `dompurify`, `esbuild`, `js-yaml`, `nanoid`, `@babel/core`, `postcss-selector-parser`,
