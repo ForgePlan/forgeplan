@@ -2,7 +2,10 @@
 depth: tactical
 id: PROB-097
 kind: problem
-status: draft
+links:
+- target: PRD-085
+  relation: references
+status: deprecated
 title: git pull leaves the semantic index stale and git-sync is documented nowhere
 ---
 
@@ -118,5 +121,9 @@ mtime markdown с `updated_at` в индексе и сообщают о расх
 - **PROB-093** — тот же класс на пути CLI; закрыт
 - **PROB-098** — соседняя дыра в онбординге, найдена тем же прогоном
 - **ADR-003** — markdown источник истины, LanceDB производный
+
+
+
+
 
 

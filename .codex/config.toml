@@ -1,0 +1,33 @@
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1"
+HINDSIGHT_API_KEY = "B1HAdEZo9Z1X3kHJwOiVBRystwafcNQ4ZZncavUk"
+HINDSIGHT_URL = "https://hindsight.tools.orch.so"
+
+[mcp_servers.forgeplan]
+command = "/opt/homebrew/bin/forgeplan"
+args = ["serve"]
+
+[mcp_servers.grafana]
+command = "uvx"
+args = ["mcp-grafana"]
+
+[mcp_servers.grafana.env]
+GRAFANA_AUTH_DISABLED = "true"
+GRAFANA_URL = "http://localhost:3110"
+
+[mcp_servers.hindsight]
+command = "node"
+args = ["/Users/explosovebit/.claude/plugins/cache/ForgePlan-marketplace/fpl-hsmem/2.1.0/dist/index.mjs"]
+
+[mcp_servers.hindsight.env]
+HINDSIGHT_BANK_ID = "forgeplan"
+HINDSIGHT_URL = "https://hindsight.tools.orch.so"
+
+[mcp_servers.orch]
+url = "http://localhost:28173/mcp"
+
+[mcp_servers.tempo-traces]
+url = "http://localhost:3200/api/mcp"

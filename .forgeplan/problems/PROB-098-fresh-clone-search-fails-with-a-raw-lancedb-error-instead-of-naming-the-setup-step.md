@@ -2,6 +2,9 @@
 depth: tactical
 id: PROB-098
 kind: problem
+links:
+- target: PRD-085
+  relation: references
 status: draft
 title: 'Fresh clone: search fails with a raw LanceDB error instead of naming the setup step'
 ---
@@ -90,5 +93,6 @@ README. Агент, получив «Table 'artifacts' was not found», с бо�
 - **PROB-097** — соседний разрыв: `pull` оставляет индекс устаревшим
 - **PRD-071** — контракт подсказок, требующий исполнимый `Fix:`
 - **ADR-003** — markdown источник истины, индекс производный
+
 
 

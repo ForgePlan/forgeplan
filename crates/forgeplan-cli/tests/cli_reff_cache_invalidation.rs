@@ -154,15 +154,20 @@ fn assert_reconcile_parents_hint_line(combined: &str, mutator: &str, target: &st
             line.trim(),
             per_target.trim(),
             "{mutator}: `Next:` line equals forbidden per-target hint `{per_target}`. \
-             Cache is already self-healing — emit `Next: forgeplan score-all` instead. \
+             Cache is already self-healing — emit `Next: forgeplan score --all` instead. \
              Got:\n{combined}"
         );
     }
+    // #348: this asserted `forgeplan score-all`, a command that has never
+    // existed — the real one is `forgeplan score --all`. The test is why the
+    // defect survived: anyone fixing the hint got a red test and reverted.
+    // A test pinning a broken contract is worse than no test, because it
+    // actively defends the bug.
     assert!(
         next_lines
             .iter()
-            .any(|l| l.trim() == "Next: forgeplan score-all"),
-        "{mutator}: missing canonical `Next: forgeplan score-all` line. Got:\n{combined}"
+            .any(|l| l.trim() == "Next: forgeplan score --all"),
+        "{mutator}: missing canonical `Next: forgeplan score --all` line. Got:\n{combined}"
     );
 }
 

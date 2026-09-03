@@ -54,11 +54,33 @@ trap 'rm -rf "$TMP"' EXIT
   | grep -E "^  [a-z]" | awk '{print $1}' | grep -vx help \
   > "$TMP/commands.txt"
 
-# Cache each subcommand's flags on first use.
+# Cache the flag set for a command path, on first use.
+#
+# Takes the full path, not just the top-level name: `--yes` belongs to
+# `playbook run`, and asking `playbook --help` for it reports a real flag as
+# drift. Nested subcommands (playbook/plugins/mcp/discover/fpf) are the norm
+# here, so resolving only the first word produces a wall of false positives.
 flags_for() {
-  local cmd="$1" f="$TMP/flags.$1"
-  [ -f "$f" ] || "$BIN" "$cmd" --help 2>&1 | grep -oE '\-\-[a-z][a-z0-9-]*' | sort -u > "$f"
+  local key f
+  key="$(printf '%s' "$*" | tr ' ' '_')"
+  f="$TMP/flags.$key"
+  # shellcheck disable=SC2086
+  [ -f "$f" ] || "$BIN" $* --help 2>&1 | grep -oE '\-\-[a-z][a-z0-9-]*' | sort -u > "$f"
   cat "$f"
+}
+
+# Deepest command path an example actually names: `forgeplan playbook run X`
+# resolves to `playbook run`, `forgeplan score --all` to `score`.
+resolve_path() {
+  local first="$1" second="$2"
+  case "$second" in
+    ""|-*|PLACEHOLDER|\<*|\**) printf '%s' "$first"; return ;;
+  esac
+  if "$BIN" "$first" "$second" --help >/dev/null 2>&1; then
+    printf '%s %s' "$first" "$second"
+  else
+    printf '%s' "$first"
+  fi
 }
 
 problems=0
@@ -98,26 +120,94 @@ for src in "${SOURCES[@]}"; do
       continue
     fi
 
-    # Flags the example claims, minus anything inside a placeholder.
+    # Flags the example claims, checked against the deepest command path it
+    # names — see resolve_path.
+    sub="$(printf '%s' "$example" | awk '{print $3}')"
+    path="$(resolve_path "$cmd" "$sub")"
     for flag in $(printf '%s' "$example" | grep -oE '\-\-[a-z][a-z0-9-]*' | sort -u); do
-      if ! flags_for "$cmd" | grep -qx -- "$flag"; then
+      if ! flags_for $path | grep -qx -- "$flag"; then
         printf 'DRIFT  %s\n         `%s` is not a flag of `forgeplan %s`\n         in: %s\n' \
-          "$example" "$flag" "$cmd" "$src"
+          "$example" "$flag" "$path" "$src"
         problems=$((problems+1))
       fi
     done
   done < "$TMP/examples.txt"
 done
 
+# ---------------------------------------------------------------------------
+# Emitted hints — the surface an agent is CONTRACTUALLY OBLIGED to run
+# ---------------------------------------------------------------------------
+#
+# Documentation drift is bad; hint drift is worse. PRD-071 requires `Next:`
+# and `Fix:` to be runnable as-is, and an agent follows them verbatim. A hint
+# naming a command that does not exist spends the agent's turn on an error.
+#
+# Issue #348 is exactly this: `forgeplan link` emitted
+# `Next: forgeplan score-all` for months. The real command is
+# `forgeplan score --all`. Documentation checks never saw it, because the
+# string lives in Rust source, not in a doc file.
+#
+# Placeholders (`{id}`, `<id>`) are expected in these strings and are ignored —
+# only the subcommand name and literal flags are checked.
+
+echo
+echo "Scanning emitted hints (Next:/Fix:/with_action)…"
+
+# Only the surfaces that ARE the contract: an action attached to a Hint, or a
+# string a user sees prefixed with Next:/Fix:/Or:. Scanning every string that
+# happens to contain the word "forgeplan" pulls in prose from comments
+# ("the forgeplan binary built by cargo test") and reports it as a missing
+# command — a checker that cries wolf gets muted, and then catches nothing.
+{
+  grep -rhoE 'with_action\(\s*(format!\()?"[^"]+"' crates/ --include="*.rs" 2>/dev/null \
+    | sed 's/.*"\(.*\)"*/\1/' | tr -d '"'
+  grep -rhoE '"(Next|Fix|Or): forgeplan [^"]*"' crates/ --include="*.rs" 2>/dev/null \
+    | tr -d '"' | sed 's/^[A-Za-z]*: //'
+} \
+  | grep -E '^forgeplan ' \
+  | sed 's/{[^}]*}/PLACEHOLDER/g' \
+  | sed 's/[[:space:]]*$//' \
+  | sort -u > "$TMP/hints.txt" || true
+
+while IFS= read -r hint; do
+  [ -n "$hint" ] || continue
+  case "$hint" in
+    *"|"*|*"..."*|*"<"*) continue ;;   # prose or a placeholder-only template
+  esac
+
+  cmd="$(printf '%s' "$hint" | awk '{print $2}')"
+  [ -n "$cmd" ] || continue
+  case "$cmd" in PLACEHOLDER|\**) continue ;; esac
+  checked=$((checked+1))
+
+  if ! grep -qx "$cmd" "$TMP/commands.txt"; then
+    printf 'DRIFT  %s\n         emitted hint names `%s`, which is not a command\n' \
+      "$hint" "$cmd"
+    problems=$((problems+1))
+    continue
+  fi
+
+  hsub="$(printf '%s' "$hint" | awk '{print $3}')"
+  hpath="$(resolve_path "$cmd" "$hsub")"
+  for flag in $(printf '%s' "$hint" | grep -oE '\-\-[a-z][a-z0-9-]*' | sort -u); do
+    if ! flags_for $hpath | grep -qx -- "$flag"; then
+      printf 'DRIFT  %s\n         emitted hint uses `%s`, not a flag of `forgeplan %s`\n' \
+        "$hint" "$flag" "$hpath"
+      problems=$((problems+1))
+    fi
+  done
+done < "$TMP/hints.txt"
+
 echo
 echo "──────────────────────────────────────────────"
-printf 'checked %d documented example(s), %d drift(s)\n' "$checked" "$problems"
+printf 'checked %d documented example(s) and emitted hint(s), %d drift(s)\n' \
+  "$checked" "$problems"
 echo "──────────────────────────────────────────────"
 
 if [ "$problems" -gt 0 ]; then
   echo
-  echo "Docs promise an interface the binary does not have. Fix the docs, or"
-  echo "add the flag — but do not leave an agent following an instruction that"
-  echo "cannot work."
+  echo "Something promises an interface the binary does not have. Fix it, or add"
+  echo "the flag — but do not leave an agent following an instruction that cannot"
+  echo "work. For an emitted hint this is a PRD-071 violation, not a typo."
   exit 1
 fi

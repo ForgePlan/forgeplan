@@ -1,0 +1,84 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/explosovebit/Work/ForgePlan/.codex/hooks/forge-safety-hook.sh'",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "'/Users/explosovebit/Work/ForgePlan/.codex/hooks/pr-todo-check.sh'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "'/Users/explosovebit/Work/ForgePlan/.codex/hooks/pre-pr-evidence-check.sh'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "'/Users/explosovebit/Work/ForgePlan/.codex/hooks/commit-test-check.sh'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "'/Users/explosovebit/Work/ForgePlan/.codex/hooks/pre-commit-health.sh'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "'/Users/explosovebit/Work/ForgePlan/.codex/hooks/pre-commit-fmt.sh'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/explosovebit/Work/ForgePlan/.codex/hooks/pre-code-check.sh'",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /Users/explosovebit/.claude/plugins/cache/ForgePlan-marketplace/fpl-hsmem/2.1.0/dist/hooks/session-end.mjs",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /Users/explosovebit/.claude/plugins/cache/ForgePlan-marketplace/fpl-hsmem/2.1.0/dist/hooks/recall.mjs",
+            "timeout": 12
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /Users/explosovebit/.claude/plugins/cache/ForgePlan-marketplace/fpl-hsmem/2.1.0/dist/hooks/retain.mjs",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
