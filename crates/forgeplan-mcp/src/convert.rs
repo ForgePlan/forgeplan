@@ -140,6 +140,12 @@ impl From<ArtifactRecord> for ArtifactRecordDto {
             assigned_number: identity.assigned_number,
             id_canonical: identity.id_canonical,
             id_display: identity.id_display,
+            // #447 — this conversion has no store handle, so edges cannot be
+            // read here. The caller that does have one fills them in; see
+            // `forgeplan_get` in server.rs. Left empty rather than optional so
+            // a caller who forgets still emits `{"outbound": [], "inbound": []}`
+            // instead of silently dropping the field.
+            links: Default::default(),
         }
     }
 }

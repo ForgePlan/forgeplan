@@ -3697,7 +3697,30 @@ impl ForgeplanServer {
                     next_action.push_str(&claim_hint);
                 }
 
-                hinted_result(&ArtifactRecordDto::from(r), next_action)
+                // #447 — fill the edges the pure `From` conversion cannot
+                // reach. Failure to read the relations table degrades to empty
+                // rather than failing the whole read: an artifact body is
+                // still worth returning when the edge lookup misbehaves.
+                let outbound = store.get_relations(&canonical).await.unwrap_or_default();
+                let inbound = store
+                    .get_incoming_relations(&canonical)
+                    .await
+                    .unwrap_or_default();
+                let mut dto = ArtifactRecordDto::from(r);
+                dto.links = crate::types::ArtifactLinksDto {
+                    outbound: outbound
+                        .into_iter()
+                        .map(|(target, relation)| crate::types::OutboundLinkDto {
+                            target,
+                            relation,
+                        })
+                        .collect(),
+                    inbound: inbound
+                        .into_iter()
+                        .map(|(source, relation)| crate::types::InboundLinkDto { source, relation })
+                        .collect(),
+                };
+                hinted_result(&dto, next_action)
             }
             Ok(None) => Ok(artifact_not_found(&p.id)),
             Err(e) => Ok(safe_err_result("", e)),

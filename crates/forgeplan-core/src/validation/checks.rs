@@ -57,7 +57,23 @@ pub fn extract_related_artifacts_table_ids(body: &str) -> Vec<String> {
             continue;
         }
         for m in ID_RE.find_iter(line) {
-            found.insert(m.as_str().to_string());
+            let token = m.as_str();
+            // #446 — the regex matches any `<UPPER>-<digits>` token, so it
+            // swept up requirement ids (`FR-1`), invariant numbers (`I-3`) and
+            // anything else shaped that way. Those can never be link targets,
+            // so the warning naming them was unclosable by construction, and
+            // its `Run: forgeplan link <this-id> FR-1` remediation could not
+            // be executed — a PRD-071 violation of the same shape as #348 and
+            // #351. Keep only tokens whose prefix maps to a real artifact kind.
+            let Some((prefix, _)) = token.split_once('-') else {
+                continue;
+            };
+            if crate::artifact::types::ArtifactKind::from_slug_prefix(&prefix.to_lowercase())
+                .is_none()
+            {
+                continue;
+            }
+            found.insert(token.to_string());
         }
     }
     found.into_iter().collect()
@@ -1300,6 +1316,60 @@ mod tests {
 ";
         let ids = extract_related_artifacts_table_ids(body);
         assert_eq!(ids, vec!["EVID-042", "PRD-001", "RFC-003"]);
+    }
+
+    /// #446 — tokens shaped like an id but whose prefix is not an artifact
+    /// kind are not link candidates. `FR-1` is a requirement number and `I-3`
+    /// an invariant number; neither can ever be a link target, so naming them
+    /// produced a warning that could not be resolved by linking anything.
+    #[test]
+    fn extract_related_artifacts_table_ids_skips_non_artifact_tokens() {
+        let body = "
+# SPEC-003: Title
+
+## Related Artifacts
+
+| Artifact | Type | Relation |
+|---|---|---|
+| PRD-065 | PRD | refines (contract for FR-1, FR-2, FR-3, FR-5) |
+| ADR-009 | ADR | based_on (invariants I-1, I-3) |
+";
+        let ids = extract_related_artifacts_table_ids(body);
+        assert_eq!(
+            ids,
+            vec!["ADR-009", "PRD-065"],
+            "only real artifact kinds survive; FR-* and I-* are not link targets"
+        );
+    }
+
+    /// #446 guard — the filter must not become an allow-list that quietly
+    /// drops real kinds. Every kind prefix the slug parser accepts has to
+    /// survive extraction, otherwise the drift rule goes blind to that kind.
+    #[test]
+    fn extract_related_artifacts_table_ids_keeps_every_real_kind() {
+        let body = "
+## Related Artifacts
+
+| Artifact | Relation |
+|---|---|
+| PRD-001 | refines |
+| RFC-002 | informs |
+| ADR-003 | based_on |
+| EPIC-004 | belongs_to |
+| SPEC-005 | refines |
+| PROB-006 | informs |
+| SOL-007 | informs |
+| EVID-008 | informs |
+| NOTE-009 | informs |
+| REF-010 | informs |
+| MEM-011 | informs |
+";
+        let ids = extract_related_artifacts_table_ids(body);
+        assert_eq!(
+            ids.len(),
+            11,
+            "all real kinds must survive the #446 prefix filter, got {ids:?}"
+        );
     }
 
     /// Free-text mention OUTSIDE the Related Artifacts section is NOT
