@@ -40,7 +40,7 @@ pub fn extended_registry() -> PluginRegistry {
             source: PluginSource::ClaudePlugin,
             version_req: ">=1.0".to_string(),
             expected_paths: vec![PathBuf::from("agents-pro")],
-            install_command: "claude plugin install agents-pro".to_string(),
+            install_command: "/plugin install agents-pro@ForgePlan-marketplace".to_string(),
             description: "Pro agent pack: ddd-domain-expert, agents-architect, agents-reviewer"
                 .into(),
         },
@@ -52,7 +52,7 @@ pub fn extended_registry() -> PluginRegistry {
                 PathBuf::from("agents-sparc/agents/specification"),
                 PathBuf::from("sparc-specification"),
             ],
-            install_command: "claude plugin install agents-sparc".to_string(),
+            install_command: "/plugin install agents-sparc@ForgePlan-marketplace".to_string(),
             description: "SPARC specification agent (via agents-sparc pack)".into(),
         },
         PluginInfo {
@@ -63,7 +63,7 @@ pub fn extended_registry() -> PluginRegistry {
                 PathBuf::from("c4-architecture/agents/c4-context"),
                 PathBuf::from("c4-context"),
             ],
-            install_command: "claude plugin install c4-architecture".to_string(),
+            install_command: "/plugin install c4-architecture@claude-code-workflows".to_string(),
             description: "C4 context-level diagram agent (via c4-architecture)".into(),
         },
         PluginInfo {
@@ -74,7 +74,7 @@ pub fn extended_registry() -> PluginRegistry {
                 PathBuf::from("c4-architecture/agents/c4-container"),
                 PathBuf::from("c4-container"),
             ],
-            install_command: "claude plugin install c4-architecture".to_string(),
+            install_command: "/plugin install c4-architecture@claude-code-workflows".to_string(),
             description: "C4 container-level diagram agent (via c4-architecture)".into(),
         },
         PluginInfo {
@@ -85,7 +85,7 @@ pub fn extended_registry() -> PluginRegistry {
                 PathBuf::from("c4-architecture/agents/c4-component"),
                 PathBuf::from("c4-component"),
             ],
-            install_command: "claude plugin install c4-architecture".to_string(),
+            install_command: "/plugin install c4-architecture@claude-code-workflows".to_string(),
             description: "C4 component-level diagram agent (via c4-architecture)".into(),
         },
         PluginInfo {
@@ -96,7 +96,8 @@ pub fn extended_registry() -> PluginRegistry {
                 PathBuf::from("agent-orchestration/agents/context-manager"),
                 PathBuf::from("agent-orchestration-context-manager"),
             ],
-            install_command: "claude plugin install agent-orchestration".to_string(),
+            install_command: "/plugin install agent-orchestration@claude-code-workflows"
+                .to_string(),
             description: "Context-manager agent (via agent-orchestration pack)".into(),
         },
     ];
@@ -212,5 +213,34 @@ mod tests {
     fn merge_with_empty_user_is_identity() {
         let merged = merge_user_registry(default_registry(), PluginRegistry::new());
         assert_eq!(merged, default_registry());
+    }
+
+    /// #351: `plugins doctor` printed `claude plugin install <name>` — an
+    /// invocation that does not exist. The real form is
+    /// `/plugin install <name>@<marketplace>`, run inside Claude Code.
+    ///
+    /// Same class as #348 (`Next: forgeplan score-all`): an emitted remediation
+    /// naming a command nobody can run. PRD-071 requires these to be runnable
+    /// as-is, and an agent following one verbatim spends a turn on an error.
+    ///
+    /// The marketplace suffix is not optional decoration — without it the
+    /// install is ambiguous when two marketplaces carry the same plugin name.
+    #[test]
+    fn install_commands_name_a_real_invocation_with_its_marketplace() {
+        for plugin in extended_registry().plugins.values() {
+            let cmd = &plugin.install_command;
+            assert!(
+                !cmd.starts_with("claude plugin install"),
+                "{}: `claude plugin install` is not a real command (#351): {cmd}",
+                plugin.name
+            );
+            if cmd.contains("/plugin install") {
+                assert!(
+                    cmd.contains('@'),
+                    "{}: `/plugin install` needs an @marketplace suffix, got: {cmd}",
+                    plugin.name
+                );
+            }
+        }
     }
 }

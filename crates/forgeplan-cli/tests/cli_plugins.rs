@@ -94,7 +94,11 @@ fn plugins_info_known_plugin_returns_details() {
         .assert()
         .success()
         .stdout(predicate::str::contains("c4-architecture"))
-        .stdout(predicate::str::contains("claude plugin install"));
+        // #351: asserted `claude plugin install`, a command that does not
+        // exist — the same shape as #348, where a test defended a broken hint
+        // and anyone fixing it got a red build. The real form is
+        // `/plugin install <name>@<marketplace>`.
+        .stdout(predicate::str::contains("/plugin install c4-architecture@"));
 }
 
 #[test]

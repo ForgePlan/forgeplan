@@ -53,6 +53,19 @@ pub struct KnownPlaybook {
 ///   installed).
 ///
 /// Returns an empty vec when no playbook applies (no noise).
+/// The real install command for a plugin, from the registry.
+///
+/// `/plugin install <name>@<marketplace>` is the form Claude Code accepts; the
+/// `@marketplace` suffix is not decoration — without it the install is
+/// ambiguous when two marketplaces carry the same plugin name (#351).
+fn install_command_for(name: &str) -> String {
+    crate::plugins::registry::extended_registry()
+        .plugins
+        .get(name)
+        .map(|p| p.install_command.clone())
+        .unwrap_or_else(|| format!("/plugin install {name}@<marketplace>"))
+}
+
 pub fn build_recommendations(
     signals: &ProjectSignals,
     installed: &[InstalledPlugin],
@@ -71,12 +84,18 @@ pub fn build_recommendations(
             .requires_plugins
             .iter()
             .filter(|name| !installed_names.contains(name.as_str()))
-            // For a missing plugin we don't have its install command in this
-            // function (it lives on `PluginInfo` in the registry). The
-            // canonical command shape is `claude plugin install <name>` —
-            // Wave 3 surface code with access to the registry MAY swap this
-            // for the registry's `install_command` for accuracy.
-            .map(|name| format!("claude plugin install {name}"))
+            // #351: this used to emit `claude plugin install <name>` — an
+            // invocation that does not exist. The comment here even said the
+            // accurate command "lives on `PluginInfo` in the registry" and
+            // that a later wave MAY use it. It never did, so the approximation
+            // shipped, and `plugins doctor` told people to run a command that
+            // cannot work. PRD-071 requires the opposite: runnable as-is.
+            //
+            // The registry is reachable from here, so use it. A plugin absent
+            // from the registry falls back to the correct invocation with an
+            // explicit marketplace placeholder — incomplete, but at least not
+            // a command that fails outright.
+            .map(|name| install_command_for(name))
             .collect();
 
         hints.push(RecommendedPlaybookHint {
@@ -95,7 +114,7 @@ pub fn build_recommendations(
 ///
 /// ```text
 /// recommended: greenfield-kickoff playbook (requires autoresearch plugin)
-/// Fix: claude plugin install autoresearch
+/// Fix: /plugin install autoresearch@claude-code-workflows
 /// recommended: brownfield-docs playbook
 /// ```
 ///
@@ -203,8 +222,19 @@ fn describe_reason(t: &TriggeredBy) -> String {
 /// behavior of `types::extract_plugin_name` (intentionally duplicated to
 /// avoid widening the public surface of `types`).
 fn extract_plugin_name(cmd: &str) -> String {
+    // #351: the command form changed from `claude plugin install <name>` to
+    // `/plugin install <name>@<marketplace>`, so the last token now carries
+    // the marketplace too. Strip it — this function names the PLUGIN, and the
+    // display line reads "(requires <plugin> plugin)".
+    //
+    // Deriving a name by slicing a command string couples the two: change the
+    // command and the label silently changes with it. Caught by a test here;
+    // worth remembering the coupling exists.
     cmd.split_whitespace()
         .next_back()
+        .unwrap_or("?")
+        .split('@')
+        .next()
         .unwrap_or("?")
         .to_string()
 }
@@ -226,7 +256,7 @@ mod tests {
                 source: PluginSource::ClaudePlugin,
                 version_req: "*".to_string(),
                 expected_paths: Vec::new(),
-                install_command: format!("claude plugin install {name}"),
+                install_command: format!("/plugin install {name}@test-marketplace"),
                 description: String::new(),
             },
             detected_path: PathBuf::from("/tmp"),
@@ -295,7 +325,11 @@ mod tests {
         let r = &recs[0];
         assert_eq!(r.playbook_name, "greenfield-kickoff");
         assert_eq!(r.install_hints.len(), 1);
-        assert_eq!(r.install_hints[0], "claude plugin install autoresearch");
+        // #351: the registry now supplies the real command, marketplace included.
+        assert_eq!(
+            r.install_hints[0],
+            "/plugin install autoresearch@claude-code-workflows"
+        );
         assert!(r.reason.contains("empty_repo=true"));
     }
 
@@ -361,7 +395,7 @@ mod tests {
         let hints = vec![RecommendedPlaybookHint {
             playbook_name: "greenfield-kickoff".to_string(),
             reason: "empty_repo".to_string(),
-            install_hints: vec!["claude plugin install autoresearch".to_string()],
+            install_hints: vec!["/plugin install autoresearch@claude-code-workflows".to_string()],
         }];
         let out = render_recommendations(&hints);
         assert!(
@@ -370,7 +404,7 @@ mod tests {
             ),
             "unexpected output: {out}"
         );
-        assert!(out.contains("\nFix: claude plugin install autoresearch"));
+        assert!(out.contains("\nFix: /plugin install autoresearch@claude-code-workflows"));
     }
 
     #[test]
@@ -406,7 +440,7 @@ mod tests {
             RecommendedPlaybookHint {
                 playbook_name: "a".to_string(),
                 reason: "r1".to_string(),
-                install_hints: vec!["claude plugin install p1".to_string()],
+                install_hints: vec!["/plugin install p1@some-marketplace".to_string()],
             },
             RecommendedPlaybookHint {
                 playbook_name: "b".to_string(),
@@ -418,7 +452,7 @@ mod tests {
         let lines: Vec<&str> = out.split('\n').collect();
         assert_eq!(lines.len(), 4);
         assert!(lines[0].starts_with("recommended: a playbook"));
-        assert_eq!(lines[1], "Fix: claude plugin install p1");
+        assert_eq!(lines[1], "Fix: /plugin install p1@some-marketplace");
         assert_eq!(lines[2], "");
         assert_eq!(lines[3], "recommended: b playbook");
     }
