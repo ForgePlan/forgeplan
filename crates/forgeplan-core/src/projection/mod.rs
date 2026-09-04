@@ -951,33 +951,56 @@ pub async fn update_metadata_with_projection(
     Ok(())
 }
 
-/// ADR-012 / SPEC-005 identity fields.
+/// Re-attach body-frontmatter fields from `old_body` that `new_body` does not
+/// carry and that the projection does not regenerate.
 ///
-/// Under the PRD-073 two-block layout these live in the **body's** own
-/// frontmatter, which makes them collateral damage of any body replacement —
-/// see [`carry_identity_forward`].
-const IDENTITY_FM_KEYS: &[&str] = &["slug", "predicted_number", "assigned_number"];
-
-/// Re-attach the ADR-012 identity fields from `old_body` when `new_body` does
-/// not carry them.
-///
-/// The identity triple lives inside the body's frontmatter block (PRD-073
-/// layout: synthetic projection block on top, canonical body below). A body
-/// replacement is therefore an *identity deletion* unless the fields are
+/// The body has its own frontmatter block (PRD-073 layout: synthetic
+/// projection block on top, canonical body below). A body replacement is
+/// therefore a *field deletion* for everything in that block unless it is
 /// carried across — which is why a mature workspace ends up with no artifact
 /// carrying a slug at all: `forgeplan new` writes one, and the very next
 /// `update --body` that CLAUDE.md prescribes silently drops it.
 ///
-/// Callers supply prose. Re-attaching here keeps every call site from having to
-/// remember, and is a no-op when the caller *did* supply identity (round-trip of
-/// a full document) or when the artifact never had one (legacy, pre-Phase-1.5).
+/// ## Why the rule is `KNOWN_FM_KEYS`, not a hand-listed triple
+///
+/// This carried exactly `["slug", "predicted_number", "assigned_number"]` —
+/// the three fields whose loss someone noticed. The argument that justified
+/// carrying those three applies verbatim to every other field in the block,
+/// so the list was a fix for three instances of a class, and everything
+/// outside it kept being deleted in silence.
+///
+/// Measured on a real workspace: a no-op round-trip of RFC-022 (read the body
+/// back with `forgeplan get --json`, hand it straight to `update --body`
+/// unchanged) dropped eight lines. Five of them — `author`, `depth`, `id`,
+/// `status`, `title` — are in [`KNOWN_FM_KEYS`] and are legitimately
+/// regenerated into the projection block above, so their in-body copies are
+/// redundant. Three were pure loss: `created`, `updated`, `prd`.
+///
+/// So the rule is the one the neighbouring [`filter_preserved`] already
+/// applies to the projection block's own unknown keys (PRD-057 FR-009):
+/// **anything the record does not own survives**. Deriving it from
+/// `KNOWN_FM_KEYS` rather than from a second authored list means a field
+/// added to the record is automatically excluded, and a field added to the
+/// body is automatically preserved — neither needs anyone to remember this
+/// function exists. Carrying a `KNOWN_FM_KEYS` field would be worse than
+/// dropping it: `update_body_with_projection` parses `status` back out of the
+/// new body to sync LanceDB, so a stale in-body copy could resurrect a
+/// superseded status.
+///
+/// Consequence, stated rather than discovered later: a caller cannot delete a
+/// body-frontmatter field by omitting it. That is deliberate — silent data
+/// loss is the failure this function exists to prevent, and it is the more
+/// expensive of the two. Removing a field means writing the block without it
+/// AND having the record not own it; for the record-owned ones there are
+/// dedicated mutators (`update --status`, `--title`, `--depth`).
 fn carry_identity_forward(old_body: &str, new_body: &str) -> String {
     let Ok((old_fm, _)) = frontmatter::parse_frontmatter(old_body) else {
         return new_body.to_string();
     };
-    let carried: Vec<(&str, serde_yaml::Value)> = IDENTITY_FM_KEYS
+    let carried: Vec<(&str, serde_yaml::Value)> = old_fm
         .iter()
-        .filter_map(|k| old_fm.get(*k).map(|v| (*k, v.clone())))
+        .filter(|(k, _)| !KNOWN_FM_KEYS.contains(&k.as_str()))
+        .map(|(k, v)| (k.as_str(), v.clone()))
         .collect();
     if carried.is_empty() {
         return new_body.to_string();
@@ -1043,9 +1066,11 @@ pub async fn update_body_with_projection(
     };
     let links = store.get_relations(id).await.unwrap_or_default();
 
-    // PROB-060 / ADR-012: preserve the identity triple the replacement would
-    // otherwise delete. Must happen before `derived_status` is parsed and
-    // before either write, so file and index agree on one body.
+    // PROB-060 / ADR-012: preserve the body-frontmatter fields the replacement
+    // would otherwise delete — every field the record does not own, not just
+    // the identity triple this originally carried. Must happen before
+    // `derived_status` is parsed and before either write, so file and index
+    // agree on one body.
     let carried = carry_identity_forward(&record.body, body);
     let body: &str = &carried;
 
@@ -2288,6 +2313,66 @@ mod tests {
         // A body with no frontmatter at all must not panic or corrupt.
         let new = "## Problem\n\nplain\n";
         assert_eq!(carry_identity_forward("no frontmatter here\n", new), new);
+    }
+
+    /// The identity triple was three instances of a class, and the rest of the
+    /// class kept being deleted in silence.
+    ///
+    /// Measured on a real workspace before this was fixed: reading RFC-022's
+    /// body back and handing it to `update --body` UNCHANGED — a no-op — cost
+    /// eight frontmatter lines. Five (`author`, `depth`, `id`, `status`,
+    /// `title`) are in `KNOWN_FM_KEYS` and are regenerated into the projection
+    /// block above, so losing the in-body copy is correct. Three were pure
+    /// loss, and this pins them.
+    #[test]
+    fn carry_identity_forward_keeps_every_field_the_record_does_not_own() {
+        // The second block of a generated artifact, as `forgeplan new` writes
+        // it. `created`/`updated`/`prd` exist ONLY here — no projection field
+        // regenerates them.
+        let old = "---\nassigned_number: 22\nauthor: null\ncreated: 2026-09-03\n\
+                   depth: standard\nid: RFC-022\nprd: null\npredicted_number: 22\n\
+                   slug: rfc-production-program\nstatus: Draft\ntitle: 'Production program'\n\
+                   updated: 2026-09-03\n---\n\n## Summary\n\nold prose\n";
+
+        let out = carry_identity_forward(old, "## Summary\n\nnew prose\n");
+
+        // Population before the claim: the call produced frontmatter at all.
+        // Without this a `!out.contains(...)` pair below would hold for an
+        // empty string.
+        assert!(
+            out.starts_with("---\n"),
+            "expected a frontmatter block, got:\n{out}"
+        );
+
+        for expected in [
+            "created: 2026-09-03",
+            "updated: 2026-09-03",
+            "prd: null",
+            "slug: rfc-production-program",
+            "predicted_number: 22",
+            "assigned_number: 22",
+        ] {
+            assert!(
+                out.contains(expected),
+                "`{expected}` was dropped — it is not a record-owned field:\n{out}"
+            );
+        }
+
+        // The other direction, and it is the half that keeps this from being
+        // "carry everything": a record-owned field must NOT be carried. Its
+        // authoritative copy is regenerated into the projection block, and
+        // `update_body_with_projection` parses `status` back out of the new
+        // body to sync LanceDB — a stale in-body copy could resurrect a
+        // superseded status.
+        for owned in ["status:", "title:", "depth:", "id:", "author:"] {
+            assert!(
+                !out.contains(owned),
+                "`{owned}` is in KNOWN_FM_KEYS and must not be carried:\n{out}"
+            );
+        }
+
+        assert!(out.contains("new prose"), "the new prose must be what lands");
+        assert!(!out.contains("old prose"), "old prose must not resurrect");
     }
 
     // ── #419 BLOCKER: same-slug title change must not delete the file ────
