@@ -219,7 +219,8 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
         .depth
         .parse()
         .unwrap_or(crate::artifact::types::Mode::Standard);
-    let fm = record.frontmatter_map();
+    // #446 — see LanceStore::frontmatter_map_with_links.
+    let fm = store.frontmatter_map_with_links(&record).await;
 
     let result = validation::validate(artifact_id, &record.body, &fm, &kind, &depth);
 
@@ -364,7 +365,8 @@ pub async fn activate(
         .depth
         .parse()
         .unwrap_or(crate::artifact::types::Mode::Standard);
-    let fm = record.frontmatter_map();
+    // #446 — see LanceStore::frontmatter_map_with_links.
+    let fm = store.frontmatter_map_with_links(&record).await;
     let validation_result = validation::validate(artifact_id, &record.body, &fm, &kind, &depth);
     let must_findings: Vec<String> = validation_result
         .findings

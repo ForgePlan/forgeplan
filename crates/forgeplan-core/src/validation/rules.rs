@@ -271,11 +271,23 @@ fn check_body_links_drift(body: &str, fm: &Frontmatter) -> Option<String> {
     if missing.is_empty() {
         None
     } else {
+        // #446 — the ids are known here, so name them instead of shipping
+        // `<this-id>` and `<target>` for the reader to substitute. The
+        // relation is left as a choice because it genuinely is one: only the
+        // author knows whether the edge is `informs` or `based_on`.
+        let self_ref = if self_id.is_empty() {
+            "<this-id>".to_string()
+        } else {
+            self_id.clone()
+        };
         Some(format!(
-            "Body's `## Related Artifacts` table mentions {} but frontmatter `links:` array doesn't reference \
-             them. Run: forgeplan link <this-id> <target> --relation <informs|based_on|refines|...> \
-             OR remove the table row if the mention is incidental.",
-            missing.join(", ")
+            "Body's `## Related Artifacts` table mentions {} but the artifact is not linked to \
+             them. Run: forgeplan link {} {} --relation <informs|based_on|refines> — pick the \
+             relation, the ids are already correct. Or remove the table row if the mention is \
+             incidental.",
+            missing.join(", "),
+            self_ref,
+            missing[0],
         ))
     }
 }

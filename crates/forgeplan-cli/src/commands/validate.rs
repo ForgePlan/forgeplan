@@ -56,7 +56,9 @@ Fix: forgeplan list",
     let mut json_results = Vec::new();
 
     for record in &to_validate {
-        let fm = record.frontmatter_map();
+        // #446 — the link-less reconstruction made body-links-drift compare
+        // against an empty set and warn on correctly linked artifacts.
+        let fm = store.frontmatter_map_with_links(record).await;
 
         let kind = record.kind.parse::<ArtifactKind>().unwrap_or_else(|_| {
             if !json {
