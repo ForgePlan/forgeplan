@@ -241,7 +241,7 @@ pub fn default_registry() -> PluginRegistry {
             source: PluginSource::ClaudePlugin,
             version_req: ">=1.0".to_string(),
             expected_paths: vec![PathBuf::from("c4-architecture")],
-            install_command: "claude plugin install c4-architecture".to_string(),
+            install_command: "/plugin install c4-architecture@claude-code-workflows".to_string(),
             description: "C4 model diagrams (context/container/component/code) generator".into(),
         },
         PluginInfo {
@@ -249,7 +249,7 @@ pub fn default_registry() -> PluginRegistry {
             source: PluginSource::ClaudePlugin,
             version_req: ">=1.0".to_string(),
             expected_paths: vec![PathBuf::from("autoresearch")],
-            install_command: "claude plugin install autoresearch".to_string(),
+            install_command: "/plugin install autoresearch@claude-code-workflows".to_string(),
             description: "Automated research workflows for greenfield kickoff".into(),
         },
         PluginInfo {
@@ -261,7 +261,7 @@ pub fn default_registry() -> PluginRegistry {
                 PathBuf::from("agents-pro/agents/ddd-domain-expert"),
                 PathBuf::from("ddd-domain-expert"),
             ],
-            install_command: "claude plugin install agents-pro".to_string(),
+            install_command: "/plugin install agents-pro@ForgePlan-marketplace".to_string(),
             description: "Domain-driven design domain-expert sub-agent (via agents-pro)".into(),
         },
         PluginInfo {
@@ -269,7 +269,8 @@ pub fn default_registry() -> PluginRegistry {
             source: PluginSource::ClaudePlugin,
             version_req: ">=1.0".to_string(),
             expected_paths: vec![PathBuf::from("sparc-specification")],
-            install_command: "claude plugin install sparc-specification".to_string(),
+            install_command: "/plugin install sparc-specification@ForgePlan-marketplace"
+                .to_string(),
             description: "SPARC specification agent — pseudocode-driven spec writer".into(),
         },
         PluginInfo {
@@ -482,12 +483,18 @@ impl fmt::Display for RecommendedPlaybookHint {
 /// Best-effort extraction of the plugin name from an install command string.
 ///
 /// Heuristic: take the last whitespace-separated token. Works for both
-/// `claude plugin install <name>` and `forgeplan skill install <name>`. If
+/// `/plugin install <name>@<marketplace>` and `forgeplan skill install <name>`. If
 /// the string is empty, returns `"?"` so the headline never panics.
 fn extract_plugin_name(install_cmd: &str) -> String {
+    // #351: mirrors `hints::extract_plugin_name`. The command form is now
+    // `/plugin install <name>@<marketplace>`, so the last token carries the
+    // marketplace and must be stripped — this returns the PLUGIN name.
     install_cmd
         .split_whitespace()
         .next_back()
+        .unwrap_or("?")
+        .split('@')
+        .next()
         .unwrap_or("?")
         .to_string()
 }
@@ -657,13 +664,16 @@ mod tests {
             reason: "has_obsidian".to_string(),
             install_hints: vec![
                 "forgeplan skill install brownfield-docs-pack".to_string(),
-                "claude plugin install autoresearch".to_string(),
+                "/plugin install autoresearch@claude-code-workflows".to_string(),
             ],
         };
         let lines = hint.install_hint_lines();
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], "forgeplan skill install brownfield-docs-pack");
-        assert_eq!(lines[1], "claude plugin install autoresearch");
+        assert_eq!(
+            lines[1],
+            "/plugin install autoresearch@claude-code-workflows"
+        );
 
         let rendered = format!("{}", hint);
         assert!(rendered.contains("brownfield-docs"));

@@ -31,6 +31,17 @@ Scope note for scripted consumers: **one new CLI flag** (`setup --skip-hooks`), 
 
 ### Fixed
 
+- **`plugins doctor` printed an install command that does not exist** (#351). It emitted
+  `claude plugin install <name>`; the real invocation is `/plugin install <name>@<marketplace>`.
+  Same shape as #348 - a remediation PRD-071 obliges an agent to run verbatim, which cannot work.
+
+  Bigger than the issue described. The wrong string lived in three files, **a test asserted it**
+  (so anyone fixing it got a red build and reverted - the identical mechanism that kept #348
+  alive), and the plugin name was derived by slicing the command's last token, so changing the
+  command silently turned the display line into "requires autoresearch@claude-code-workflows
+  plugin". `hints.rs` now reads the install command from the registry, which is what its own
+  comment had promised and never done.
+
 - **`git pull` left the semantic index describing the state before it** (PROB-097, EVID-167).
   Measured on three real clones through a bare repo, not reasoned about: after a colleague
   rewrote a note and pushed, `git pull` followed by a search returned the **deleted** content at
@@ -88,6 +99,18 @@ Scope note for scripted consumers: **one new CLI flag** (`setup --skip-hooks`), 
   marginally.
 
 ### Added
+
+- **PROB-099 / ADR-024 - the `--json` contract, decided and handed off, not shipped.** Measured:
+  82 commands, 35 with `--json`, **118 hand-rolled `serde_json::json!` blocks across 36 files and
+  zero shared helpers**, `_next_action` in 71 of them, and `--json` does **not** survive a
+  failure - an agent asking for machine output gets prose exactly when it most needs to know what
+  went wrong.
+
+  Adding the flag to the other 47 would have made it worse: 82 disagreeing formats instead of 35,
+  frozen as a public contract the moment agents depend on it. The envelope and a centralised
+  failure path are built and proven but deliberately withheld, because the half-migrated state
+  lies louder than the original defect - the flag would be *accepted* by all 82 commands and
+  *honoured* by 35. See `docs/handoff/json-contract-handoff.md`.
 
 - **`scripts/check-doc-command-drift.sh` now scans emitted hints, not just documentation.**
   It could never have caught #348: that string lives in Rust source. It now checks the surfaces
