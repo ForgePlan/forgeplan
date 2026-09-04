@@ -15,16 +15,6 @@ pub async fn run() -> anyhow::Result<()> {
         .map(|e| e.chunk_size)
         .unwrap_or(2000);
 
-    // Tell the user about a multi-gigabyte download BEFORE it starts, not
-    // after they notice the process sitting there. Silent when the model is
-    // already cached.
-    if let Some(notice) = forgeplan_core::embed::first_run_notice() {
-        ui::info(&notice);
-    }
-
-    ui::info("Loading embedding model...");
-    let mut embedder = Embedder::new()?;
-
     let records = store.list_records(None).await?;
     if records.is_empty() {
         ui::info("No artifacts to embed.");
@@ -36,22 +26,20 @@ pub async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!(
-        "Embedding {} artifact(s) (title + body, chunk_size={})...\n",
-        records.len(),
-        chunk_size
-    );
-
-    let mut ok = 0usize;
-    let mut err = 0usize;
+    // PROB-093: only encode what actually moved. A record is current when it
+    // already carries a vector AND its content hash still matches. Before
+    // that fix, `embed` recomputed all 400+ records to index one new artifact
+    // — 13m18s on this workspace, which is why the step people were supposed
+    // to run manually did not get run.
+    //
+    // Deciding this BEFORE the model loads is the other half, and it was
+    // missing: the incremental skip removed the encoding work but left the
+    // load unconditional, so a fully-current workspace still paid 8.22s to
+    // report "0 embedded, 427 already current". The model was read off disk
+    // and never used. Work first, model only if there is work.
+    let mut work: Vec<(&forgeplan_core::db::store::ArtifactRecord, String)> = Vec::new();
     let mut skipped = 0usize;
-
     for record in &records {
-        // PROB-093: only encode what actually moved. A record is current when
-        // it already carries a vector AND its content hash still matches.
-        // Before this, `embed` recomputed all 400+ records to index one new
-        // artifact — 13m18s on this workspace, which is why the step people
-        // were supposed to run manually did not get run.
         let current_hash =
             forgeplan_core::db::store::compute_content_hash(&record.title, &record.body);
         if record.embedding.is_some() && record.body_hash.as_deref() == Some(current_hash.as_str())
@@ -59,13 +47,47 @@ pub async fn run() -> anyhow::Result<()> {
             skipped += 1;
             continue;
         }
+        work.push((record, current_hash));
+    }
 
+    if work.is_empty() {
+        println!("Done: 0 embedded, {skipped} already current, 0 failed.");
+        let hint_list = vec![
+            Hint::info("Run a semantic search")
+                .with_action("forgeplan search \"<query>\"".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&hint_list));
+        return Ok(());
+    }
+
+    // Tell the user about a multi-gigabyte download BEFORE it starts, not
+    // after they notice the process sitting there. Silent when the model is
+    // already cached — and now silent as well when nothing needs encoding,
+    // which is the common case.
+    if let Some(notice) = forgeplan_core::embed::first_run_notice() {
+        ui::info(&notice);
+    }
+
+    ui::info("Loading embedding model...");
+    let mut embedder = Embedder::new()?;
+
+    println!(
+        "Embedding {} of {} artifact(s) (title + body, chunk_size={})...\n",
+        work.len(),
+        records.len(),
+        chunk_size
+    );
+
+    let mut ok = 0usize;
+    let mut err = 0usize;
+
+    for (record, current_hash) in &work {
         let text = record.embedding_text(chunk_size);
         match embedder.embed(&text) {
             Ok(vec) => {
                 store.update_embedding(&record.id, &vec).await?;
                 store
-                    .update_body_hash(&record.id, &current_hash)
+                    .update_body_hash(&record.id, current_hash)
                     .await
                     // The vector is written; a failed hash stamp only costs a
                     // redundant re-encode next run, so it must not fail the
