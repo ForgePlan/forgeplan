@@ -1,0 +1,71 @@
+diff --git a/crates/forgeplan-cli/src/lib.rs b/crates/forgeplan-cli/src/lib.rs
+index 4378be31..9648c22e 100644
+--- a/crates/forgeplan-cli/src/lib.rs
++++ b/crates/forgeplan-cli/src/lib.rs
+@@ -15,4 +15,10 @@
+ //! library facade only when the test budget or determinism demands it.
+ 
+ pub mod commands;
++/// The single `--json` envelope every command answers with (ADR-024).
++///
++/// Public so integration tests can assert the shape without re-deriving it —
++/// a test that hand-writes the expected JSON drifts from the producer, which
++/// is how 118 hand-rolled blocks diverged in the first place.
++pub mod output;
+ pub(crate) mod ui;
+diff --git a/crates/forgeplan-cli/src/main.rs b/crates/forgeplan-cli/src/main.rs
+index b8f0a599..7307740f 100644
+--- a/crates/forgeplan-cli/src/main.rs
++++ b/crates/forgeplan-cli/src/main.rs
+@@ -29,6 +29,17 @@ fn load_workspace_env() {
+ struct Cli {
+     #[command(subcommand)]
+     command: Commands,
++
++    /// Emit machine-readable JSON (ADR-024).
++    ///
++    /// Global on purpose. Per-command flags cannot reach the failure path:
++    /// `main` returns `anyhow::Result`, so an error bubbles past every command
++    /// and gets printed as prose — which is precisely what made `--json`
++    /// unusable for agents (PROB-099). One flag here lets the top-level
++    /// handler answer in the requested format no matter which command failed,
++    /// instead of duplicating that path 82 times.
++    #[arg(long, global = true)]
++    json: bool,
+ }
+ 
+ #[derive(Subcommand)]
+@@ -1100,7 +1111,32 @@ enum FpfCommands {
+ }
+ 
+ #[tokio::main]
+-async fn main() -> anyhow::Result<()> {
++async fn main() -> std::process::ExitCode {
++    let json_mode = std::env::args().any(|a| a == "--json");
++    match run().await {
++        Ok(()) => std::process::ExitCode::SUCCESS,
++        Err(e) => {
++            if json_mode {
++                // ADR-024 invariant 1: `--json` yields valid JSON on failure
++                // too. Before this, an agent asking for machine output got
++                // prose exactly when it most needed to know what happened.
++                forgeplan::output::emit_error(
++                    e.to_string(),
++                    forgeplan::output::classify(&e),
++                    forgeplan::output::next_action_from_error(&e),
++                );
++            } else {
++                eprintln!("Error: {e:?}");
++            }
++            // Invariant 2: the field does not replace the exit code. Shell
++            // callers and CI read the code; removing it to be tidy would break
++            // `set -e` for no gain the field does not already provide.
++            std::process::ExitCode::FAILURE
++        }
++    }
++}
++
++async fn run() -> anyhow::Result<()> {
+     // Load .env from workspace first (.forgeplan/.env via walk-up from cwd),
+     // then fall back to cwd .env. Neither call overrides shell env vars —
+     // precedence: shell env > workspace .env > cwd .env.

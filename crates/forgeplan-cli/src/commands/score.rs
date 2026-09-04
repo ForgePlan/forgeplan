@@ -137,7 +137,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         Ok(r) => r,
         Err(e) => {
             eprintln!("  Warning: could not persist R_eff score: {e}");
-            eprintln!("Fix: forgeplan score-all");
+            eprintln!("Fix: forgeplan score --all");
             let mut visited = HashSet::new();
             reff::r_eff_recursive(target_id, &store, &mut visited).await?
         }

@@ -88,6 +88,33 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 ## Current status
 
+- **v0.36.0** (2026-09-04) — **вещи, которые отчитывались об успехе, ничего не проверяя**.
+  Каждый дефект релиза вёл себя корректно — поиск возвращал правдоподобное, подсказки
+  были исполнимы, сборка была зелёной, — и именно это их скрывало.
+  **Поиск отдавал вектор удалённого текста** (PROB-093): заметка, переписанная с
+  подлодок на выпечку, находилась по **удалённому** содержимому на 0.80 против 0.62 по
+  актуальному. Причина — `compute_body_hash` была определена и **не вызывалась ниоткуда**,
+  вся машинерия обнаружения изменений лежала мёртвой. Теперь `update_body` снимает
+  устаревший вектор, `embed` инкрементальный, `search` сообщает, скольких артефактов не
+  видел. **`git pull` оставлял индекс от состояния «до»** (PROB-097): проверено тремя
+  клонами — после чужой правки поиск отдавал **удалённое** содержимое на 0.81. Лечит
+  `git-sync`, который **не был задокументирован нигде**; теперь `forgeplan setup` ставит
+  хуки `post-merge`/`post-checkout` (1.4 с на 411 артефактов, `embed` намеренно не
+  запускают). **Подсказка учила отбирать чужой захват** (PROB-095): `Fix:` предлагал
+  `--force`; сам замок был исправен — рабочий замок с инструкцией по его выламыванию.
+  **Скилл `/forge` описывал память как key-value** (PROB-094), 2 из 3 команд падали, а
+  файл раздаётся всем через `setup-skill`. **`reason` не отрабатывал** (PROB-096):
+  замер 18 с пол / 237 с промпт / 303 с полный прогон против жёстких 120 с; бюджеты
+  вынесены в `config.yaml`. **`link` печатал `Next: forgeplan score-all`** (#348) —
+  команды не существует, и выжил дефект потому, что **тест утверждал сломанную
+  подсказку**: чинивший получал красный тест и откатывался.
+  Два гейта в CI: стенд на 82 команды и детектор дрейфа (документация **и** эмитируемые
+  подсказки). Детектор при первом прогоне дал 18 находок — после проверки самого
+  детектора настоящей осталась **одна**; 17 были дефектами инструмента.
+  **Breaking-ish**: `forgeplan setup` теперь пишет git-хуки в репозиторий, `embed`
+  сменил формат вывода. Новое: `--skip-hooks`, `llm.timeout_seconds`,
+  `llm.reason_timeout_seconds`. Открыто: PROB-098 (свежий клон отдаёт ошибку LanceDB),
+  PRD-085 (командная готовность), PROB-091 (Mean-пулинг).
 - **v0.35.0** (2026-09-03) — **semantic search actually ships**. Движок эмбеддингов
   переехал на `tract` (чистый Rust), и `semantic-search` впервые попал во все пять
   релизных бинарей (PRD-084 / RFC-013 / ADR-023, supersedes ADR-022). До этого
@@ -121,16 +148,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
   Migration: run `forgeplan score --all`; expect a small number of artifacts whose
   only evidence was retired to drop to 0 (1 of 89 here) — that is real debt the
   old formula masked.
-- **v0.33.0** (2026-06-04) — MCP worktree-aware routing (PRD-078: optional
-  `workspace` param on store-resolution tools — strict write-gate / soft read,
-  closes PROB-072) + CRITICAL #350 fix (`@file` body expansion, no silent data
-  loss) + **PROB-078 read-after-write REFUTED** as a stdio-printf harness
-  artifact (7 new regression tests: store + in-process MCP + real-binary
-  subprocess) + 5 dogfood CLI fixes (claim default-id, progress/playbook/order,
-  activity hint-loop) + PROB-075 stale-cache hardening + PROB-070 supply-chain
-  (SHA-pinned actions). Security: openssl 0.10.80 (alert #34). Dependabot:
-  lru LOW carried; lancedb 0.30 / sha2 / notify / arrow-schema deferred to v0.34.
-- **82 CLI commands** (+`setup`; прежние «82» считали авто-`help` от clap), **73 MCP tools**, **3268 tests + 9 doc-tests** (CI `nextest`), **0 warnings** on both feature configs
+- **82 CLI commands** (+`setup`; прежние «82» считали авто-`help` от clap), **73 MCP tools**, **3290 tests + 9 doc-tests** (CI `nextest`), **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**, **Epic #287 ✅** (brownfield). Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 on `tract` (pure-Rust inference — RFC-013; feature-gated, graceful fallback)
 

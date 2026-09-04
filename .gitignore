@@ -141,3 +141,16 @@ dev/forgeplan-project-map.zip
 
 # vNext pack: per-machine GitHub issue-creation state
 docs/vnext/engineering-contract-layer/.created-issues.json
+
+# Local agent/tooling state and scratch material — never belongs in git.
+# Added after `git add -A` swept `.codex/config.toml` (which held a live
+# HINDSIGHT_API_KEY) into this public repo. Removing the file does not undo
+# exposure: the object stays fetchable by SHA from the closed PR that carried
+# it, so rotation is the only thing that actually closes it. Do not read this
+# block as a statement that rotation happened — it stops the sweep repeating,
+# nothing more.
+.codex/
+design/
+ref/
+log_*.md
+*.jpg

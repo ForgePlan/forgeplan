@@ -11,7 +11,41 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-04
+
+Sprint headline: **Things that reported success while verifying nothing.** Every defect here behaved correctly — search returned plausible results, hints were runnable, the release built green — which is exactly what hid them.
+
+Scope note for scripted consumers: **one new CLI flag** (`setup --skip-hooks`), **two new config keys** (`llm.timeout_seconds`, `llm.reason_timeout_seconds`), no new MCP tool (still 73). Two output changes worth knowing about: `embed` now prints `N embedded, M already current, K failed`, and `forgeplan setup` now **writes git hooks into your repository** — that side effect is why this is a minor bump rather than a patch.
+
 ### Fixed
+
+- **`plugins doctor` printed an install command that does not exist** (#351). It emitted
+  `claude plugin install <name>`; the real invocation is `/plugin install <name>@<marketplace>`.
+  Same shape as #348 — a remediation PRD-071 obliges an agent to run verbatim, which cannot work.
+
+  Bigger than the issue described. The wrong string lived in three files, **a test asserted it**
+  (so anyone fixing it got a red build and reverted — the identical mechanism that kept #348
+  alive), and the plugin name was derived by slicing the command's last token, so changing the
+  command silently turned the display line into "requires autoresearch@claude-code-workflows
+  plugin". `hints.rs` now reads the install command from the registry, which is what its own
+  comment had promised and never done.
+
+- **`git pull` left the semantic index describing the state before it** (PROB-097, EVID-167).
+  Measured on three real clones through a bare repo, not reasoned about: after a colleague
+  rewrote a note and pushed, `git pull` followed by a search returned the **deleted** content at
+  0.81. `git-sync` fixed it and always could — the defect was that the command is documented
+  **nowhere**: zero matches in CLAUDE.md, `docs/`, `docs/operations/` and the shipped `/forge`
+  skill. `forgeplan setup` now installs `post-merge` and `post-checkout` hooks, so a plain
+  `git pull` retires the stale vector by itself and names what remains.
+
+- **`forgeplan link` emitted `Next: forgeplan score-all`, a command that has never existed**
+  (#348). The real one is `forgeplan score --all`. PRD-071 obliges an agent to run `Next:`
+  verbatim, so this spent a turn on an error every time.
+
+  Worth recording why it survived for months: **a test asserted the broken hint.**
+  `cli_reff_cache_invalidation.rs` required exactly `Next: forgeplan score-all`, so anyone
+  fixing it got a red test and reverted. A test pinning a wrong contract is worse than no test —
+  it actively defends the defect.
 
 - **Semantic search served vectors of text an artifact no longer contained** (PROB-093,
   EVID-164). Two failure modes, one root cause: nothing on the write path touched the
@@ -54,6 +88,35 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ### Added
 
+- **PROB-099 / ADR-024 — the `--json` contract, decided and handed off, not shipped.** Measured:
+  82 commands, 35 with `--json`, **118 hand-rolled `serde_json::json!` blocks across 36 files and
+  zero shared helpers**, `_next_action` in 71 of them, and `--json` does **not** survive a
+  failure — an agent asking for machine output gets prose exactly when it most needs to know what
+  went wrong.
+
+  Adding the flag to the other 47 would have made it worse: 82 disagreeing formats instead of 35,
+  frozen as a public contract the moment agents depend on it. The envelope and a centralised
+  failure path are built and proven but deliberately withheld, because the half-migrated state
+  lies louder than the original defect — the flag would be *accepted* by all 82 commands and
+  *honoured* by 35. See `docs/handoff/json-contract-handoff.md`.
+
+- **`scripts/check-doc-command-drift.sh` now scans emitted hints, not just documentation.**
+  It could never have caught #348: that string lives in Rust source. It now checks the surfaces
+  PRD-071 actually defines — `with_action`, and `Next:`/`Fix:`/`Or:` lines.
+
+  The first run reported **18 drifts**; after checking the checker, **1** was real. Thirteen were
+  it not understanding nested subcommands (`--yes` belongs to `playbook run`, and it asked
+  `playbook`), four were prose from comments read as command names. The number 18 was worth
+  nothing until the tool had been verified — **17 of 18 findings were defects in the tool, not
+  the code**. Now 83 checks, 0 drifts.
+
+- **Git hooks via `forgeplan setup`** — `post-merge` and `post-checkout`. They resolve the hooks
+  directory with `git rev-parse --git-path hooks` rather than assuming `.git/hooks` (in a
+  worktree `.git` is a file, and `core.hooksPath` can redirect); they never overwrite a hook they
+  did not write; they cannot fail the git operation; and they deliberately do **not** run `embed`,
+  because a pull that stalls for minutes on a 2.1 GB model is worse than the problem. `--skip-hooks`
+  opts out. Cost measured first: `git-sync` is 1.4s on 411 artifacts.
+
 - **`llm.timeout_seconds` and `llm.reason_timeout_seconds`** in `config.yaml`. The general
   budget stays 120s — short calls were never the problem and a wedged `route` should still
   fail in seconds. ADI defaults to 600s. The original reasoning behind the hardcoded value
@@ -68,6 +131,7 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 - **`scripts/check-doc-command-drift.sh`** — every `forgeplan …` example in CLAUDE.md and the
   shipped skill must name a real subcommand with real flags. 59 examples, 0 drifts. Both run
   in CI now: a gate that does not run is how PROB-093 survived months of green boards.
+
 
 ## [0.35.0] - 2026-09-03
 
