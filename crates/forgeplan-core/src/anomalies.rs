@@ -727,6 +727,20 @@ pub async fn detect_anomalies(
         .iter()
         .map(|r| (r.id.as_str(), r.r_eff_score))
         .collect();
+    // PRD-086 FR-006 (#393). The walk below used to follow every `based_on` /
+    // `informs` edge, while `r_eff_recursive` skips non-active dependencies
+    // (ADR-002) and, since PRD-086 FR-003, ceremony-free kinds. Two walks with
+    // different rules disagree about which ancestor is the weakest link — the
+    // reporter saw the scorer resolve `NOTE-003` while the detector gave up on
+    // the same artifact. Same rules, same answer.
+    let skip_as_dependency: HashSet<&str> = all_records
+        .iter()
+        .filter(|r| {
+            matches!(r.status.as_str(), "draft" | "deprecated" | "superseded")
+                || matches!(r.kind.as_str(), "note" | "memory")
+        })
+        .map(|r| r.id.as_str())
+        .collect();
     const WEAKEST_LINK_MAX_DEPTH: usize = 16;
     for r in &all_records {
         // weakest_link_unresolvable diagnoses DECISION artifacts whose evidence
@@ -765,11 +779,21 @@ pub async fn detect_anomalies(
             initial_parents.iter().map(|p| (*p, 1usize)).collect();
         let mut weakest_link: Option<&str> = None;
         let mut chain_depth: usize = 0;
+        // #393 bug 2: every give-up was reported as "cycle or depth cap", in a
+        // graph with zero cycles — 133 anomalies sending maintainers to hunt
+        // for something that was not there. Record which actually happened.
+        let mut hit_depth_cap = false;
+        let mut hit_revisit = false;
         while let Some((node, depth)) = frontier.pop() {
             if !visited.insert(node) {
+                hit_revisit = true;
                 continue;
             }
             if depth > WEAKEST_LINK_MAX_DEPTH {
+                hit_depth_cap = true;
+                continue;
+            }
+            if skip_as_dependency.contains(node) {
                 continue;
             }
             // If this node's r_eff is 0, it's a candidate weakest link
@@ -821,18 +845,42 @@ pub async fn detect_anomalies(
             observed_at: now_str.clone(),
             description: match (&weakest_link_owned, chain_depth) {
                 (Some(wl), d) => format!(
-                    "{}: active with R_eff=0; weakest link in chain = {wl} (depth {d})",
-                    r.id
+                    "{}: active with cached R_eff={:.2}; weakest link in chain = {wl} (depth {d})",
+                    r.id, r.r_eff_score
                 ),
-                (None, _) => format!(
-                    "{}: active with R_eff=0; ancestor walk could not identify source (cycle or depth cap)",
-                    r.id
-                ),
+                (None, _) => {
+                    let why = match (hit_depth_cap, hit_revisit) {
+                        (true, _) => format!(
+                            "walk stopped at the depth cap ({WEAKEST_LINK_MAX_DEPTH} hops)"
+                        ),
+                        (false, true) => {
+                            "walk revisited an artifact it had already seen — the chain loops"
+                                .to_string()
+                        }
+                        (false, false) => {
+                            "every ancestor is skipped or scores above zero — the cause is local"
+                                .to_string()
+                        }
+                    };
+                    format!(
+                        "{}: active with cached R_eff={:.2}; no weakest link named — {why}",
+                        r.id, r.r_eff_score
+                    )
+                }
             },
+            // #393 bug 1: this was the literal `0.0`. The filter above only
+            // admits artifacts whose cached score is zero, so the literal was
+            // accidentally true — and would have started lying the moment the
+            // filter changed. It is also named `r_eff_cached` now, because the
+            // reporter's confusion came from comparing it against a fresh
+            // `forgeplan_score` run: the detector reads the stored column, and
+            // a stale column is a different number, not a wrong one.
             evidence: serde_json::json!({
-                "r_eff": 0.0,
+                "r_eff_cached": r.r_eff_score,
                 "weakest_link": weakest_link_owned,
                 "chain_depth": chain_depth,
+                "walk_hit_depth_cap": hit_depth_cap,
+                "walk_hit_revisit": hit_revisit,
             }),
             suggested_resolution: Some(SuggestedResolution {
                 tier: Tier::Adi,

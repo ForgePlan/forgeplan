@@ -282,6 +282,31 @@ pub async fn advance_phase(
     to: Phase,
     reason: Option<String>,
 ) -> anyhow::Result<PhaseState> {
+    advance_phase_inner(workspace, artifact_id, to, reason, false).await
+}
+
+/// Move the phase anywhere, including backwards — for deliberate correction.
+///
+/// #330. The checked [`advance_phase`] refuses a step down the ladder, because
+/// its own name promises it will not take one. An operator running
+/// `forgeplan phase-advance --to shape` on an artifact that reached `done` is
+/// making a decision, not tripping over automation, and that path stays open.
+pub async fn advance_phase_unchecked(
+    workspace: &Path,
+    artifact_id: &str,
+    to: Phase,
+    reason: Option<String>,
+) -> anyhow::Result<PhaseState> {
+    advance_phase_inner(workspace, artifact_id, to, reason, true).await
+}
+
+async fn advance_phase_inner(
+    workspace: &Path,
+    artifact_id: &str,
+    to: Phase,
+    reason: Option<String>,
+    allow_regression: bool,
+) -> anyhow::Result<PhaseState> {
     validate_artifact_id(artifact_id)?;
 
     // Track whether state existed on disk — if no, we synthesized the
@@ -295,6 +320,27 @@ pub async fn advance_phase(
     };
 
     let from = state.current_phase;
+
+    // #330. There was no monotonicity guard at all, and MCP `forgeplan_validate`
+    // calls this with `Phase::Validate` on every PASS — so validating an
+    // artifact that had already reached `done` walked it back to `validate`,
+    // and `forgeplan_health` then reported a phase mismatch the artifact did
+    // not have until someone checked it. A function named `advance` that
+    // silently reverses is the same defect class as a gate that reports a
+    // result it never computed.
+    //
+    // Refusing leaves state untouched and tells the caller why; the auto-advance
+    // path in MCP treats phase tracking as advisory and logs the refusal without
+    // failing the tool call.
+    if !allow_regression && to.rank() < from.rank() {
+        anyhow::bail!(
+            "Phase for {artifact_id} is already `{}`; refusing to move back to `{}`\nFix: forgeplan phase-advance {artifact_id} --to {}",
+            from.as_str(),
+            to.as_str(),
+            to.as_str()
+        );
+    }
+
     // Skip recording a no-op transition (e.g. double-call of auto-advance).
     if from == to {
         if was_missing {
@@ -527,6 +573,73 @@ mod tests {
         assert_eq!(still, "sensitive");
     }
 
+    /// #330. MCP `forgeplan_validate` auto-advances to `Validate` on every
+    /// PASS. Run against an artifact that already reached `done`, that walked
+    /// the phase backwards and made `forgeplan_health` report a mismatch the
+    /// artifact did not have until someone validated it.
+    #[tokio::test]
+    async fn validation_of_a_finished_artifact_does_not_walk_the_phase_back() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        initialize_phase(&ws, "PRD-MONO", None).await.unwrap();
+        advance_phase_unchecked(&ws, "PRD-MONO", Phase::Done, None)
+            .await
+            .unwrap();
+
+        let err = advance_phase(&ws, "PRD-MONO", Phase::Validate, Some("auto".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("refusing to move back"),
+            "the refusal must say what it refused, got: {err}"
+        );
+
+        let after = read_phase(&ws, "PRD-MONO").await.unwrap().unwrap();
+        assert_eq!(
+            after.current_phase,
+            Phase::Done,
+            "a refused transition must leave state untouched"
+        );
+    }
+
+    /// Forward motion and re-stating the current phase both stay legal — the
+    /// guard must not turn into a tripwire on the normal path.
+    #[tokio::test]
+    async fn forward_and_no_op_transitions_are_unaffected() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        initialize_phase(&ws, "PRD-FWD", None).await.unwrap();
+
+        advance_phase(&ws, "PRD-FWD", Phase::Code, None)
+            .await
+            .expect("forward jump is allowed");
+        advance_phase(&ws, "PRD-FWD", Phase::Code, None)
+            .await
+            .expect("re-stating the current phase is a no-op, not a regression");
+
+        let s = read_phase(&ws, "PRD-FWD").await.unwrap().unwrap();
+        assert_eq!(s.current_phase, Phase::Code);
+    }
+
+    /// The deliberate operator path keeps both directions — that is the whole
+    /// reason the guard lives on `advance_phase` and not inside `write_phase`.
+    #[tokio::test]
+    async fn the_explicit_path_may_still_correct_a_phase_downward() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        initialize_phase(&ws, "PRD-FIX", None).await.unwrap();
+        advance_phase_unchecked(&ws, "PRD-FIX", Phase::Done, None)
+            .await
+            .unwrap();
+
+        advance_phase_unchecked(&ws, "PRD-FIX", Phase::Shape, Some("mis-marked".into()))
+            .await
+            .expect("an operator correcting a mistake is not a regression");
+
+        let s = read_phase(&ws, "PRD-FIX").await.unwrap().unwrap();
+        assert_eq!(s.current_phase, Phase::Shape);
+    }
+
     #[tokio::test]
     async fn history_is_capped_fifo() {
         // Audit Round 1 H1: runaway loop must not balloon history.
@@ -537,7 +650,12 @@ mod tests {
 
         for i in 0..(MAX_HISTORY_ENTRIES + 100) {
             let p = if i % 2 == 0 { Phase::Code } else { Phase::Test };
-            advance_phase(&ws, "PRD-CAP", p, None).await.unwrap();
+            // #330: this oscillates on purpose to exercise the FIFO cap, which
+            // is a different question from whether automation may reverse a
+            // phase. The unchecked entry point is the honest one here.
+            advance_phase_unchecked(&ws, "PRD-CAP", p, None)
+                .await
+                .unwrap();
         }
         let s = read_phase(&ws, "PRD-CAP").await.unwrap().unwrap();
         assert!(

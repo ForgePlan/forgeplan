@@ -11,6 +11,94 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Changed — BREAKING, re-score required
+
+- **Evidence that declares nothing no longer scores full marks** (PROB-101,
+  PRD-086 FR-008/FR-009). An EvidencePack with no `verdict` and no
+  `congruence_level` scored the artifact it informs **1.00**. `CLAUDE.md`
+  RED LINE #7, the `/forge` skill that `setup-skill` installs, and
+  `EVIDENCE-PROTOCOL.md` all state the opposite — CL0, score 0.1 — so the
+  binary and every document describing it disagreed, in the direction that
+  inflates trust.
+
+  The incentive was backwards too: writing `congruence_level: 2` honestly
+  scored 0.9, writing nothing scored 1.0. An unrecognised `verdict` fell
+  through to `Supports` for the same reason, while `congruence_level` in the
+  same function already failed closed with a warning.
+
+  Both now fail closed to CL0 and log why. **Run `forgeplan score --all`
+  after upgrading.** Packs missing either field drop from 1.0 to 0.1, and
+  artifacts whose weakest link was such a pack drop with them. In this
+  repository that is 3 of 167 packs (EVID-033/034/035, feeding PROB-014,
+  PROB-016 and RFC-004). Your workspace may differ, and the drop is the
+  correct reading — those scores were never earned.
+
+### Fixed
+
+- **A leaf EvidencePack scored zero** (#325). The scorer asked a pack for its
+  evidence, found none — a pack has no packs — and returned 0.0 with the
+  factor `No evidence found (L0)`. A canonical pack (`verdict: supports`,
+  `congruence_level: 3`) was worth nothing, and the only way to raise it was
+  to invent child evidence.
+
+  The intrinsic score already existed: `score_evidence_full` is applied to
+  that same pack whenever it scores for something else. It is now applied to
+  the pack itself. Packs that do carry child evidence keep the normal
+  weakest-link path.
+
+- **Trust flowed backwards along `informs`** (#325, FR-002). A pack's
+  outgoing edges point at what it *supports*; treating them as dependencies
+  made a measurement's reliability depend on the decision it justifies. They
+  are excluded from the pack's own dependency walk.
+
+- **An exempt Note poisoned everything built on it** (#392, narrowed). The
+  routing table calls a Note the artifact for trivial reversible work — no
+  ADI, no evidence. The cascade then read an active unevidenced Note as zero
+  trust, so forgeplan said a Note needs no evidence and scored everything
+  downstream of it as unevidenced. `note` and `memory` are now skipped in the
+  dependency walk with a logged factor, exactly as ADR-002 skips non-active
+  dependencies.
+
+  The weakest-link formula is unchanged for every kind that *can* owe
+  evidence. The three fixes proposed in #392 — local-only scoring, one-hop
+  propagation, a floor at `self_score` — were each an average in disguise and
+  were declined; see the issue for the reasoning.
+
+- **`advance_phase` walked phases backwards** (#330). It had no monotonicity
+  guard, and MCP `forgeplan_validate` calls it with `Phase::Validate` on every
+  PASS — so validating an already-shipped artifact reset its phase from `done`
+  and `forgeplan_health` then reported a mismatch the artifact did not have
+  until someone checked it. Backward transitions are refused with an
+  explanation; `forgeplan phase-advance --to <earlier>` still works, because a
+  human correcting a mistake is not automation misfiring.
+
+- **The anomaly detector reported three things it never checked** (#393). It
+  printed `R_eff=0` from a literal rather than the stored score (now
+  `r_eff_cached`, named so, because the reporter's confusion came from
+  comparing it against a fresh `score` run); it labelled every give-up
+  `cycle or depth cap` in graphs with zero cycles (now names which of depth
+  cap, revisit, or exhausted actually happened); and its ancestor walk
+  followed edges the scorer skips, so the two disagreed about the weakest
+  link. The walk now applies the scorer's skip rules.
+
+- **`embed` loaded the model to discover it had nothing to do** (PROB-103).
+  8.22s on a fully-current 427-artifact workspace, spent reading a model that
+  was never used — the missing half of the PROB-093 incremental fix, which
+  removed the encoding work but left the setup for it. 0.25s now, and
+  `Loading embedding model...` prints only when a model is actually loading.
+  The progress line also counted every record instead of the ones being
+  encoded (`Embedding 1 of 427`, not `Embedding 427`).
+
+### Internal
+
+- ADR-025 (orchestration sits above ForgePlan; per-surface dispositions) and
+  ADR-026 (storage classes for machine-written records) resolve two vNext
+  audit blockers that required a human decision. EVID-169 records the basis.
+- PROB-102: `embedding_reference.rs` — the correctness oracle for the
+  embedding engine — runs zero tests in CI, because `cargo nextest run` passes
+  no features while `check` and `clippy` do. Recorded, not yet fixed.
+
+
 ## [0.36.0] - 2026-09-04
 
 Sprint headline: **Things that reported success while verifying nothing.** Every defect here behaved correctly — search returned plausible results, hints were runnable, the release built green — which is exactly what hid them.

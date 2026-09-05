@@ -111,6 +111,20 @@ numbers that were never computed, and neither has a way to tell which.
 - **FR-006**: The detector's ancestor walk resolves a weakest link wherever
   `forgeplan_score` resolves one, by sharing the traversal rather than
   reimplementing it.
+- **FR-008**: An unparseable or unknown `verdict` fails closed. Today it falls
+  through to `Supports` (score 1.0) while `congruence_level` in the same
+  function fails closed to CL0 with a warning — one field punishes garbage and
+  its neighbour rewards it. Protocol v1 introduces a fourth value (`unknown`),
+  which the current parser would score 1.0.
+- **FR-009**: Absent structured fields fail closed. A pack carrying no
+  `verdict` / `congruence_level` at all currently scores its target 1.00;
+  `CLAUDE.md` RED LINE #7, the `/forge` skill shipped by `setup-skill`, and
+  `EVIDENCE-PROTOCOL.md` all state the opposite (CL0, 0.1). The absence is
+  recorded as a factor rather than applied silently. Breaking: packs without
+  fields drop from 1.0 to 0.1, and artifacts whose weakest link was such a
+  pack drop with them — 3 of 166 here, unknown elsewhere. Requires a
+  migration note and `forgeplan score --all`.
+
 - **FR-007**: `advance_phase` refuses a transition to an earlier phase, leaving
   state unchanged and reporting the refusal to its caller. Explicit
   `forgeplan phase-advance --to <earlier>` remains available for deliberate
@@ -124,9 +138,5 @@ numbers that were never computed, and neither has a way to tell which.
 | ADR-020 | based_on |
 
 GitHub: #325, #392, #393, #330.
-
-
-
-
 
 
