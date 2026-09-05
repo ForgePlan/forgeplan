@@ -7,7 +7,7 @@ links:
   relation: based_on
 - target: ADR-009
   relation: refines
-status: draft
+status: active
 title: Orchestration sits above ForgePlan; the core is the contract layer
 ---
 
@@ -83,6 +83,8 @@ belongs to the orchestrator above.
 |---|---|
 | ADR-001 | based_on |
 | ADR-009 | refines |
+
+
 
 
 

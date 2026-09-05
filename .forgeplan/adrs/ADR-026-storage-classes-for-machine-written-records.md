@@ -7,7 +7,7 @@ links:
   relation: refines
 - target: ADR-025
   relation: based_on
-status: draft
+status: active
 title: Storage classes for machine-written records
 ---
 
@@ -115,6 +115,8 @@ state into the graph creates a second owner and guarantees drift.
 |---|---|
 | ADR-003 | refines |
 | ADR-025 | based_on |
+
+
 
 
 

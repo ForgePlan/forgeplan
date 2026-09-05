@@ -71,6 +71,36 @@ ForgePlan/
 - **Code identifiers & commit descriptions:** English
 - **Communication with the user:** Russian
 
+## How to explain things to the owner
+
+Set by the owner on 2026-09-05, after comparing two answers about the same
+decisions: one written in architecture-speak, one in plain language. The
+plain one worked; the other one — «хрен поймёшь, о чём речь».
+
+When presenting a decision, a trade-off, or a piece of analysis:
+
+- **Plain, but not banal.** Simple words carrying real content — never
+  simple words instead of content. The test: the reader should be able to
+  retell the decision to someone else after one read.
+- **Name the collision before the answer.** Most decisions exist because two
+  things conflict. Show the conflict first («два действующих ADR говорили
+  противоположное»), then the resolution. An answer without its tension
+  reads as arbitrary.
+- **One live example beats three definitions.** «Приходит задача — кто
+  решает, что сначала запустится аналитик, потом кодер?» explains an
+  orchestration boundary faster than any glossary.
+- **Minimal anglicisms.** Code identifiers, artifact kinds, and command
+  names stay as-is (`claim`, `EvidencePack`, `based_on`). Everything else
+  gets a Russian phrasing: «замок на запись», not «лок»; «происхождение»,
+  not «провенанс»; «поверхность команд» needs an explanation the first time
+  it appears.
+- **Consequences, not just verdicts.** «Deprecated» is a verdict; «хоронить,
+  не лечить — всё, что она обещала, уже делают NOTE и Hindsight» is a
+  decision someone can agree or argue with.
+- **Metaphors must carry weight.** «Нотная тетрадь и приёмная комиссия» is
+  good because both halves map to real subsystems. Decoration is worse than
+  nothing.
+
 ## Authorship (single author)
 
 Forgeplan is a single-author project. When generating ANY author-attributed content, use:
