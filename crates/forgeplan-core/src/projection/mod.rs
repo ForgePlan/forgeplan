@@ -2371,7 +2371,10 @@ mod tests {
             );
         }
 
-        assert!(out.contains("new prose"), "the new prose must be what lands");
+        assert!(
+            out.contains("new prose"),
+            "the new prose must be what lands"
+        );
         assert!(!out.contains("old prose"), "old prose must not resurrect");
     }
 
