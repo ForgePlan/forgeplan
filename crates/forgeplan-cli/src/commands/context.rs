@@ -175,7 +175,17 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             Hint::warning(format!("Fix {} MUST error(s)", must_errors))
                 .with_action(format!("forgeplan validate {}", ref_form)),
         );
-    } else if !has_evidence {
+    // PRD-086 FR-001. `has_evidence` counts LINKED child packs, which a leaf
+    // EvidencePack has none of by definition — it is the evidence. Since leaf
+    // packs began scoring on their own structured fields, this branch fired
+    // under an `R_eff: 1.00` printed a few lines above it, and its `Next:` told
+    // the agent to create an EvidencePack for an EvidencePack. That is a
+    // PRD-071 contract line an agent is obliged to run, so the cost is phantom
+    // artifacts in the graph, not just a confusing sentence.
+    //
+    // Guarding on the score keeps the advice true without teaching this
+    // function which kinds self-score.
+    } else if !has_evidence && report.r_eff <= 0.0 {
         hint_list.push(
             Hint::warning("No evidence linked")
                 .with_action(format!(
@@ -344,7 +354,8 @@ fn build_suggestions(
         ));
     }
 
-    if !has_evidence {
+    // PRD-086 FR-001 — see the hint above; same condition, same reason.
+    if !has_evidence && r_eff <= 0.0 {
         suggestions.push(format!(
             "Add evidence — `forgeplan new evidence \"Evidence for {}\"` + `forgeplan link EVID-XXX {} --relation informs`",
             id, id

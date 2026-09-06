@@ -75,7 +75,16 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
 
     let target: Phase = to.into();
     let state =
-        phase::store::advance_phase(&ws, &canonical, target, reason.map(|s| s.to_string())).await?;
+        // #330 — the explicit operator path may move a phase in either
+        // direction; the guard belongs on automation, not on a deliberate
+        // command someone typed.
+        phase::store::advance_phase_unchecked(
+            &ws,
+            &canonical,
+            target,
+            reason.map(|s| s.to_string()),
+        )
+        .await?;
 
     // PRD-071 contract: produce a single Next: action — the next suggested phase
     // advance. No suggestion when at terminal phase (Done.).
