@@ -727,7 +727,13 @@ mod tests {
             let ws = ws.clone();
             let phase = if i % 2 == 0 { Phase::Code } else { Phase::Test };
             tasks.push(tokio::spawn(async move {
-                advance_phase(&ws, "PRD-CC", phase, Some(format!("concurrent-{i}"))).await
+                // #330: the question here is tmp-filename collision under
+                // concurrent writes, not whether a phase may move backwards.
+                // The oscillation between Code and Test is just a way to make
+                // every task write; with the monotonicity guard in place the
+                // losers of that race are refused, which would turn a
+                // write-safety test into an ordering test by accident.
+                advance_phase_unchecked(&ws, "PRD-CC", phase, Some(format!("concurrent-{i}"))).await
             }));
         }
         let results = join_all(tasks).await;
@@ -737,6 +743,34 @@ mod tests {
         // State exists and is one of the expected phases.
         let s = read_phase(&ws, "PRD-CC").await.unwrap().unwrap();
         assert!(matches!(s.current_phase, Phase::Code | Phase::Test));
+    }
+
+    /// #330, the half the rewrite above would otherwise have dropped: under
+    /// concurrency the CHECKED entry point must refuse cleanly rather than
+    /// corrupt state or panic. Sixteen tasks all advancing forward to the same
+    /// phase — every one is either a real transition or a no-op, none is a
+    /// regression, so all must succeed and the state must land exactly there.
+    #[tokio::test]
+    async fn concurrent_checked_advances_are_safe() {
+        use futures::future::join_all;
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        initialize_phase(&ws, "PRD-CCC", None).await.unwrap();
+
+        let mut tasks = Vec::new();
+        for i in 0..16 {
+            let ws = ws.clone();
+            tasks.push(tokio::spawn(async move {
+                advance_phase(&ws, "PRD-CCC", Phase::Code, Some(format!("fwd-{i}"))).await
+            }));
+        }
+        for r in join_all(tasks).await {
+            r.expect("task panicked")
+                .expect("a forward transition must never be refused");
+        }
+
+        let s = read_phase(&ws, "PRD-CCC").await.unwrap().unwrap();
+        assert_eq!(s.current_phase, Phase::Code);
     }
 
     #[tokio::test]
