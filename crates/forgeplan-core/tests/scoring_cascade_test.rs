@@ -99,6 +99,13 @@ async fn the_leaf_score_still_discriminates() {
 /// as a dependency made trust in a measurement flow down from the decision it
 /// justifies — so a well-formed pack attached to an unevidenced PRD scored
 /// zero, which is the tail wagging the dog.
+///
+/// NOTE ON WHAT THIS PROVES. For a LEAF pack the FR-001 early return fires
+/// first and the dependency walk is never built, so deleting the FR-002 filter
+/// leaves this test green — an adversarial review caught that. It is kept as a
+/// behavioural guard on the observable outcome, and
+/// `a_pack_with_children_is_not_dragged_down_by_what_it_informs` below is the
+/// one that actually reaches the filter.
 #[tokio::test]
 async fn a_pack_is_not_dragged_down_by_the_artifact_it_supports() {
     let tmp = TempDir::new().unwrap();
@@ -120,6 +127,75 @@ async fn a_pack_is_not_dragged_down_by_the_artifact_it_supports() {
     assert!(
         (s - 1.0).abs() < 1e-9,
         "the pack's own quality does not depend on what it informs; got {s}"
+    );
+}
+
+/// FR-002 where it is actually reachable: a pack that HAS child evidence, so
+/// the FR-001 early return does not fire and the dependency walk runs, pointing
+/// at a decision that is weak for a reason of its OWN.
+///
+/// Getting this test to reach the code took three attempts, and the two failures
+/// are worth recording because both looked correct:
+///
+/// 1. A leaf pack informing an unevidenced PRD — the FR-001 early return fires
+///    first and the dependency walk is never built.
+/// 2. A pack WITH children informing an unevidenced PRD — the PRD is not
+///    unevidenced at all, because the pack under test informs it. Evidence
+///    collection reads incoming edges, so linking the pack to the PRD is what
+///    evidences the PRD. The min had nothing to drag anything down with.
+///
+/// So the weak artifact has to be weak independently: PRD-201 is unevidenced,
+/// PRD-200 is `based_on` it and therefore zero despite its own evidence, and
+/// EVID-200 informs PRD-200. Without the filter, EVID-200 inherits that zero.
+#[tokio::test]
+async fn a_pack_with_children_is_not_dragged_down_by_what_it_informs() {
+    let tmp = TempDir::new().unwrap();
+    let store = make_store(&tmp).await;
+
+    // The independent source of weakness, two hops away from the pack.
+    store
+        .create_artifact_for_test(&artifact("PRD-201", "prd", "active", "no evidence at all"))
+        .await
+        .unwrap();
+    // The decision the pack supports — evidenced, but zeroed by its own parent.
+    store
+        .create_artifact_for_test(&artifact("PRD-200", "prd", "active", "built on PRD-201"))
+        .await
+        .unwrap();
+    store
+        .add_relation_for_test("PRD-200", "PRD-201", "based_on")
+        .await
+        .unwrap();
+
+    // The pack under test, plus a child so the FR-001 early return does not fire.
+    store
+        .create_artifact_for_test(&artifact("EVID-200", "evidence", "active", CANONICAL))
+        .await
+        .unwrap();
+    store
+        .create_artifact_for_test(&artifact("EVID-201", "evidence", "active", CANONICAL))
+        .await
+        .unwrap();
+    store
+        .add_relation_for_test("EVID-201", "EVID-200", "informs")
+        .await
+        .unwrap();
+    store
+        .add_relation_for_test("EVID-200", "PRD-200", "informs")
+        .await
+        .unwrap();
+
+    // Precondition: the decision really is zero, or this test proves nothing.
+    let prd = score(&store, "PRD-200").await;
+    assert_eq!(
+        prd, 0.0,
+        "setup is wrong — PRD-200 must be zeroed by PRD-201"
+    );
+
+    let s = score(&store, "EVID-200").await;
+    assert!(
+        s > 0.0,
+        "a measurement's reliability must not depend on the decision it justifies; got {s}"
     );
 }
 

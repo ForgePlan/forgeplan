@@ -782,6 +782,15 @@ pub async fn detect_anomalies(
         // #393 bug 2: every give-up was reported as "cycle or depth cap", in a
         // graph with zero cycles — 133 anomalies sending maintainers to hunt
         // for something that was not there. Record which actually happened.
+        //
+        // `hit_revisit` deliberately does NOT claim a cycle. The push guard
+        // checks `visited`, not frontier membership, so one node can be queued
+        // twice on a perfectly acyclic graph: C has parents [D, E] and E also
+        // points at D. Calling that "the chain loops" would repeat the very
+        // mistake this hunk fixes, narrowed instead of removed. The wording
+        // below states what was observed — the same artifact reached more than
+        // once — and leaves the cause to the reader, who can run
+        // `forgeplan blocked` to see whether real cycles exist.
         let mut hit_depth_cap = false;
         let mut hit_revisit = false;
         while let Some((node, depth)) = frontier.pop() {
@@ -800,6 +809,18 @@ pub async fn detect_anomalies(
             // — but check parents to ensure it's not just transitively
             // inheriting from a deeper artifact.
             let node_r_eff = r_eff_by_id.get(node).copied().unwrap_or(0.0);
+            // PRD-086 FR-006, second half. Filtering only at pop time was not
+            // enough: the acceptance test below asks whether every parent has
+            // been visited, and a skipped parent never gets visited — it is
+            // dropped when popped. So a node that IS the weakest link but sits
+            // behind a note failed the test, was never named, and the walk
+            // reported "the cause is local" while `forgeplan score` resolved
+            // the same chain and named the artifact. Two walks disagreeing
+            // again, which is the defect FR-006 exists to close.
+            //
+            // Applying the skip at collection time makes a skipped parent
+            // invisible to both the acceptance test and the frontier, which is
+            // exactly what "the scorer does not walk through this edge" means.
             let parents: Vec<&str> = outgoing
                 .get(node)
                 .map(|edges| {
@@ -807,6 +828,7 @@ pub async fn detect_anomalies(
                         .iter()
                         .filter(|(_, rel)| matches!(*rel, "based_on" | "informs"))
                         .map(|(t, _)| *t)
+                        .filter(|t| !skip_as_dependency.contains(t))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -854,7 +876,8 @@ pub async fn detect_anomalies(
                             "walk stopped at the depth cap ({WEAKEST_LINK_MAX_DEPTH} hops)"
                         ),
                         (false, true) => {
-                            "walk revisited an artifact it had already seen — the chain loops"
+                            "walk reached the same artifact by more than one path; \
+                             run `forgeplan blocked` to check for real cycles"
                                 .to_string()
                         }
                         (false, false) => {

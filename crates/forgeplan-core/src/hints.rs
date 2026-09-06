@@ -135,7 +135,20 @@ pub fn score_hints(
 ) -> Vec<Hint> {
     let mut hints = Vec::new();
 
-    if !has_evidence {
+    // PRD-086 FR-001. This warning states a number, and after leaf EvidencePacks
+    // began scoring on their own structured fields it started stating a false
+    // one: `forgeplan score` on a canonical pack printed "R_eff = 1.00" and then
+    // this line underneath, claiming the score "will be 0.0".
+    //
+    // Same defect class as the display branch in `score.rs` — an assertion keyed
+    // on a condition ("nothing linked") that used to have exactly one cause and
+    // now has two. The display was fixed; this was missed because no test reads
+    // the hint text. Found by running the binary, not by the suite.
+    //
+    // Guarding on the score rather than on the artifact kind keeps the hint
+    // honest for every future case where a nonzero score arrives without linked
+    // children, without this function needing to know what kinds exist.
+    if !has_evidence && r_eff <= 0.0 {
         hints.push(
             Hint::warning("No evidence linked — R_eff will be 0.0")
                 .with_action(format!(
@@ -403,6 +416,35 @@ mod tests {
             action
         );
         assert!(!action.contains("<artifact>"));
+    }
+
+    #[test]
+    fn score_hints_does_not_promise_zero_for_a_self_scoring_leaf() {
+        // PRD-086 FR-001. A leaf EvidencePack has no linked children by
+        // definition and now scores on its own structured fields, so
+        // `has_evidence: false` no longer implies a zero. The warning states a
+        // specific number, and stating it here would contradict the score
+        // printed two lines above it in `forgeplan score`.
+        let hints = score_hints("EVID-001", 1.0, false, 0);
+        assert!(
+            !hints
+                .iter()
+                .any(|h| h.message.contains("R_eff will be 0.0")),
+            "a nonzero score must not carry a warning promising 0.0: {hints:?}"
+        );
+    }
+
+    #[test]
+    fn score_hints_still_warns_when_the_score_really_is_zero() {
+        // The guard must not silence the case the warning exists for: an
+        // ordinary artifact with nothing linked.
+        let hints = score_hints("PRD-001", 0.0, false, 0);
+        assert!(
+            hints
+                .iter()
+                .any(|h| h.message.contains("R_eff will be 0.0")),
+            "an unevidenced artifact at zero must still be warned: {hints:?}"
+        );
     }
 
     #[test]

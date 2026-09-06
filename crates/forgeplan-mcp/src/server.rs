@@ -8145,8 +8145,10 @@ impl ForgeplanServer {
     #[tool(
         description = "Manually advance (or set) the advisory **artifact lifecycle phase** marker \
                        for an artifact (shape/validate/adi/code/test/audit/evidence/done). \
-                       Appends a transition to the history. Does NOT validate phase ordering — \
-                       advisory layer allows out-of-order jumps (e.g. direct `done` override). \
+                       Appends a transition to the history. Forward and out-of-order jumps are \
+                       allowed, including a direct `done` override, and so is moving BACKWARDS — \
+                       this tool is the deliberate-correction path (PRD-086 FR-007). Automatic \
+                       advancement triggered by other tools refuses to move a phase backwards. \
                        Full phase enforcement lands in a later PRD under EPIC-005. Use when \
                        auto-advancement missed a transition or when reclassifying workflow state. \
                        NOTE: this targets the artifact lifecycle phase machine, NOT the \
@@ -8187,8 +8189,20 @@ impl ForgeplanServer {
         let safe_id = sanitize_for_hint(&p.id);
         let safe_reason = p.reason.as_deref().map(sanitize_for_hint);
 
-        match forgeplan_core::phase::store::advance_phase(&ws, &p.id, target, p.reason.clone())
-            .await
+        // PRD-086 FR-007. The monotonicity guard belongs on AUTOMATIC advancement
+        // — `maybe_advance_phase`, which fires on every `forgeplan_validate`
+        // PASS and used to walk a shipped artifact back from `done`. An explicit
+        // call to THIS tool is the same act as `forgeplan phase-advance` on the
+        // command line: someone deciding to correct a marker. The CLI was moved
+        // to the unchecked entry point and this handler must match it, or the
+        // two surfaces disagree about what the same operation means.
+        match forgeplan_core::phase::store::advance_phase_unchecked(
+            &ws,
+            &p.id,
+            target,
+            p.reason.clone(),
+        )
+        .await
         {
             Ok(state) => {
                 let current = state.current_phase.as_str();
