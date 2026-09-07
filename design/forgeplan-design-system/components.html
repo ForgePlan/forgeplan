@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ForgePlan — component examples</title>
+<style>
+*{box-sizing:border-box}html{background:var(--forge-bg);color:var(--forge-fg);font-family:'Space Grotesk',ui-sans-serif,system-ui,sans-serif}
+:root{--forge-bg:#0D0D0D;--forge-fg:#E8E8E8;--forge-surface:#161616;--forge-line:#3A3A3A;--forge-dim:#949494;--ember:#FF6B35;--ember-text:#FF6B35;--green:#28C840;--green-text:#28C840;--err:#EF4444;--err-text:#EF4444;--warn:#F59E0B;--warn-text:#F59E0B;--info:#60A5FA;--info-text:#60A5FA;--focus-outer:#0D0D0D;--mono:'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace}
+[data-theme=light]{--forge-bg:#F5F5F0;--forge-fg:#1A1A1A;--forge-surface:#FFFFFF;--forge-line:#D4D4D0;--forge-dim:#6B6B6B;--ember-text:#C94400;--green-text:#166534;--err-text:#991B1B;--warn-text:#92400E;--info-text:#1E3A8A;--focus-outer:#F5F5F0}
+body{margin:0}.shell{width:min(1280px,100%);margin:auto;padding:32px}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:1px solid var(--forge-line);padding-bottom:16px}.actions,.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+h1{font-size:40px;line-height:1.1;font-weight:500;margin:0}h2{font-size:24px;margin:40px 0 12px}p{color:var(--forge-dim)}code,pre,.mono{font-family:var(--mono)}
+:focus-visible{outline:2px solid var(--ember);outline-offset:2px;box-shadow:0 0 0 4px var(--focus-outer)}
+.btn{min-height:44px;padding:0 16px;border:1px solid transparent;border-radius:0;font:600 14px/1 var(--mono);cursor:pointer;background:none;color:var(--forge-fg)}
+.btn:hover{filter:brightness(1.08)}.btn:active{transform:translateY(1px);filter:brightness(.92)}.btn:disabled{opacity:.48;cursor:not-allowed;transform:none}
+.btn--primary{background:var(--ember);color:#1A1A1A}.btn--secondary{border-color:var(--forge-line);background:var(--forge-surface)}.btn--ghost{border-color:transparent}.btn--ghost:hover{border-color:var(--forge-line)}.btn--danger{border-color:var(--err);color:var(--err-text)}
+.btn--sm{min-height:44px;padding:0 12px;font-size:12px}.btn--lg{min-height:48px;padding:0 20px;font-size:16px}.spinner{display:inline-block;width:14px;height:14px;margin-right:8px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px}
+label{display:grid;gap:6px;color:var(--forge-dim);font-size:13px}.field{width:min(420px,100%);min-height:44px;border:1px solid var(--forge-line);border-radius:0;background:var(--forge-surface);color:var(--forge-fg);padding:10px 12px;font:14px var(--mono)}.field:hover{border-color:var(--forge-dim)}.field:focus{border-color:var(--ember);outline:none;box-shadow:0 0 0 2px var(--ember),0 0 0 4px var(--focus-outer)}.field:disabled{opacity:.48}
+.card{border:1px solid var(--forge-line);background:var(--forge-surface);padding:20px}.card__id{font:12px var(--mono);color:var(--ember-text);letter-spacing:.06em}
+.table-wrap{overflow:auto;border:1px solid var(--forge-line);max-height:300px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;border-bottom:1px solid var(--forge-line);padding:12px 16px;white-space:nowrap}th{position:sticky;top:0;background:var(--forge-surface);z-index:1}tbody tr:nth-child(even){background:color-mix(in srgb,var(--forge-fg) 3%,transparent)}.dense th,.dense td{padding:8px 12px}.ultra th,.ultra td{padding:4px 8px;font-size:12px}
+.inline-code{font:13px var(--mono);color:var(--ember-text);background:color-mix(in srgb,var(--ember) 14%,transparent);padding:1px 4px;border-radius:3px}
+.terminal{position:relative;border:1px solid var(--forge-line);background:var(--forge-surface);padding:16px;overflow:auto}.terminal pre{margin:0;white-space:pre;min-width:max-content;line-height:1.6}.prompt{color:var(--ember-text)}.output{color:var(--forge-dim)}.copy{position:absolute;top:4px;right:4px}
+.alert{display:grid;grid-template-columns:auto 1fr;gap:12px;border:1px solid var(--forge-line);border-left:3px solid currentColor;padding:12px 16px}.alert::before{font:700 12px var(--mono)}.info{color:var(--info-text)}.info::before{content:"i"}.success{color:var(--green-text)}.success::before{content:"✓"}.warning{color:var(--warn-text)}.warning::before{content:"!"}.danger{color:var(--err-text)}.danger::before{content:"×"}.alert span{color:var(--forge-fg)}
+.types{display:flex;flex-wrap:wrap;gap:8px}.type{border:1px solid var(--forge-line);padding:4px 8px;font:12px var(--mono)}.type b{display:inline-grid;place-items:center;width:20px;height:20px;margin-right:6px;border:1px solid currentColor;color:var(--ember-text)}
+.confidence{display:grid;grid-template-columns:72px minmax(120px,320px) auto;gap:10px;align-items:center;font:13px var(--mono)}.track{height:8px;border:1px solid var(--forge-line);background:repeating-linear-gradient(90deg,transparent 0 calc(25% - 1px),var(--forge-line) calc(25% - 1px) 25%)}.fill{height:100%;background:var(--ember);width:var(--score)}.confidence--na .track{background:repeating-linear-gradient(135deg,transparent 0 4px,var(--forge-line) 4px 5px)}.confidence--na .value{color:var(--forge-dim)}
+[data-lang=en] [data-ru],[data-lang=ru] [data-en]{display:none}
+@keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+@media(max-width:700px){.shell{padding:20px}.confidence{grid-template-columns:64px 1fr}.confidence .value{grid-column:2}}
+</style>
+</head>
+<body data-lang="ru">
+<main class="shell">
+  <header class="top"><div><div class="mono" style="color:var(--ember-text)">FORGEPLAN / UI</div><h1><span data-ru>Примеры компонентов</span><span data-en>Component examples</span></h1></div><div class="actions"><button class="btn btn--secondary" id="lang">RU / EN</button><button class="btn btn--secondary" id="theme"><span data-ru>Сменить тему</span><span data-en>Toggle theme</span></button></div></header>
+
+  <h2><span data-ru>Кнопки</span><span data-en>Buttons</span></h2>
+  <div class="row"><button class="btn btn--primary"><span data-ru>Создать запись</span><span data-en>Create artifact</span></button><button class="btn btn--secondary"><span data-ru>Проверить</span><span data-en>Validate</span></button><button class="btn btn--ghost"><span data-ru>Отмена</span><span data-en>Cancel</span></button><button class="btn btn--danger"><span data-ru>Удалить</span><span data-en>Delete</span></button><button class="btn btn--secondary" disabled><span data-ru>Недоступно</span><span data-en>Disabled</span></button><button class="btn btn--secondary"><i class="spinner"></i><span data-ru>Проверка</span><span data-en>Validating</span></button></div>
+
+  <h2><span data-ru>Поле и карточка</span><span data-en>Field and card</span></h2>
+  <div style="display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))"><label><span data-ru>Идентификатор записи</span><span data-en>Artifact identifier</span><input class="field" value="ADR-042"></label><article class="card"><div class="card__id">ADR-042 · ACTIVE</div><h3><span data-ru>Хранилище решений в Git</span><span data-en>Git-backed decision storage</span></h3><p><span data-ru>Решение принято, связано с тремя доказательствами.</span><span data-en>Decision accepted and linked to three evidence records.</span></p></article></div>
+
+  <h2><span data-ru>Плотность таблиц</span><span data-en>Table density</span></h2>
+  <div class="row" role="group"><button class="btn btn--secondary density" data-density="">12 / 16</button><button class="btn btn--secondary density" data-density="dense">8 / 12</button><button class="btn btn--secondary density" data-density="ultra">4 / 8</button></div>
+  <div class="table-wrap" style="margin-top:8px"><table id="table"><thead><tr><th>ID</th><th>TYPE</th><th><span data-ru>СОСТОЯНИЕ</span><span data-en>STATE</span></th><th>R_eff</th></tr></thead><tbody><tr><td>PRD-018</td><td>PRD</td><td>active</td><td>0.82</td></tr><tr><td>RFC-003</td><td>RFC</td><td>draft</td><td>0.44</td></tr><tr><td>ADR-001</td><td>ADR</td><td>active</td><td>—</td></tr></tbody></table></div>
+
+  <h2><span data-ru>Код и терминал</span><span data-en>Code and terminal</span></h2>
+  <p><span data-ru>Строчная команда:</span><span data-en>Inline command:</span> <code class="inline-code">forgeplan health</code></p>
+  <div class="terminal"><button class="btn btn--ghost btn--sm copy"><span data-ru>Копировать</span><span data-en>Copy</span></button><pre><span class="prompt">$ forgeplan health</span>
+<span class="output">Verdict: Healthy
+Artifacts: 341
+Tests: 3084</span></pre></div>
+
+  <h2><span data-ru>Оповещения</span><span data-en>Alerts</span></h2>
+  <div style="display:grid;gap:8px"><div class="alert info"><span><b>INFO</b> · <span data-ru>Индекс обновлён.</span><span data-en>Index updated.</span></span></div><div class="alert success"><span><b>SUCCESS</b> · <span data-ru>Все проверки пройдены.</span><span data-en>All checks passed.</span></span></div><div class="alert warning"><span><b>WARNING</b> · <span data-ru>Доказательства устаревают.</span><span data-en>Evidence is becoming stale.</span></span></div><div class="alert danger"><span><b>DANGER</b> · <span data-ru>Нарушена связь записей.</span><span data-en>Artifact link is broken.</span></span></div></div>
+
+  <h2><span data-ru>Типы записей</span><span data-en>Artifact types</span></h2>
+  <div class="types"><span class="type"><b>P</b>PRD</span><span class="type"><b>R</b>RFC</span><span class="type"><b>A</b>ADR</span><span class="type"><b>S</b>Spec</span><span class="type"><b>E</b>Epic</span><span class="type"><b>V</b>Evidence</span><span class="type"><b>!</b>Problem</span><span class="type"><b>✓</b>Solution</span><span class="type"><b>N</b>Note</span><span class="type"><b>↻</b>Refresh</span></div>
+
+  <h2><span data-ru>Надёжность</span><span data-en>Reliability</span></h2>
+  <div style="display:grid;gap:12px"><div class="confidence" style="--score:18%"><b>LOW</b><div class="track"><div class="fill"></div></div><span class="value">0.18 / 1.00</span></div><div class="confidence" style="--score:82%"><b>HIGH</b><div class="track"><div class="fill"></div></div><span class="value">0.82 / 1.00</span></div><div class="confidence confidence--na"><b>NOT RUN</b><div class="track"></div><span class="value">— / <span data-ru>не считалась</span><span data-en>not calculated</span></span></div></div>
+</main>
+<script>
+const root=document.documentElement,body=document.body;
+document.querySelector('#theme').onclick=()=>root.dataset.theme=root.dataset.theme==='dark'?'light':'dark';
+document.querySelector('#lang').onclick=()=>{body.dataset.lang=body.dataset.lang==='ru'?'en':'ru';root.lang=body.dataset.lang};
+document.querySelectorAll('.density').forEach(b=>b.onclick=()=>document.querySelector('#table').className=b.dataset.density);
+document.querySelector('.copy').onclick=async e=>{await navigator.clipboard.writeText('forgeplan health');e.currentTarget.textContent=body.dataset.lang==='ru'?'Скопировано':'Copied'};
+</script>
+</body>
+</html>
