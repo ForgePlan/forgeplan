@@ -1,7 +1,7 @@
 # Handoff: SPEC validator inversion + NFR rules (#449, #450, PROB-105)
 
-**Status:** code complete and committed, gates green, **not yet pushed**.
-**Branch:** `fix/spec-validator-inverted`, one commit `daa103b` off `dev`.
+**Status:** code complete, gates green, **pushed**; PR open against `dev`.
+**Branch:** `fix/spec-validator-inverted` off `dev` — `daa103b` (code) + `3e16e48` (this document).
 **Written:** 2026-09-07, against `forgeplan 0.36.0`.
 
 Everything this document points at is committed. That is deliberate: the previous
@@ -108,7 +108,7 @@ edited in place — a test name carrying a number goes stale silently.
 
 ## What is left
 
-1. **Push and open the PR** into `dev`. Nothing else blocks it.
+1. ~~Push and open the PR~~ — done; see the PR linked from the branch.
 2. **CHANGELOG entry** — drafted but not written into the file. Content is in
    this document; the Fixed/Added split is already worked out above.
 3. **SPEC template note** (optional, recommended). The template is API-first and

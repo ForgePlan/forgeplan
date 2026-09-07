@@ -89,6 +89,55 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   The progress line also counted every record instead of the ones being
   encoded (`Embedding 1 of 427`, not `Embedding 427`).
 
+- **The SPEC validator passed empty templates and blocked real specs** (#450,
+  PROB-105). An untouched `forgeplan new spec` template — every field still a
+  placeholder — validated `PASS — 0 error(s), 0 warning(s)` and activated at
+  **R_eff 1.00**. A spec with two requirements and two GIVEN/WHEN/THEN
+  scenarios failed the MUST rule `spec-contracts`, so it could not activate at
+  all. The kernel had a MUST pointing *against* behavioural specs while waving
+  through documents that said nothing.
+
+  Two causes. `check_stub`'s twelve phrase markers are all PRD prose, and its
+  placeholder signal was capped at `+1` against a threshold of 3 — fifteen
+  unfilled slots weighed the same as one. The count scales now; the threshold
+  comes from the corpus (SPEC template **15** placeholders, PRD template
+  **5**, the six real SPECs **0–3**), not from taste. And `spec-contracts`
+  demanded one particular contract shape; it still demands *a* contract, but
+  `## Requirements`, `## Contract`, and `## Behavioral Contract` now count
+  alongside `## API` and `## Data Model`.
+
+  This is why the marketplace TDD flow grew its own scenario gate: core was
+  rejecting the shape TDD needs.
+
+- **The stub gate told every artifact kind to fill a PRD's sections.** Its
+  remediation line read `Fill MUST sections (Problem, Goals, FR)` whether the
+  artifact was a SPEC, an ADR, or an Epic. It now names the sections of the
+  kind in hand.
+
+### Added
+
+- **`spec-requirement-has-scenario`** (Should, #450). Fires only on a spec
+  that already writes requirements behaviourally and leaves one without a
+  scenario. Deliberately conditional: the blanket form was measured against
+  this repository and fired on 6 of 6 SPECs, none of them defective.
+
+- **`prd-nfr-exist` and `prd-nfr-measurable`** (Should, #449). The PRD had 24
+  validator rules and none about non-functional requirements. `extract_nfr_section`
+  already existed and was called from exactly one place — the tech-leakage
+  check — so the validator could find the NFR section and asked nothing about
+  its contents.
+
+  Both are Should, not Must: 30 of 69 PRDs here have no NFR section at all.
+  `prd-nfr-measurable` strips non-prose before scanning, which is the whole
+  difficulty — the subjective-adjective list (`scalable`, `robust`,
+  `efficient`, `responsive`) reads like a list of NFRs and had only ever been
+  applied to the FR section. Across the 69 PRDs it matches **2** places in FR
+  and **15** in NFR, and all 15 sit inside the template's own
+  `<!-- BAD: "System should be fast and responsive" -->` guidance. A rule
+  flagging those would be unclosable — the only fix would be deleting the
+  instructions. Verified: **0 findings across all 69 PRDs**, while
+  hand-written vague prose still produces findings with line numbers.
+
 ### Internal
 
 - ADR-025 (orchestration sits above ForgePlan; per-surface dispositions) and

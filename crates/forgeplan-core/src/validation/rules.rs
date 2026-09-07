@@ -2273,6 +2273,37 @@ mod tests {
         );
     }
 
+    /// The test above pins a hand-abridged copy of the template, so it cannot
+    /// notice the real file changing. This one reads the file the binary
+    /// actually ships (`include_str!`, same path as `template::engine`) and
+    /// asserts two things about it:
+    ///
+    /// 1. it still reads as a stub — an author who runs `forgeplan new spec`
+    ///    and stops must not be able to activate the result;
+    /// 2. the guidance comment added for PROB-105 does not register as a
+    ///    heading. It names `## Requirements` and `### Requirement` inside
+    ///    backticks; if `section_exists` ever started matching those, an empty
+    ///    template would satisfy `spec-contracts` through its own comment.
+    #[test]
+    fn the_shipped_spec_template_is_a_stub_and_declares_no_sections() {
+        let raw = include_str!("../../../../templates/spec/_TEMPLATE.md");
+        let body = raw
+            .strip_prefix("---")
+            .and_then(|rest| rest.split_once("\n---"))
+            .map(|(_, after)| after)
+            .unwrap_or(raw);
+
+        assert!(
+            check_stub(body, &Frontmatter::new()).is_some(),
+            "the shipped SPEC template must read as a stub -- \
+             it is entirely unfilled slots"
+        );
+        assert!(
+            !checks::section_exists(body, "Requirements"),
+            "the guidance comment must not register as a Requirements heading"
+        );
+    }
+
     /// The other side of the same threshold: a real spec uses a handful of
     /// placeholders in examples and must stay silent. Measured across the six
     /// real SPECs in this repository: 0-3 placeholders each.
