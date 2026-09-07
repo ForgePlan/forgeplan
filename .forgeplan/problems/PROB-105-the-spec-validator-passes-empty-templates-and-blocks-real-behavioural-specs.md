@@ -5,7 +5,7 @@ kind: problem
 links:
 - target: PRD-086
   relation: informs
-status: draft
+status: active
 title: The SPEC validator passes empty templates and blocks real behavioural specs
 ---
 
@@ -107,5 +107,7 @@ Three changes, none of which teaches the kernel a methodology:
 | PRD-086 | informs |
 
 GitHub: #450 (its premise is inverted — see above), #449 (separate).
+
+
 
 
