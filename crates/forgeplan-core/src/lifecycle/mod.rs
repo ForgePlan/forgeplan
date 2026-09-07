@@ -191,8 +191,21 @@ pub async fn collect_activation_gates(
     let stub_check = crate::validation::rules::check_stub(&record.body, &record.frontmatter_map());
     let stub_ok = stub_check.is_none();
     let stub_msg = stub_check.map(|msg| {
+        // PROB-105. The remediation used to name Problem / Goals / FR for every
+        // kind — sections a SPEC does not have and an ADR does not have either.
+        // Until this release the SPEC case was unreachable (the gate could not
+        // see a SPEC at all), so the wrong advice was never printed; now that it
+        // can fire, telling a spec author to fill in a Problem section would send
+        // them looking for something that is not in their template.
+        let sections = match record.kind.to_ascii_lowercase().as_str() {
+            "spec" => "Summary, a contract section (API Contracts / Data Models / Requirements)",
+            "adr" => "Context, Decision, Consequences",
+            "rfc" => "Summary, Motivation, Options Considered, Proposed Direction",
+            "epic" => "Vision, Goals, Children",
+            _ => "Problem, Goals, Functional Requirements",
+        };
         format!(
-            "{msg} → Fill MUST sections (Problem, Goals, FR) before activating. \
+            "{msg} → Replace the template placeholders and fill {sections} before activating. \
              See PRD-043 FR-003 for stub detection rules."
         )
     });

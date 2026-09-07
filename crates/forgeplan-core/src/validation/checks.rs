@@ -79,6 +79,80 @@ pub fn extract_related_artifacts_table_ids(body: &str) -> Vec<String> {
     found.into_iter().collect()
 }
 
+/// Requirement headings in a SPEC body that carry no `#### Scenario` beneath
+/// them — issue #450, narrowed to internal consistency.
+///
+/// The issue asked for "every `### Requirement` has a `#### Scenario`" as a
+/// blanket rule. Measured against this repository first: none of the six SPECs
+/// uses either heading — they are API-contract shaped (`## Contract`,
+/// `## Data Models`, `## Errors`), which the template prescribes. A blanket
+/// rule would have fired on 6 of 6, none of them defective. That is the shape
+/// of warning PRD-086 spent a week removing.
+///
+/// So the question is asked conditionally instead: a spec that *opens* a
+/// Requirement has committed to the behavioural form, and a Requirement with no
+/// scenario is a promise with no oracle — the half-authored state that leaves
+/// the downstream TDD flow with nothing to plan against. On a spec that never
+/// uses the heading this returns empty and the rule is silent.
+///
+/// Returns the requirement titles that lack a scenario, in document order.
+pub fn requirements_without_scenarios(body: &str) -> Vec<String> {
+    /// `### Requirement…` — the heading that opens a behavioural requirement.
+    fn requirement_title(line: &str) -> Option<String> {
+        let rest = line.strip_prefix("### ")?;
+        let rest = rest.trim();
+        rest.to_lowercase()
+            .starts_with("requirement")
+            .then(|| rest.to_string())
+    }
+
+    /// `#### Scenario…` — deeper than the requirement, so it belongs to it.
+    fn is_scenario(line: &str) -> bool {
+        line.strip_prefix("#### ")
+            .map(|rest| rest.trim().to_lowercase().starts_with("scenario"))
+            .unwrap_or(false)
+    }
+
+    /// Any heading at `###` or shallower closes the requirement being read.
+    fn closes_requirement(line: &str) -> bool {
+        line.starts_with("# ") || line.starts_with("## ") || line.starts_with("### ")
+    }
+
+    let stripped = strip_non_prose_for_leakage(body);
+    let mut missing = Vec::new();
+    let mut open: Option<String> = None;
+    let mut saw_scenario = false;
+
+    let close = |open: &mut Option<String>, saw: &mut bool, out: &mut Vec<String>| {
+        if let Some(title) = open.take()
+            && !*saw
+        {
+            out.push(title);
+        }
+        *saw = false;
+    };
+
+    for line in stripped.lines() {
+        let trimmed = line.trim();
+
+        if let Some(title) = requirement_title(trimmed) {
+            close(&mut open, &mut saw_scenario, &mut missing);
+            open = Some(title);
+            continue;
+        }
+        if is_scenario(trimmed) {
+            saw_scenario = true;
+            continue;
+        }
+        if closes_requirement(trimmed) {
+            close(&mut open, &mut saw_scenario, &mut missing);
+        }
+    }
+    close(&mut open, &mut saw_scenario, &mut missing);
+
+    missing
+}
+
 /// PROB-059 — extract `target` IDs от frontmatter `links:` array.
 pub fn extract_frontmatter_link_targets(fm: &Frontmatter) -> Vec<String> {
     let Some(links_val) = fm.get("links") else {
@@ -868,6 +942,55 @@ const VAGUE_QUANTIFIERS: &[&str] = &[
     "numerous",
 ];
 
+/// Subjective adjectives inside the NFR section — issue #449.
+///
+/// The blacklist this shares with [`check_measurability_adjectives`] reads like
+/// a list of non-functional requirements: `scalable`, `robust`, `efficient`,
+/// `responsive`, `fast`, `seamless`. It was only ever applied to the FR section.
+/// Measured across the 69 PRDs in this repository: 2 hits in FR (checked), 15 in
+/// NFR (unchecked).
+///
+/// Those 15 are the reason this strips non-prose first. Every one of them sits
+/// inside the PRD template's own HTML comment demonstrating what NOT to write —
+/// `<!-- BAD: "System should be fast and responsive" -->`. A rule that flagged
+/// them would be unclosable: the only way to silence it is to delete the
+/// template's guidance. [`check_measurability_adjectives`] does not strip, and
+/// carries the same latent bug; it has simply never fired because the template's
+/// BAD examples happen to live under the NFR heading.
+///
+/// Returns (word, line number relative to body start).
+pub fn check_nfr_measurability(body: &str) -> Vec<(String, usize)> {
+    static ADJECTIVE_REGEXES: LazyLock<Vec<(String, Regex)>> = LazyLock::new(|| {
+        SUBJECTIVE_ADJECTIVES
+            .iter()
+            .filter_map(|word| {
+                let pattern = format!(r"(?i)\b{}\b", regex::escape(word));
+                Regex::new(&pattern).ok().map(|re| (word.to_string(), re))
+            })
+            .collect()
+    });
+
+    let nfr_section = match extract_nfr_section(body) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    // Line numbers survive the strip — comments are replaced with newlines.
+    let prose = strip_non_prose_for_leakage(&nfr_section);
+
+    let nfr_start_offset = body.find(&nfr_section).unwrap_or(0);
+    let line_offset = body[..nfr_start_offset].lines().count();
+
+    let mut results = Vec::new();
+    for (i, line) in prose.lines().enumerate() {
+        for (word, re) in ADJECTIVE_REGEXES.iter() {
+            if re.is_match(line) {
+                results.push((word.clone(), line_offset + i + 1));
+            }
+        }
+    }
+    results
+}
+
 /// Check for subjective adjectives in FR/requirements sections.
 /// Returns vec of (found_word, line_number) — line numbers are relative to body start.
 pub fn check_measurability_adjectives(body: &str) -> Vec<(String, usize)> {
@@ -1316,6 +1439,128 @@ mod tests {
 ";
         let ids = extract_related_artifacts_table_ids(body);
         assert_eq!(ids, vec!["EVID-042", "PRD-001", "RFC-003"]);
+    }
+
+    // ── issue #449 / #450: NFR measurability and Requirement/Scenario ──────
+
+    /// #449. The 15 "hits" that made this rule look valuable in the corpus were
+    /// all inside the template's own `<!-- BAD: ... -->` guidance. Flagging them
+    /// would be unclosable — the only fix is deleting the instructions.
+    #[test]
+    fn nfr_adjectives_inside_html_comments_are_not_flagged() {
+        let body = "\
+## Non-Functional Requirements
+
+<!-- BAD:  \"System should be fast and responsive\" -->
+<!-- GOOD: \"p95 latency < 200ms at 50 rps\"        -->
+
+- NFR-001: p95 latency < 200ms at 50 rps.
+";
+        assert!(
+            check_nfr_measurability(body).is_empty(),
+            "the template's own bad-example comment must not become a finding"
+        );
+    }
+
+    /// The other half: a genuinely vague NFR outside comments still fires,
+    /// otherwise the strip would have turned the rule into decoration.
+    #[test]
+    fn vague_nfr_prose_is_flagged() {
+        let body = "\
+## Non-Functional Requirements
+
+- NFR-001: The export is fast and the service is robust.
+";
+        let found: Vec<String> = check_nfr_measurability(body)
+            .into_iter()
+            .map(|(w, _)| w)
+            .collect();
+        assert!(found.contains(&"fast".to_string()), "got {found:?}");
+        assert!(found.contains(&"robust".to_string()), "got {found:?}");
+    }
+
+    /// The section is optional; absence is `prd-nfr-exist`'s business, not this
+    /// rule's. Returning findings here would double-report.
+    #[test]
+    fn no_nfr_section_yields_no_measurability_findings() {
+        assert!(
+            check_nfr_measurability("## Functional Requirements\n\n- FR-001: fast.\n").is_empty()
+        );
+    }
+
+    /// #450. The blanket rule the issue asked for would fire on all six SPECs in
+    /// this repository, none of which is defective — they are API-contract
+    /// shaped. Silence on a spec that never opens a Requirement is the point.
+    #[test]
+    fn a_spec_without_requirement_headings_is_silent() {
+        let body = "\
+## Summary
+
+A contract.
+
+## API Contracts
+
+### Endpoint: `GET /v1/things`
+
+Returns things.
+";
+        assert!(requirements_without_scenarios(body).is_empty());
+    }
+
+    /// A requirement that opened and never delivered a scenario is the real
+    /// defect: a promise with no oracle.
+    #[test]
+    fn a_requirement_without_a_scenario_is_reported() {
+        let body = "\
+## Requirements
+
+### Requirement: Failing step halts the run
+
+The runner MUST stop.
+
+### Requirement: Report names the step
+
+#### Scenario: step two fails
+
+GIVEN three steps WHEN step two exits 1 THEN the report names step two
+";
+        let missing = requirements_without_scenarios(body);
+        assert_eq!(missing.len(), 1, "got {missing:?}");
+        assert!(missing[0].contains("Failing step halts"), "got {missing:?}");
+    }
+
+    /// A `##` heading closes the requirement above it — a scenario appearing
+    /// later under a different section does not retroactively satisfy it.
+    #[test]
+    fn a_scenario_in_a_later_section_does_not_count() {
+        let body = "\
+## Requirements
+
+### Requirement: Unsatisfied
+
+## Appendix
+
+#### Scenario: unrelated
+
+GIVEN something
+";
+        assert_eq!(requirements_without_scenarios(body).len(), 1);
+    }
+
+    /// Requirement blocks inside fenced examples are documentation, not
+    /// requirements — the same strip that saves the NFR rule saves this one.
+    #[test]
+    fn requirement_headings_inside_code_fences_are_ignored() {
+        let body = "\
+## Summary
+
+Write requirements like this:
+
+```markdown
+### Requirement: Example with no scenario
+```
+";
+        assert!(requirements_without_scenarios(body).is_empty());
     }
 
     /// #446 — tokens shaped like an id but whose prefix is not an artifact
