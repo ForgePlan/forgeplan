@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-078
   relation: informs
-status: draft
+status: active
 title: PRD-078 adversarial audit — 2-agent (security + architecture) verdict CONCERNS/fix-first
 ---
 
@@ -93,6 +93,7 @@ MED-4/5/6 + LOW-7/8/9 — fold into fix round or explicit follow-up issue.
 - Architecture review: agents-pro:architect-reviewer, ~257K tokens, 174 tool calls, static analysis + live reproducer for ADR-015 claim + both e2e suites pass + forgeplan-core compiles clean
 - Code review: agents-core:code-reviewer — INCOMPLETE (output truncated mid-investigation); dimensions covered transitively by architect
 - Pre-audit pipeline: fmt ✅ clippy ✅ test ✅ (~3100 tests, 0 failed)
+
 
 
 

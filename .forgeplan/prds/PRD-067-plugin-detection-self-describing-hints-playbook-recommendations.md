@@ -8,7 +8,7 @@ links:
   relation: refines
 - target: ADR-009
   relation: based_on
-status: draft
+status: active
 title: Plugin detection + self-describing hints playbook recommendations
 updated: 2026-04-20
 ---
@@ -80,6 +80,7 @@ Forgeplan сейчас не знает какие плагины установ�
 | ADR-008 | ADR | informs (self-describing hints extended) |
 | EPIC-007 | EPIC | refines |
 | PRD-065 | PRD | informs (runtime uses detection for missing plugins) |
+
 
 
 

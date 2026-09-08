@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-011
   relation: informs
-status: draft
+status: active
 title: PRD-011 Adversarial Validation verified — devil advocate review, vague word detection
 ---
 
@@ -14,4 +14,5 @@ title: PRD-011 Adversarial Validation verified — devil advocate review, vague 
 verdict: supports
 congruence_level: 3
 evidence_type: test
+
 

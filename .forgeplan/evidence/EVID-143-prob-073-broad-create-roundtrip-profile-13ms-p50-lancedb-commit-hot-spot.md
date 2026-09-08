@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-073
   relation: informs
-status: draft
+status: active
 title: 'PROB-073 broad: create-roundtrip profile — 13ms p50, LanceDB commit hot spot'
 ---
 
@@ -56,5 +56,6 @@ The detection slice of PROB-073 was closed separately (EVID-141, SC-2 via gating
 - Bench: `crates/forgeplan-core/tests/create_roundtrip_bench.rs`
 - Command: `cargo test -p forgeplan-core --features test-helpers --test create_roundtrip_bench -- --ignored --nocapture`
 - Branch: `chore/prob-073-roundtrip-profile` (off `origin/dev`)
+
 
 

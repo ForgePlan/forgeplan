@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-012
   relation: informs
-status: draft
+status: active
 title: PRD-012 scan-import verified — 20 tests, 3-tier detection, E2E
 ---
 
@@ -30,4 +30,5 @@ title: PRD-012 scan-import verified — 20 tests, 3-tier detection, E2E
 verdict: supports
 congruence_level: 3
 evidence_type: test
+
 

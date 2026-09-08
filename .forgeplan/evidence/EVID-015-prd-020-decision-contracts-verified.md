@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-017
   relation: informs
-status: draft
+status: active
 title: PRD-020 Decision Contracts verified
 ---
 
@@ -20,3 +20,4 @@ evidence_type: test
 - Contract validation: 5 ADR rules + 2 RFC rules
 - Drift detection: forgeplan drift работает (git log --since)
 - LanceDB migration system: idempotent column additions
+

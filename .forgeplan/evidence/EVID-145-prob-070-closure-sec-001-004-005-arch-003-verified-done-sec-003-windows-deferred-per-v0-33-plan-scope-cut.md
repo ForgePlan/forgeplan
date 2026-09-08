@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-070
   relation: informs
-status: draft
+status: active
 title: 'PROB-070 closure: SEC-001/004/005 + ARCH-003 verified done; SEC-003 Windows deferred per v0.33 plan scope-cut'
 ---
 
@@ -47,5 +47,6 @@ PROB-070 closed as **resolved** (SEC-001/CR-*, SEC-004, SEC-005, ARCH-003) with 
 - Verified on `origin/dev` @ post-#370 merge.
 - Workflows: `.github/workflows/security.yml` (SEC-004 comment + SHA pins), all 6 workflow files (SEC-005).
 - Test: `crates/forgeplan-core/tests/verdict_boundary_test.rs` (ARCH-003).
+
 
 

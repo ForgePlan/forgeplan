@@ -7,9 +7,7 @@ links:
   relation: based_on
 - target: ADR-003
   relation: based_on
-- target: PROB-048
-  relation: based_on
-status: draft
+status: active
 title: ADR-003 file-first migration — phase out direct LanceStore mutations from commands and MCP handlers
 ---
 
@@ -112,4 +110,5 @@ Total: ~9-12h focused work across 5 PRs / 1 sprint.
   - ADR-003 Amendment 2 records before/after taxonomy + downstream migration path
 - [ ] Phase 3d — drift detection in `sync_metadata_from_file` / `sync_relation_from_file` + `HashSet` dedup in `add_links_batch_with_projection` (Wave 1B audit LOW-4)
 - [ ] Phase 5 — EVID-094 supplement: clone reproducibility at CL3 + closure
+
 

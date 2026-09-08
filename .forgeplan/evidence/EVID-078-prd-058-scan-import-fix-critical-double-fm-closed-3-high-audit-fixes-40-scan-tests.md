@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-058
   relation: supports
-status: draft
+status: active
 title: PRD-058 scan-import fix — CRITICAL double-FM closed + 3 HIGH audit fixes, 40 scan tests
 ---
 
@@ -145,4 +145,5 @@ paths named by file:line.
 |----------|----------|
 | PRD-058 | supports |
 | ADR-003 | informs (PRD-058 enforces the invariant) |
+
 

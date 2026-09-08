@@ -13,7 +13,7 @@ links:
   relation: refines
 - target: ADR-009
   relation: based_on
-status: draft
+status: active
 title: Real subprocess dispatchers + init recommendation wiring + greenfield playbook
 ---
 
@@ -124,6 +124,7 @@ Phase 5 (PRD-065/066/067, merged 2026-04-28) shipped Playbook runtime, Ingest en
 | ADR-010 | ADR | drives (subprocess lifecycle decision) |
 | EVID-089 | Evidence | informs (deferrals от Phase 5 closed by this PRD) |
 | PROB-046 | Problem | informs (output hint contract — dispatch failures emit hints) |
+
 
 
 

@@ -13,7 +13,7 @@ links:
   relation: informs
 - target: PROB-050
   relation: informs
-status: draft
+status: active
 title: v0.28.0 quality sweep audit closure measurement
 ---
 
@@ -161,6 +161,7 @@ No proxies, no synthetic measurements. Audit cost: $0 (sub-agent invocations
 | ADR-011 | informs (Phase B Wave 1 doc updates verified в audit) |
 | PRD-073 | informs (file-first invariant — release theme) |
 | PROB-050 | informs (A-26 methodology lesson + A-29..A-32 candidate followups) |
+
 
 
 

@@ -7,7 +7,7 @@ links:
   relation: informs
 - target: PRD-020
   relation: informs
-status: draft
+status: active
 title: LLM-first routing Level 0→1 implementation tests
 ---
 
@@ -55,4 +55,5 @@ evidence_type: test
 1. MCP server used only Level 0 → fixed: route_with_llm + FPF context
 2. FPF KB not injected into route prompt → fixed: route_with_llm_and_context()
 3. CLI didn't auto-detect Level 1 → fixed: auto-detect when config available
+
 

@@ -11,7 +11,7 @@ links:
   relation: informs
 - target: PRD-066
   relation: informs
-status: draft
+status: active
 title: Spike-1 c4-to-forge mapping concept validated on scoring module
 ---
 
@@ -100,6 +100,7 @@ ADR-009 DoR Spike-1 — **DONE**. Mapping primitive validated на real C4 outpu
 - PRD-066 — Ingest engine (target_kind default=note refinement)
 - Source artifact: `.local/spike-1-c4-scoring.md` (397 LOC C4 output)
 - Mapping fixture: `.local/spike-1-c4-to-forge-mapping.yaml` (3 rules, 14 traces)
+
 
 
 
