@@ -11,6 +11,22 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-09-08
+
+Sprint headline: **Trust the number, and the write, and the gate that proves it.**
+An EvidencePack with no `verdict` and no `congruence_level` has been scoring a
+perfect **1.00** — the opposite of every document describing this system. A
+`forgeplan deprecate` was printing a reason and putting it nowhere a fresh clone
+could ever see it. A test file written to catch a live engine swap has run zero
+times in CI since the swap it exists for. None of the three looked broken —
+each reported success, correctly formatted, right up until someone read the
+file it was supposed to have written to.
+
+Scope note for scripted consumers: no new CLI flag, no new config key, MCP tool
+count unchanged (73). One breaking behaviour change: R_eff for any artifact
+whose weakest evidence pack lacks `verdict`/`congruence_level` drops from 1.0 to
+0.1 — **run `forgeplan score --all` after upgrading** (see below).
+
 ### Changed — BREAKING, re-score required
 
 - **Evidence that declares nothing no longer scores full marks** (PROB-101,
@@ -138,14 +154,68 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   instructions. Verified: **0 findings across all 69 PRDs**, while
   hand-written vague prose still produces findings with line numbers.
 
+### Fixed
+
+- **`forgeplan deprecate` / `renew` / `reopen` printed a reason and stored it
+  nowhere durable.** The command echoed the reason back and `forgeplan get`
+  showed it, but the markdown file never received the `## Deprecation` /
+  `## Renewal` / `## Reopened` section — only the status did, because status
+  lives in frontmatter and the section does not. `.forgeplan/lance/` is
+  gitignored, so the reason did not exist on a fresh clone. Worse than a
+  missing write: the next lifecycle command on that artifact synced the
+  section-less file body back over the index, erasing the reason there too —
+  the disagreement between file and index was temporary, the loss was not.
+  Root cause was a collision between two individually-correct behaviours:
+  `render_projection` is files-first by design (a user's on-disk edits must
+  survive `link`/`tag`/`activate`), and it discarded whatever body these
+  three commands handed it. The three CLI call sites and the MCP `deprecate`
+  handler now use the forcing variant, safe only there because a
+  file→store sync always runs immediately before. Recovery for anyone
+  already hit by this: `forgeplan update <id> --body @path` projects
+  correctly and restores the section by hand.
+
+- **The embedding correctness oracle ran in CI exactly zero times since it
+  was written** (PROB-102). `tests/embedding_reference.rs` pins the engine's
+  output against pre-tract values from the v0.35.0 ONNX → tract swap it
+  exists to catch; the file is entirely behind `semantic-search`, so
+  `check`/`clippy` compiled it and `cargo nextest run --workspace` — invoked
+  without the feature — never even built it into that run. A new CI job
+  runs it in isolation with the model cached across runs, and converts the
+  oracle's normal quiet local-dev skip (a missing model reads as PASS, not
+  skipped) into a loud failure for this job specifically — a cold cache
+  proving nothing would otherwise reproduce the exact defect being closed,
+  one layer down.
+
 ### Internal
 
 - ADR-025 (orchestration sits above ForgePlan; per-surface dispositions) and
   ADR-026 (storage classes for machine-written records) resolve two vNext
   audit blockers that required a human decision. EVID-169 records the basis.
-- PROB-102: `embedding_reference.rs` — the correctness oracle for the
-  embedding engine — runs zero tests in CI, because `cargo nextest run` passes
-  no features while `check` and `clippy` do. Recorded, not yet fixed.
+- PROB-104: a leaf pack with an evidence neighbour reports the neighbour's
+  score. Recorded, not yet fixed — found while scoping this release, not
+  introduced by it.
+
+### Security
+
+33 open Dependabot alerts at release time (8 high / 15 medium / 10 low), one
+Rust, 32 npm — full triage in
+[`docs/operations/dependabot-triage-2026-09-08.md`](docs/operations/dependabot-triage-2026-09-08.md).
+
+- **`lru` LOW (GHSA-rhfx-m35p-ff5j) — accepted-with-justification, carried
+  forward.** The only consumer is `tantivy 0.24.2`, which pins `lru 0.12.x`;
+  the fix landed in `0.16.3`, a major bump only `tantivy` can take. Forgeplan
+  never constructs an `lru` cache or calls the affected method. Same verdict
+  as v0.33.0 through v0.36.0.
+- **All 32 npm alerts — scheduled.** Confined to `website/`, a statically
+  generated docs site shipping no server and no part of any released
+  artifact. One of them (#442) carries an `astro` 6→7 major inside a
+  Dependabot group PR opened before the `Website build` CI gate existed — its
+  green checkmarks don't include the one check that would exercise a
+  two-major jump. Filed as #485 rather than merged on stale-green.
+- `cargo-deny` (`security` workflow) is **green on `dev`** — checked directly
+  rather than inferred from an empty Dependabot list, because RustSec is not
+  mirrored into Dependabot and that gap has cost this project a red `dev` gate
+  twice before (v0.34.0, v0.35.0) without Dependabot ever showing a symptom.
 
 
 ## [0.36.0] - 2026-09-04
