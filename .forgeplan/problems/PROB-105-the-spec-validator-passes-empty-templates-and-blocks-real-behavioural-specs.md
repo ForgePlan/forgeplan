@@ -5,9 +5,10 @@ kind: problem
 links:
 - target: PRD-086
   relation: informs
-status: active
+status: deprecated
 title: The SPEC validator passes empty templates and blocks real behavioural specs
 ---
+
 
 ---
 assigned_number: 105
@@ -108,6 +109,8 @@ Three changes, none of which teaches the kernel a methodology:
 
 GitHub: #450 (its premise is inverted — see above), #449 (separate).
 
+## Deprecation
 
-
+Reason: Fixed and merged: 551ddb9 (PR #472). check_stub now scales the placeholder signal, spec-contracts accepts a behavioural contract, and spec-requirement-has-scenario covers the half-authored case. Verified by EVID-171 (before/after measurements, 3320 tests, 4 mutation checks). Kept as history rather than deleted.
+Date: 2026-09-08
 
