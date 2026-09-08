@@ -4545,8 +4545,15 @@ impl ForgeplanServer {
                 // markdown projection's `status:` frontmatter reflects the
                 // transition. Without this, a CLI re-deprecate would see a
                 // file `status: active` and a store `status: deprecated`.
+                //
+                // #478: must be the *_with_body variant. `deprecate` appends a
+                // `## Deprecation` section carrying the reason; the plain
+                // renderer is files-first and drops it, so the status reached
+                // the file and the reason did not. Safe here because
+                // `sync_before_mutation` ran above.
                 if let Err(e) =
-                    forgeplan_core::projection::render_after_mutation(&ws, &store, &p.id).await
+                    forgeplan_core::projection::render_after_mutation_with_body(&ws, &store, &p.id)
+                        .await
                 {
                     tracing::warn!(
                         "post-mutation render for {} failed: {e} — \

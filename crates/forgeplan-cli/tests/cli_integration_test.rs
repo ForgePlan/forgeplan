@@ -2919,6 +2919,188 @@ fn e2e_full_lifecycle_deprecate() {
 }
 
 // -----------------------------------------------------------------------
+// #478: the lifecycle reason must reach the FILE, not just LanceDB.
+//
+// The tests above, and every unit test in `lifecycle/mod.rs`, assert through
+// `forgeplan get` — which reads the store. The store was never the broken
+// half. `deprecate` appended its `## Deprecation` section to LanceDB and the
+// files-first renderer discarded it, so the status reached the markdown and
+// the reason did not. `lance/` is gitignored, so on a fresh clone the reason
+// did not exist anywhere; worse, the next mutation synced the section-less
+// file body back over the store, erasing it there too.
+//
+// These read the `.md` off disk. Asserting through the store is precisely
+// what let the defect ship.
+// -----------------------------------------------------------------------
+
+/// Read an artifact's markdown projection from a workspace.
+fn read_projection(workspace: &std::path::Path, dir: &str, prefix: &str) -> String {
+    let d = workspace.join(".forgeplan").join(dir);
+    let entry = std::fs::read_dir(&d)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", d.display()))
+        .filter_map(Result::ok)
+        .find(|e| e.file_name().to_string_lossy().starts_with(prefix))
+        .unwrap_or_else(|| panic!("no file starting with {prefix} in {}", d.display()));
+    std::fs::read_to_string(entry.path()).unwrap()
+}
+
+#[test]
+fn deprecate_writes_the_reason_into_the_markdown_file() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "note", "Lifecycle Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["activate", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["deprecate", "NOTE-001", "--reason", "replaced by REPRO-478"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let md = read_projection(tmp.path(), "notes", "NOTE-001");
+    assert!(
+        md.contains("## Deprecation"),
+        "the markdown file must carry the Deprecation section, got:\n{md}"
+    );
+    assert!(
+        md.contains("Reason: replaced by REPRO-478"),
+        "the markdown file must carry the reason itself, got:\n{md}"
+    );
+    assert!(
+        md.contains("status: deprecated"),
+        "status must still project, got:\n{md}"
+    );
+}
+
+/// The permanent-loss half. When the file lacks a section the store has, the
+/// two disagree — and `read_file_body_if_newer` compares content, so the next
+/// mutation writes the file body over the store and the reason is gone from
+/// both. Agreement after the command is what makes the loss impossible.
+#[test]
+fn after_deprecate_the_file_and_the_store_agree() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "note", "Divergence Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["activate", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["deprecate", "NOTE-001", "--reason", "AGREEMENT-MARKER"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let md = read_projection(tmp.path(), "notes", "NOTE-001");
+    assert!(
+        md.contains("AGREEMENT-MARKER"),
+        "file lost the reason:\n{md}"
+    );
+
+    // `get` reads the store. Both surfaces must show it.
+    forgeplan()
+        .args(["get", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("AGREEMENT-MARKER"));
+}
+
+#[test]
+fn reopen_writes_its_reason_into_the_retired_artifacts_file() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "note", "Reopen Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["activate", "NOTE-001"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["reopen", "NOTE-001", "--reason", "REOPEN-MARKER-478"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // The OLD artifact is the one that loses its section — the new one's file
+    // does not exist yet at render time, so it always kept its body.
+    let md = read_projection(tmp.path(), "notes", "NOTE-001");
+    assert!(
+        md.contains("## Reopened"),
+        "the retired artifact must record why it was retired, got:\n{md}"
+    );
+    assert!(
+        md.contains("REOPEN-MARKER-478"),
+        "the retired artifact must carry the reason, got:\n{md}"
+    );
+}
+
+#[test]
+fn renew_writes_its_reason_into_the_markdown_file() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["new", "note", "Renew Test"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args([
+            "renew",
+            "NOTE-001",
+            "--reason",
+            "RENEW-MARKER-478",
+            "--until",
+            "2099-01-01",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let md = read_projection(tmp.path(), "notes", "NOTE-001");
+    assert!(
+        md.contains("## Renewal"),
+        "the markdown file must carry the Renewal section, got:\n{md}"
+    );
+    assert!(
+        md.contains("RENEW-MARKER-478"),
+        "the markdown file must carry the reason, got:\n{md}"
+    );
+}
+
+// -----------------------------------------------------------------------
 // ADR-005: draft → deprecated directly is NOT allowed
 // -----------------------------------------------------------------------
 
