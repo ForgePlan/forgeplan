@@ -151,10 +151,27 @@ fn read_json_string(s: &str) -> String {
 /// Returns `None` when the model is not on this machine. Deliberately loud:
 /// "skipped" alone would read as "checked and fine" in a scroll-back, and this
 /// is the one test whose silence is indistinguishable from success.
+///
+/// PROB-102: an early `return` here reports as a PASS to nextest — zero
+/// assertions ran, and the exit code says everything is fine. That is exactly
+/// the failure class this oracle exists to catch, one level down. The CI job
+/// that runs this file with a warm model cache sets
+/// `FORGEPLAN_REQUIRE_MODEL_IN_TESTS=1` so a cold or broken cache is a loud,
+/// red failure instead of a silent green one. Local runs without the env var
+/// keep the quiet skip — a developer without the 2.1 GB model on their
+/// machine should not be blocked from running the rest of the suite.
 fn embedder_or_skip(test_name: &str) -> Option<forgeplan_core::embed::Embedder> {
     match forgeplan_core::embed::Embedder::new() {
         Ok(e) => Some(e),
         Err(err) => {
+            if require_model_in_tests_from(std::env::var("FORGEPLAN_REQUIRE_MODEL_IN_TESTS").ok()) {
+                panic!(
+                    "{test_name}: FORGEPLAN_REQUIRE_MODEL_IN_TESTS=1 and the model \
+                     is unavailable — {err}. This is the CI oracle job; a cold or \
+                     broken model cache must fail loudly, not silently pass with \
+                     zero assertions run (PROB-102)."
+                );
+            }
             eprintln!(
                 "\n!! {test_name} DID NOT RUN — NOTHING WAS VERIFIED.\n\
                  !! The embedding model is not available on this machine:\n\
@@ -163,6 +180,56 @@ fn embedder_or_skip(test_name: &str) -> Option<forgeplan_core::embed::Embedder> 
                  !! correctness of the engine is unchecked, not confirmed.\n"
             );
             None
+        }
+    }
+}
+
+/// The decision behind the panic branch above, with the env read pulled out
+/// so it can be tested without touching process environment — the same
+/// reasoning `embed::resolve_cache_dir_from` documents: mutating env vars in
+/// tests is `unsafe` in Rust 2024 (the write races reads of any other
+/// variable from other threads), and this crate already has enough
+/// env-sensitive tests without adding one more.
+///
+/// Anything other than exactly `"1"` is "not required" — an unset var, an
+/// empty string, `"true"`, `"0"` all fall through to the quiet local skip.
+/// A CI job that means to require the model sets it to `"1"`; anything else
+/// reads as "not configured for this", not as "configured wrong".
+fn require_model_in_tests_from(value: Option<String>) -> bool {
+    value.as_deref() == Some("1")
+}
+
+#[cfg(test)]
+mod require_model_gate_tests {
+    use super::require_model_in_tests_from;
+
+    /// The branch this session almost shipped without exercising: a cold
+    /// model cache under `FORGEPLAN_REQUIRE_MODEL_IN_TESTS` must fail loudly,
+    /// not return the quiet `None` that reads as a pass to nextest. This is
+    /// the pure decision the panic branch is gated on — the branch itself
+    /// needs a real `Embedder::new()` failure to exercise directly, which
+    /// needs either no network or a populated-then-emptied cache; both are
+    /// impractical to assert in a unit test. What IS practical, and what
+    /// actually carries the risk of a silent regression, is this: does the
+    /// gate read the env var correctly.
+    #[test]
+    fn require_1_means_required() {
+        assert!(require_model_in_tests_from(Some("1".to_string())));
+    }
+
+    #[test]
+    fn unset_means_not_required() {
+        assert!(!require_model_in_tests_from(None));
+    }
+
+    #[test]
+    fn anything_other_than_exactly_1_means_not_required() {
+        for v in ["0", "true", "yes", "TRUE", "1 ", " 1", ""] {
+            assert!(
+                !require_model_in_tests_from(Some(v.to_string())),
+                "{v:?} must not be treated as \"required\" — only the exact \
+                 string \"1\" opts in"
+            );
         }
     }
 }
