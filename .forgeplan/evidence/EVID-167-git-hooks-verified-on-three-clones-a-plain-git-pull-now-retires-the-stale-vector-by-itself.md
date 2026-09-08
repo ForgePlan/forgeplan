@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-097
   relation: informs
-status: draft
+status: active
 title: 'Git hooks verified on three clones: a plain git pull now retires the stale vector by itself'
 ---
 
@@ -107,5 +107,6 @@ Carol ставит хуки, Alice переписывает NOTE-002 (было �
 - **PROB-098** — соседний, НЕ закрыт
 - **PRD-085** — более широкий скоуп командной готовности
 - **PRD-071** — контракт подсказок, нарушенный #348
+
 
 

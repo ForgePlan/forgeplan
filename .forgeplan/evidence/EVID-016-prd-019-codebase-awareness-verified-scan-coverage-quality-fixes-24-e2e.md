@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-016
   relation: informs
-status: draft
+status: active
 title: PRD-019 Codebase Awareness verified — scan, coverage, quality fixes, 24 E2E
 ---
 
@@ -21,3 +21,4 @@ evidence_type: test
 - 14 manual negative/corner case tests — 0 crashes, 0 silent failures
 - Quality fixes: FPF search ranking, scan filter, CL default, empty input handling
 - All 13 features verified on live workspace
+

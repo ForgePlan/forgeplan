@@ -13,7 +13,7 @@ links:
   relation: informs
 - target: EVID-088
   relation: based_on
-status: draft
+status: active
 title: Spike-2 tokio::process subprocess invocation validated for Phase 6 dispatchers
 ---
 
@@ -91,6 +91,7 @@ Spike-2 closes ADR-010 DoR Pre-condition #4. R_eff PRD-072/RFC-007/ADR-010 ready
 - EPIC-007 — Playbook Runtime + Pack Marketplace
 - EVID-088 — Spike-1 c4-to-forge mapping (precedent для spike-driven CL3)
 - Spike artifact: `.local/spike-2/src/main.rs` (~50 LOC, gitignored — preserved as fixture if needed)
+
 
 
 

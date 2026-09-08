@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-014
   relation: informs
-status: draft
+status: active
 title: PROB-014 P0 sprint — embed body, gaps command, relation types
 ---
 
@@ -41,4 +41,5 @@ PROB-014 P0 fixes: F1 (embed body), F2 (relation types), F5 (gaps command).
 verdict: supports
 congruence_level: 3
 evidence_type: test
+
 

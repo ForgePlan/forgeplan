@@ -7,7 +7,7 @@ links:
   relation: informs
 - target: PROB-101
   relation: informs
-status: draft
+status: active
 title: 'PRD-086: five trust-layer defects measured before and after'
 ---
 
@@ -119,4 +119,5 @@ nextest` gives each test its own process.
 verdict: supports
 congruence_level: 3
 evidence_type: measurement
+
 

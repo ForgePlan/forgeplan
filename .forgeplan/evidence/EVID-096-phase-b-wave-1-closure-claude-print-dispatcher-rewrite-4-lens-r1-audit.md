@@ -7,7 +7,7 @@ last_modified_by: claude-code/2.1.121
 links:
 - target: ADR-011
   relation: informs
-status: draft
+status: active
 title: Phase B Wave 1 closure — claude --print dispatcher rewrite + 4-lens R1 audit
 ---
 
@@ -176,4 +176,5 @@ EVID-096 (this evidence) measures the implementation closing it.
 | PRD-072 | informs (Phase 6 dispatcher architecture parent) |
 | EVID-093 | informs (spike validation, pre-Phase-B baseline) |
 | PROB-050 | informs (Phase B follow-up tracker, created from R1 audit deferrals) |
+
 

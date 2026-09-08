@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: RFC-003
   relation: informs
-status: draft
+status: active
 title: RFC-003 Phase 1 — StorageDriver traits implemented
 ---
 
@@ -38,4 +38,5 @@ RFC-003 Phase 1 реализован: 4 trait definitions + 2 implementations + 
 verdict: supports
 congruence_level: 3
 evidence_type: test
+
 

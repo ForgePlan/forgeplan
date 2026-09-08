@@ -11,7 +11,7 @@ links:
   relation: informs
 - target: PROB-072
   relation: informs
-status: draft
+status: active
 title: 'PRD-078 closure: 7-layer verify (3130 tests) + Layer-7 audit (0 HIGH+) + all real findings fixed'
 ---
 
@@ -90,4 +90,5 @@ Beyond the in-process e2e, the **compiled `forgeplan-mcp` binary** was driven ov
 - Result: `NOTE-001-dogfood-binary-routing.md` landed in **`T_WT/.forgeplan/notes/`** (the requested workspace); response carried `resolved_workspace` + `resolved_via`. **Zero leak into `T_MAIN`** (the frozen cwd) — the exact PROB-072 production scenario, proven end-to-end through the real binary.
 
 Explicit e2e replay (by name, 2× identical green): **18 tests** across `worktree_routing_e2e` (4) + `worktree_read_e2e` (12) + `worktree_error_e2e` (2): AC-1 `ac1_worktree_workspace_param_routes_correctly`, AC-2 `ac2_single_worktree_backward_compat`, AC-3 `ac3_multi_worktree_no_workspace_returns_32602` + `ac3b_explicit_param_bypasses_gate`, AC-4 `ac4_ci_strict_mode_via_env_var`, Journey-1 `p1_journey1_write_then_read_in_worktree`, negatives n1-n3, edges e1-e3, phase3c list/search/score.
+
 

@@ -13,7 +13,7 @@ links:
   relation: informs
 - target: EVID-089
   relation: based_on
-status: draft
+status: active
 title: Phase 6 — Real dispatchers + init wiring + greenfield shipped (PRD-072)
 ---
 
@@ -145,6 +145,7 @@ Phase 6 PRD-072 — **implementation closed** для FR-1, FR-2, FR-3 (stub), FR
 - `marketplace/playbooks/greenfield-kickoff.yaml` — canonical greenfield playbook
 - `docs/operations/PLAYBOOK-AUTHORING.ru.md` §Subprocess lifecycle — pack-author guide
 - CHANGELOG.md v0.27.0 — release notes
+
 
 
 

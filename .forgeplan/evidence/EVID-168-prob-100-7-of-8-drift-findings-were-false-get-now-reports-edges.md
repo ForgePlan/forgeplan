@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-100
   relation: informs
-status: draft
+status: active
 title: 'PROB-100: 7 of 8 drift findings were false; get now reports edges'
 ---
 
@@ -94,5 +94,6 @@ evidence_type: measurement
 base_sha: ca5a7c2c
 result_sha: 9dd7242
 changed_paths: crates/forgeplan-cli/src/commands/get.rs, crates/forgeplan-cli/src/commands/validate.rs, crates/forgeplan-cli/tests/cli_get_links.rs, crates/forgeplan-core/src/db/store.rs, crates/forgeplan-core/src/lifecycle/mod.rs, crates/forgeplan-core/src/validation/checks.rs, crates/forgeplan-core/src/validation/rules.rs, crates/forgeplan-mcp/src/convert.rs, crates/forgeplan-mcp/src/server.rs, crates/forgeplan-mcp/src/types.rs, .gitignore
+
 
 

@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-008
   relation: informs
-status: draft
+status: active
 title: PRD-008 CLI UX — unified helpers, --json for get/score/search, styled output
 ---
 
@@ -35,4 +35,5 @@ title: PRD-008 CLI UX — unified helpers, --json for get/score/search, styled o
 verdict: supports
 congruence_level: 3
 evidence_type: test
+
 

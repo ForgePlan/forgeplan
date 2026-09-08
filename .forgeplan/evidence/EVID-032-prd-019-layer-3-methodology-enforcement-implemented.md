@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-019
   relation: informs
-status: draft
+status: active
 title: PRD-019 Layer 3 — methodology enforcement implemented
 ---
 
@@ -23,4 +23,5 @@ PRD-019 Layer 3: activate blocks stub + no-evidence artifacts.
 verdict: supports
 congruence_level: 3
 evidence_type: test
+
 
