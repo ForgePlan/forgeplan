@@ -11,6 +11,213 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-09-08
+
+Sprint headline: **Trust the number, and the write, and the gate that proves it.**
+An EvidencePack with no `verdict` and no `congruence_level` has been scoring a
+perfect **1.00** — the opposite of every document describing this system. A
+`forgeplan deprecate` was printing a reason and putting it nowhere a fresh clone
+could ever see it. A test file written to catch a live engine swap has run zero
+times in CI since the swap it exists for. None of the three looked broken —
+each reported success, correctly formatted, right up until someone read the
+file it was supposed to have written to.
+
+Scope note for scripted consumers: no new CLI flag, no new config key, MCP tool
+count unchanged (73). One breaking behaviour change: R_eff for any artifact
+whose weakest evidence pack lacks `verdict`/`congruence_level` drops from 1.0 to
+0.1 — **run `forgeplan score --all` after upgrading** (see below).
+
+### Changed — BREAKING, re-score required
+
+- **Evidence that declares nothing no longer scores full marks** (PROB-101,
+  PRD-086 FR-008/FR-009). An EvidencePack with no `verdict` and no
+  `congruence_level` scored the artifact it informs **1.00**. `CLAUDE.md`
+  RED LINE #7, the `/forge` skill that `setup-skill` installs, and
+  `EVIDENCE-PROTOCOL.md` all state the opposite — CL0, score 0.1 — so the
+  binary and every document describing it disagreed, in the direction that
+  inflates trust.
+
+  The incentive was backwards too: writing `congruence_level: 2` honestly
+  scored 0.9, writing nothing scored 1.0. An unrecognised `verdict` fell
+  through to `Supports` for the same reason, while `congruence_level` in the
+  same function already failed closed with a warning.
+
+  Both now fail closed to CL0 and log why. **Run `forgeplan score --all`
+  after upgrading.** Packs missing either field drop from 1.0 to 0.1, and
+  artifacts whose weakest link was such a pack drop with them. In this
+  repository that is 3 of 167 packs (EVID-033/034/035, feeding PROB-014,
+  PROB-016 and RFC-004). Your workspace may differ, and the drop is the
+  correct reading — those scores were never earned.
+
+### Fixed
+
+- **A leaf EvidencePack scored zero** (#325). The scorer asked a pack for its
+  evidence, found none — a pack has no packs — and returned 0.0 with the
+  factor `No evidence found (L0)`. A canonical pack (`verdict: supports`,
+  `congruence_level: 3`) was worth nothing, and the only way to raise it was
+  to invent child evidence.
+
+  The intrinsic score already existed: `score_evidence_full` is applied to
+  that same pack whenever it scores for something else. It is now applied to
+  the pack itself. Packs that do carry child evidence keep the normal
+  weakest-link path.
+
+- **Trust flowed backwards along `informs`** (#325, FR-002). A pack's
+  outgoing edges point at what it *supports*; treating them as dependencies
+  made a measurement's reliability depend on the decision it justifies. They
+  are excluded from the pack's own dependency walk.
+
+- **An exempt Note poisoned everything built on it** (#392, narrowed). The
+  routing table calls a Note the artifact for trivial reversible work — no
+  ADI, no evidence. The cascade then read an active unevidenced Note as zero
+  trust, so forgeplan said a Note needs no evidence and scored everything
+  downstream of it as unevidenced. `note` and `memory` are now skipped in the
+  dependency walk with a logged factor, exactly as ADR-002 skips non-active
+  dependencies.
+
+  The weakest-link formula is unchanged for every kind that *can* owe
+  evidence. The three fixes proposed in #392 — local-only scoring, one-hop
+  propagation, a floor at `self_score` — were each an average in disguise and
+  were declined; see the issue for the reasoning.
+
+- **`advance_phase` walked phases backwards** (#330). It had no monotonicity
+  guard, and MCP `forgeplan_validate` calls it with `Phase::Validate` on every
+  PASS — so validating an already-shipped artifact reset its phase from `done`
+  and `forgeplan_health` then reported a mismatch the artifact did not have
+  until someone checked it. Backward transitions are refused with an
+  explanation; `forgeplan phase-advance --to <earlier>` still works, because a
+  human correcting a mistake is not automation misfiring.
+
+- **The anomaly detector reported three things it never checked** (#393). It
+  printed `R_eff=0` from a literal rather than the stored score (now
+  `r_eff_cached`, named so, because the reporter's confusion came from
+  comparing it against a fresh `score` run); it labelled every give-up
+  `cycle or depth cap` in graphs with zero cycles (now names which of depth
+  cap, revisit, or exhausted actually happened); and its ancestor walk
+  followed edges the scorer skips, so the two disagreed about the weakest
+  link. The walk now applies the scorer's skip rules.
+
+- **`embed` loaded the model to discover it had nothing to do** (PROB-103).
+  8.22s on a fully-current 427-artifact workspace, spent reading a model that
+  was never used — the missing half of the PROB-093 incremental fix, which
+  removed the encoding work but left the setup for it. 0.25s now, and
+  `Loading embedding model...` prints only when a model is actually loading.
+  The progress line also counted every record instead of the ones being
+  encoded (`Embedding 1 of 427`, not `Embedding 427`).
+
+- **The SPEC validator passed empty templates and blocked real specs** (#450,
+  PROB-105). An untouched `forgeplan new spec` template — every field still a
+  placeholder — validated `PASS — 0 error(s), 0 warning(s)` and activated at
+  **R_eff 1.00**. A spec with two requirements and two GIVEN/WHEN/THEN
+  scenarios failed the MUST rule `spec-contracts`, so it could not activate at
+  all. The kernel had a MUST pointing *against* behavioural specs while waving
+  through documents that said nothing.
+
+  Two causes. `check_stub`'s twelve phrase markers are all PRD prose, and its
+  placeholder signal was capped at `+1` against a threshold of 3 — fifteen
+  unfilled slots weighed the same as one. The count scales now; the threshold
+  comes from the corpus (SPEC template **15** placeholders, PRD template
+  **5**, the six real SPECs **0–3**), not from taste. And `spec-contracts`
+  demanded one particular contract shape; it still demands *a* contract, but
+  `## Requirements`, `## Contract`, and `## Behavioral Contract` now count
+  alongside `## API` and `## Data Model`.
+
+  This is why the marketplace TDD flow grew its own scenario gate: core was
+  rejecting the shape TDD needs.
+
+- **The stub gate told every artifact kind to fill a PRD's sections.** Its
+  remediation line read `Fill MUST sections (Problem, Goals, FR)` whether the
+  artifact was a SPEC, an ADR, or an Epic. It now names the sections of the
+  kind in hand.
+
+### Added
+
+- **`spec-requirement-has-scenario`** (Should, #450). Fires only on a spec
+  that already writes requirements behaviourally and leaves one without a
+  scenario. Deliberately conditional: the blanket form was measured against
+  this repository and fired on 6 of 6 SPECs, none of them defective.
+
+- **`prd-nfr-exist` and `prd-nfr-measurable`** (Should, #449). The PRD had 24
+  validator rules and none about non-functional requirements. `extract_nfr_section`
+  already existed and was called from exactly one place — the tech-leakage
+  check — so the validator could find the NFR section and asked nothing about
+  its contents.
+
+  Both are Should, not Must: 30 of 69 PRDs here have no NFR section at all.
+  `prd-nfr-measurable` strips non-prose before scanning, which is the whole
+  difficulty — the subjective-adjective list (`scalable`, `robust`,
+  `efficient`, `responsive`) reads like a list of NFRs and had only ever been
+  applied to the FR section. Across the 69 PRDs it matches **2** places in FR
+  and **15** in NFR, and all 15 sit inside the template's own
+  `<!-- BAD: "System should be fast and responsive" -->` guidance. A rule
+  flagging those would be unclosable — the only fix would be deleting the
+  instructions. Verified: **0 findings across all 69 PRDs**, while
+  hand-written vague prose still produces findings with line numbers.
+
+### Fixed
+
+- **`forgeplan deprecate` / `renew` / `reopen` printed a reason and stored it
+  nowhere durable.** The command echoed the reason back and `forgeplan get`
+  showed it, but the markdown file never received the `## Deprecation` /
+  `## Renewal` / `## Reopened` section — only the status did, because status
+  lives in frontmatter and the section does not. `.forgeplan/lance/` is
+  gitignored, so the reason did not exist on a fresh clone. Worse than a
+  missing write: the next lifecycle command on that artifact synced the
+  section-less file body back over the index, erasing the reason there too —
+  the disagreement between file and index was temporary, the loss was not.
+  Root cause was a collision between two individually-correct behaviours:
+  `render_projection` is files-first by design (a user's on-disk edits must
+  survive `link`/`tag`/`activate`), and it discarded whatever body these
+  three commands handed it. The three CLI call sites and the MCP `deprecate`
+  handler now use the forcing variant, safe only there because a
+  file→store sync always runs immediately before. Recovery for anyone
+  already hit by this: `forgeplan update <id> --body @path` projects
+  correctly and restores the section by hand.
+
+- **The embedding correctness oracle ran in CI exactly zero times since it
+  was written** (PROB-102). `tests/embedding_reference.rs` pins the engine's
+  output against pre-tract values from the v0.35.0 ONNX → tract swap it
+  exists to catch; the file is entirely behind `semantic-search`, so
+  `check`/`clippy` compiled it and `cargo nextest run --workspace` — invoked
+  without the feature — never even built it into that run. A new CI job
+  runs it in isolation with the model cached across runs, and converts the
+  oracle's normal quiet local-dev skip (a missing model reads as PASS, not
+  skipped) into a loud failure for this job specifically — a cold cache
+  proving nothing would otherwise reproduce the exact defect being closed,
+  one layer down.
+
+### Internal
+
+- ADR-025 (orchestration sits above ForgePlan; per-surface dispositions) and
+  ADR-026 (storage classes for machine-written records) resolve two vNext
+  audit blockers that required a human decision. EVID-169 records the basis.
+- PROB-104: a leaf pack with an evidence neighbour reports the neighbour's
+  score. Recorded, not yet fixed — found while scoping this release, not
+  introduced by it.
+
+### Security
+
+33 open Dependabot alerts at release time (8 high / 15 medium / 10 low), one
+Rust, 32 npm — full triage in
+[`docs/operations/dependabot-triage-2026-09-08.md`](docs/operations/dependabot-triage-2026-09-08.md).
+
+- **`lru` LOW (GHSA-rhfx-m35p-ff5j) — accepted-with-justification, carried
+  forward.** The only consumer is `tantivy 0.24.2`, which pins `lru 0.12.x`;
+  the fix landed in `0.16.3`, a major bump only `tantivy` can take. Forgeplan
+  never constructs an `lru` cache or calls the affected method. Same verdict
+  as v0.33.0 through v0.36.0.
+- **All 32 npm alerts — scheduled.** Confined to `website/`, a statically
+  generated docs site shipping no server and no part of any released
+  artifact. One of them (#442) carries an `astro` 6→7 major inside a
+  Dependabot group PR opened before the `Website build` CI gate existed — its
+  green checkmarks don't include the one check that would exercise a
+  two-major jump. Filed as #485 rather than merged on stale-green.
+- `cargo-deny` (`security` workflow) is **green on `dev`** — checked directly
+  rather than inferred from an empty Dependabot list, because RustSec is not
+  mirrored into Dependabot and that gap has cost this project a red `dev` gate
+  twice before (v0.34.0, v0.35.0) without Dependabot ever showing a symptom.
+
+
 ## [0.36.0] - 2026-09-04
 
 Sprint headline: **Things that reported success while verifying nothing.** Every defect here behaved correctly — search returned plausible results, hints were runnable, the release built green — which is exactly what hid them.

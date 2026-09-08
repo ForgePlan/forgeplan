@@ -79,3 +79,4 @@ title: R_eff excludes terminal-status evidence from the weakest-link min
 - **Фильтровать и draft (буквальный acceptance #436)** — отвергнуто: ломает score-гейт Standard-flow (см. Decision §2).
 
 
+

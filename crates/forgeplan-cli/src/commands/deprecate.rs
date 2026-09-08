@@ -32,10 +32,21 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id))?;
 
-    // Re-render projection with updated status
+    // Re-render projection with the updated status AND the appended body.
+    //
+    // #478: this used `render_projection`, which is files-first — it discards
+    // the body it is handed whenever the file already has one (RFC-004, so a
+    // user's edits survive `link`/`tag`/`activate`). The status reached the
+    // file because status lives in frontmatter; the `## Deprecation` section
+    // did not. `lance/` is gitignored, and the next lifecycle command syncs
+    // the section-less file body back over the DB, so the reason ended up
+    // nowhere at all.
+    //
+    // Forcing is safe *here* because `sync_file_to_store` ran above: at this
+    // point the DB body is the file body plus the section just appended.
     if let Some(record) = store.get_record(id).await? {
         let links = store.get_relations(id).await.unwrap_or_default();
-        projection::render_projection(
+        projection::render_projection_with_body(
             &ws,
             &record.id,
             &record.kind,

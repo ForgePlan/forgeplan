@@ -324,6 +324,52 @@ pub async fn r_eff_recursive(
         evidence_items.push(parse_evidence_from_record(rec));
     }
 
+    // PRD-086 FR-001 (#325). An EvidencePack asked for its evidence finds none —
+    // a pack has no packs — and the empty-evidence branch below returns 0.0 with
+    // the factor "No evidence found (L0)". A canonical pack (`verdict: supports`,
+    // `congruence_level: 3`) scored zero, and the only way to lift it was to
+    // invent child evidence, which is graph pollution to satisfy a walk.
+    //
+    // The intrinsic score already exists. `score_evidence_full` is applied to
+    // this very pack whenever it is scored AS evidence for something else; it
+    // was simply never applied to the pack itself. Trust in a measurement comes
+    // from its verdict, congruence and freshness — not from someone having
+    // measured the measurement.
+    //
+    // Packs that carry child evidence keep the normal path: an EVID built on
+    // other EVIDs is a real chain and the weakest link still rules it.
+    let is_evidence_kind = store
+        .get_record(artifact_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.kind.eq_ignore_ascii_case("evidence"))
+        .unwrap_or(false);
+
+    if is_evidence_kind && evidence_items.is_empty() && terminal_skips == 0 {
+        let own = store.get_record(artifact_id).await.ok().flatten();
+        if let Some(rec) = own {
+            let item = parse_evidence_from_record(&rec);
+            let intrinsic = score_evidence_full(&item);
+            factors.push(format!(
+                "Leaf evidence scored on its own fields: {:?} CL{} = {:.2}",
+                item.verdict, item.congruence_level, intrinsic
+            ));
+            return Ok(AssuranceReport {
+                artifact_id: artifact_id.to_string(),
+                r_eff: intrinsic,
+                self_score: intrinsic,
+                weakest_link: None,
+                decay_penalty: if is_expired(item.valid_until) {
+                    0.9
+                } else {
+                    0.0
+                },
+                factors,
+            });
+        }
+    }
+
     let self_score = if evidence_items.is_empty() {
         if terminal_skips > 0 {
             // quint-code edge case (decision.go:826): all evidence displaced
@@ -358,10 +404,17 @@ pub async fn r_eff_recursive(
         .copied()
         .collect();
 
-    // Collect dependency IDs from outgoing relations.
+    // PRD-086 FR-002 (#325). An EvidencePack's outgoing `informs` / `based_on`
+    // edges point at the artifacts it SUPPORTS. Treating those as dependencies
+    // makes trust in the measurement flow down from the decision it justifies —
+    // backwards. A pack does not become less reliable because the PRD it
+    // informs is poorly evidenced elsewhere.
     let deps: Vec<(String, String)> = outgoing
         .iter()
         .filter(|(_, rel_type)| dep_relation_types.contains(rel_type.as_str()))
+        .filter(|(_, rel_type)| {
+            !(is_evidence_kind && matches!(rel_type.as_str(), "informs" | "based_on"))
+        })
         .cloned()
         .collect();
 
@@ -370,14 +423,33 @@ pub async fn r_eff_recursive(
 
     for (dep_id, rel_type) in &deps {
         // Skip non-active dependencies — draft/deprecated/superseded should not drag down R_eff
-        if let Ok(Some(dep_record)) = store.get_record(dep_id).await
-            && matches!(
+        if let Ok(Some(dep_record)) = store.get_record(dep_id).await {
+            if matches!(
                 dep_record.status.as_str(),
                 "draft" | "deprecated" | "superseded"
-            )
-        {
-            factors.push(format!("Skipped {dep_id} (status: {})", dep_record.status));
-            continue;
+            ) {
+                factors.push(format!("Skipped {dep_id} (status: {})", dep_record.status));
+                continue;
+            }
+
+            // PRD-086 FR-003 (#392, narrowed). The routing table calls a Note
+            // the artifact for trivial, reversible work: no ADI, no evidence,
+            // expires in 90 days. The cascade then read an active Note with no
+            // evidence as zero trust and poisoned every chain based on it — so
+            // forgeplan said a Note needs no evidence and scored everything
+            // downstream of it as unevidenced. Two of its own rules disagreeing.
+            //
+            // Same remedy ADR-002 chose for `draft`: skip, logged, rather than
+            // soften the min. The weakest-link rule is untouched for every kind
+            // that CAN owe evidence — a PRD or ADR with none is real debt and
+            // the cascade surfacing it is the product working.
+            if matches!(dep_record.kind.as_str(), "note" | "memory") {
+                factors.push(format!(
+                    "Skipped {dep_id} (kind: {} — exempt from evidence by routing depth)",
+                    dep_record.kind
+                ));
+                continue;
+            }
         }
 
         let dep_report = match Box::pin(r_eff_recursive(dep_id, store, visited)).await {

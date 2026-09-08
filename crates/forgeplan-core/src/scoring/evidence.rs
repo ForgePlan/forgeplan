@@ -55,14 +55,34 @@ impl SourceTier {
 /// PRD-035 Sprint 13.3 security audit H2 (a malicious contributor cannot
 /// inflate `R_eff` by tagging weak evidence as `source_tier: t1`).
 pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
-    let verdict = extract_field(&record.body, "verdict")
-        .map(|s| match s.to_lowercase().as_str() {
-            "supports" => Verdict::Supports,
-            "weakens" => Verdict::Weakens,
-            "refutes" => Verdict::Refutes,
-            _ => Verdict::Supports,
-        })
-        .unwrap_or(Verdict::Supports);
+    // PRD-086 FR-008. Both branches used to resolve to `Supports`, which scores
+    // 1.0 — an unreadable verdict and an absent one were rewarded with maximum
+    // trust, while `congruence_level` twenty lines below fails closed to CL0
+    // with a warning for exactly the same input classes. One field punished
+    // garbage and its neighbour paid for it.
+    //
+    // Protocol v1 adds a fourth value (`verdict: unknown`) that the old parser
+    // would have scored 1.0 on arrival.
+    //
+    // Fail closed via CL0, which is exactly the outcome the docs already
+    // promise (`Supports` 1.0 minus the CL0 penalty 0.9 = 0.1). `Refutes` would
+    // be the wrong landing — it means "this evidence argues against the claim",
+    // a statement nobody made. Undeclared is not opposed; it is unsupported.
+    let verdict_raw = extract_field(&record.body, "verdict");
+    let verdict_declared = match verdict_raw.as_deref().map(str::to_lowercase).as_deref() {
+        Some("supports") => Some(Verdict::Supports),
+        Some("weakens") => Some(Verdict::Weakens),
+        Some("refutes") => Some(Verdict::Refutes),
+        Some(other) => {
+            eprintln!(
+                "warn: evidence {} has unrecognised verdict='{}' — treated as undeclared (score 0.1) to prevent silent trust inflation",
+                record.id, other
+            );
+            None
+        }
+        None => None,
+    };
+    let verdict = verdict_declared.clone().unwrap_or(Verdict::Supports);
 
     let tier_cl = extract_field(&record.body, "source_tier")
         .and_then(|s| SourceTier::parse(&s))
@@ -114,11 +134,41 @@ pub fn parse_evidence_from_record(record: &ArtifactRecord) -> EvidenceItem {
     // Precedence: take MIN of (tier_cl, explicit_cl). Explicit operator
     // downgrade can never be silently overridden by an automatic tier mapping.
     // Default CL=3 (same context) — evidence created locally is same-context by default.
-    let cl = match (tier_cl, explicit_cl) {
-        (Some(t), Some(e)) => t.min(e),
-        (Some(t), None) => t,
-        (None, Some(e)) => e,
-        (None, None) => 3,
+    // PRD-086 FR-009. `(None, None)` used to mean CL3 — maximum trust for a
+    // pack that declared nothing at all. Three documents state the opposite in
+    // the same words: CLAUDE.md RED LINE #7, the `/forge` skill that
+    // `setup-skill` ships to every user, and EVIDENCE-PROTOCOL.md all say
+    // absent fields mean CL0 and a score of 0.1. Measured before this change:
+    // a body of pure prose scored its target 1.00 "Adequate".
+    //
+    // The rationale for the old default was that locally-authored evidence is
+    // same-context by construction. True, and beside the point — congruence is
+    // not the only thing a missing field withholds. A pack that says nothing
+    // has made no claim to be congruent WITH.
+    //
+    // The incentive was also backwards: writing `congruence_level: 2` honestly
+    // scored 0.9, writing nothing scored 1.0. Skipping the discipline paid
+    // better than following it.
+    //
+    // Verdict participates in the same gate. A pack with `congruence_level: 3`
+    // and no verdict still made no claim about direction, and the old code
+    // defaulted that to `Supports`.
+    let claim_declared = verdict_declared.is_some() && (tier_cl.is_some() || explicit_cl.is_some());
+    let cl = if !claim_declared {
+        if verdict_raw.is_none() && explicit_cl_raw.is_none() && tier_cl.is_none() {
+            eprintln!(
+                "warn: evidence {} declares no structured fields — scored CL0 (0.1). Add `verdict:` and `congruence_level:` under `## Structured Fields`",
+                record.id
+            );
+        }
+        0
+    } else {
+        match (tier_cl, explicit_cl) {
+            (Some(t), Some(e)) => t.min(e),
+            (Some(t), None) => t,
+            (None, Some(e)) => e,
+            (None, None) => unreachable!("claim_declared guarantees one CL source"),
+        }
     };
 
     let valid_until = record.valid_until.as_deref().and_then(|s| {
@@ -474,21 +524,21 @@ congruence_level: 3
 
     #[test]
     fn evidence_body_with_source_tier_maps_to_cl() {
-        let body = "source_tier: t2\nevidence_type: test\n";
+        let body = "verdict: supports\nsource_tier: t2\nevidence_type: test\n";
         let item = parse_evidence_from_record(&mk_record(body));
         assert_eq!(item.congruence_level, 2);
     }
 
     #[test]
     fn evidence_body_source_tier_t1_maps_to_cl3() {
-        let body = "source_tier: tier1\n";
+        let body = "verdict: supports\nsource_tier: tier1\n";
         let item = parse_evidence_from_record(&mk_record(body));
         assert_eq!(item.congruence_level, 3);
     }
 
     #[test]
     fn evidence_body_source_tier_t3_maps_to_cl1() {
-        let body = "source_tier: 3\n";
+        let body = "verdict: supports\nsource_tier: 3\n";
         let item = parse_evidence_from_record(&mk_record(body));
         assert_eq!(item.congruence_level, 1);
     }
@@ -507,35 +557,69 @@ congruence_level: 3
     #[test]
     fn explicit_cl_does_not_inflate_above_source_tier() {
         // source_tier=t3 (CL1) + congruence_level=3 → min = 1
-        let body = "source_tier: t3\ncongruence_level: 3\n";
+        let body = "verdict: supports\nsource_tier: t3\ncongruence_level: 3\n";
         let item = parse_evidence_from_record(&mk_record(body));
         assert_eq!(item.congruence_level, 1);
     }
 
     #[test]
     fn source_tier_used_when_no_explicit_cl() {
-        let body = "source_tier: t2\n";
+        let body = "verdict: supports\nsource_tier: t2\n";
         let item = parse_evidence_from_record(&mk_record(body));
         assert_eq!(item.congruence_level, 2);
     }
 
     #[test]
     fn explicit_cl_used_when_no_source_tier() {
-        let body = "congruence_level: 2\n";
+        let body = "verdict: supports\ncongruence_level: 2\n";
         let item = parse_evidence_from_record(&mk_record(body));
         assert_eq!(item.congruence_level, 2);
     }
 
     #[test]
-    fn neither_field_defaults_to_cl3() {
+    fn no_congruence_source_fails_closed_to_cl0() {
+        // PRD-086 FR-009. This test previously asserted CL3 — it defended the
+        // defect. A pack stating a verdict and no congruence has not said how
+        // close its context is to the claim's, and CLAUDE.md RED LINE #7, the
+        // `/forge` skill and EVIDENCE-PROTOCOL.md all specify CL0 for that.
+        // Renamed rather than edited in place so the old name cannot be found
+        // and trusted.
         let body = "verdict: supports\n";
         let item = parse_evidence_from_record(&mk_record(body));
-        assert_eq!(item.congruence_level, 3);
+        assert_eq!(item.congruence_level, 0);
+    }
+
+    #[test]
+    fn a_body_with_no_structured_fields_scores_a_tenth_not_full_marks() {
+        // The measured symptom behind PROB-101: pure prose scored its target
+        // 1.00 "Adequate". The documented outcome is 0.1 — Supports (1.0)
+        // minus the CL0 penalty (0.9).
+        let item = parse_evidence_from_record(&mk_record("Just prose. Ran it. Fine.\n"));
+        assert_eq!(item.congruence_level, 0);
+        assert!(
+            (crate::scoring::reff::raw_evidence_score(&item) - 0.1).abs() < 1e-9,
+            "expected the documented 0.1, got {}",
+            crate::scoring::reff::raw_evidence_score(&item)
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_verdict_does_not_score_as_support() {
+        // PRD-086 FR-008. `_ => Verdict::Supports` scored garbage at 1.0 while
+        // `congruence_level` in the same function failed closed for the same
+        // input class. Protocol v1's `verdict: unknown` would have arrived
+        // scoring full marks.
+        let item =
+            parse_evidence_from_record(&mk_record("verdict: unknown\ncongruence_level: 3\n"));
+        assert_eq!(
+            item.congruence_level, 0,
+            "an undeclared direction is not a CL3 claim"
+        );
     }
 
     #[test]
     fn evidence_body_invalid_source_tier_falls_back_to_cl() {
-        let body = "source_tier: bogus\ncongruence_level: 2\n";
+        let body = "verdict: supports\nsource_tier: bogus\ncongruence_level: 2\n";
         let item = parse_evidence_from_record(&mk_record(body));
         assert_eq!(item.congruence_level, 2);
     }

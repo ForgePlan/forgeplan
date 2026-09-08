@@ -1369,6 +1369,50 @@ impl LanceStore {
         .await
     }
 
+    /// The record's frontmatter map **with its real links merged in**.
+    ///
+    /// #446. [`ArtifactRecord::frontmatter_map`] rebuilds a frontmatter from
+    /// the record's columns, and the record has no link columns — so the map
+    /// it returns never carries a `links` key. Every rule that compares
+    /// something against `extract_frontmatter_link_targets(fm)` was therefore
+    /// comparing against an empty set, and `body-links-drift` fired on every
+    /// artifact whose `## Related Artifacts` table named anything at all,
+    /// including targets that were correctly linked. The warning could not be
+    /// silenced by doing the right thing, only by deleting the table.
+    ///
+    /// Links come from the relations table — the same source `forgeplan graph`
+    /// renders and `forgeplan link` writes — so the warning now agrees with
+    /// what the user can check by eye.
+    ///
+    /// A failed relations read degrades to the link-less map rather than
+    /// failing validation outright; that restores the old behaviour for that
+    /// one record instead of refusing to validate it.
+    pub async fn frontmatter_map_with_links(
+        &self,
+        record: &ArtifactRecord,
+    ) -> BTreeMap<String, serde_yaml::Value> {
+        use serde_yaml::{Mapping, Value};
+
+        let mut map = record.frontmatter_map();
+        let Ok(relations) = self.get_relations(&record.id).await else {
+            return map;
+        };
+        if relations.is_empty() {
+            return map;
+        }
+        let seq: Vec<Value> = relations
+            .into_iter()
+            .map(|(target, relation)| {
+                let mut entry = Mapping::new();
+                entry.insert(Value::String("target".into()), Value::String(target));
+                entry.insert(Value::String("relation".into()), Value::String(relation));
+                Value::Mapping(entry)
+            })
+            .collect();
+        map.insert("links".to_string(), Value::Sequence(seq));
+        map
+    }
+
     /// Get incoming relations where this artifact is the TARGET.
     /// Returns Vec<(source_id, relation_type)>.
     ///
@@ -3605,6 +3649,93 @@ mod tests {
         assert!(map.contains_key("updated_at"));
         // Empty tags should NOT be emitted
         assert!(!map.contains_key("tags"));
+    }
+
+    /// #446 — the defect in one assertion: `frontmatter_map()` cannot carry
+    /// links, so anything comparing against it sees an artifact with five
+    /// edges as an artifact with none.
+    #[tokio::test]
+    async fn frontmatter_map_alone_never_carries_links() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .add_relation_for_test("SPEC-003", "PRD-065", "refines")
+            .await
+            .unwrap();
+
+        let record = record_for_links_test("SPEC-003");
+
+        assert!(
+            !record.frontmatter_map().contains_key("links"),
+            "the record has no link columns, so the reconstruction cannot have them"
+        );
+        assert!(
+            store
+                .frontmatter_map_with_links(&record)
+                .await
+                .contains_key("links"),
+            "the store knows the edge and must merge it in"
+        );
+    }
+
+    /// #446 — the merged map must be in the exact shape
+    /// `extract_frontmatter_link_targets` reads, otherwise the rule still sees
+    /// an empty set and the fix is cosmetic.
+    #[tokio::test]
+    async fn merged_links_are_readable_by_the_rule_that_needs_them() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        for (target, relation) in [
+            ("PRD-065", "refines"),
+            ("ADR-009", "based_on"),
+            ("SPEC-004", "informs"),
+        ] {
+            store
+                .add_relation_for_test("SPEC-003", target, relation)
+                .await
+                .unwrap();
+        }
+
+        let map = store
+            .frontmatter_map_with_links(&record_for_links_test("SPEC-003"))
+            .await;
+        let mut targets = crate::validation::checks::extract_frontmatter_link_targets(&map);
+        targets.sort();
+
+        assert_eq!(targets, vec!["ADR-009", "PRD-065", "SPEC-004"]);
+    }
+
+    /// An artifact with no edges keeps the link-less map — the merge must not
+    /// invent an empty `links` key that reads as "checked and empty" when the
+    /// relations read never happened.
+    #[tokio::test]
+    async fn no_relations_leaves_the_map_untouched() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let map = store
+            .frontmatter_map_with_links(&record_for_links_test("PRD-777"))
+            .await;
+        assert!(!map.contains_key("links"));
+    }
+
+    fn record_for_links_test(id: &str) -> ArtifactRecord {
+        ArtifactRecord {
+            id: id.to_string(),
+            kind: "spec".to_string(),
+            status: "draft".to_string(),
+            title: "Links".to_string(),
+            body: "body".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
+        }
     }
 
     #[tokio::test]

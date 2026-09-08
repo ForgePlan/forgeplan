@@ -3697,7 +3697,30 @@ impl ForgeplanServer {
                     next_action.push_str(&claim_hint);
                 }
 
-                hinted_result(&ArtifactRecordDto::from(r), next_action)
+                // #447 — fill the edges the pure `From` conversion cannot
+                // reach. Failure to read the relations table degrades to empty
+                // rather than failing the whole read: an artifact body is
+                // still worth returning when the edge lookup misbehaves.
+                let outbound = store.get_relations(&canonical).await.unwrap_or_default();
+                let inbound = store
+                    .get_incoming_relations(&canonical)
+                    .await
+                    .unwrap_or_default();
+                let mut dto = ArtifactRecordDto::from(r);
+                dto.links = crate::types::ArtifactLinksDto {
+                    outbound: outbound
+                        .into_iter()
+                        .map(|(target, relation)| crate::types::OutboundLinkDto {
+                            target,
+                            relation,
+                        })
+                        .collect(),
+                    inbound: inbound
+                        .into_iter()
+                        .map(|(source, relation)| crate::types::InboundLinkDto { source, relation })
+                        .collect(),
+                };
+                hinted_result(&dto, next_action)
             }
             Ok(None) => Ok(artifact_not_found(&p.id)),
             Err(e) => Ok(safe_err_result("", e)),
@@ -4522,8 +4545,15 @@ impl ForgeplanServer {
                 // markdown projection's `status:` frontmatter reflects the
                 // transition. Without this, a CLI re-deprecate would see a
                 // file `status: active` and a store `status: deprecated`.
+                //
+                // #478: must be the *_with_body variant. `deprecate` appends a
+                // `## Deprecation` section carrying the reason; the plain
+                // renderer is files-first and drops it, so the status reached
+                // the file and the reason did not. Safe here because
+                // `sync_before_mutation` ran above.
                 if let Err(e) =
-                    forgeplan_core::projection::render_after_mutation(&ws, &store, &p.id).await
+                    forgeplan_core::projection::render_after_mutation_with_body(&ws, &store, &p.id)
+                        .await
                 {
                     tracing::warn!(
                         "post-mutation render for {} failed: {e} — \
@@ -8122,8 +8152,10 @@ impl ForgeplanServer {
     #[tool(
         description = "Manually advance (or set) the advisory **artifact lifecycle phase** marker \
                        for an artifact (shape/validate/adi/code/test/audit/evidence/done). \
-                       Appends a transition to the history. Does NOT validate phase ordering — \
-                       advisory layer allows out-of-order jumps (e.g. direct `done` override). \
+                       Appends a transition to the history. Forward and out-of-order jumps are \
+                       allowed, including a direct `done` override, and so is moving BACKWARDS — \
+                       this tool is the deliberate-correction path (PRD-086 FR-007). Automatic \
+                       advancement triggered by other tools refuses to move a phase backwards. \
                        Full phase enforcement lands in a later PRD under EPIC-005. Use when \
                        auto-advancement missed a transition or when reclassifying workflow state. \
                        NOTE: this targets the artifact lifecycle phase machine, NOT the \
@@ -8164,8 +8196,20 @@ impl ForgeplanServer {
         let safe_id = sanitize_for_hint(&p.id);
         let safe_reason = p.reason.as_deref().map(sanitize_for_hint);
 
-        match forgeplan_core::phase::store::advance_phase(&ws, &p.id, target, p.reason.clone())
-            .await
+        // PRD-086 FR-007. The monotonicity guard belongs on AUTOMATIC advancement
+        // — `maybe_advance_phase`, which fires on every `forgeplan_validate`
+        // PASS and used to walk a shipped artifact back from `done`. An explicit
+        // call to THIS tool is the same act as `forgeplan phase-advance` on the
+        // command line: someone deciding to correct a marker. The CLI was moved
+        // to the unchecked entry point and this handler must match it, or the
+        // two surfaces disagree about what the same operation means.
+        match forgeplan_core::phase::store::advance_phase_unchecked(
+            &ws,
+            &p.id,
+            target,
+            p.reason.clone(),
+        )
+        .await
         {
             Ok(state) => {
                 let current = state.current_phase.as_str();

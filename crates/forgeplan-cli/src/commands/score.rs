@@ -308,7 +308,29 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     // --- Styled display ---
     ui::header(&target.id, &target.title);
 
-    if evidence_items.is_empty() {
+    // PRD-086 FR-001. "No evidence linked" is now only half a story for an
+    // EvidencePack: it has no child evidence and it is not supposed to, because
+    // it IS the evidence. The engine already scores it on its own fields — this
+    // branch was announcing `R_eff = 0.0` over a report that said 1.00, which is
+    // the same defect class the PRD exists to close, committed by the printer
+    // rather than the scorer. Caught by dogfooding on the real graph; the unit
+    // and integration tests both passed because neither reads this line.
+    let is_evidence = target.kind.eq_ignore_ascii_case("evidence");
+    if evidence_items.is_empty() && is_evidence {
+        ui::info(&format!(
+            "Leaf evidence — scored on its own structured fields. R_eff = {:.2}",
+            report.r_eff
+        ));
+        if report.r_eff <= 0.1 {
+            println!();
+            ui::error_hint(
+                "Structured fields missing or undeclared",
+                &format!(
+                    "forgeplan get {target_ref} — add `verdict:` and `congruence_level:` under `## Structured Fields`"
+                ),
+            );
+        }
+    } else if evidence_items.is_empty() {
         ui::info("No evidence linked. R_eff = 0.0");
         println!();
         ui::error_hint(

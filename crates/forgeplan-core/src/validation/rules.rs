@@ -165,8 +165,38 @@ pub fn check_stub_detailed(body: &str, _fm: &Frontmatter) -> Option<StubReport> 
     // {placeholder} markers — single-brace curly placeholders like {name}.
     // Avoid false-positives on `{{var}}` (already covered by no-placeholders)
     // and on JSON/code by requiring word characters only inside the braces.
-    if PLACEHOLDER_RE.is_match(body) {
+    //
+    // PROB-105. This used to be a single +1 no matter how many placeholders a
+    // body carried, and that cap is why the gate could not see a SPEC. Its
+    // twelve phrase markers are all PRD prose ("Что мы строим и почему это
+    // важно", "[Actor] can [capability]"), none of which appears in the SPEC
+    // template — so an untouched SPEC scored exactly 1 against a threshold of
+    // 3, validated with zero findings, and activated at R_eff 1.00 while its
+    // body still read `{METHOD} /v1/{resource}`.
+    //
+    // A document that is mostly unfilled slots is a stub whatever kind it is,
+    // so the count scales. The second threshold is set from the corpus rather
+    // than taste:
+    //
+    //   SPEC template, untouched   15 placeholders
+    //   PRD template, untouched     5
+    //   SPEC-001 … SPEC-006 (real)  0–3
+    //
+    // MANY_PLACEHOLDERS = 8 sits in the gap with room on both sides. A busy
+    // real spec would have to more than double its placeholder use before this
+    // fires, and a template cannot avoid it.
+    //
+    // Deliberately kind-agnostic: the question is "is this still a form to fill
+    // in", not "is this Gherkin or an API contract". A line-count test was
+    // measured and rejected — the untouched template has 25 non-empty lines
+    // under `## API Contracts`, because placeholder JSON is still lines.
+    const MANY_PLACEHOLDERS: usize = 8;
+    let placeholder_count = PLACEHOLDER_RE.find_iter(body).count();
+    if placeholder_count > 0 {
         count += 1;
+    }
+    if placeholder_count >= MANY_PLACEHOLDERS {
+        count += 2;
     }
 
     // 3+ consecutive section bodies that are just "..."
@@ -271,11 +301,23 @@ fn check_body_links_drift(body: &str, fm: &Frontmatter) -> Option<String> {
     if missing.is_empty() {
         None
     } else {
+        // #446 — the ids are known here, so name them instead of shipping
+        // `<this-id>` and `<target>` for the reader to substitute. The
+        // relation is left as a choice because it genuinely is one: only the
+        // author knows whether the edge is `informs` or `based_on`.
+        let self_ref = if self_id.is_empty() {
+            "<this-id>".to_string()
+        } else {
+            self_id.clone()
+        };
         Some(format!(
-            "Body's `## Related Artifacts` table mentions {} but frontmatter `links:` array doesn't reference \
-             them. Run: forgeplan link <this-id> <target> --relation <informs|based_on|refines|...> \
-             OR remove the table row if the mention is incidental.",
-            missing.join(", ")
+            "Body's `## Related Artifacts` table mentions {} but the artifact is not linked to \
+             them. Run: forgeplan link {} {} --relation <informs|based_on|refines> — pick the \
+             relation, the ids are already correct. Or remove the table row if the mention is \
+             incidental.",
+            missing.join(", "),
+            self_ref,
+            missing[0],
         ))
     }
 }
@@ -424,6 +466,26 @@ fn prd_rules(depth: &Mode) -> Vec<RuleEntry> {
         Severity::Could,
         "FR format: [Actor] can [capability]",
         check_prd_fr_format,
+    ));
+
+    // Issue #449. PRD carried 24 validator rules and none for non-functional
+    // requirements. `extract_nfr_section` already existed — called from exactly
+    // one place, the tech-leakage check — so the validator could find the
+    // section and asked nothing about its contents.
+    //
+    // Should, not Must: 30 of the 69 PRDs here have no NFR section, and turning
+    // them all red at once is how a rule gets ignored rather than obeyed.
+    rules.push(rule(
+        "prd-nfr-exist",
+        Severity::Should,
+        "Non-Functional Requirements section",
+        check_prd_nfr_exists,
+    ));
+    rules.push(rule(
+        "prd-nfr-measurable",
+        Severity::Should,
+        "NFRs state numbers, not adjectives",
+        check_prd_nfr_measurable,
     ));
 
     // BMAD Step 5: Measurability checks
@@ -690,6 +752,36 @@ fn check_prd_fr_format(body: &str, _fm: &Frontmatter) -> Option<String> {
     }
 }
 
+fn check_prd_nfr_exists(body: &str, _fm: &Frontmatter) -> Option<String> {
+    if checks::extract_nfr_section(body).is_some() {
+        return None;
+    }
+    Some(
+        "No '## Non-Functional Requirements' section. Performance, reliability and security \
+         budgets that are never written down are never verified — state them, or say \
+         explicitly that this change has none (aliases: 'NFR', 'Quality Attributes')"
+            .into(),
+    )
+}
+
+fn check_prd_nfr_measurable(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let findings = checks::check_nfr_measurability(body);
+    if findings.is_empty() {
+        return None;
+    }
+    let details: Vec<String> = findings
+        .iter()
+        .take(5)
+        .map(|(word, line)| format!("'{word}' at line {line}"))
+        .collect();
+    Some(format!(
+        "Subjective adjectives in NFR: {}. An NFR without a number cannot be verified — give \
+         each one a threshold and how it is measured (e.g. 'p95 < 200ms under 50 rps'), or \
+         mark it TBD so the gap stays visible",
+        details.join(", ")
+    ))
+}
+
 fn check_prd_measurability_adjectives(body: &str, _fm: &Frontmatter) -> Option<String> {
     let findings = checks::check_measurability_adjectives(body);
     if findings.is_empty() {
@@ -943,7 +1035,38 @@ fn spec_rules(_depth: &Mode) -> Vec<RuleEntry> {
             "Related Artifacts",
             check_spec_related,
         ),
+        // Issue #450, narrowed to internal consistency — see
+        // `checks::requirements_without_scenarios` for why the blanket form was
+        // rejected. Should, not Must: a half-authored spec is worth flagging,
+        // not worth blocking mid-draft.
+        rule(
+            "spec-requirement-has-scenario",
+            Severity::Should,
+            "Each `### Requirement` carries a `#### Scenario`",
+            check_spec_requirement_scenarios,
+        ),
     ]
+}
+
+fn check_spec_requirement_scenarios(body: &str, _fm: &Frontmatter) -> Option<String> {
+    let missing = checks::requirements_without_scenarios(body);
+    if missing.is_empty() {
+        return None;
+    }
+    let shown: Vec<String> = missing.iter().take(3).map(|t| format!("`{t}`")).collect();
+    let more = missing.len().saturating_sub(shown.len());
+    let tail = if more > 0 {
+        format!(" (+{more} more)")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "{} requirement(s) have no `#### Scenario`: {}{tail}. A requirement without a scenario \
+         is a promise with no oracle — add a `#### Scenario` with GIVEN / WHEN / THEN beneath \
+         each, or move the requirement out until it can be stated as observable behaviour",
+        missing.len(),
+        shown.join(", ")
+    ))
 }
 
 fn check_spec_summary(body: &str, _fm: &Frontmatter) -> Option<String> {
@@ -955,13 +1078,41 @@ fn check_spec_summary(body: &str, _fm: &Frontmatter) -> Option<String> {
 }
 
 fn check_spec_contracts(body: &str, _fm: &Frontmatter) -> Option<String> {
-    let has_api = checks::section_exists(body, "API");
-    let has_data = checks::section_exists(body, "Data Model");
-    let has_contracts = checks::section_exists(body, "Contracts");
-    if !has_api && !has_data && !has_contracts {
-        Some("Missing '## API Contracts' or '## Data Models' section".into())
-    } else {
+    // A SPEC must carry a contract someone can check an implementation against.
+    // The rule does NOT get to decide what form that takes.
+    //
+    // PROB-105. Until this fix the accepted headings were `API`, `Data Model`
+    // and `Contracts` — all structural. A behavioural spec built from
+    // `## Requirements` / `### Requirement` / `#### Scenario` with GIVEN/WHEN/THEN
+    // failed this MUST and could not be activated, while an untouched template
+    // full of `{METHOD} /v1/{resource}` passed it. The kernel was mandating one
+    // methodology's shape and rejecting the other, which is the reverse of what
+    // issue #450 reports.
+    //
+    // `section_exists` matches by prefix, so "Contracts" never matched a
+    // singular `## Contract`, and "Behavioral Contract" matched nothing at all
+    // because the prefix is "behavioral".
+    //
+    // Both oracles are legitimate: an API contract tells an implementer what to
+    // build, a scenario tells a test what to assert. Either satisfies the rule;
+    // neither is privileged.
+    let structural = checks::section_exists(body, "API")
+        || checks::section_exists(body, "Data Model")
+        || checks::section_exists(body, "Contract");
+    let behavioural = checks::section_exists(body, "Requirements")
+        || checks::section_exists(body, "Behavioral Contract")
+        || checks::section_exists(body, "Behavioural Contract");
+
+    if structural || behavioural {
         None
+    } else {
+        Some(
+            "Missing a contract section — a SPEC needs something an implementation can be \
+             checked against: `## API Contracts` / `## Data Models` / `## Contract` for a \
+             structural spec, or `## Requirements` with `#### Scenario` blocks for a \
+             behavioural one"
+                .into(),
+        )
     }
 }
 
@@ -1654,6 +1805,7 @@ mod tests {
         let prd_base = 5; // problem, goals, non-goals, fr, related
         let fr_format = 1; // fr-format check (all depths)
         let measurability = 2; // adjectives + vague quantifiers (all depths)
+        let nfr = 2; // #449: nfr-exist + nfr-measurable (all depths)
         let density_detection = 2; // filler-phrases + density-score (all depths)
         let traceability = 2; // orphan-frs + orphan-goals (all depths)
         let classification = 2; // domain-sections + project-type-sections (all depths)
@@ -1663,6 +1815,7 @@ mod tests {
                 + prd_base
                 + fr_format
                 + measurability
+                + nfr
                 + density_detection
                 + traceability
                 + classification
@@ -1677,6 +1830,7 @@ mod tests {
         let standard_extra = 3; // density, audience, leakage
         let fr_format = 1;
         let measurability = 2; // adjectives + vague quantifiers
+        let nfr = 2; // #449: nfr-exist + nfr-measurable (all depths)
         let density_detection = 2; // filler-phrases + density-score
         let traceability = 2; // orphan-frs + orphan-goals
         let classification = 2; // domain-sections + project-type-sections
@@ -1687,6 +1841,7 @@ mod tests {
                 + standard_extra
                 + fr_format
                 + measurability
+                + nfr
                 + density_detection
                 + traceability
                 + classification
@@ -1707,6 +1862,7 @@ mod tests {
         let deep_extra = 7; // timeline, stakeholders, acceptance, risk, rollback, success_metrics, dependencies
         let fr_format = 1;
         let measurability = 2; // adjectives + vague quantifiers
+        let nfr = 2; // #449: nfr-exist + nfr-measurable (all depths)
         let density_detection = 2; // filler-phrases + density-score
         let traceability = 2; // orphan-frs + orphan-goals
         let classification = 2; // domain-sections + project-type-sections
@@ -1718,6 +1874,7 @@ mod tests {
                 + deep_extra
                 + fr_format
                 + measurability
+                + nfr
                 + density_detection
                 + traceability
                 + classification
@@ -1744,15 +1901,19 @@ mod tests {
     }
 
     #[test]
-    fn rules_for_spec_returns_base_plus_3() {
+    fn rules_for_spec_returns_base_plus_4() {
         let rules = rules_for(&ArtifactKind::Spec, &Mode::Standard);
         let base_count = base_rules().len();
-        assert_eq!(rules.len(), base_count + 3);
+        // #450 added spec-requirement-has-scenario. Renamed rather than edited
+        // in place, so a stale reference to "plus_3" cannot resolve and be
+        // trusted.
+        assert_eq!(rules.len(), base_count + 4);
 
         let ids: Vec<&str> = rules.iter().map(|(id, _, _, _)| *id).collect();
         assert!(ids.contains(&"spec-summary"));
         assert!(ids.contains(&"spec-contracts"));
         assert!(ids.contains(&"spec-related"));
+        assert!(ids.contains(&"spec-requirement-has-scenario"));
     }
 
     #[test]
@@ -2065,6 +2226,127 @@ mod tests {
     }
 
     // ─── no-stub-content (PRD-043 FR-003) ──────────────────────────────────
+    /// PROB-105. An untouched SPEC template used to score exactly 1 against a
+    /// threshold of 3 and validate with zero findings — the twelve phrase
+    /// markers are PRD prose, and the placeholder signal was capped at +1 no
+    /// matter how many slots were unfilled.
+    ///
+    /// Verified by mutation: removing the scaling puts this template back to
+    /// `PASS -- 0 error(s), 0 warning(s)`.
+    #[test]
+    fn an_untouched_spec_template_is_detected_as_a_stub() {
+        let body = "\
+# SPEC-{NNN}: {Specification Title}
+
+## Summary
+
+Что специфицируется. Одно предложение.
+
+## API Contracts
+
+### Endpoint: `{METHOD} /v1/{resource}`
+
+**Request**:
+```json
+{ \"field1\": \"string (required)\" }
+```
+
+### Endpoint: `{METHOD} /v1/{resource}/{id}`
+
+## Data Models
+
+### Entity: {EntityName}
+
+| Field | Type |
+|---|---|
+| {field} | {type} |
+
+### Entity: {OtherEntity}
+
+## Errors
+
+| {status} | {code} |
+";
+        assert!(
+            check_stub(body, &Frontmatter::new()).is_some(),
+            "a body that is still mostly unfilled slots must read as a stub"
+        );
+    }
+
+    /// The test above pins a hand-abridged copy of the template, so it cannot
+    /// notice the real file changing. This one reads the file the binary
+    /// actually ships (`include_str!`, same path as `template::engine`) and
+    /// asserts two things about it:
+    ///
+    /// 1. it still reads as a stub — an author who runs `forgeplan new spec`
+    ///    and stops must not be able to activate the result;
+    /// 2. the guidance comment added for PROB-105 does not register as a
+    ///    heading. It names `## Requirements` and `### Requirement` inside
+    ///    backticks; if `section_exists` ever started matching those, an empty
+    ///    template would satisfy `spec-contracts` through its own comment.
+    #[test]
+    fn the_shipped_spec_template_is_a_stub_and_declares_no_sections() {
+        let raw = include_str!("../../../../templates/spec/_TEMPLATE.md");
+        let body = raw
+            .strip_prefix("---")
+            .and_then(|rest| rest.split_once("\n---"))
+            .map(|(_, after)| after)
+            .unwrap_or(raw);
+
+        assert!(
+            check_stub(body, &Frontmatter::new()).is_some(),
+            "the shipped SPEC template must read as a stub -- \
+             it is entirely unfilled slots"
+        );
+        assert!(
+            !checks::section_exists(body, "Requirements"),
+            "the guidance comment must not register as a Requirements heading"
+        );
+    }
+
+    /// The other side of the same threshold: a real spec uses a handful of
+    /// placeholders in examples and must stay silent. Measured across the six
+    /// real SPECs in this repository: 0-3 placeholders each.
+    #[test]
+    fn a_real_spec_with_a_few_placeholders_is_not_a_stub() {
+        let body = "\
+# SPEC-003: Playbook YAML schema
+
+## Summary
+
+The on-disk contract for a playbook file.
+
+## Contract
+
+Every playbook declares `schema_version`, `name` and a non-empty `steps` list.
+A step names the agent it dispatches to and the artifact kind it may write.
+Unknown keys are rejected rather than ignored, so a typo fails loudly.
+
+## Data Models
+
+```rust
+pub struct Playbook {
+    pub schema_version: SchemaVersion,
+    pub name: String,
+    pub steps: Vec<Step>,
+}
+```
+
+Paths are written as `{workspace}/playbooks/<name>.yaml` where the brace is a
+literal placeholder in prose, not an unfilled slot.
+
+## Errors
+
+| Code | Meaning |
+|---|---|
+| E_SCHEMA | schema_version is absent or unsupported |
+| E_EMPTY | steps is present but empty |
+";
+        assert!(
+            check_stub(body, &Frontmatter::new()).is_none(),
+            "a filled spec with an incidental placeholder must not read as a stub"
+        );
+    }
 
     #[test]
     fn test_check_stub_detailed_returns_count() {

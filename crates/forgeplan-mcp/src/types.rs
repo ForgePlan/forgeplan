@@ -38,6 +38,31 @@ pub struct ArtifactSummaryDto {
     pub id_display: String,
 }
 
+// #447 — the graph edges of a single artifact. `forgeplan_get` returned ~20
+// fields and none of them were links, so an artifact with five edges and one
+// with none were indistinguishable in the response. Against a rich object, a
+// missing field reads as "this artifact has none", not "this tool does not
+// report them".
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OutboundLinkDto {
+    pub target: String,
+    pub relation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct InboundLinkDto {
+    pub source: String,
+    pub relation: String,
+}
+
+/// Inbound matters as much as outbound: "which evidence supports this" is the
+/// question behind an `r_eff` of 0, and it is invisible from the outbound side.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactLinksDto {
+    pub outbound: Vec<OutboundLinkDto>,
+    pub inbound: Vec<InboundLinkDto>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactRecordDto {
     pub id: String,
@@ -66,6 +91,12 @@ pub struct ArtifactRecordDto {
     pub id_canonical: String,
     #[serde(default)]
     pub id_display: String,
+    // #447 — deliberately NOT `skip_serializing_if`. An absent field and an
+    // empty one say the same thing to a caller, which is the whole defect;
+    // the empty arrays are the signal that the question was asked and the
+    // answer is "none".
+    #[serde(default)]
+    pub links: ArtifactLinksDto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

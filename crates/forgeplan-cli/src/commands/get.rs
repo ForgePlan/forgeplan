@@ -29,6 +29,23 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         .await
         .unwrap_or_default();
     let has_links = !relations.is_empty() || !incoming.is_empty();
+
+    // #447 — both edge sets were already fetched above and then collapsed
+    // into `has_links` purely to pick a hint. The data was one line from the
+    // output and thrown away, so a linked artifact and an orphan rendered
+    // identically. Emitted unconditionally: a caller must be able to tell
+    // "this has no links" from "this tool does not report links", and an
+    // absent field says the same thing as an empty one.
+    let links_json = serde_json::json!({
+        "outbound": relations
+            .iter()
+            .map(|(target, relation)| serde_json::json!({ "target": target, "relation": relation }))
+            .collect::<Vec<_>>(),
+        "inbound": incoming
+            .iter()
+            .map(|(source, relation)| serde_json::json!({ "source": source, "relation": relation }))
+            .collect::<Vec<_>>(),
+    });
     let kind: forgeplan_core::artifact::types::ArtifactKind = record
         .kind
         .parse()
@@ -89,6 +106,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             "created_at": record.created_at,
             "updated_at": record.updated_at,
             "body": record.body,
+            "links": links_json,
             "_next_action": hints::primary_action(&hints_vec),
         });
         println!("{}", serde_json::to_string_pretty(&json_data)?);
@@ -118,6 +136,23 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     ui::kv("R_eff", &ui::styled_reff(record.r_eff_score));
     ui::kv("Created", &record.created_at);
     ui::kv("Updated", &record.updated_at);
+    // #447 — the same edges the JSON path reports. Printed even when there
+    // are none, for the same reason.
+    if relations.is_empty() && incoming.is_empty() {
+        ui::kv("Links", "none");
+    } else {
+        if !relations.is_empty() {
+            let out: Vec<String> = relations
+                .iter()
+                .map(|(t, r)| format!("{t} ({r})"))
+                .collect();
+            ui::kv("Links out", &out.join(", "));
+        }
+        if !incoming.is_empty() {
+            let inc: Vec<String> = incoming.iter().map(|(s, r)| format!("{s} ({r})")).collect();
+            ui::kv("Links in", &inc.join(", "));
+        }
+    }
     println!();
     println!("{}", record.body);
 

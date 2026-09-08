@@ -96,7 +96,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup Node
-        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903  # v6.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -120,7 +120,7 @@ jobs:
     # in website/docs/CLAUDE.md/README/TODO, so a docs-only PR never ran it.
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Self-test the detector's own regex
         # #421: the extraction pattern had never been asserted, and a
@@ -190,7 +190,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba  # v0.0.11
 
       - name: Probe sccache backend
         # Probe whether the GHA cache backend is healthy. If reachable,
@@ -223,7 +223,7 @@ jobs:
           fi
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
@@ -272,7 +272,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba  # v0.0.11
 
       - name: Probe sccache backend
         # Same probe pattern as in the check job — see comment above.
@@ -298,10 +298,10 @@ jobs:
           fi
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094  # v2.85.1
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: cargo-nextest
 
@@ -313,6 +313,129 @@ jobs:
         # (https://github.com/nextest-rs/nextest/issues/16). Run separately
         # to maintain coverage parity with the previous workflow.
         run: cargo test --workspace --doc
+
+      - name: sccache stats
+        if: always() && env.RUSTC_WRAPPER == 'sccache'
+        run: sccache --show-stats || true
+
+  # PROB-102: the `check` job above proves the semantic-search feature
+  # COMPILES. It has never proven the embedding engine is CORRECT — that
+  # needs `tests/embedding_reference.rs`, which is entirely behind the
+  # feature, so `test`'s plain `cargo nextest run --workspace` never even
+  # compiles it, let alone runs it. `0 passed` for a file with three real
+  # assertions read as success on every PR since v0.35.0 (the ONNX -> tract
+  # engine swap this oracle exists to catch).
+  #
+  # This job pays the cost the `check` job comment said "is not worth
+  # downloading per run": the model is ~2.1 GB, cached across runs by
+  # `actions/cache` keyed on the model repo name, so only the FIRST run
+  # after a cache eviction pays the download. `FORGEPLAN_REQUIRE_MODEL_IN_
+  # TESTS=1` makes a cold or broken cache a loud red failure instead of the
+  # oracle's normal quiet local-dev skip (an early `return` on a missing
+  # model reads as PASS to nextest — the same defect one level down inside
+  # the fix for it, so this job would silently prove nothing if the cache
+  # ever failed to warm and the guard were not here).
+  test-embedding-oracle:
+    name: Embedding correctness oracle
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable branch @ 2026-03-27 (no tag; verify with git ls-remote)
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+
+      - name: Probe sccache backend
+        # Same probe pattern as the check/test jobs — see comment there.
+        run: |
+          export SCCACHE_GHA_ENABLED=true
+          if timeout 30 sccache --start-server >/dev/null 2>&1; then
+            echo 'fn main() {}' > /tmp/probe.rs
+            if timeout 30 sccache rustc \
+                --edition 2021 \
+                --crate-name probe \
+                --crate-type bin \
+                /tmp/probe.rs \
+                -o /tmp/probe 2>/dev/null; then
+              echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+              echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+              echo "✓ sccache probe passed — wrapper enabled"
+            else
+              sccache --stop-server >/dev/null 2>&1 || true
+              echo "✗ sccache probe failed (rustc invocation) — falling back to direct rustc"
+            fi
+          else
+            echo "✗ sccache probe failed (server start) — falling back to direct rustc"
+          fi
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: embedding-oracle
+
+      - name: Cache embedding model
+        # `resolve_cache_dir()` (crates/forgeplan-core/src/embed/mod.rs) puts
+        # the model under the platform cache dir when `FORGEPLAN_MODEL_CACHE`
+        # is unset — `~/.cache/forgeplan/models` on this runner. Keyed on the
+        # model repo name, not a version tag: the model itself doesn't churn
+        # per-PR, and a stale-but-present cache is exactly what this job's
+        # `FORGEPLAN_REQUIRE_MODEL_IN_TESTS` guard is for — if the cached
+        # weights were ever wrong, the oracle's vector comparison would be
+        # the thing that catches it, not the cache key.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v6.1.0
+        with:
+          path: ~/.cache/forgeplan/models
+          key: embedding-model-bge-m3
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094  # v2.85.1
+        with:
+          tool: cargo-nextest
+
+      - name: cargo nextest run (embedding oracle)
+        # Two independent fail-closed paths, verified separately rather than
+        # assumed:
+        #   1. `--test embedding_reference` with the feature dropped compiles
+        #      zero tests. Verified locally: nextest exits 4 with
+        #      "error: no tests to run" on its own — no extra guard needed
+        #      for that case.
+        #   2. The feature present but the model missing/broken: without
+        #      `FORGEPLAN_REQUIRE_MODEL_IN_TESTS`, `embedder_or_skip` returns
+        #      `None` and each test `return`s early, which nextest reports as
+        #      PASS — this is the actual PROB-102 shape, one level inside the
+        #      fix for it. `=1` turns that `None` into a panic instead.
+        #      Verified locally by forcing `Embedder::new()` to `Err`: the
+        #      job fails loudly with `=1` set, passes silently without it.
+        #
+        # `--test-threads=1`: found the hard way, on this job's own first
+        # cold-cache run. `dimension_is_unchanged` and `embeddings_match_
+        # the_captured_reference` both call `Embedder::new()`, and nextest
+        # defaults to running them concurrently. Against a genuinely empty
+        # cache both start downloading the same ~2.1 GB model into the same
+        # directory at once — one finished in 62s, the other failed 7s in
+        # trying to fetch `onnx/model.onnx_data`. Once `actions/cache` has
+        # populated the directory this race cannot occur (`find_snapshot`
+        # returns immediately, no write happens) — but the FIRST run after
+        # any cache eviction hits it every time, and that run reporting red
+        # for a race rather than a real defect is exactly the kind of noise
+        # that trains people to re-run and ignore, not investigate. Serial
+        # execution removes the download race outright; two tests don't
+        # need parallelism.
+        env:
+          FORGEPLAN_REQUIRE_MODEL_IN_TESTS: "1"
+        run: |
+          cargo nextest run -p forgeplan-core --features semantic-search \
+            --test embedding_reference --no-fail-fast --test-threads=1
 
       - name: sccache stats
         if: always() && env.RUSTC_WRAPPER == 'sccache'
@@ -336,7 +459,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba  # v0.0.11
 
       - name: Probe sccache backend
         run: |
@@ -361,7 +484,7 @@ jobs:
           fi
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
 
       - name: Build forgeplan binary
         run: cargo build --bin forgeplan

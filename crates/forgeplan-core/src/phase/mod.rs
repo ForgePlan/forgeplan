@@ -108,6 +108,26 @@ pub enum Phase {
 }
 
 impl Phase {
+    /// Position in the canonical ladder, for monotonicity checks (#330).
+    ///
+    /// `Unknown` sits below everything: an artifact whose phase was never
+    /// tracked may advance to any real phase. Every other pair compares by
+    /// ladder position, so "is this a step backwards" has one answer rather
+    /// than one per call site.
+    pub fn rank(self) -> u8 {
+        match self {
+            Phase::Unknown => 0,
+            Phase::Shape => 1,
+            Phase::Validate => 2,
+            Phase::Adi => 3,
+            Phase::Code => 4,
+            Phase::Test => 5,
+            Phase::Audit => 6,
+            Phase::Evidence => 7,
+            Phase::Done => 8,
+        }
+    }
+
     /// Canonical string name (snake_case, matches serde output).
     pub fn as_str(self) -> &'static str {
         match self {
