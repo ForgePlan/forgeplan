@@ -34,13 +34,20 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id))?;
 
-    // Render projections for both old (deprecated) and new (draft)
+    // Render projections for both old (deprecated) and new (draft).
+    //
+    // #478 — the OLD artifact needs the forcing variant: `render_projection`
+    // is files-first and dropped its `## Reopened` section, so the record of
+    // why it was retired never reached the file. Safe to force here because
+    // `sync_file_to_store` ran above. The NEW artifact below keeps the plain
+    // call: its file does not exist yet, so the renderer already takes the
+    // passed body.
     if let Some(old_record) = store.get_record(&result.old_id).await? {
         let links = store
             .get_relations(&result.old_id)
             .await
             .unwrap_or_default();
-        projection::render_projection(
+        projection::render_projection_with_body(
             &ws,
             &old_record.id,
             &old_record.kind,

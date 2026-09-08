@@ -167,10 +167,45 @@ pub async fn render_projection(
 /// Render a full ArtifactRecord (includes tags) to its markdown file.
 /// Used by mutations like `tag` / `untag` that need to persist tags to
 /// frontmatter so they survive a reindex (ADR-003 files-first).
+///
+/// Files-first: an existing non-empty file body wins over `record.body`.
+/// For a mutation that *appends to the body* (the lifecycle sections), use
+/// [`render_projection_record_with_body`] instead — see #478.
 pub async fn render_projection_record(
     workspace: &Path,
     record: &crate::db::store::ArtifactRecord,
     links: &[(String, String)],
+) -> anyhow::Result<PathBuf> {
+    render_projection_record_inner(workspace, record, links, false).await
+}
+
+/// Like [`render_projection_record`], but writes `record.body` verbatim
+/// instead of preserving whatever the file already holds.
+///
+/// #478: `deprecate` / `renew` / `reopen` append a `## Deprecation` /
+/// `## Renewal` / `## Reopened` section to the body. Rendered files-first,
+/// that section is discarded — the status reaches the file (it is
+/// frontmatter) and the reason does not. Because `lance/` is gitignored and
+/// the next mutation syncs the section-less file body back over the DB, the
+/// reason ends up in neither place.
+///
+/// Only safe when the caller has just synced file → store, so that
+/// `record.body` is the file body plus the appended section. Do not reach
+/// for this in `link` / `tag` / `activate`: they pass a possibly-stale DB
+/// body, and files-first is what protects a user's edits there.
+pub async fn render_projection_record_with_body(
+    workspace: &Path,
+    record: &crate::db::store::ArtifactRecord,
+    links: &[(String, String)],
+) -> anyhow::Result<PathBuf> {
+    render_projection_record_inner(workspace, record, links, true).await
+}
+
+async fn render_projection_record_inner(
+    workspace: &Path,
+    record: &crate::db::store::ArtifactRecord,
+    links: &[(String, String)],
+    force_body: bool,
 ) -> anyhow::Result<PathBuf> {
     let artifact_kind = record
         .kind
@@ -184,7 +219,10 @@ pub async fn render_projection_record(
     let filepath = dir.join(&filename);
 
     // Files-first: preserve existing body + agent-owned fm keys (PRD-057 FR-009).
-    let (effective_body, preserved_fm) = if filepath.exists() {
+    // `force_body` (#478) opts out for mutations that append to the body.
+    let (effective_body, preserved_fm) = if force_body {
+        (record.body.clone(), read_preserved_fm(&filepath).await)
+    } else if filepath.exists() {
         match tokio::fs::read_to_string(&filepath).await {
             Ok(file_content) => match frontmatter::parse_frontmatter(&file_content) {
                 Ok((fm, file_body)) => {
@@ -392,6 +430,24 @@ pub async fn render_after_mutation(
     if let Some(record) = store.get_record(id).await? {
         let links = store.get_relations(id).await.unwrap_or_default();
         render_projection_record(workspace, &record, &links).await?;
+    }
+    Ok(())
+}
+
+/// Like [`render_after_mutation`], but writes the store's body verbatim.
+///
+/// For handlers whose mutation *appended to the body* — the lifecycle
+/// sections. The plain variant is files-first and silently drops them
+/// (#478). Requires that the handler synced file → store first, which
+/// `sync_before_mutation` does.
+pub async fn render_after_mutation_with_body(
+    workspace: &Path,
+    store: &crate::db::store::LanceStore,
+    id: &str,
+) -> anyhow::Result<()> {
+    if let Some(record) = store.get_record(id).await? {
+        let links = store.get_relations(id).await.unwrap_or_default();
+        render_projection_record_with_body(workspace, &record, &links).await?;
     }
     Ok(())
 }

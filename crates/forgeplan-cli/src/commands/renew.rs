@@ -21,10 +21,12 @@ pub async fn run(id: &str, reason: &str, until: &str) -> anyhow::Result<()> {
 
     let result = lifecycle::renew(&store, id, reason, until).await?;
 
-    // Re-render projection with updated status
+    // Re-render projection with the updated status AND the appended body.
+    // #478 — `render_projection` is files-first and would drop the
+    // `## Renewal` section. Safe to force: `sync_file_to_store` ran above.
     if let Some(record) = store.get_record(id).await? {
         let links = store.get_relations(id).await.unwrap_or_default();
-        projection::render_projection(
+        projection::render_projection_with_body(
             &ws,
             &record.id,
             &record.kind,
