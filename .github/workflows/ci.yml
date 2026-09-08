@@ -416,11 +416,26 @@ jobs:
         #      fix for it. `=1` turns that `None` into a panic instead.
         #      Verified locally by forcing `Embedder::new()` to `Err`: the
         #      job fails loudly with `=1` set, passes silently without it.
+        #
+        # `--test-threads=1`: found the hard way, on this job's own first
+        # cold-cache run. `dimension_is_unchanged` and `embeddings_match_
+        # the_captured_reference` both call `Embedder::new()`, and nextest
+        # defaults to running them concurrently. Against a genuinely empty
+        # cache both start downloading the same ~2.1 GB model into the same
+        # directory at once — one finished in 62s, the other failed 7s in
+        # trying to fetch `onnx/model.onnx_data`. Once `actions/cache` has
+        # populated the directory this race cannot occur (`find_snapshot`
+        # returns immediately, no write happens) — but the FIRST run after
+        # any cache eviction hits it every time, and that run reporting red
+        # for a race rather than a real defect is exactly the kind of noise
+        # that trains people to re-run and ignore, not investigate. Serial
+        # execution removes the download race outright; two tests don't
+        # need parallelism.
         env:
           FORGEPLAN_REQUIRE_MODEL_IN_TESTS: "1"
         run: |
           cargo nextest run -p forgeplan-core --features semantic-search \
-            --test embedding_reference --no-fail-fast
+            --test embedding_reference --no-fail-fast --test-threads=1
 
       - name: sccache stats
         if: always() && env.RUSTC_WRAPPER == 'sccache'
