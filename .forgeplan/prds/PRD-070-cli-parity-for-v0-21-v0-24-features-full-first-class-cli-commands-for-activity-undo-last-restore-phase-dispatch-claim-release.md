@@ -9,7 +9,7 @@ links:
   relation: based_on
 priority: P1
 projectType: cli_tool
-status: draft
+status: active
 title: CLI parity for v0.21-v0.24 features — full first-class CLI commands for activity, undo-last, restore, phase, dispatch, claim, release
 updated: 2026-04-26
 ---
@@ -124,4 +124,5 @@ Full detail in PROB-045.
 | PRD-055 | informs (source of activity, undo, restore) |
 | PRD-056 | informs (source of phase, phase-advance) |
 | PRD-057 | informs (source of dispatch, claim, claims, release) |
+
 

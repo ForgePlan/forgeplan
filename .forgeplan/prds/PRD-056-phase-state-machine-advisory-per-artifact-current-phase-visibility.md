@@ -5,7 +5,7 @@ kind: prd
 links:
 - target: EPIC-005
   relation: based_on
-status: draft
+status: active
 title: Phase state machine (advisory) — per-artifact current_phase visibility
 ---
 
@@ -315,5 +315,6 @@ And health does not fail (exit 0, advisory only)
 ---
 
 > **Next step**: validate PRD-056 → ADI (3+ hypotheses, Standard recommended) → Code.
+
 
 

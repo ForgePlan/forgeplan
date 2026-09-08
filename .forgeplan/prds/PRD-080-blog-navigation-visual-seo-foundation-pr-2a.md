@@ -7,7 +7,7 @@ last_modified_by: claude-code/2.1.149
 links:
 - target: PRD-079
   relation: based_on
-status: draft
+status: active
 title: Blog navigation + visual + SEO foundation (PR-2A)
 ---
 
@@ -114,6 +114,7 @@ PR-2A заполняет эти 12 primitive'ов **до того как** PR-2B
 - [ ] PRD activated (draft → active).
 - [ ] Commit на `feat/blog-foundation` с правильными Refs.
 - [ ] User-approved push (RED LINE #2).
+
 
 
 
