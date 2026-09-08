@@ -92,6 +92,68 @@ Two related traps, same family:
   for anything that writes. A concurrent commit from a second session has
   already cost a lost commit-message file and half an hour of misdiagnosis in
   this repo.
+- **The exit code you print through a pipe is the wrong one.** `cmd | tail` and
+  `echo $?` reports `tail`. `${PIPESTATUS[0]}` is a bashism and expands to the
+  empty string in this repo's zsh, so the guard prints `exit=` and reads as
+  fine. Redirect to a file and measure without a pipe:
+  `cargo clippy ... > /tmp/x.log 2>&1; echo "exit=$?"`. Same family as the
+  disk-full trap above — the number is real, it is just measuring something
+  else.
+
+## Findings have a home, and it is not the chat
+
+A finding that lives only in a reply is gone at the end of the session. This has
+already cost real work here: a measurement across 465 artifacts that cancelled a
+planned fix lived nowhere but a chat message until someone thought to file it,
+and a handoff document once pointed at a scratch directory that did not survive
+the session it described.
+
+**File it the moment you find it, before finishing the thought that produced
+it.** Three kinds of finding, three homes:
+
+| Finding | Home | Why there |
+|---|---|---|
+| A rule that changes how an agent works | **this file** | Read every session. Costs context every session, so it earns its place only by changing behaviour. |
+| Work someone should do | **GitHub issue**, open | Assignable, closable, outside the context budget. |
+| A measured dead end — checked, decided not to do | **GitHub issue, closed on arrival**, label `measured-not-planned` | Findable by `gh issue list --state closed --label measured-not-planned`. Costs nothing to keep. |
+
+The third row is the one people skip, and it is the one that pays. A measurement
+that **cancels** work is worth as much as one that starts it, and it evaporates
+faster — nobody files "we checked and it does not matter". Then the next person
+smells the same thing and re-derives it. #476 is the worked example: two
+plausible defects, both measured, both left alone, numbers on the record.
+
+Rules for filing:
+
+- **Numbers, not adjectives.** "Zero verdicts change across 465 artifacts"
+  survives a year. "Seems fine" does not.
+- **Every finding carries a trigger to revisit, phrased as a condition.**
+  `"later"` is not a trigger. `"if stripping comments would change the verdict
+  on one or more artifacts"` is. Same rule ADRs already follow: name what must
+  become true for someone to pick this up.
+- **Say what was rejected and why.** A finding that records only the conclusion
+  invites the next person to relitigate the option you already killed.
+- **Do not file the same thing twice.** `gh issue list --search` before
+  creating; extend the existing issue if one fits.
+
+Revisit is a step, not a habit: **before opening a `release/v*` PR**, list the
+`measured-not-planned` issues and re-check their triggers against the current
+corpus. A trigger that has become true reopens the issue; one that has not gets
+left alone without discussion.
+
+## GitHub mechanics that silently do nothing
+
+- **`Closes #N` in a PR body does not close anything when merging into `dev`.**
+  GitHub honours closing keywords only on merges into the *default* branch, and
+  ours is `main`. Feature branches merge into `dev`, so the keyword is inert and
+  the issue stays open with no error anywhere. Close the issue by hand at
+  dev-merge, naming the merge commit — leaving it open until the release means
+  the board says "nobody did this" about finished work.
+- **An empty `gh` result is not proof of absence.** `Post
+  "https://api.github.com/graphql": EOF` prints nothing to stdout and can exit
+  through a pipe as success. Verify a listing you are about to act on by
+  querying the object directly, not by trusting that zero rows means zero
+  things.
 
 ## Repository structure (quick map)
 
