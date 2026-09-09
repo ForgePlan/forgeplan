@@ -1075,6 +1075,54 @@ mod claude_code_tests {
         assert_eq!(text, "ADI hypothesis A is strongest");
     }
 
+    /// End-to-end guard for the shape claude CLI 2.x actually emits: an
+    /// array of stream events rather than a bare envelope object. Before
+    /// the `parse_envelope` array branch this failed with
+    /// `failed to decode ... invalid type: map, expected a boolean`, whose
+    /// remediation text ("Is `claude` logged in?") sent users chasing an
+    /// auth problem that did not exist.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial(env_path)]
+    async fn claude_code_accepts_event_array_envelope() {
+        let _env = crate::playbook::dispatch::claude_print::DISPATCH_ENV_LOCK
+            .lock()
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let envelope = r#"[{"type": "system", "subtype": "init", "session_id": "sess-xyz"}, {"type": "result", "subtype": "success", "is_error": false, "result": "ADI hypothesis A is strongest", "total_cost_usd": 0.01, "session_id": "sess-xyz"}]"#;
+        let script = write_mock_claude(tmp.path(), envelope);
+
+        let prev_active = std::env::var_os(CLAUDE_CODE_PROVIDER_ACTIVE_ENV);
+        let prev_bin = std::env::var_os("FORGEPLAN_CLAUDE_BIN");
+        unsafe {
+            std::env::remove_var(CLAUDE_CODE_PROVIDER_ACTIVE_ENV);
+            std::env::set_var("FORGEPLAN_CLAUDE_BIN", script.as_os_str());
+        }
+
+        let cfg = LlmConfig {
+            provider: "claude-code".into(),
+            model: "claude-sonnet-4-5".into(),
+            api_key_env: None,
+            ..Default::default()
+        };
+        let client = LlmClient::new(cfg);
+        let result = client.generate("route this task", Some("be terse")).await;
+
+        unsafe {
+            match prev_active {
+                Some(v) => std::env::set_var(CLAUDE_CODE_PROVIDER_ACTIVE_ENV, v),
+                None => std::env::remove_var(CLAUDE_CODE_PROVIDER_ACTIVE_ENV),
+            }
+            match prev_bin {
+                Some(v) => std::env::set_var("FORGEPLAN_CLAUDE_BIN", v),
+                None => std::env::remove_var("FORGEPLAN_CLAUDE_BIN"),
+            }
+        }
+
+        let text = result.expect("event-array envelope must yield result text");
+        assert_eq!(text, "ADI hypothesis A is strongest");
+    }
+
     /// Non-zero exit from the mock `claude` (simulates not-logged-in) must
     /// surface a graceful error mentioning `claude login` (AC-4).
     #[cfg(unix)]
