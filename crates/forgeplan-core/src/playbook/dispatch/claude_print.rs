@@ -11,7 +11,8 @@
 //! - [`invoke`] — full orchestration, called by both dispatchers.
 //! - [`build_argv`] — argv construction with security gates
 //!   ([`validate_allowed_tools`] + [`add_dir_for_produces_at`]).
-//! - [`parse_envelope`] — UTF-8-trimmed JSON envelope decode.
+//! - [`parse_envelope`] — UTF-8-trimmed JSON envelope decode, accepting
+//!   both the bare-object and the claude-CLI-2.x event-array shape.
 //! - [`format_timeout_msg`] — uniform second/millisecond rendering for
 //!   timeout diagnostics.
 //! - [`DISPATCH_ENV_LOCK`] — `#[cfg(test)]` cross-dispatcher
@@ -473,18 +474,51 @@ pub(super) fn effective_budget_usd(step: &Step) -> f64 {
 /// trailing newlines + BOM that real `claude --print` can emit, so it's
 /// the safer pattern. Both dispatchers now consume this helper.
 ///
+/// # Envelope shapes
+///
+/// `claude --print --output-format json` has emitted two different
+/// top-level shapes across CLI versions, and both are accepted here:
+///
+/// - a bare envelope object (`{"is_error": false, "result": ...}`) — what
+///   this helper was originally written against;
+/// - a JSON **array** of stream events whose final `{"type": "result", ...}`
+///   entry carries the envelope — what claude CLI 2.x emits.
+///
+/// Without the array branch, serde deserialises the sequence into the
+/// struct positionally: the first event (`{"type": "system", ...}`) lands
+/// in `is_error` and the decode fails with
+/// `invalid type: map, expected a boolean at line 1 column 1`. That message
+/// reads as a malformed-auth problem, so callers are pointed at
+/// `claude login` for what is actually a shape mismatch.
 /// # Errors
 ///
 /// Returns `serde_json::Error` when stdout is not parseable as a
 /// [`ClaudePrintResponse`]. Callers wrap in dispatcher-specific
-/// diagnostics (with agent name / plugin/target context).
+/// diagnostics (with agent name / plugin/target context). Also returned
+/// when stdout is an event array carrying no `type: "result"` entry.
 ///
 /// ADR-017: widened to `pub(crate)` (with `ClaudePrintResponse`) so the
 /// `claude-code` LLM provider reuses the identical UTF-8-trimmed decode
 /// instead of re-implementing envelope parsing.
 pub(crate) fn parse_envelope(stdout: &[u8]) -> Result<ClaudePrintResponse, serde_json::Error> {
     let s = String::from_utf8_lossy(stdout);
-    serde_json::from_str(s.trim())
+    let value: serde_json::Value = serde_json::from_str(s.trim())?;
+
+    let envelope = match value {
+        serde_json::Value::Array(events) => events
+            .into_iter()
+            .rev()
+            .find(|event| event.get("type").and_then(serde_json::Value::as_str) == Some("result"))
+            .ok_or_else(|| {
+                <serde_json::Error as serde::de::Error>::custom(
+                    "`claude --print --output-format json` returned an event array with no \
+                     `type: \"result\"` event",
+                )
+            })?,
+        other => other,
+    };
+
+    serde_json::from_value(envelope)
 }
 
 /// Format the dispatcher timeout-error message.
@@ -850,6 +884,65 @@ mod tests {
         assert!(resp.is_success());
         assert_eq!(resp.total_cost_usd, 0.0);
         assert_eq!(resp.duration_ms, 0);
+    }
+
+    /// claude CLI 2.x emits a JSON array of stream events for
+    /// `--output-format json`; the envelope is the final `type: "result"`
+    /// entry. Regression guard: this shape used to fail with
+    /// `invalid type: map, expected a boolean at line 1 column 1`.
+    #[test]
+    fn parses_event_array_envelope() {
+        let json = r#"[
+            {"type": "system", "subtype": "init", "session_id": "abc-123"},
+            {"type": "assistant", "message": {"role": "assistant", "content": []}},
+            {"type": "result", "subtype": "success", "is_error": false,
+             "result": "ADI hypothesis A is strongest", "total_cost_usd": 0.42,
+             "duration_ms": 1234, "session_id": "abc-123"}
+        ]"#;
+        let resp = parse_envelope(json.as_bytes()).expect("event array must decode");
+        assert!(resp.is_success());
+        assert_eq!(
+            resp.result.as_deref(),
+            Some("ADI hypothesis A is strongest")
+        );
+        assert_eq!(resp.total_cost_usd, 0.42);
+        assert_eq!(resp.session_id.as_deref(), Some("abc-123"));
+    }
+
+    /// The bare-object shape older CLI versions emit still decodes — the
+    /// array branch is additive, not a replacement.
+    #[test]
+    fn parses_bare_object_envelope_via_helper() {
+        let json = json_response(false, None, 0.42);
+        let resp = parse_envelope(json.as_bytes()).expect("bare object must decode");
+        assert!(resp.is_success());
+        assert_eq!(resp.total_cost_usd, 0.42);
+    }
+
+    /// In-band error semantics survive the array unwrap: `is_error` and
+    /// `api_error_status` are read off the result event, not the first one.
+    #[test]
+    fn event_array_preserves_in_band_error() {
+        let json = r#"[
+            {"type": "system", "subtype": "init"},
+            {"type": "result", "subtype": "error_during_execution", "is_error": true,
+             "api_error_status": "rate_limited", "result": "partial"}
+        ]"#;
+        let resp = parse_envelope(json.as_bytes()).expect("error envelope must decode");
+        assert!(!resp.is_success());
+        assert!(resp.render_failure_context().contains("rate_limited"));
+    }
+
+    /// An array carrying no result event fails loudly rather than
+    /// silently decoding some other event as the envelope.
+    #[test]
+    fn event_array_without_result_event_errors_clearly() {
+        let json = r#"[{"type": "system", "subtype": "init"}]"#;
+        let err = parse_envelope(json.as_bytes()).expect_err("must not decode");
+        assert!(
+            err.to_string().contains("no `type: \"result\"` event"),
+            "error should name the missing result event, got: {err}"
+        );
     }
 
     #[test]
