@@ -60,7 +60,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GetParams`_
 
 ## Эквивалент в CLI
 
-- [`forgeplan show`](/ru/docs/cli/get/) - человекочитаемый вывод в терминале
+- [`forgeplan get`](/ru/docs/cli/get/) - человекочитаемый вывод в терминале
 
 ## См. также
 

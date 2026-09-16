@@ -20,7 +20,7 @@ description: "List all brownfield discovery sessions in the workspace"
 ## Usage
 
 ```text
-forgeplan discover list [OPTIONS]
+forgeplan discover list
 ```
 
 ## Options

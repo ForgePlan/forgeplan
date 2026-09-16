@@ -38,7 +38,18 @@ function parseServer() {
     // Extract description = "..." (may contain escaped quotes)
     let description = '';
     const dm = attr.match(/description\s*=\s*"((?:[^"\\]|\\.)*)"/);
-    if (dm) description = dm[1].replace(/\\"/g, '"').replace(/\\n/g, ' ');
+    if (dm) {
+      description = dm[1]
+        // Rust line continuations. The attribute is read across source lines and
+        // re-joined with a single space, so a trailing `\` in server.rs survives
+        // as a literal backslash — it reached 23 rows of the generated index,
+        // where Markdown renders it verbatim (`orphans, \ stale evidence`).
+        .replace(/\\\s+/g, ' ')
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
 
     // Skip attribute lines and find the async fn declaration
     let fnLine = -1;
@@ -153,6 +164,29 @@ function exampleFor(tool) {
   return examples[tool.name] || `{}`;
 }
 
+// The published docs are swept free of em dashes - they read as an AI tell, and
+// the site-wide sweep removed them. Inside a fenced block they are verbatim tool
+// output and stay exactly as the binary printed them, so only prose is touched.
+function stripEmDashes(text) {
+  let fence = null;
+  return text
+    .split('\n')
+    .map((line) => {
+      const s = line.trimStart();
+      if (fence === null && (s.startsWith('```') || s.startsWith('~~~'))) {
+        fence = s.slice(0, 3);
+        return line;
+      }
+      if (fence !== null && s.startsWith(fence)) {
+        fence = null;
+        return line;
+      }
+      if (fence !== null) return line;
+      return line.replace(/[—–]/g, '-');
+    })
+    .join('\n');
+}
+
 function pageFor(tool) {
   const title = tool.name;
   const desc = tool.description || title;
@@ -169,7 +203,10 @@ function pageFor(tool) {
       body += `| \`${p.name}\` | \`${p.type.replace(/\|/g, '\\|')}\` | see source |\n`;
     }
     body += `\n`;
-    body += `_Parameter structs are defined in \`crates/forgeplan-mcp/src/types.rs\`. Refer to that file for exact field names and optionality._\n\n`;
+    // The parameter structs live next to the tools in server.rs; types.rs holds
+    // the response DTOs. The footer used to point at types.rs and sent readers
+    // to a file that does not contain the struct they were looking for.
+    body += `_Parameter structs are defined in \`crates/forgeplan-mcp/src/server.rs\`._\n\n`;
   }
 
   body += `## Example invocation\n\n\`\`\`json\n${exampleFor(tool)}\n\`\`\`\n\n`;
@@ -216,7 +253,7 @@ function writeOverview(tools) {
     }
     body += `\n`;
   }
-  writeFileSync(resolve(OUT_DIR, 'index.md'), body);
+  writeFileSync(resolve(OUT_DIR, 'index.md'), stripEmDashes(body));
 }
 
 function main() {
@@ -229,7 +266,7 @@ function main() {
   console.log(`[mcp-gen] found ${tools.length} tools`);
 
   for (const t of tools) {
-    writeFileSync(resolve(OUT_DIR, `${t.name}.md`), pageFor(t));
+    writeFileSync(resolve(OUT_DIR, `${t.name}.md`), stripEmDashes(pageFor(t)));
   }
   writeOverview(tools);
   console.log(`[mcp-gen] wrote ${readdirSync(OUT_DIR).filter(f => f.endsWith('.md')).length} files to ${OUT_DIR}`);

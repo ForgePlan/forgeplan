@@ -434,7 +434,7 @@ or ask the orchestrator to force-release.
     <div class="p-title">Multi-agent dispatch с claim-конфликтом</div>
     <p>Несколько агентов работают параллельно. Если claim занят другим - <code>Or:</code> предлагает альтернативу, не блокирует worker.</p>
     <div class="p-flow"><span class="fp-cmd">forgeplan_dispatch(--agents 3)</span>
-  → <span class="m-next">Next:</span> forgeplan claim PRD-054 --agent worker-1 --ttl 30
+  → <span class="m-next">Next:</span> forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30
   → <span class="m-or">Or:</span>   forgeplan list --status draft
 
 <span class="fp-cmd">forgeplan_claim("PRD-054")</span>

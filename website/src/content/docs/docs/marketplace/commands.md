@@ -7,209 +7,154 @@ description: All slash commands from ForgePlan marketplace plugins
 Commands listed below come from external marketplace plugins. Install them with `/plugin install <name>@ForgePlan-marketplace` (after `/plugin marketplace add ForgePlan/marketplace`) or use the built-in `forgeplan setup-skill` for the core `/forge` skill.
 :::
 
-## Core Commands (forgeplan-workflow)
+Every slash command the marketplace ships, grouped by the plugin that provides it - 29 commands across 10 plugins. `dev-toolkit` is deprecated; read [Superseded commands](#superseded-commands) before installing it.
 
-### /forge "task description"
-**Plugin**: forgeplan-workflow
+## forgeplan-workflow
 
-Runs the full Forgeplan methodology cycle: Route → Shape → Validate → Build → Evidence → Activate.
+The methodology cycle itself.
 
-```
-/forge "Add OAuth2 authentication"
-```
+| Command | What it does |
+|---|---|
+| `/forge-cycle` | Run the full forgeplan engineering cycle: health check, route, shape, build, evidence, activate, commit. |
+| `/forge-audit` | Run a multi-expert audit on the current codebase. |
 
-The command determines depth automatically and creates the right artifacts.
+## agents-canvas
 
-### /forge-cycle PRD-XXX
-**Plugin**: forgeplan-workflow
+Design-system work: Pencil to native components, with a fail-closed tokens gate.
 
-Explicit step-by-step forge cycle with 8 phases:
+| Command | What it does |
+|---|---|
+| `/canvas-init` | One-time per-branch setup for the CANVAS tokens-gate. |
+| `/canvas-audit` | One-shot DS-convention audit (canvas-guardian as a command). |
+| `/canvas-review` | CANVAS post-export code + UX gate. |
+| `/canvas-rule` | Look up a CANVAS design-system convention or a UX law by name. |
 
-```
-Phase 0: OBSERVE   → forgeplan health
-Phase 1: ROUTE     → determine depth
-Phase 2: SPRINT    → plan waves
-Phase 3: BUILD     → implement
-Phase 4: AUDIT     → adversarial review
-Phase 5: FIXES     → fix HIGH/CRITICAL
-Phase 6: EVIDENCE  → create + score
-Phase 7: COMMIT    → git + PR
-```
+## forgeplan-map-pack
 
-### /forge-audit
-**Plugin**: forgeplan-workflow
+Composed code+docs maps under `.forgeplan/map/`.
 
-Multi-expert code audit with Forgeplan methodology integration.
+| Command | What it does |
+|---|---|
+| `/map-build` | Scan the current forgeplan-enabled repo and generate a validated `.forgeplan/map/map.json`. |
+| `/map-build-layer` | Generate one zone's drill-down layer for an already-built map, on demand and append-only. |
+| `/map-refresh` | Incrementally refresh an already-built map - rebuild only the layers affected by git and doc changes. |
+| `/map-doctor` | Fast, read-only health check for an already-built map and its layers. |
 
----
+## forgeplan-orchestra
 
-## Development Commands (dev-toolkit)
+Sync with an Orchestra task board.
 
-### /audit
-**Plugin**: dev-toolkit
+| Command | What it does |
+|---|---|
+| `/session` | Session Start Protocol with Inbox Pattern - restores context from Orchestra, Git and Forgeplan. |
+| `/sync` | Bidirectional sync between Forgeplan artifacts and Orchestra tasks. |
 
-Launches 4 parallel expert agents:
-- **Logic** - correctness, edge cases, race conditions
-- **Architecture** - SOLID, coupling, DRY, naming
-- **Security** - OWASP Top 10, injection, auth
-- **Tests** - coverage gaps, test quality
+## fpf
 
-Reports findings with severity: CRITICAL / HIGH / MEDIUM / LOW.
+First Principles Framework reasoning, backed by a 224-section knowledge base.
 
-### /sprint "goal"
-**Plugin**: dev-toolkit
+| Command | What it does |
+|---|---|
+| `/fpf` | Universal thinking command - routes to decompose, evaluate, or reason mode based on your question. |
+| `/fpf-decompose` | Decompose a complex problem or system into bounded parts using FPF. |
+| `/fpf-evaluate` | Evaluate a decision or compare alternatives using FPF Trust Calculus and F-G-R scoring. |
+| `/fpf-reason` | Reason through a complex question using FPF's structured reasoning cycle. |
+| `/fpf-lookup` | Look up an FPF concept in the 224-section knowledge base. |
 
-Adaptive sprint planning that scales:
-- 1 task → just do it
-- 3-5 tasks → parallel execution
-- 10+ tasks → wave-based sprint with dependency tracking
+## laws-of-ux
 
-### /recall
-**Plugin**: dev-toolkit
+The 30 Laws of UX as a review surface.
 
-Restores session context from Hindsight memory - what you worked on, what was decided, what's pending.
+| Command | What it does |
+|---|---|
+| `/ux-review` | Review frontend code against the 30 Laws of UX principles. |
+| `/ux-law` | Look up a specific UX law by name. |
 
----
+## slopocop
 
-## FPF Commands (fpf plugin)
+AI-slop detection and rewriting for prose.
 
-### /fpf "question"
-**Plugin**: fpf
+| Command | What it does |
+|---|---|
+| `/slop-audit` | Read-only AI-slop detection for text. |
+| `/slop-humanize` | Humanize text - strip AI slop and rewrite in a specific human voice. |
 
-Auto-routes to the right reasoning mode based on your question.
+## slopocop-code
 
-### /fpf decompose "system"
-Break a system into bounded contexts with roles, interfaces, and responsibilities.
+AI-slop detection and rewriting for source code.
 
-```
-/fpf decompose our authentication system
-```
+| Command | What it does |
+|---|---|
+| `/code-audit` | Read-only AI-slop detection for source code. |
+| `/code-deslop` | Behavior-preserving rewrite that strips the AI-slop layer from source code. |
 
-### /fpf evaluate "options"
-Compare alternatives with F-G-R scoring and evidence assessment.
+## slopocop-design
 
-```
-/fpf evaluate React vs Vue vs Svelte for our SPA
-```
+AI-slop detection and rewriting for UI.
 
-### /fpf reason "problem"
-Structured ADI reasoning: 3+ hypotheses → predictions → evidence check.
+| Command | What it does |
+|---|---|
+| `/design-audit` | Audit UI and frontend code for AI-slop design. |
+| `/design-redesign` | Redesign a page or component so it stops looking AI-generated. |
 
-```
-/fpf reason why our API response times degraded
-```
+## dev-toolkit (deprecated)
 
----
+:::caution[Deprecated]
+`dev-toolkit` is marked `deprecated` and superseded by **fpl-skills**. Install it only if you already depend on it.
+:::
 
-## Orchestra Commands (forgeplan-orchestra plugin)
+| Command | What it does |
+|---|---|
+| `/audit` | Multi-expert code audit - launches 4 parallel review agents (Logic, Architecture, Security, Tests) and reports findings by severity. |
+| `/sprint` | Adaptive sprint - scales from a quick fix to a full release cycle. |
+| `/recall` | Session context restore - reads project state, recent git history, and available memory sources for a session-start briefing. |
+| `/report` | Generate a structured report for the recent work: pick a template, output TL;DR, what's done, what is not, reversibility, drift risks and next steps. |
 
-### /session
-**Plugin**: forgeplan-orchestra
+## Superseded commands
 
-Full context restore: Hindsight memory + Forgeplan health + Orchestra tasks.
+Two of the deprecated plugin's commands have a successor in an actively maintained plugin. Prefer the successor on a new install.
 
-### /sync
-**Plugin**: forgeplan-orchestra
+| Deprecated | Successor | Why |
+|---|---|---|
+| `/audit` (dev-toolkit) | `/forge-audit` (forgeplan-workflow) | Adds performance and documentation experts and writes Forgeplan evidence. |
+| `/recall` (dev-toolkit) | `/session` (forgeplan-orchestra) | Adds the Orchestra inbox and Forgeplan health to the restore. |
 
-Bidirectional sync between Forgeplan artifacts and Orchestra tasks.
+## Skills are not slash commands
 
----
+Several plugins - `fpl-skills`, `agents-*`, `slopocop*`, `fpf` and others - ship **skills** rather than slash commands. A skill is loaded by the agent when the task matches its description; it is not registered as a `/` command and will not appear in the command palette. Skills such as `shape`, `spec-author`, `estimate`, `gate-check`, `refine`, `sprint` and `wrap` live in `fpl-skills` and are used that way.
 
-## UX Commands (laws-of-ux plugin)
+The distinction matters when you are looking for something and cannot find it: absence from this page means "not a command", not "not installed". See the per-plugin pages for the skills each one ships.
 
-### /ux-review
-**Plugin**: laws-of-ux
-
-Reviews frontend code against 30 UX psychology laws. Reports violations with severity and fix suggestions.
-
-### /ux-law "law name"
-Look up a specific UX law with examples, violations, and best practices.
-
----
-
-## Research & build commands (dev-toolkit)
-
-### /research "topic"
-**Plugin**: dev-toolkit
-
-Quick research - study a topic, find patterns, understand how something works. Uses Explore agents.
-
-### /deep-research "topic"
-**Plugin**: dev-toolkit
-
-Deep multi-agent research (4-7 agents). Writes reports to `docs/research/`. Use before major work.
-
-### /build "research-dir"
-**Plugin**: dev-toolkit
-
-Implement from existing research reports. Reads research output and creates implementation plan.
-
-### /synthesize "dir1" "dir2"
-**Plugin**: dev-toolkit
-
-Combine multiple research reports into a unified plan. Useful when you researched several topics and need one roadmap.
-
-### /do "task"
-**Plugin**: dev-toolkit
-
-Universal task executor - takes any description and figures out the right approach.
-
-### /wave "description"
-**Plugin**: dev-toolkit
-
-Quick wave-based execution from current chat context. No research phase - just plan and execute.
-
-### /write-doc "type" "topic"
-**Plugin**: dev-toolkit
-
-Create structured documents: RFC, guide, report, ADR. Uses templates and project context.
-
-### /team-up
-**Plugin**: dev-toolkit
-
-Launch Agent Teams for parallel implementation. Best for tasks that span multiple domains (backend + frontend).
-
----
-
-## Proactive Suggestions
-
-Claude Code can suggest commands based on what you're doing:
-
-| You say | Suggested command |
-|---------|-------------------|
-| "изучи", "разберись", "найди" | `/research` |
-| "глубоко изучи", "ресерч" | `/deep-research` |
-| "напиши RFC", "доку" | `/write-doc` |
-| Complex multi-step task | `/do` or `/sprint` |
-| "ревью", "проверь" | `/audit` |
-| Backend + frontend work | `/team-up` |
-| Has research reports | `/build` |
-| "объедини", "roadmap" | `/synthesize` |
-
----
-
-## When to Use What
+## When to use what
 
 | Situation | Command |
-|-----------|---------|
-| Starting new feature | `/forge "description"` |
-| Code review before PR | `/audit` |
-| Complex multi-step task | `/sprint "goal"` |
-| Architecture decision | `/fpf evaluate "A vs B"` |
-| Understanding a system | `/fpf decompose "system"` |
-| Debugging issue | `/fpf reason "why X"` |
-| Restoring context | `/recall` or `/session` |
+|---|---|
+| Starting new feature | `/forge-cycle` |
+| Code review before PR | `/forge-audit` |
+| Comprehensive sprint | `/sprint` |
+| Architecture decision | `/fpf-evaluate` |
+| Understanding a system | `/fpf-decompose` |
+| Debugging an argument | `/fpf-reason` |
+| Looking up an FPF concept | `/fpf-lookup` |
+| Restoring session context | `/session` |
+| Sync with a task board | `/sync` |
 | Frontend quality | `/ux-review` |
+| Text reads like AI wrote it | `/slop-audit` → `/slop-humanize` |
+| Source reads like AI wrote it | `/code-audit` → `/code-deslop` |
+| UI looks AI-generated | `/design-audit` → `/design-redesign` |
 
-## Workflow Chains
+## Workflow chains
 
 ```
-Research → Build:
-  /fpf decompose → /forge "implement X"
-
-Multi-step feature:
-  /forge "feature" → /audit → fix → /sprint "remaining tasks"
+Feature delivery:
+  /forge-cycle  →  /forge-audit  →  fix  →  /sprint
 
 Architecture decision:
-  /fpf evaluate "options" → /forge "implement winner"
+  /fpf-evaluate "options"  →  /forge-cycle "implement winner"
+
+De-slopping a codebase:
+  /code-audit  →  /code-deslop  →  /code-audit
+
+Session start:
+  /session  →  work  →  /sync
 ```

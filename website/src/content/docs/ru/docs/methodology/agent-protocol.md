@@ -162,7 +162,7 @@ forgeplan_claim("PRD-054")
 Контракт enforced через:
 
 1. **Integration test** `crates/forgeplan-cli/tests/hint_contract.rs` - 36 тестов, fails CI если команда без contract marker
-2. **Audit script** `scripts/audit-hints.sh` - coverage метрика, target 100%, currently 100% (70/70 commands)
+2. **Audit script** `scripts/audit-hints.sh` - coverage метрика, target 100%, currently 90.0% (72/80 проверенных команд; у 8 новых команд contract marker пока нет)
 
 ## Quick reference card
 

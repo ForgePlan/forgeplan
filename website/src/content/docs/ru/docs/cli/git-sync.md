@@ -42,7 +42,7 @@ forgeplan git-sync [OPTIONS]
 git checkout dev
 git pull origin dev          # получает 3 новых PRD от коллег
 forgeplan git-sync           # <1с: переиндексированы только 3 новых файла
-forgeplan list --since 1d    # посмотреть, что пришло
+forgeplan log                 # посмотреть, что пришло
 forgeplan health             # проверить наличие новых слепых пятен
 ```
 
@@ -86,7 +86,7 @@ forgeplan git-sync --since dev
 
 ## См. также
 
--   [Обзор CLI](/docs/cli/)
--   [`forgeplan reindex`](/docs/cli/reindex/) - запасной вариант полной пересборки
--   [`forgeplan watch`](/docs/cli/watch/) - демон живой синхронизации
--   [`forgeplan health`](/docs/cli/health/) - проверка после синхронизации
+-   [Обзор CLI](/ru/docs/cli/)
+-   [`forgeplan reindex`](/ru/docs/cli/reindex/) - запасной вариант полной пересборки
+-   [`forgeplan watch`](/ru/docs/cli/watch/) - демон живой синхронизации
+-   [`forgeplan health`](/ru/docs/cli/health/) - проверка после синхронизации

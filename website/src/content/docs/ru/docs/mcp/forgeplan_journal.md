@@ -68,7 +68,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::JournalParams
 ## Эквивалент CLI
 
 ```bash
-forgeplan journal --kind adr --risk
+forgeplan journal --type adr --risk
 ```
 
 ## См. также

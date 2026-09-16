@@ -77,7 +77,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::PhaseAdvanceP
 
 ## CLI эквивалент
 
-[`forgeplan phase advance <id> --to <phase>`](/ru/docs/cli/) - та же запись, та же
+[`forgeplan phase-advance --to <phase> <id>`](/ru/docs/cli/phase-advance/) - та же запись, та же
 рекомендательная семантика.
 
 ## См. также

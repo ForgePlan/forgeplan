@@ -353,7 +353,7 @@
 
 <span class="cb-prompt">$</span> forgeplan release PRD-054
 <span class="cb-ok">→</span> Released · available for next claim
-<span class="cb-emph">Next:</span> forgeplan claim EVID-018 --agent worker-1 --ttl 30
+<span class="cb-emph">Next:</span> forgeplan claim EVID-018 --agent worker-1 --ttl-minutes 30
 
 <span class="cb-comment"># Orchestrator смотрит общее состояние</span>
 <span class="cb-prompt">$</span> forgeplan claims
@@ -450,7 +450,7 @@
     <div class="worked-step">
       <div class="step-num">02 · claim ×3</div>
       <div class="step-content">
-        <h4>Каждый worker в своей сессии Claude Code → <code>claim --ttl 30</code></h4>
+        <h4>Каждый worker в своей сессии Claude Code → <code>claim --ttl-minutes 30</code></h4>
         <p>worker-1 claim'ит PRD-054. worker-2 - PRD-055. worker-3 - PRD-056. <code>forgeplan claims</code> показывает 3 активных claim'а. WIP=1 у каждого worker'а соблюдён.</p>
       </div>
     </div>
@@ -458,7 +458,7 @@
       <div class="step-num">03 · work</div>
       <div class="step-content">
         <h4>Параллельная работа в 3 сессиях · drafting, evidence, validate</h4>
-        <p>Каждый worker отвечает за свой bucket. Если TTL подходит к концу, а работа не закончена - <code>forgeplan claim &lt;id&gt; --extend 30</code>. Если worker свободен раньше - release и claim следующий артефакт из bucket'а.</p>
+        <p>Каждый worker отвечает за свой bucket. Если TTL подходит к концу, а работа не закончена - <code>forgeplan claim &lt;id&gt; --ttl-minutes 30</code>. Если worker свободен раньше - release и claim следующий артефакт из bucket'а.</p>
       </div>
     </div>
     <div class="worked-step crit">

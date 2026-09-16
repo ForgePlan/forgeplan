@@ -62,8 +62,12 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GuardParams`_
 
 ## Эквивалент CLI
 
+Отдельной CLI-команды для гарда нет - это совещательная проверка только на
+MCP-поверхности. Две команды, которые он смотрит, доступны:
+
 ```bash
-forgeplan guard --target coding
+forgeplan session           # фаза, в которой вы находитесь
+forgeplan validate PRD-001  # что мешает переходу shaping → coding
 ```
 
 ## См. также

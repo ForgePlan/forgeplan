@@ -18,7 +18,7 @@ Mirrors [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) on the MCP side.
 
 ## When NOT to use
 
-- You need lifecycle state (`draft` / `active` / `superseded`) - that is separate from claims; use [`forgeplan list`](/docs/cli/list/) or `forgeplan show <id>`.
+- You need lifecycle state (`draft` / `active` / `superseded`) - that is separate from claims; use [`forgeplan list`](/docs/cli/list/) or `forgeplan get <id>`.
 - You want to modify state - this command only reads. Use [`forgeplan claim`](/docs/cli/claim/) to acquire and [`forgeplan release`](/docs/cli/release/) to drop.
 - You need long-term audit history - claims are temporary (max 24-hour TTL). For historical records, query [`forgeplan activity`](/docs/cli/activity/).
 

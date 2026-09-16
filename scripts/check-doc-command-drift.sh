@@ -28,10 +28,38 @@
 set -uo pipefail
 
 BIN="${FORGEPLAN_BIN:-forgeplan}"
+# Sources scanned: the repo-level docs plus the site corpora.
+#
+# The site corpora were never scanned until now, which is how the lessons
+# happily documented commands that do not exist: `CLAUDE.md` is not the only
+# place a user copies an example from. Only the ENGLISH tree is scanned —
+# `ru/docs` mirrors the same examples and would report every finding twice.
 SOURCES=(
   "CLAUDE.md"
   "crates/forgeplan-cli/src/commands/forge-skill.md"
+  "website/src/content/docs/docs"
+  "website/public/guides-raw"
 )
+
+# The changelog is a generated copy of the root `CHANGELOG.md` and an
+# append-only release log. It records CLI shapes as they were — including one
+# command (`forgeplan score-all`) that the changelog itself calls out as never
+# having existed. Demanding that history describe today's binary is not a check,
+# it is noise.
+EXCLUDE=(
+  "website/src/content/docs/docs/changelog.md"
+)
+
+# One tutorial's subject IS a feature that does not exist yet: it walks a reader
+# through writing a PRD for "add `--dry-run` to `forgeplan new`". Its examples of
+# that proposed surface are the lesson, not instructions to run anything — so the
+# fictional surface is ignored, in those two files only, and nothing else.
+FICTION_FILES=(
+  "website/src/content/docs/docs/guides/first-artifact.md"
+  "website/public/guides-raw/first-artifact.html"
+)
+FICTION_CMDS="preview"
+FICTION_FLAGS="--dry-run"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -86,16 +114,64 @@ resolve_path() {
 problems=0
 checked=0
 
-for src in "${SOURCES[@]}"; do
+# A directory entry means "every doc under it". The old `[ -f "$src" ]` guard
+# silently skipped a directory, so listing one looked like it worked.
+FILES=()
+for entry in "${SOURCES[@]}"; do
+  if [ -d "$entry" ]; then
+    while IFS= read -r f; do
+      FILES+=("$f")
+    done < <(find "$entry" -type f \( -name '*.md' -o -name '*.mdx' -o -name '*.html' \) | sort)
+  else
+    FILES+=("$entry")
+  fi
+done
+for exc in "${EXCLUDE[@]}"; do
+  keep=()
+  for f in "${FILES[@]}"; do
+    [ "$f" = "$exc" ] || keep+=("$f")
+  done
+  FILES=(${keep[@]+"${keep[@]}"})
+done
+
+for src in "${FILES[@]}"; do
   [ -f "$src" ] || { echo "skip (missing): $src"; continue; }
 
-  # Pull examples from inline code spans and from bare lines in fenced blocks.
+  # Pull examples from inline code spans, from bare lines in fenced blocks, and
+  # — for the HTML lessons — from the two forms a command actually takes there:
+  # a `<code>` element, and the terminal transcript's
+  # `<span class="to-prompt">$</span> forgeplan …` line.
+  #
+  # Both HTML forms are matched as *elements*, not by stripping tags off the
+  # whole file: the lessons carry their transcripts as escaped `\n` strings
+  # inside one `<script>` blob, and stripping tags across that produced a wall
+  # of phantom commands ending in `\n\nProject` or `.',`.
   {
     grep -ohE '`forgeplan [a-z][a-z0-9-]*[^`]*`' "$src" 2>/dev/null | sed 's/`//g'
     grep -ohE '^forgeplan [a-z][a-z0-9-]*.*$' "$src" 2>/dev/null
+    if [ "${src##*.}" = "html" ]; then
+      # A `<code>` element holding a command. Anchored: `<code>Error: .forgeplan/
+      # already exists</code>` mentions the binary without being an example.
+      grep -ohE '<code[^>]*>forgeplan[^<]*</code>' "$src" 2>/dev/null \
+        | sed -E 's/<[^>]*>//g'
+      # A command block: <div class="pc-cmd">forgeplan …</div>
+      grep -ohE '<div class="pc-cmd">[^<]*forgeplan[^<]*</div>' "$src" 2>/dev/null \
+        | sed -E 's/<[^>]*>//g'
+      # Terminal transcripts, both shapes they take here:
+      #   <span class="to-prompt">$</span> forgeplan …
+      #   <span class="m-next">Next:</span> forgeplan …
+      grep -ohE '<span class="to-prompt">\$</span> forgeplan [^\\<]*' "$src" 2>/dev/null \
+        | sed -E 's/<[^>]*>//g; s/^\$[[:space:]]*//'
+      grep -ohE '<span class="[a-z-]*">(Next|Fix|Or):</span> forgeplan [^\\<]*' "$src" 2>/dev/null \
+        | sed -E 's/<[^>]*>//g; s/^(Next|Fix|Or): //'
+    fi
   } \
+  | sed 's/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g; s/&amp;/\&/g' \
+  | sed -E 's/\\n.*$//' \
   | sed 's/[[:space:]]*#.*$//' \
-  | sed 's/[[:space:]]*$//' \
+  | sed -E 's/[[:space:]]+$//' \
+  | sed -E "s/[[:space:]]*[',.;:)]+\$//" \
+  | sed -E 's/[[:space:]]+$//' \
   | sort -u > "$TMP/examples.txt"
 
   while IFS= read -r example; do
@@ -111,6 +187,17 @@ for src in "${SOURCES[@]}"; do
 
     cmd="$(printf '%s' "$example" | awk '{print $2}')"
     [ -n "$cmd" ] || continue
+
+    # The proposed-feature tutorial names a surface that does not exist yet —
+    # see FICTION_FILES. Ignore exactly that surface, in exactly those files.
+    fiction=0
+    for ff in "${FICTION_FILES[@]}"; do
+      [ "$src" = "$ff" ] && fiction=1
+    done
+    if [ "$fiction" = 1 ]; then
+      case " $FICTION_CMDS " in *" $cmd "*) continue ;; esac
+    fi
+
     checked=$((checked+1))
 
     if ! grep -qx "$cmd" "$TMP/commands.txt"; then
@@ -124,7 +211,14 @@ for src in "${SOURCES[@]}"; do
     # names — see resolve_path.
     sub="$(printf '%s' "$example" | awk '{print $3}')"
     path="$(resolve_path "$cmd" "$sub")"
-    for flag in $(printf '%s' "$example" | grep -oE '\-\-[a-z][a-z0-9-]*' | sort -u); do
+    # A `--flag` inside a quoted argument is data, not a flag: `forgeplan route
+    # "add --dry-run to new"` does not make `--dry-run` a flag of `route`. The
+    # second form also drops an unbalanced quote a truncated example leaves.
+    flags_src="$(printf '%s' "$example" | sed -E 's/"[^"]*"//g; s/".*$//')"
+    for flag in $(printf '%s' "$flags_src" | grep -oE '\-\-[a-z][a-z0-9-]*' | sort -u); do
+      if [ "$fiction" = 1 ]; then
+        case " $FICTION_FLAGS " in *" $flag "*) continue ;; esac
+      fi
       if ! flags_for $path | grep -qx -- "$flag"; then
         printf 'DRIFT  %s\n         `%s` is not a flag of `forgeplan %s`\n         in: %s\n' \
           "$example" "$flag" "$path" "$src"

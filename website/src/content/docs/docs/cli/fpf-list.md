@@ -21,7 +21,7 @@ description: "List all ingested FPF sections as a table (ID, part, title)"
 ## Usage
 
 ```text
-forgeplan fpf list [OPTIONS]
+forgeplan fpf list
 ```
 
 ## Options

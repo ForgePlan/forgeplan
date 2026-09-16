@@ -175,7 +175,7 @@ Thresholds for concern:
 
 - Any blind spots = immediate fix (you are claiming active decisions with no proof)
 - Orphans > 3 = workflow leak, find where artifacts are getting abandoned
-- Stale > 5 = decay problem, run `forgeplan refresh` for a sweep
+- Stale > 5 = decay problem, run `forgeplan stale` for a sweep
 
 ## How it fits the workflow
 
@@ -194,6 +194,6 @@ session start                                                             end of
 - [`forgeplan status`](/docs/cli/status/) - raw counts without the health lens
 - [`forgeplan blindspots`](/docs/cli/blindspots/) - blind-spot-only view
 - [`forgeplan gaps`](/docs/cli/gaps/) - missing-artifact detection
-- [`forgeplan refresh`](/docs/cli/stale/) - bulk stale artifact review
+- [`forgeplan stale`](/docs/cli/stale/) - bulk stale artifact review
 - [`forgeplan context`](/docs/cli/context/) - per-artifact deep-dive
 - [Methodology: quality gates](/docs/methodology/overview/)

@@ -74,7 +74,7 @@ This command belongs in the [full artifact lifecycle](/docs/guides/first-artifac
 | Error | Cause | Fix |
 |---|---|---|
 | `MUST rule failed: Problem section missing` | Required frontmatter or section is empty | Edit the artifact file, then re-run `forgeplan validate <id>` |
-| `Artifact already in state: active` | Already activated in a previous session | No action needed; inspect with `forgeplan show <id>` |
+| `Artifact already in state: active` | Already activated in a previous session | No action needed; inspect with `forgeplan get <id>` |
 | `R_eff = 0 after activation` | No EvidencePack linked | Create evidence with `forgeplan new evidence`, then `forgeplan link` + `forgeplan score` |
 | `Cannot activate from terminal state` | Artifact is `superseded` or `deprecated` | Terminal states never re-activate - create a new draft instead |
 

@@ -117,7 +117,7 @@ Shape → Validate → Reason → Code → Evidence → Activate
 
 - Called automatically by `forgeplan reason`, `forgeplan generate`, and MCP tools
 - Use manually to preview what an agent will see before invoking reasoning
-- Pair with `forgeplan audit` for bulk context sweeps across many artifacts
+- Pair with `forgeplan health` for a workspace-wide sweep across all artifacts
 
 ## See also
 

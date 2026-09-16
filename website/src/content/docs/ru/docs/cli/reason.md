@@ -63,7 +63,7 @@ forgeplan reason PRD-001 --fpf
 forgeplan reason PRD-001 --save
 ```
 
-Создаёт артефакт `note-*`, содержащий полный вывод ADI, и связывает его с исходным PRD (отношение `informs`). Полезно, когда вы хотите, чтобы рассуждения сохранились после текущей сессии терминала и отображались в `forgeplan get PRD-001 --graph`.
+Создаёт артефакт `note-*`, содержащий полный вывод ADI, и связывает его с исходным PRD (отношение `informs`). Полезно, когда вы хотите, чтобы рассуждения сохранились после текущей сессии терминала и отображались в `forgeplan graph`.
 
 ### Пример 4: Машиночитаемый вывод для агентов
 
@@ -89,12 +89,12 @@ forgeplan reason PRD-001 --json
 
 ## Как это вписывается в рабочий процесс
 
-Эта команда входит в [полный жизненный цикл артефакта](/docs/guides/first-artifact/) - см. руководство для сквозного процесса. `reason` запускается после `validate` PASS и до написания кода; для глубины Critical используйте команду в паре с `/audit` и человеческим ревью перед реализацией.
+Эта команда входит в [полный жизненный цикл артефакта](/ru/docs/guides/first-artifact/) - см. руководство для сквозного процесса. `reason` запускается после `validate` PASS и до написания кода; для глубины Critical используйте команду в паре с `/audit` и человеческим ревью перед реализацией.
 
 ## См. также
 
-- [`forgeplan route`](/docs/cli/route/) - решить, требуется ли ADI
-- [`forgeplan decompose`](/docs/cli/decompose/) - разбить проанализированный PRD на задачи RFC
-- [`forgeplan validate`](/docs/cli/validate/) - предварительное условие перед рассуждением
-- [`forgeplan generate`](/docs/cli/generate/) - черновик содержимого артефакта
-- [Методология: цикл ADI](/docs/methodology/overview/)
+- [`forgeplan route`](/ru/docs/cli/route/) - решить, требуется ли ADI
+- [`forgeplan decompose`](/ru/docs/cli/decompose/) - разбить проанализированный PRD на задачи RFC
+- [`forgeplan validate`](/ru/docs/cli/validate/) - предварительное условие перед рассуждением
+- [`forgeplan generate`](/ru/docs/cli/generate/) - черновик содержимого артефакта
+- [Методология: цикл ADI](/ru/docs/methodology/overview/)

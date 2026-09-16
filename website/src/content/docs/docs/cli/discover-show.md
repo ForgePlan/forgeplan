@@ -22,7 +22,7 @@ Use it during a run to watch progress, and before `discover complete` to sanity-
 ## Usage
 
 ```text
-forgeplan discover show <SESSION_ID> [OPTIONS]
+forgeplan discover show <SESSION_ID>
 ```
 
 ## Arguments

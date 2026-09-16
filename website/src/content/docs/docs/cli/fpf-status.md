@@ -23,7 +23,7 @@ Think of it as `forgeplan health` for the FPF KB specifically.
 ## Usage
 
 ```text
-forgeplan fpf status [OPTIONS]
+forgeplan fpf status
 ```
 
 ## Options

@@ -74,7 +74,7 @@ When in doubt, inspect the graph first:
 
 ```bash
 forgeplan graph PRD-001         # see all edges touching PRD-001
-forgeplan show PRD-001 --links  # list links in tabular form
+forgeplan get PRD-001            # read the artifact and its incoming links
 ```
 
 ## Self-link guard (PROB-019)

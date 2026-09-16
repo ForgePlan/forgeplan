@@ -113,7 +113,7 @@ done
 
 ## См. также
 
-- [`forgeplan estimate`](/docs/cli/estimate/) - оценка, с которой производится калибровка
-- [`forgeplan config`](/docs/getting-started/configuration/) - где находится grade_profile
-- [Единый рабочий процесс](/docs/guides/git-workflow/) - ритуалы закрытия спринта
-- [Обзор CLI](/docs/cli/)
+- [`forgeplan estimate`](/ru/docs/cli/estimate/) - оценка, с которой производится калибровка
+- [Настройка](/ru/docs/getting-started/configuration/) - где находится `grade_profile`
+- [Единый рабочий процесс](/ru/docs/guides/git-workflow/) - ритуалы закрытия спринта
+- [Обзор CLI](/ru/docs/cli/)

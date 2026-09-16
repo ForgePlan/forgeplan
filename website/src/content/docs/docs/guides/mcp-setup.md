@@ -40,7 +40,7 @@ The command writes a `forgeplan` entry into your client's MCP config:
 ```
 
 It's **smart-merge**:
-- Replaces `command` / `args` / `transport` (so `forgeplan upgrade` works cleanly)
+- Replaces `command` / `args` / `transport` (so upgrading the `forgeplan` binary works cleanly)
 - **Preserves your `env`** (API keys, `RUST_LOG`, custom paths)
 - Leaves other MCP servers in the file untouched
 - Idempotent - safe to re-run

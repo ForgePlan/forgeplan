@@ -11,11 +11,11 @@ Generates a **fully-drafted artifact** from a natural language description using
 - **Prototype artifact for discussion**: generate a throw-away PRD to explore a half-formed idea with the team before committing to the real one.
 - **Brown-field discovery**: describe an existing subsystem and ask the model to reverse-engineer a PRD / Spec / RFC for documentation.
 - You have a clear one-liner ("add rate limiting to /api/v1/") and want all the sections filled consistently.
-- Fast iteration during Shape phase when you want to try 2–3 framings quickly.
+- Fast iteration during Shape phase when you want to try 2-3 framings quickly.
 
 ## When NOT to use
 
-- You don't have LLM credentials configured - run `forgeplan config set llm.provider ...` first, or fall back to [`forgeplan new`](/docs/cli/new/).
+- You don't have LLM credentials configured - add a provider block to `.forgeplan/config.yaml` first, or fall back to [`forgeplan new`](/docs/cli/new/).
 - The decision is tactical and doesn't need an artifact at all - just commit.
 - You want full manual control over wording - use [`forgeplan new`](/docs/cli/new/) and fill sections yourself.
 - You're logging a decision from a conversation - use [`forgeplan capture`](/docs/cli/capture/).

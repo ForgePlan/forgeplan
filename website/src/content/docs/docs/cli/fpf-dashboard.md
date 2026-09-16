@@ -23,7 +23,7 @@ It's the FPF counterpart to `forgeplan health` - `health` reports artifact-level
 ## Usage
 
 ```text
-forgeplan fpf dashboard [OPTIONS]
+forgeplan fpf dashboard
 ```
 
 ## Options

@@ -68,7 +68,7 @@ An ordered list of journal entries, newest first:
 ## CLI equivalent
 
 ```bash
-forgeplan journal --kind adr --risk
+forgeplan journal --type adr --risk
 ```
 
 ## See also

@@ -50,7 +50,7 @@ set it to the previous tip of the current branch, giving `git-sync` an exact
 git checkout dev
 git pull origin dev          # pulls 3 new PRDs from teammates
 forgeplan git-sync           # <1s: only the 3 new files re-indexed
-forgeplan list --since 1d    # see what arrived
+forgeplan log                 # see what arrived
 forgeplan health             # check for new blind spots
 ```
 

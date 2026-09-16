@@ -171,6 +171,29 @@ function escapeYaml(s) {
   return s.replace(/"/g, '\\"');
 }
 
+// The published docs are swept free of em dashes - they read as an AI tell, and
+// the site-wide sweep removed them. Inside a fenced block they are verbatim tool
+// output and stay exactly as the binary printed them, so only prose is touched.
+function stripEmDashes(text) {
+  let fence = null;
+  return text
+    .split('\n')
+    .map((line) => {
+      const s = line.trimStart();
+      if (fence === null && (s.startsWith('```') || s.startsWith('~~~'))) {
+        fence = s.slice(0, 3);
+        return line;
+      }
+      if (fence !== null && s.startsWith(fence)) {
+        fence = null;
+        return line;
+      }
+      if (fence !== null) return line;
+      return line.replace(/[—–]/g, '-');
+    })
+    .join('\n');
+}
+
 function pageFor(cmd, help) {
   const { description, usage, argsBlock, optsBlock, subBlock } = parseHelp(help);
   const title = `forgeplan ${cmd}`;
@@ -197,12 +220,33 @@ function pageFor(cmd, help) {
   return body;
 }
 
-function pageForSubcommand(parent, subName, subDesc) {
+function pageForSubcommand(parent, subName, subDesc, subHelp) {
+  // Derive description / usage / arguments / options from the subcommand's own
+  // `forgeplan <parent> <sub> --help` output. Hardcoding `[OPTIONS]` here used to
+  // emit a usage line that did not exist: subcommands that take positional
+  // arguments (`playbook run <TARGET>`) or none at all (`plugins doctor`) drifted.
+  const parsed = subHelp ? parseHelp(subHelp) : null;
+  const desc = (parsed && parsed.description) || subDesc;
+  const usage = (parsed && parsed.usage) || `forgeplan ${parent} ${subName}`;
+  const positional = parsed
+    ? parsed.argsBlock
+        .map(l => l.match(/^\s+(<[^>]+>)/))
+        .filter(Boolean)
+        .map(m => m[1])
+    : [];
+
   const title = `forgeplan ${parent} ${subName}`;
-  let body = `---\ntitle: ${title}\ndescription: "${escapeYaml(subDesc)}"\n---\n\n`;
-  body += `${subDesc}\n\n`;
-  body += `## Usage\n\n\`\`\`text\nforgeplan ${parent} ${subName} [OPTIONS]\n\`\`\`\n\n`;
-  body += `## Example\n\n\`\`\`bash\nforgeplan ${parent} ${subName}\n\`\`\`\n\n`;
+  let body = `---\ntitle: ${title}\ndescription: "${escapeYaml(desc)}"\n---\n\n`;
+  body += `${desc}\n\n`;
+  body += `## Usage\n\n\`\`\`text\n${usage}\n\`\`\`\n\n`;
+  if (parsed && parsed.argsBlock.length) {
+    body += `## Arguments\n\n${fmtBlock(parsed.argsBlock)}\n`;
+  }
+  if (parsed && parsed.optsBlock.length) {
+    body += `## Options\n\n${fmtBlock(parsed.optsBlock)}\n`;
+  }
+  const example = `forgeplan ${parent} ${subName}${positional.length ? ' ' + positional.join(' ') : ''}`;
+  body += `## Example\n\n\`\`\`bash\n${example}\n\`\`\`\n\n`;
   body += `## See also\n\n`;
   body += `- [\`forgeplan ${parent}\`](/docs/cli/${parent}/)\n`;
   body += `- [CLI overview](/docs/cli/)\n`;
@@ -248,7 +292,7 @@ function writeOverview(commands) {
     }
     body += `\n`;
   }
-  writeFileSync(resolve(OUT_DIR, 'index.md'), body);
+  writeFileSync(resolve(OUT_DIR, 'index.md'), stripEmDashes(body));
 }
 
 function main() {
@@ -283,7 +327,7 @@ function main() {
       continue;
     }
     const page = pageFor(cmd.name, help);
-    writeFileSync(resolve(OUT_DIR, `${cmd.name}.md`), page);
+    writeFileSync(resolve(OUT_DIR, `${cmd.name}.md`), stripEmDashes(page));
 
     // Nested subcommands (fpf, help etc.)
     const parsed = parseHelp(help);
@@ -294,8 +338,16 @@ function main() {
         const subName = m[1];
         if (subName === 'help') continue;
         const subDesc = m[2].trim();
-        const page2 = pageForSubcommand(cmd.name, subName, subDesc);
-        writeFileSync(resolve(OUT_DIR, `${cmd.name}-${subName}.md`), page2);
+        let subHelp = '';
+        try {
+          subHelp = process.env.FORGEPLAN_VIA_CARGO
+            ? execFileSync('cargo', ['run', '--quiet', '--bin', 'forgeplan', '--', 'help', cmd.name, subName], { cwd: REPO_ROOT, encoding: 'utf8' })
+            : run(['help', cmd.name, subName]);
+        } catch (err) {
+          console.error(`[cli-gen] ${cmd.name} ${subName}: help failed: ${err.message}`);
+        }
+        const page2 = pageForSubcommand(cmd.name, subName, subDesc, subHelp);
+        writeFileSync(resolve(OUT_DIR, `${cmd.name}-${subName}.md`), stripEmDashes(page2));
       }
     }
   }

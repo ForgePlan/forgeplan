@@ -108,12 +108,12 @@ Shape → Validate → Reason → Code → Evidence → Activate
 
 - Вызывается автоматически `forgeplan reason`, `forgeplan generate` и инструментами MCP
 - Используйте вручную для предварительного просмотра того, что увидит агент, прежде чем запускать рассуждения
-- Используйте в паре с `forgeplan audit` для массовых проверок контекста по множеству артефактов
+- Используйте в паре с `forgeplan health` для проверки всего рабочего пространства сразу
 
 ## См. также
 
-- [`forgeplan get`](/docs/cli/get/) - более лёгкое подмножество (только артефакт)
-- [`forgeplan validate`](/docs/cli/validate/) - подмножество валидации
-- [`forgeplan score`](/docs/cli/score/) - подмножество скоринга
-- [`forgeplan reason`](/docs/cli/reason/) - использует контекст для анализа ADI
-- [`forgeplan health`](/docs/cli/health/) - панель мониторинга по всему проекту
+- [`forgeplan get`](/ru/docs/cli/get/) - более лёгкое подмножество (только артефакт)
+- [`forgeplan validate`](/ru/docs/cli/validate/) - подмножество валидации
+- [`forgeplan score`](/ru/docs/cli/score/) - подмножество скоринга
+- [`forgeplan reason`](/ru/docs/cli/reason/) - использует контекст для анализа ADI
+- [`forgeplan health`](/ru/docs/cli/health/) - панель мониторинга по всему проекту

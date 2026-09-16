@@ -163,9 +163,9 @@ Prints the top 10 hits with kind, id, title and score.
 ### 2. Filter by kind
 
 ```bash
-forgeplan search "auth" --kind prd
-forgeplan search "auth" --kind rfc
-forgeplan search "auth" --kind evidence
+forgeplan search "auth" --type prd
+forgeplan search "auth" --type rfc
+forgeplan search "auth" --type evidence
 ```
 
 Only artifacts of the requested kind are returned. Useful when you want the
@@ -178,10 +178,10 @@ forgeplan search "tags canonicalization" --status active
 forgeplan search "deprecated semantics"   --status deprecated
 ```
 
-Combine with `--kind` to scope precisely:
+Combine with `--type` to scope precisely:
 
 ```bash
-forgeplan search "scoring" --kind prd --status active
+forgeplan search "scoring" --type prd --status active
 ```
 
 ### 4. Limit results

@@ -61,11 +61,11 @@ The new draft inherits the kind (`PRD`) and is linked as the successor under re-
 
 ```bash
 forgeplan stale
-forgeplan refresh ADR-012
-forgeplan reopen ADR-012 --reason "refresh report identified 3 invalidated invariants"
+forgeplan review ADR-012
+forgeplan reopen ADR-012 --reason "review identified 3 invalidated invariants"
 ```
 
-Combine with `refresh` when the re-evaluation needs a structured report before the new draft is opened.
+Combine with a `forgeplan new refresh` artifact when the re-evaluation needs a structured report before the new draft is opened.
 
 ## How it fits the workflow
 

@@ -67,23 +67,23 @@ forgeplan activate RFC-012 --force
 
 ## Как это вписывается в рабочий процесс
 
-Эта команда входит в [полный жизненный цикл артефакта](/docs/guides/first-artifact/) - см. руководство для сквозного процесса. Активация - это то, как Forgeplan отличает работу "в процессе" от "действующих" решений, от которых могут зависеть другие артефакты.
+Эта команда входит в [полный жизненный цикл артефакта](/ru/docs/guides/first-artifact/) - см. руководство для сквозного процесса. Активация - это то, как Forgeplan отличает работу "в процессе" от "действующих" решений, от которых могут зависеть другие артефакты.
 
 ## Распространенные ошибки
 
 | Ошибка | Причина | Исправление |
 |---|---|---|
 | `MUST rule failed: Problem section missing` | Обязательный фронтматтер или раздел пуст | Отредактируйте файл артефакта, затем повторно запустите `forgeplan validate <id>` |
-| `Artifact already in state: active` | Уже активирован в предыдущей сессии | Действий не требуется; проверьте с помощью `forgeplan show <id>` |
+| `Artifact already in state: active` | Уже активирован в предыдущей сессии | Действий не требуется; проверьте с помощью `forgeplan get <id>` |
 | `R_eff = 0 after activation` | EvidencePack не связан | Создайте доказательство с помощью `forgeplan new evidence`, затем `forgeplan link` + `forgeplan score` |
 | `Cannot activate from terminal state` | Артефакт `superseded` или `deprecated` | Конечные состояния никогда не активируются повторно - вместо этого создайте новый черновик |
 
 ## См. также
 
-- [`forgeplan validate`](/docs/cli/validate/) - запускает гейт валидации без изменения состояния
-- [`forgeplan score`](/docs/cli/score/) - проверяет R_eff до и после активации
-- [`forgeplan review`](/docs/cli/review/) - пробный запуск готовности
-- [`forgeplan supersede`](/docs/cli/supersede/) - замещает один активный артефакт другим
-- [`forgeplan deprecate`](/docs/cli/deprecate/) - отменяет активный артефакт без замены
-- [Руководство по жизненному циклу v2](/docs/guides/lifecycle-v2/)
-- [Методология: Жизненный цикл артефакта](/docs/methodology/lifecycle/)
+- [`forgeplan validate`](/ru/docs/cli/validate/) - запускает гейт валидации без изменения состояния
+- [`forgeplan score`](/ru/docs/cli/score/) - проверяет R_eff до и после активации
+- [`forgeplan review`](/ru/docs/cli/review/) - пробный запуск готовности
+- [`forgeplan supersede`](/ru/docs/cli/supersede/) - замещает один активный артефакт другим
+- [`forgeplan deprecate`](/ru/docs/cli/deprecate/) - отменяет активный артефакт без замены
+- [Руководство по жизненному циклу v2](/ru/docs/guides/lifecycle-v2/)
+- [Методология: Жизненный цикл артефакта](/ru/docs/methodology/lifecycle/)

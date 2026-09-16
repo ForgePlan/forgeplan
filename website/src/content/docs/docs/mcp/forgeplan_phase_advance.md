@@ -75,7 +75,7 @@ Skip ahead (advisory, no validation gate):
 
 ## CLI equivalent
 
-[`forgeplan phase advance <id> --to <phase>`](/docs/cli/) - same write, same advisory
+[`forgeplan phase-advance --to <phase> <id>`](/docs/cli/phase-advance/) - same write, same advisory
 semantics.
 
 ## See also

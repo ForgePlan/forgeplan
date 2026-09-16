@@ -60,7 +60,7 @@ With typical agent context:
 
 ## CLI equivalent
 
-- [`forgeplan show`](/docs/cli/get/) - human-readable terminal render
+- [`forgeplan get`](/docs/cli/get/) - human-readable terminal render
 
 ## See also
 

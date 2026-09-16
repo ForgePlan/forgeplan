@@ -84,7 +84,13 @@ SEARCH_PATHS=(
 # `63 MCP-инструмента` in ru/docs/cli/serve.md, and printed "No drift" — a
 # green gate certifying the very drift it exists to catch. English `MCP-tools`
 # has the same exposure. See #421.
-EXTRACT_RE='[0-9]+[[:space:]]*(MCP[[:space:]-]*tool[s]?([^a-zA-Z]|$)|tool[s]?([^a-zA-Z]|$)|MCP[[:space:]-]*инструмент|инструмент)'
+#
+# The long form is spelled out too. `63 Model Context Protocol tools` sat in the
+# frontmatter description of mcp/index.md while the body of that same page said
+# 73: the number is three words away from the noun, so every number-adjacent
+# branch missed it, and the bare `tools` branch matched the word without a
+# number attached to extract.
+EXTRACT_RE='[0-9]+[[:space:]]*([Mm]odel[[:space:]]+[Cc]ontext[[:space:]]+[Pp]rotocol[[:space:]-]*tool[s]?([^a-zA-Z]|$)|MCP[[:space:]-]*tool[s]?([^a-zA-Z]|$)|tool[s]?([^a-zA-Z]|$)|MCP[[:space:]-]*инструмент|инструмент)'
 
 # --self-test: exercise the extraction regex against both languages and both
 # separators. Runs offline, touches no repo file. The blind spot in #421
@@ -108,9 +114,12 @@ if [[ "${SELF_TEST:-0}" == "1" ]]; then
     st_expect 1 '73 MCP инструмента для агентов'
     st_expect 1 '73 MCP-инструмента, сопоставленных с операциями'
     st_expect 1 '73 инструмента для агентов'
+    st_expect 1 '63 Model Context Protocol tools'
+    st_expect 1 '73 Model Context Protocol tools exposed by forgeplan serve'
     # Must NOT match — the audit C-3 false positives.
     st_expect 0 'a tooltip and a toolbox'
     st_expect 0 '76 CLI commands'
+    st_expect 0 'the Model Context Protocol'
     if [[ "$st_fail" -ne 0 ]]; then
         echo "Self-test FAILED" >&2
         exit 1
@@ -123,6 +132,10 @@ DRIFT_FOUND=0
 DRIFT_OUTPUT=$(mktemp)
 trap 'rm -f "$DRIFT_OUTPUT"' EXIT
 
+# `/docs/marketplace/` is filtered out below: those pages describe *other* MCP
+# servers — fpl-hsmem wraps Hindsight's 27 tools — so their counts are not
+# claims about this binary. The pages that must match (mcp/, cli/, landing)
+# stay in scope.
 for path in "${SEARCH_PATHS[@]}"; do
     if [[ ! -e "$path" ]]; then
         continue
@@ -139,6 +152,7 @@ for path in "${SEARCH_PATHS[@]}"; do
         | grep -v 'website/dist' \
         | grep -v 'TODO\.md.*Previous: v0\.' \
         | grep -v 'mcp-count-drift: ignore' \
+        | grep -v '/docs/marketplace/' \
         | while read -r line; do
             # NOTE: DRIFT_FOUND is NOT assigned inside this while-pipe
             # (subshell scoping: variable changes don't propagate to

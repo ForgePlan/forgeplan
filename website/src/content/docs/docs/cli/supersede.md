@@ -63,7 +63,7 @@ forgeplan supersede RFC-002 --by RFC-014
 
 ```bash
 forgeplan supersede PRD-007 --by PRD-021
-forgeplan links PRD-007
+forgeplan get PRD-007
 ```
 
 After superseding, inspect the relationship graph to confirm the `superseded_by` edge was written.
@@ -86,6 +86,6 @@ Supersede is the clean exit of the `Shape → Validate → Code → Evidence →
 - [`forgeplan deprecate`](/docs/cli/deprecate/) - retire without a replacement
 - [`forgeplan reopen`](/docs/cli/reopen/) - deprecate and start a new draft for re-evaluation
 - [`forgeplan activate`](/docs/cli/activate/) - activate the successor before superseding
-- [`forgeplan links`](/docs/cli/link/) - inspect the `superseded_by` relationship
+- [`forgeplan get`](/docs/cli/get/) - inspect the `superseded_by` relationship
 - [Lifecycle v2 guide](/docs/guides/lifecycle-v2/)
 - [Methodology: Artifact Lifecycle](/docs/methodology/lifecycle/)

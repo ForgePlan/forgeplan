@@ -16,8 +16,8 @@ description: "Заменить активный артефакт более но
 
 ## Когда НЕ использовать
 
-- Старый артефакт просто устарел без прямой замены - вместо этого используйте [`forgeplan deprecate`](/docs/cli/deprecate/) с указанием причины.
-- Вы хотите заново изучить проблему и создать черновик преемника с нуля - используйте [`forgeplan reopen`](/docs/cli/reopen/), который автоматически создаёт новый черновик.
+- Старый артефакт просто устарел без прямой замены - вместо этого используйте [`forgeplan deprecate`](/ru/docs/cli/deprecate/) с указанием причины.
+- Вы хотите заново изучить проблему и создать черновик преемника с нуля - используйте [`forgeplan reopen`](/ru/docs/cli/reopen/), который автоматически создаёт новый черновик.
 - Замещающий артефакт ещё не существует. Сначала создайте и активируйте его, затем заместите.
 - Старый артефакт всё ещё находится в состоянии `draft` (черновик). Черновики не нуждаются в замещении - просто удалите или перепишите их.
 
@@ -64,7 +64,7 @@ forgeplan supersede RFC-002 --by RFC-014
 
 ```bash
 forgeplan supersede PRD-007 --by PRD-021
-forgeplan links PRD-007
+forgeplan get PRD-007
 ```
 
 После замещения проверьте граф связей, чтобы убедиться, что ребро `superseded_by` было записано.
@@ -84,9 +84,9 @@ Supersede - это чистый выход из цикла `Shape → Validate �
 
 ## См. также
 
-- [`forgeplan deprecate`](/docs/cli/deprecate/) - вывести из эксплуатации без замены
-- [`forgeplan reopen`](/docs/cli/reopen/) - отменить и начать новый черновик для переоценки
-- [`forgeplan activate`](/docs/cli/activate/) - активировать преемника перед замещением
-- [`forgeplan links`](/docs/cli/link/) - проверить связь `superseded_by`
-- [Руководство по жизненному циклу v2](/docs/guides/lifecycle-v2/)
-- [Методология: Жизненный цикл артефактов](/docs/methodology/lifecycle/)
+- [`forgeplan deprecate`](/ru/docs/cli/deprecate/) - вывести из эксплуатации без замены
+- [`forgeplan reopen`](/ru/docs/cli/reopen/) - отменить и начать новый черновик для переоценки
+- [`forgeplan activate`](/ru/docs/cli/activate/) - активировать преемника перед замещением
+- [`forgeplan get`](/ru/docs/cli/get/) - проверить связь `superseded_by`
+- [Руководство по жизненному циклу v2](/ru/docs/guides/lifecycle-v2/)
+- [Методология: Жизненный цикл артефактов](/ru/docs/methodology/lifecycle/)

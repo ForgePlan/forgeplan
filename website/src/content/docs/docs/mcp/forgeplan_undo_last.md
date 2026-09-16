@@ -75,7 +75,7 @@ Wider search after an idle period:
 
 ## CLI equivalent
 
-[`forgeplan undo`](/docs/cli/) - same trash-walking logic.
+[`forgeplan undo-last`](/docs/cli/undo-last/) - same trash-walking logic.
 
 ## See also
 

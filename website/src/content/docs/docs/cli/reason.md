@@ -70,7 +70,7 @@ forgeplan reason PRD-001 --save
 
 Creates a `note-*` artifact containing the full ADI output and links it to the
 source PRD (`informs` relation). Useful when you want the reasoning to survive
-past the current terminal session and show up in `forgeplan get PRD-001 --graph`.
+past the current terminal session and show up in `forgeplan graph`.
 
 ### Example 4: Machine-readable output for agents
 

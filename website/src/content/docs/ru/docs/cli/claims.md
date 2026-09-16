@@ -18,7 +18,7 @@ description: "List live claims in the workspace - who is working on what right n
 
 ## Когда НЕ использовать
 
-- Нужен lifecycle-статус (`draft` / `active` / `superseded`) - это отдельно от клеймов; используйте [`forgeplan list`](/ru/docs/cli/list/) или `forgeplan show <id>`.
+- Нужен lifecycle-статус (`draft` / `active` / `superseded`) - это отдельно от клеймов; используйте [`forgeplan list`](/ru/docs/cli/list/) или `forgeplan get <id>`.
 - Хотите изменить состояние - эта команда только читает. Для записи используйте [`forgeplan claim`](/ru/docs/cli/claim/) и [`forgeplan release`](/ru/docs/cli/release/).
 - Нужна долгосрочная история - клеймы эфемерны (максимум 24 часа TTL). Для истории запросов используйте [`forgeplan activity`](/ru/docs/cli/activity/).
 

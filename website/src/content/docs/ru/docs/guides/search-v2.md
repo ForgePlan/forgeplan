@@ -116,9 +116,9 @@ forgeplan search "bm25 russian morphology"
 ### 2. Фильтрация по типу
 
 ```bash
-forgeplan search "auth" --kind prd
-forgeplan search "auth" --kind rfc
-forgeplan search "auth" --kind evidence
+forgeplan search "auth" --type prd
+forgeplan search "auth" --type rfc
+forgeplan search "auth" --type evidence
 ```
 
 Возвращаются только артефакты запрошенного типа. Полезно, когда вам нужен RFC, объясняющий, как создается PRD.
@@ -130,10 +130,10 @@ forgeplan search "tags canonicalization" --status active
 forgeplan search "deprecated semantics"   --status deprecated
 ```
 
-Объедините с `--kind` для точного определения области:
+Объедините с `--type` для точного определения области:
 
 ```bash
-forgeplan search "scoring" --kind prd --status active
+forgeplan search "scoring" --type prd --status active
 ```
 
 ### 4. Ограничение результатов
@@ -238,7 +238,7 @@ v0.18 имеет сложность O(N) - рабочее пространств
 
 ## См. также
 
--   [Справочник CLI по `forgeplan search`](/docs/cli/search/)
--   [Справочник по инструменту MCP `forgeplan_search`](/docs/mcp/forgeplan_search/)
--   [Руководство по Lifecycle v2](/docs/guides/lifecycle-v2/)
--   [Десять правил методологии Forgeplan](/docs/guides/ten-rules/)
+-   [Справочник CLI по `forgeplan search`](/ru/docs/cli/search/)
+-   [Справочник по инструменту MCP `forgeplan_search`](/ru/docs/mcp/forgeplan_search/)
+-   [Руководство по Lifecycle v2](/ru/docs/guides/lifecycle-v2/)
+-   [Десять правил методологии Forgeplan](/ru/docs/guides/ten-rules/)

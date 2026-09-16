@@ -62,8 +62,12 @@ Blocked case:
 
 ## CLI equivalent
 
+There is no CLI command for the guard - it is an advisory check on the MCP
+surface only. The two commands it inspects are available:
+
 ```bash
-forgeplan guard --target coding
+forgeplan session           # the phase you are in
+forgeplan validate PRD-001  # what blocks a shaping → coding hop
 ```
 
 ## See also

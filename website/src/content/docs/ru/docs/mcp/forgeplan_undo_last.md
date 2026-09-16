@@ -78,7 +78,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::UndoLastParam
 
 ## CLI эквивалент
 
-[`forgeplan undo`](/ru/docs/cli/) - та же логика обхода trash.
+[`forgeplan undo-last`](/ru/docs/cli/undo-last/) - та же логика обхода trash.
 
 ## См. также
 

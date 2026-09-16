@@ -22,7 +22,7 @@ This is where the brownfield pipeline turns raw findings into real methodology s
 ## Usage
 
 ```text
-forgeplan discover complete <SESSION_ID> [OPTIONS]
+forgeplan discover complete <SESSION_ID>
 ```
 
 ## Arguments

@@ -42,7 +42,7 @@ forgeplan mcp install --client windsurf
 ```
 
 Это **smart-merge**:
-- Заменяет `command` / `args` / `transport` (чтобы `forgeplan upgrade` работал чисто)
+- Заменяет `command` / `args` / `transport` (чтобы обновление бинарника `forgeplan` проходило чисто)
 - **Сохраняет ваш `env`** (API-ключи, `RUST_LOG`, кастомные пути)
 - Не трогает другие MCP-серверы в файле
 - Идемпотентна - безопасно перезапускать

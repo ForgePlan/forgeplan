@@ -55,7 +55,7 @@ Finds the newest unused trash record for `PRD-042`, replays the original operati
 
 ```bash
 forgeplan restore PRD-042
-forgeplan show PRD-042
+forgeplan get PRD-042
 ```
 
 Always inspect the body, status, and links after a restore - confirm everything looks right. Re-create any links reported as skipped manually if you need them.
@@ -70,7 +70,7 @@ Returns JSON and extracts only the list of links that could not be restored. Use
 
 ## How it fits the workflow
 
-Recovery is two steps: figure out when the destruction happened, then restore. Use [`forgeplan activity`](/docs/cli/activity/) with a destructive-operation filter to confirm the timeline, run `forgeplan restore <ID>`, then verify with `forgeplan show <ID>`. Re-link any skipped relations by hand if they matter.
+Recovery is two steps: figure out when the destruction happened, then restore. Use [`forgeplan activity`](/docs/cli/activity/) with a destructive-operation filter to confirm the timeline, run `forgeplan restore <ID>`, then verify with `forgeplan get <ID>`. Re-link any skipped relations by hand if they matter.
 
 ## See also
 

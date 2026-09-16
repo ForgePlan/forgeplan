@@ -114,6 +114,6 @@ you review the drift and decide what to change.
 ## See also
 
 - [`forgeplan estimate`](/docs/cli/estimate/) - the estimate this calibrates against
-- [`forgeplan config`](/docs/getting-started/configuration/) - where grade_profile lives
+- [Configuration](/docs/getting-started/configuration/) - where `grade_profile` lives
 - [Unified Workflow](/docs/guides/git-workflow/) - sprint close rituals
 - [CLI overview](/docs/cli/)

@@ -79,13 +79,13 @@ Tags power several downstream commands:
 
 | Command                                                 | How tags are used                                   |
 |---------------------------------------------------------|-----------------------------------------------------|
-| [`forgeplan discover`](/docs/cli/discover/)             | Group artifacts by tag, surface tag frequency       |
-| [`forgeplan search --tag <t>`](/docs/cli/search/)       | Filter BM25 results to a tag intersection           |
+| [`forgeplan tag <ID> <TAGS>...`](/docs/cli/tag/)        | Add tags to an artifact                             |
+| [`forgeplan untag <ID> <TAGS>...`](/docs/cli/untag/)    | Remove tags from an artifact                        |
 | [`forgeplan list --tag <t>`](/docs/cli/list/)           | List artifacts matching a tag                       |
 | [`forgeplan health`](/docs/cli/health/)                 | Surfaces untagged active artifacts                  |
 
-A well-tagged workspace makes `discover` meaningful. An untagged workspace
-makes `discover` noise.
+A consistent tag vocabulary is what makes `list --tag` and the untagged-artifact
+count in `health` useful. Tag sprawl makes both noise.
 
 ## Tagging conventions (suggested)
 
@@ -163,6 +163,5 @@ for how this interacts with R_eff scoring after upgrade.
 
 - [CLI overview](/docs/cli/)
 - [`forgeplan untag`](/docs/cli/untag/) - remove tags
-- [`forgeplan discover`](/docs/cli/discover/) - browse by tag
-- [`forgeplan search`](/docs/cli/search/) - filter search by tag
+- [`forgeplan list`](/docs/cli/list/) - `--tag <t>` lists artifacts by tag
 - [Methodology guide](/docs/methodology/overview/)

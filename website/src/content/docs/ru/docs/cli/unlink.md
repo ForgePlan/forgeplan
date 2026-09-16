@@ -4,7 +4,7 @@ description: "Удалить связь между двумя артефакта
 ---
 
 Удаляет типизированную связь между двумя артефактами. Обратная операция для
-[`forgeplan link`](/docs/cli/link/). Используйте `unlink`, чтобы исправить ошибки - неправильное
+[`forgeplan link`](/ru/docs/cli/link/). Используйте `unlink`, чтобы исправить ошибки - неправильное
 направление, неправильный тип связи, просроченная связь, оставшаяся от замещённого
 решения - без ручного переписывания markdown.
 
@@ -74,38 +74,38 @@ forgeplan unlink EVID-017 ADR-004 --relation contradicts
 
 ```bash
 forgeplan graph PRD-001         # показать все рёбра, связанные с PRD-001
-forgeplan show PRD-001 --links  # вывести связи в табличной форме
+forgeplan get PRD-001            # прочитать артефакт и его входящие связи
 ```
 
 ## Защита от самосвязей (PROB-019)
 
-Поскольку самосвязи не могут быть созданы (см. [`forgeplan link`](/docs/cli/link/)),
+Поскольку самосвязи не могут быть созданы (см. [`forgeplan link`](/ru/docs/cli/link/)),
 `forgeplan unlink PRD-001 PRD-001` никогда не найдёт совпадения и завершит работу без эффекта.
 
 ## Побочные эффекты
 
--   [`forgeplan score`](/docs/cli/score/) пересчитывает R_eff для целевого элемента. Если
+-   [`forgeplan score`](/ru/docs/cli/score/) пересчитывает R_eff для целевого элемента. Если
     вы удалите единственное поддерживающее ребро `informs`, оценка упадёт до 0, и
-    артефакт станет слепым пятном на [`forgeplan health`](/docs/cli/health/).
--   [`forgeplan blocked`](/docs/cli/blocked/) и
-    [`forgeplan order`](/docs/cli/order/) повторно запускают топологическую сортировку.
--   Граф Mermaid из [`forgeplan graph`](/docs/cli/graph/) теряет ребро.
+    артефакт станет слепым пятном на [`forgeplan health`](/ru/docs/cli/health/).
+-   [`forgeplan blocked`](/ru/docs/cli/blocked/) и
+    [`forgeplan order`](/ru/docs/cli/order/) повторно запускают топологическую сортировку.
+-   Граф Mermaid из [`forgeplan graph`](/ru/docs/cli/graph/) теряет ребро.
 
 ## Примечания
 
 -   Unlink идемпотентен - запуск дважды даёт тот же эффект, что и запуск
     один раз. Нет ошибки при отсутствии ребра.
 -   Чтобы полностью удалить артефакт (включая все его связи), используйте
-    [`forgeplan delete`](/docs/cli/delete/) - он каскадно удаляет связи за
+    [`forgeplan delete`](/ru/docs/cli/delete/) - он каскадно удаляет связи за
     один проход.
 -   Прямые изменения файлов `.forgeplan/<kind>s/<id>.md` никогда не затрагивают таблицу `links`.
     Если вам нужно вручную отредактировать связи, запустите
-    [`forgeplan scan-import`](/docs/cli/scan-import/) после этого.
+    [`forgeplan scan-import`](/ru/docs/cli/scan-import/) после этого.
 
 ## См. также
 
--   [Обзор CLI](/docs/cli/)
--   [`forgeplan link`](/docs/cli/link/) - создать связь
--   [`forgeplan graph`](/docs/cli/graph/) - визуализировать текущие связи
--   [`forgeplan score`](/docs/cli/score/) - пересчитать R_eff после отмены связи
--   [Руководство по методологии](/docs/methodology/overview/)
+-   [Обзор CLI](/ru/docs/cli/)
+-   [`forgeplan link`](/ru/docs/cli/link/) - создать связь
+-   [`forgeplan graph`](/ru/docs/cli/graph/) - визуализировать текущие связи
+-   [`forgeplan score`](/ru/docs/cli/score/) - пересчитать R_eff после отмены связи
+-   [Руководство по методологии](/ru/docs/methodology/overview/)
