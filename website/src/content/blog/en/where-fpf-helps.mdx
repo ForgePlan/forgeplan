@@ -12,7 +12,7 @@ translations:
   ru: where-fpf-helps
 ---
 
-In [the previous post](/blog/en/what-is-fpf/) I covered what FPF is as a whole: where the framework comes from, why it exists, and how its basic vocabulary works. This post is a companion: where exactly these patterns apply.
+In [the previous post](/blog/what-is-fpf/) I covered what FPF is as a whole: where the framework comes from, why it exists, and how its basic vocabulary works. This post is a companion: where exactly these patterns apply.
 
 25 situations across 12 fields. For each one: which FPF pattern solves the problem and what changes as a result.
 
@@ -44,9 +44,9 @@ The cases are independent of each other: you can start from whichever section ma
 
 ### 3. The SRE dashboard is green - and lying
 
-- **Situation.** 12 SLI graphs are green; the customer complains about latency. It turns out that alerting rules had not been updated in 9 months, the latency bucket was widened in March, and no one revised the thresholds.
+- **Situation.** 12 SLI graphs are green; the customer complains about latency. The alerting rules had not been updated in 9 months, the latency bucket was widened in March, and no one revised the thresholds.
 - **FPF Pattern.** B.3.4 Evidence Decay + Epistemic Debt - every SLI needs a valid_until date and a refresh policy.
-- **What changes.** The dashboard shows not only the color but also the age of the threshold definition. Older than 90 days triggers a visual "stale" marker and a Refresh task to the owner.
+- **What changes.** The dashboard shows both the color and the age of the threshold definition. Older than 90 days triggers a visual "stale" marker and a Refresh task to the owner.
 
 ### 4. The architect chose Kafka "because Kafka"
 
@@ -104,7 +104,7 @@ The cases are independent of each other: you can start from whichever section ma
 
 ### 12. "The mass is most likely benign"
 
-- **Situation.** A radiologist writes "lesion, most probably benign." The clinician treats it as "benign" and defers follow-up. A year later it turns out this was one of three hypotheses the radiologist considered - and not the leading one given all the features.
+- **Situation.** A radiologist writes "lesion, most probably benign." The clinician treats it as "benign" and defers follow-up. A year later it is clear that this was one of three hypotheses the radiologist considered, and not the leading one given all the features.
 - **FPF Pattern.** B.5.2.1 Creative Abduction + NQD - return a Pareto-front, not a winner.
 - **What changes.** The report contains not a "diagnosis" but a ranked set: three hypotheses with weights and the criteria that would distinguish them. The clinician sees which additional workup resolves the ambiguity.
 
@@ -148,7 +148,7 @@ The cases are independent of each other: you can start from whichever section ma
 
 ### 18. Crisis: the first plausible version
 
-- **Situation.** A data breach. The PR team assembles a version - "breach via a contractor" - within 2 hours and publishes a statement. The next day it turns out the source was an insider. The second statement contradicts the first; reputational damage doubles.
+- **Situation.** A data breach. The PR team assembles a version - "breach via a contractor" - within 2 hours and publishes a statement. The next day the real source is identified: an insider. The second statement contradicts the first; reputational damage doubles.
 - **FPF Pattern.** B.5.2 Abductive Loop - no first hypothesis goes to publication without a second hypothesis and a distinguishing filter.
 - **What changes.** The PR protocol requires: before any public statement - at minimum 2 hypotheses and at least one filter that distinguishes them. If a filter is impossible within the timebox, the publication says "under investigation," not "here is what happened."
 
@@ -214,5 +214,5 @@ Two more quick takes. `B.5.2 Abductive Loop` saves PR crises, medical diagnoses,
 
 To go deeper into the patterns themselves:
 
-- Full FPF overview: [/blog/en/what-is-fpf/](/blog/en/what-is-fpf/)
+- Full FPF overview: [/blog/what-is-fpf/](/blog/what-is-fpf/)
 - Specification: [github.com/ailev/FPF](https://github.com/ailev/FPF)

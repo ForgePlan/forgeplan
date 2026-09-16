@@ -21,7 +21,7 @@ Monday, 10:42 am. The product manager opens chat and sees a message from the ana
 
 Forty minutes later there are four people in the thread. The developer writes: "I know what this is - we rolled out the new payment form last week. Going to roll it back."
 
-The manager nods: the reflex is right. They roll back the form. Conversion doesn't come back. They spend another day digging through the backend. Nothing. On day three, someone out of boredom opens a session recording on mobile - and it turns out that the release shuffled the layout at the bottom of the screen, and the Pay button moved out of reach on older Android phones. You can't hit it with your thumb.
+The manager nods: the reflex is right. They roll back the form. Conversion doesn't come back. They spend another day digging through the backend. Nothing. On day three, someone out of boredom opens a session recording on mobile. What they see is clear: the release shuffled the layout at the bottom of the screen, and the Pay button moved out of reach on older Android phones. You can't hit it with your thumb.
 
 The payment form has nothing to do with it. The rollback cost a full day and pushed the next release. The real fix - three lines of CSS, five minutes of work.
 
@@ -51,7 +51,7 @@ One version isn't thinking, it's a reflex. If only one hypothesis exists in your
 
 Two is a false choice. "It's either the payment form or the backend." At this stage the brain already narrows the picture to a binary and discards anything that doesn't fit. Classic example: "do we need Redis or Memcached?" - that's not a choice between alternatives, it's a choice between two flavors of the same alternative (external cache). The real choice is whether you need an external cache at all, or whether profiling the queries might be enough.
 
-Three is the minimum that breaks the tunnel. The third version almost always comes at things from an unexpected angle and forces a separate check. It's often the one that turns out to be right - not because there's anything magical about being third, but because the first and second fall into the same groove, and the third breaks out of it.
+Three is the minimum that breaks the tunnel. The third version almost always comes at things from an unexpected angle and forces a separate check. It is often the one that turns out to be right. Nothing magical about being third - the first and second fall into the same groove, and the third breaks out of it.
 
 If you can write four, great. Fewer than three means you haven't left the anchor yet.
 

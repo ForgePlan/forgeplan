@@ -8,7 +8,7 @@ description: Install Forgeplan - CLI, AI Skill, or MCP Server
 Installing Forgeplan gives you routing, artifacts, validation, scoring, the
 link graph and keyword search. Three further capabilities each need one
 command, and **each one fails quietly if you skip it**. Nothing crashes. You
-get a worse answer and no indication that you got one — which is exactly why
+get a worse answer and no indication that you got one. That is exactly why
 this block is at the top of the page rather than buried below.
 
 | Step | Command | What you lose by skipping it |
@@ -18,7 +18,7 @@ this block is at the top of the page rather than buried below.
 | **3. Agent harness** | install 5 marketplace plugins | `/smith`, `/forge-cycle`, `/audit` and the specialist agents do not exist |
 
 Steps 1 and 2 apply to everyone. Step 3 applies if you drive Forgeplan
-through an AI agent — which is the intended way to use it.
+through an AI agent. That is the intended way to use it.
 
 ### 1. Fetch the embedding model
 
@@ -26,19 +26,16 @@ through an AI agent — which is the intended way to use it.
 forgeplan setup
 ```
 
-Every released binary — Homebrew, `install.sh`, GitHub Release archives —
-carries the semantic search engine. It does **not** carry the 2.1 GB of model
-weights, because shipping them in the binary would make every download 2.1 GB
-whether you use search or not.
+Every released binary: Homebrew, `install.sh`, and GitHub Release archives, all carry the semantic search engine. It does **not** carry the 2.1 GB of model weights, because shipping them in the binary would make every download 2.1 GB whether you use search or not.
 
 **Why it matters.** Without the model, `forgeplan search --semantic` still
-returns results. It falls back to BM25 keyword matching and says so — but a
+returns results. It falls back to BM25 keyword matching and says so, but a
 line of fallback text is easy to miss, and keyword search cannot find "how do
 we handle auth failures" in a document that says "retry policy for rejected
 credentials". You get plausible results that quietly miss the thing you were
 looking for.
 
-**If it did not download.** `forgeplan setup` is idempotent — run it again.
+**If it did not download.** `forgeplan setup` is idempotent: run it again.
 `forgeplan init -y` deliberately never downloads (agents and CI must not pull
 gigabytes by accident), so a scripted setup needs `forgeplan init --with-model`.
 To check what you actually have, run `forgeplan embed`: it starts loading the
@@ -58,15 +55,13 @@ The First Principles Framework spec is a 204-section corpus that ships as a
 **separate skill**, not inside the binary. `fpf ingest` parses it, embeds it,
 and writes it into your workspace knowledge base.
 
-**Why it matters.** FPF is what `forgeplan reason` uses for ADI reasoning —
-the step that makes an artifact generate genuine alternatives instead of
-restating your first idea. It is required for Standard-depth work and above.
+**Why it matters.** FPF is what `forgeplan reason` uses for ADI reasoning: the step that makes an artifact generate genuine alternatives instead of restating your first idea. It is required for Standard-depth work and above.
 
 **Why this step is easy to get wrong.** Skipping it produces a closed loop
 that looks like a working system: `fpf search` reports "no matches, run
 ingest", and before v0.35.0 `ingest` pointed at a skill name that no longer
 existed. An empty corpus and a missing corpus give the identical answer. If
-`fpf search` returns nothing, run `forgeplan fpf status` — it distinguishes
+`fpf search` returns nothing, run `forgeplan fpf status`. It distinguishes
 the two.
 
 Details: [`forgeplan fpf ingest`](/docs/cli/fpf-ingest/).
@@ -74,9 +69,7 @@ Details: [`forgeplan fpf ingest`](/docs/cli/fpf-ingest/).
 ### 3. Install the agent harness
 
 Everything above works from a plain shell. But Forgeplan is designed to be
-driven by an agent, and the commands that do the driving — `/smith`,
-`/forge-cycle`, `/audit`, `/sprint` — live in marketplace plugins, not in the
-binary.
+driven by an agent, and the commands that do the driving: `/smith`, `/forge-cycle`, `/audit`, `/sprint`. They live in marketplace plugins, not in the binary.
 
 Five plugins are required for the full pipeline; two more are strongly
 recommended. The exact list, what each one gives you, and the optional extras
@@ -103,7 +96,7 @@ After installation, use in chat:
 /forge "Add OAuth2 authentication"
 ```
 
-**Alternative**: if you already have the CLI installed, use the built-in command instead -- it embeds the skill file directly, no network required:
+**Alternative**: if you already have the CLI installed, use the built-in command instead. It embeds the skill file directly, no network required:
 
 ```bash
 forgeplan setup-skill
@@ -113,9 +106,9 @@ See [`forgeplan setup-skill`](/docs/cli/setup-skill/) for details.
 
 **Discover more plugins**: [Marketplace Overview](/docs/marketplace/overview/).
 
-## Full Harness Bundle (Claude Code)
+## Full harness bundle (Claude Code)
 
-The `/forge` skill above is enough to start. For the **complete Forgeplan harness** — `/smith` master orchestrator, `/forge-cycle` reactive enforcer, `/audit`, `/sprint`, `/methodology-check`, `/forgeplan-cookbook`, guardian + Profile A/B/C/D canonical agents, FPF ADI reasoning, Hindsight cross-session memory — install the recommended plugin set. This is what `/smith-bootstrap` Step 0a expects on a greenfield project.
+The `/forge` skill above is enough to start. For the **complete Forgeplan harness** (everything: `/smith` master orchestrator, `/forge-cycle` reactive enforcer, `/audit`, `/sprint`, `/methodology-check`, `/forgeplan-cookbook`, guardian + Profile A/B/C/D canonical agents, FPF ADI reasoning, Hindsight cross-session memory), install the recommended plugin set. This is what `/smith-bootstrap` Step 0a expects on a greenfield project.
 
 Run these inside a Claude Code session:
 
@@ -148,7 +141,7 @@ After reload, `/smith-bootstrap` for a fresh repo or `/smith` for next-action re
 | `agents-pro` | Dispatch named specialists when you need them: `brief-intake` turns a vague idea into a structured Brief, `adr-architect` produces architecture decisions with three considered alternatives, `research-analyst` gathers prior art before you commit to a direction, `guardian` runs the last check before activation. |
 | `agents-sparc` | Use the SPARC five-phase flow for any new feature: Specification → Pseudocode → Architecture → Refinement → Completion. Without it, the first PRD on a fresh project lands without the SPARC structure and you have to redo the spec phase by hand. |
 | `agents-core` | Actually write, review, and test code. The `coder` agent edits files in an isolated worktree, `code-reviewer` produces structured findings against the spec, `tester` runs the suite and reports coverage delta. |
-| `forgeplan-workflow` | Run the `/forge-cycle` command — the reactive enforcer that walks an artifact through validate → ADI → review → activate one step at a time. Plus `/forge-audit` for multi-expert code audit and the guardian gate enforcement that decides whether a PRD is ready to ship. |
+| `forgeplan-workflow` | Run the `/forge-cycle` command, the reactive enforcer that walks an artifact through validate → ADI → review → activate one step at a time. Plus `/forge-audit` for multi-expert code audit and the guardian gate enforcement that decides whether a PRD is ready to ship. |
 
 ### Optional plugins
 
@@ -196,8 +189,8 @@ Download pre-built binaries from [GitHub Releases](https://github.com/ForgePlan/
 
 ### First run: fetch the embedding model
 
-Semantic search is compiled into every released binary — Homebrew, the install
-script and the GitHub Release archives alike. The engine is [`tract`](https://github.com/sonos/tract),
+Semantic search is compiled into every released binary: Homebrew, the install
+script, and the GitHub Release archives alike. The engine is [`tract`](https://github.com/sonos/tract),
 pure Rust, so there is no platform where the feature exists in the source but
 not in the build.
 
@@ -211,7 +204,7 @@ It does two things:
 
 - downloads the **embedding model** up front, so your first semantic search
   does not stall for minutes with no explanation
-- creates the **`fpl` alias** when you installed via `cargo install` — brew and
+- creates the **`fpl` alias** when you installed via `cargo install`. brew and
   `install.sh` get it from cargo-dist's `bin-aliases`, but cargo has no
   post-install hook, so a source install has `forgeplan` and no `fpl`
 
@@ -219,12 +212,12 @@ Both steps are idempotent; `--skip-model` and `--skip-alias` opt out of either.
 An existing `fpl` on your PATH is never overwritten.
 
 Until the model is present, `forgeplan search --semantic` falls back to BM25
-keyword search and says so; everything else — routing, artifacts, validation,
-scoring, the graph — is unaffected.
+keyword search and says so. Everything else (routing, artifacts, validation,
+scoring, the graph) is unaffected.
 
 `forgeplan init` also offers the download when run interactively. It never
-downloads under `-y` — agents and CI runners must not pull gigabytes by
-accident — so pass `--with-model` when a scripted install genuinely wants it.
+downloads under `-y`. Agents and CI runners must not pull gigabytes by
+accident, so pass `--with-model` when a scripted install genuinely wants it.
 
 The model is **~2.1 GB**, downloaded once per machine with a progress bar, and
 cached outside your projects, in the platform cache directory:
@@ -236,7 +229,7 @@ cached outside your projects, in the platform cache directory:
 | Windows | `%LOCALAPPDATA%\forgeplan\models` |
 
 Override with `FORGEPLAN_MODEL_CACHE`. If you already have `HF_HOME` set, it
-takes precedence over both — that is fastembed's behaviour and we do not
+takes precedence over both. That is fastembed's behaviour and we do not
 override it, so a shared HuggingFace cache stays authoritative.
 
 To check which kind of build you have, run `forgeplan embed`: a build without

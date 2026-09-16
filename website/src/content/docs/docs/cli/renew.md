@@ -84,7 +84,7 @@ Renew is part of the decision-maintenance loop that runs alongside the main `Sha
 ## See also
 
 - [`forgeplan stale`](/docs/cli/stale/) - list artifacts with expired `valid_until`
-- [`forgeplan reopen`](/docs/cli/reopen/) - if the decision needs re-evaluation, not just extension
+- [`forgeplan reopen`](/docs/cli/reopen/) - if the decision needs re-evaluation from scratch
 - [`forgeplan deprecate`](/docs/cli/deprecate/) - if the decision no longer applies
 - [`forgeplan supersede`](/docs/cli/supersede/) - if a replacement already exists
 - [`forgeplan health`](/docs/cli/health/) - surfaces stale artifacts that need attention

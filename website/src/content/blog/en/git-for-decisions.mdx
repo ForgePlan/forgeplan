@@ -51,7 +51,7 @@ Every artifact is scored as `R_eff = min(evidence_scores)`. Never average. If yo
 
 **Rule 2: Evidence decays honestly.**
 
-Every EvidencePack carries `verdict` (supports / weakens / refutes), `congruence_level` (CL3 same-context = best, CL0 opposed = a -0.9 penalty), and `valid_until` (TTL). Past the TTL, evidence score drops to 0.1 - not because we don't trust the engineer who wrote it, but because the world six months ago is not the world today. Re-validate or accept the decay.
+Every EvidencePack carries `verdict` (supports / weakens / refutes), `congruence_level` (CL3 same-context = best, CL0 opposed = a -0.9 penalty), and `valid_until` (TTL). Past the TTL, evidence score drops to 0.1. The engineer who wrote it is still trustworthy; the world six months ago is simply not the world today. Re-validate or accept the decay.
 
 **Rule 3: The artifact graph is typed.**
 
@@ -83,7 +83,7 @@ ForgePlan is the tool that makes the synthesis tractable in a real repo, but it'
 
 ### What "AI-native" actually means in practice
 
-The phrase is overused. Here's what it concretely means in our cohort:
+The phrase is overused. In our cohort it concretely means:
 
 - You write a CLAUDE.md with your project's methodology and red lines.
 - You spawn parallel sub-agents with explicit file-ownership grids (you don't say "go forth and refactor" - you say "Worker 1 owns these 4 files; Worker 2 owns those 3; here are the forbidden files for each").

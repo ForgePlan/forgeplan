@@ -100,7 +100,7 @@ The CLI does not enforce a taxonomy, but the following patterns work well:
 Pick a small, opinionated vocabulary and stick to it. Tag sprawl kills
 discovery.
 
-## Source Tier and CL mapping (v0.17.0, PRD-035)
+## Source tier and CL mapping (v0.17.0, PRD-035)
 
 Tags of the form `source_tier=T1`, `source_tier=T2`, or `source_tier=T3` have
 special meaning in Forgeplan's trust calculus. They map directly to a

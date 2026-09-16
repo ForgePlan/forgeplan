@@ -5,13 +5,13 @@ description: How Forgeplan determines the right level of rigor for each task
 
 ## Why This Matters
 
-Not every task deserves the same level of rigor. A typo fix and a payment system redesign are fundamentally different -- treating them the same way either buries you in paperwork for trivial changes or leaves critical decisions undocumented. Routing solves this by asking one question upfront: **how much can go wrong?**
+Not every task deserves the same level of rigor. A typo fix and a payment system redesign are fundamentally different. Treating them the same way either buries you in paperwork for trivial changes or leaves critical decisions undocumented. Routing solves this by asking one question upfront: **how much can go wrong?**
 
 Getting the depth right saves real time. Over-engineering a simple fix with a full PRD-Spec-RFC-ADR pipeline wastes hours. Under-documenting an irreversible architecture choice means you will relitigate it in three months when nobody remembers why.
 
 ## Overview
 
-Before writing any code, Forgeplan determines the **depth** -- how much structure your decision needs.
+Before writing any code, Forgeplan determines the **depth**, i.e. how much structure your decision needs.
 
 ```bash
 forgeplan route "add payment system"
@@ -20,7 +20,7 @@ forgeplan route "add payment system"
 # -> Confidence: 92%
 ```
 
-## Four Depth Levels
+## Four depth levels
 
 | Level | When | Artifacts | Time |
 |-------|------|-----------|------|
@@ -101,10 +101,9 @@ Recommendation:
 ```
 
 The router analyzes keywords (security, API, migration) and scope indicators
-to suggest the right depth. If you disagree, you make the judgment call --
-the route is a recommendation, not an enforcement.
+to suggest the right depth. If you disagree, you make the judgment call; the route is a recommendation, not an enforcement.
 
-### Smart Routing v2: Three Levels
+### Smart routing v2: three levels
 
 Forgeplan's router (PRD-020) runs up to three layers, falling back
 gracefully if later layers are unavailable:
@@ -118,9 +117,9 @@ gracefully if later layers are unavailable:
 L0 handles 70% of obvious cases (bug fix, typo, feature). L1 kicks in for
 ambiguous tasks where keywords do not decide. L2 brings the FPF knowledge
 base (trust calculus, bounded rationality) into play for high-stakes
-decisions. Each level can run alone -- no LLM configured means pure L0.
+decisions. Each level can run alone; no LLM configured means pure L0.
 
-### What the Router Looks For
+### What the router looks for
 
 The router checks for specific signals that indicate complexity:
 
@@ -138,7 +137,7 @@ go higher. Escalation is always safe; de-escalation carries risk.
 - **Refactoring can be deceptively deep.** A "simple refactor" that changes module boundaries or public interfaces is Standard or Deep, not Tactical.
 - **Do not route after you have already started coding.** Route first. If you skipped routing and realize mid-implementation that this is more complex than expected, stop and create the appropriate artifacts before continuing.
 - **The router does not know your codebase history.** It cannot tell that "add caching" is trivial in one project and a week-long effort in another. You provide the context it lacks.
-- **Beware the "it's just a small change" trap.** Database schema changes, public API modifications, and authentication flows are never small -- even if the code diff is. Route based on consequences, not lines of code.
+- **Beware the "it's just a small change" trap.** Database schema changes, public API modifications, and authentication flows are never small, even if the code diff is. Route based on consequences, not lines of code.
 
 ## Related
 

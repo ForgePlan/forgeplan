@@ -49,7 +49,7 @@ forgeplan deprecate PRD-011 --reason "feature cancelled after Q1 roadmap review,
 
 `PRD-011` enters `deprecated`. Health reports exclude it from blind-spot calculations but it remains readable.
 
-### Example 2: Close an obsolete ProblemCard
+### Example 2: close an obsolete ProblemCard
 
 ```bash
 forgeplan deprecate PROB-018 --reason "root cause removed by infra migration, problem no longer reproducible"

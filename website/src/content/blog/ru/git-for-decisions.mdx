@@ -37,7 +37,7 @@ ForgePlan - local-first CLI, который относится к инженер
 - **Evidence** - тесты, бенчмарки, аудиты с таймером устаревания
 - **Problem / Solution / Note / Refresh** - длинный хвост «мы кое-что заметили»
 
-Каждый артефакт - это markdown-файл в `.forgeplan/` внутри репозитория. Не метафора. Буквально `git add .forgeplan/prds/PRD-001-auth-system.md` и `git push`. Markdown - источник истины; индекс LanceDB, который обеспечивает семантический поиск, является производным и восстанавливается из markdown одной командой `forgeplan scan-import`.
+Каждый артефакт - это markdown-файл в `.forgeplan/` внутри репозитория. Не метафора. Буквально `git add .forgeplan/prds/PRD-001-auth-system.md` и `git push`. Markdown - источник истины; индекс LanceDB обеспечивает семантический поиск и пересобирается из markdown одной командой `forgeplan scan-import`.
 
 CLI - это `forgeplan` (псевдоним: `fpl`), 76 команд, плюс MCP-сервер с 73 инструментами - так что Claude Code, Cursor или Aider могут нативно работать с методологией без необходимости вести агента за руку через каждый следующий шаг.
 

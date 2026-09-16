@@ -62,7 +62,7 @@ PRD-057 - current_phase: code (greenfield)
     code     2026-04-26T09:30:00Z  reason: FRs implemented
 ```
 
-### Example 2: Full history as JSON
+### Example 2: full history as JSON
 
 ```bash
 forgeplan phase PRD-057 --json | jq '.history'

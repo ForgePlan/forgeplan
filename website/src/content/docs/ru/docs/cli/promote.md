@@ -83,7 +83,7 @@ forgeplan promote mem-017 --kind adr
 ## См. также
 
 - [`forgeplan new`](/docs/cli/new/) - создать артефакт с нуля без памяти
-- [`forgeplan generate`](/docs/cli/generate/) - артефакт, созданный LLM, на основе подсказки на естественном языке
+- [`forgeplan generate`](/docs/cli/generate/) - артефакт, созданный LLM по подсказке на естественном языке
 - [`forgeplan capture`](/docs/cli/capture/) - зафиксировать текущее решение без обратного пути через память
 - [`forgeplan validate`](/docs/cli/validate/) - требуется перед активацией артефакта с повышенным статусом
 - [Методология: модель артефактов](/docs/methodology/overview/)

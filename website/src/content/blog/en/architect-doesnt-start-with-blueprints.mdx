@@ -49,7 +49,7 @@ Four phases for a building takes months. For a feature - a day or two of a produ
 
 Let me take a concrete case. A team is building a note-taking app (I'll call it Vault). A requirement comes in: "add tags to notes."
 
-Without the four phases, the developer goes to write. First they add a `tags` column to the notes table, storing it as a JSON array of strings. Ships in two days. Two weeks later: "search notes by tag." It turns out JSON search in the database is slow - need to refactor to a separate many-to-many table. Two more weeks. A month later: "delete a tag from all notes at once." Another rebuild. Two months in, the "tags" feature has consumed four weeks of work instead of the original two-day estimate.
+Without the four phases, the developer goes to write. First they add a `tags` column to the notes table, storing it as a JSON array of strings. Ships in two days. Two weeks later: "search notes by tag." JSON search in the database is slow; the team refactors to a separate many-to-many table. Two more weeks. A month later: "delete a tag from all notes at once." Another rebuild. Two months in, the "tags" feature has consumed four weeks of work instead of the original two-day estimate.
 
 With the four phases, the same feature looks completely different.
 
@@ -81,7 +81,7 @@ The third group is the least often filled in and the most important.
 
 Three of the thirteen sections are skipped most often, and they're exactly the ones that protect against scope creep.
 
-**Non-goals**. What we explicitly are **not** doing in this feature, so the scope is clear. "Not supporting tag hierarchy in MVP. Not doing tag colors. Not syncing across devices." Four lines. Without them, two weeks later the designer comes in with "let's add colors, it's the logical next step." The team spends another week on colors. Then the stakeholder shows up with "tags need to sync on mobile too." Two more weeks. The original "two days for tags" estimate turns into two months - not because of bad estimation, but because of scope creep.
+**Non-goals**. What we explicitly are **not** doing in this feature, so the scope is clear. "Not supporting tag hierarchy in MVP. Not doing tag colors. Not syncing across devices." Four lines. Without them, two weeks later the designer comes in with "let's add colors, it's the logical next step." The team spends another week on colors. Then the stakeholder shows up with "tags need to sync on mobile too." Two more weeks. The original "two days for tags" estimate turns into two months. The cause is scope creep, not bad estimation.
 
 **Open questions**. What is **not** clear right now and needs an answer before code starts. "Not resolved: maximum number of tags per note. Not resolved: do we support mixed-language tags in one field or keep them separate?" These questions will come up during implementation - better to surface them now and get an answer than to hit them mid-sprint and stall.
 
@@ -93,7 +93,7 @@ Three sections. Ten to fifteen minutes to fill in. Effect - two or three weeks o
 
 A PRD is written by the product manager. Not the developer, not the designer, not the CEO. The developer can help with technical constraints, the designer with interface sketches - but ownership of the document is the product manager's.
 
-This matters because a PRD is a contract. The developer reads it and says "this is clear, I can start from this." The designer reads it and says "I need three mockups here." The stakeholder reads it and says "yes, this is what I wanted."
+A PRD is a contract. The developer reads it and says "this is clear, I can start from this." The designer reads it and says "I need three mockups here." The stakeholder reads it and says "yes, this is what I wanted."
 
 If the developer wrote the PRD - it will be full of technical detail with no business context. If the stakeholder wrote it - no edge cases. If the designer wrote it - no numbers or metrics. One person responsible for the whole document is insurance against a document with holes.
 

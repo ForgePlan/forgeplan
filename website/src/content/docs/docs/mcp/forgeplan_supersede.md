@@ -9,7 +9,7 @@ Marks an active artifact as superseded by a newer one. This is a **terminal** tr
 
 ## When an agent calls this
 
-- To displace an outdated EvidencePack after re-verification (link the successor pack first) — the superseded pack is excluded from the parent artifact's R_eff min and the informed artifacts are rescored automatically.
+- To displace an outdated EvidencePack after re-verification (link the successor pack first): the superseded pack is excluded from the parent artifact's R_eff min and the informed artifacts are rescored automatically.
 
 - Redesign: new RFC-019 replaces RFC-018 - agent calls `supersede RFC-018 --by RFC-019`.
 - Second iteration of a decision after new evidence contradicts the old one.

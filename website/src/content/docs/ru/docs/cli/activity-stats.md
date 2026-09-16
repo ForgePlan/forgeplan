@@ -3,7 +3,7 @@ title: forgeplan activity-stats
 description: "Aggregate the activity log by tool name - counts, error rates, p50/p95 duration, total time. Entry point for cost and latency triage."
 ---
 
-`forgeplan activity-stats` сводит лог активности в таблицу: одна строка на каждый инструмент с количеством вызовов, количеством ошибок и длительностями (медиана / 95-й перцентиль / суммарно). Читает те же лог-файлы, что и [`forgeplan activity`](/ru/docs/cli/activity/), но агрегирует их - так можно одним взглядом ответить на «куда ушло время сессии?» вместо пролистывания сотен отдельных вызовов.
+`forgeplan activity-stats` сводит лог активности в таблицу: одна строка на каждый инструмент, в ней число вызовов, число ошибок и длительности (медиана / 95-й перцентиль / суммарно). Читает те же лог-файлы, что и [`forgeplan activity`](/ru/docs/cli/activity/), но агрегирует их - так можно одним взглядом ответить на «куда ушло время сессии?» вместо пролистывания сотен отдельных вызовов.
 
 Это CLI-вариант [`forgeplan_activity_stats`](/ru/docs/mcp/forgeplan_activity_stats/) - оба возвращают одни и те же числа.
 

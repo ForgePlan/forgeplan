@@ -112,7 +112,7 @@ Three sources assembled:
 
 By average - the specialized option looks "fine." By R_eff: first source - 6 × 0.9 = 5.4 (minus 10% for CL2). Second - 3 × 0.6 = 1.8. Third - 3 × 0.6 = 1.8. Minimum - 1.8.
 
-The team sees that trust is being held down by the weakest piece - the unexplained Hacker News breakage is dragging the whole decision down. They go find a fourth source: reproduce the upgrade scenario from that post, test it against their own data. An hour of work. It turns out the issue was fixed in a later version. The source gets reclassified: "outdated, fixed in version X.Y." It can be excluded.
+The team sees that trust is being held down by the weakest piece - the unexplained Hacker News breakage is dragging the whole decision down. They go find a fourth source: reproduce the upgrade scenario from that post, test it against their own data. An hour of work. The issue had been fixed in a later version. The source gets reclassified: "outdated, fixed in version X.Y." It can be excluded.
 
 New R_eff = min(5.4, 1.8) = 1.8 - still weak. The team adds their own benchmark on the full 50,000 notes. Gets p95 75ms - also within requirements. CL3, F=7, G=9, R=8 - no penalty, score 7. New R_eff = min(5.4, 1.8, 7) = 1.8.
 

@@ -3,7 +3,7 @@ title: forgeplan_score
 description: "Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores)."
 ---
 
-Computes the R_eff (effective reliability) score for an artifact, derived from its linked **non-terminal** EvidencePacks — packs with a `superseded`/`deprecated` status stay in the response flagged `excluded: true` (with their raw own-merit score) but do not feed the min. R_eff follows the weakest-link principle - it's the minimum over evidence scores, never an average - so one CL0 EvidencePack can drag the whole score to 0.1. Agents use this to answer "is this decision trustworthy enough to ship on?" and to surface PRDs that need more evidence.
+Computes the R_eff (effective reliability) score for an artifact, derived from its linked **non-terminal** EvidencePacks: packs with a `superseded`/`deprecated` status stay in the response flagged `excluded: true` (with their raw own-merit score) but do not feed the min. R_eff follows the weakest-link principle - it's the minimum over evidence scores, never an average - so one CL0 EvidencePack can drag the whole score to 0.1. Agents use this to answer "is this decision trustworthy enough to ship on?" and to surface PRDs that need more evidence.
 
 **Category**: Quality & Validation
 

@@ -9,7 +9,7 @@ The First Principles Framework (FPF) is an "Operating System for Thought" - a tr
 
 FPF is built into Forgeplan via the `/fpf` command and the `forgeplan fpf` CLI.
 
-## Three Reasoning Modes
+## Three reasoning modes
 
 ### /fpf decompose - Break it down
 

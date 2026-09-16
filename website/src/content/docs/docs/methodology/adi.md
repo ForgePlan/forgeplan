@@ -5,9 +5,9 @@ description: Abduction -> Deduction -> Induction -- structured thinking before b
 
 ## Why This Matters
 
-The most expensive bugs are not code bugs -- they are architecture bugs. Choosing the wrong database, the wrong communication pattern, or the wrong auth strategy costs weeks or months to fix. And the root cause is almost always the same: the team went with their first idea without seriously considering alternatives.
+The most expensive bugs are not code bugs. They are architecture bugs. Choosing the wrong database, the wrong communication pattern, or the wrong auth strategy costs weeks or months to fix. And the root cause is almost always the same: the team went with their first idea without seriously considering alternatives.
 
-ADI (Abduction -> Deduction -> Induction) is a structured way to avoid this trap. It forces you to generate multiple options, predict their consequences, and check those predictions against evidence -- all before writing a single line of code. Ten minutes of ADI can save ten days of rework.
+ADI (Abduction -> Deduction -> Induction) is a structured way to avoid this trap. It forces you to generate multiple options, predict their consequences, and check those predictions against evidence, all before writing a single line of code. Ten minutes of ADI can save ten days of rework.
 
 ## Why ADI?
 
@@ -17,9 +17,9 @@ Most architecture decisions are made on gut feeling. ADI forces you to generate 
 
 ## The Three Phases
 
-### 1. Abduction -- "What could work?"
+### 1. Abduction: "What could work?"
 
-Generate **3+ hypotheses** that could solve the problem. Not just your first idea -- force yourself to think of alternatives. The goal is to break anchoring bias: the tendency to lock onto the first solution that comes to mind.
+Generate **3+ hypotheses** that could solve the problem. Force yourself to think of alternatives beyond your first idea. The goal is to break anchoring bias: the tendency to lock onto the first solution that comes to mind.
 
 ```bash
 forgeplan reason PRD-001
@@ -34,9 +34,9 @@ Hypothesis 3: OAuth2 delegation to external provider
 
 Why three? Because the first idea is usually based on familiarity, not fitness. The second is often the obvious alternative. The third is where creative solutions emerge. If all three converge on the same answer, you have high confidence. If they diverge, you have important trade-offs to evaluate.
 
-### 2. Deduction -- "What should be true?"
+### 2. Deduction: "What should be true?"
 
-For each hypothesis, derive **2-3 testable predictions**. If this approach works, what measurable outcomes would we see? This is where hand-waving gets exposed -- if you cannot state concrete predictions, you do not understand the approach well enough.
+For each hypothesis, derive **2-3 testable predictions**. If this approach works, what measurable outcomes would we see? This is where hand-waving gets exposed: if you cannot state concrete predictions, you do not understand the approach well enough.
 
 ```
 H1 predictions:
@@ -55,9 +55,9 @@ H3 predictions:
   - User experience depends on third-party uptime
 ```
 
-Good predictions are specific and falsifiable. "It will be fast" is not a prediction. "Token validation under 1ms without database calls" is -- you can measure it.
+Good predictions are specific and falsifiable. "It will be fast" is not a prediction. "Token validation under 1ms without database calls" is something you can measure.
 
-### 3. Induction -- "Does evidence support it?"
+### 3. Induction: "Does evidence support it?"
 
 Check predictions against available evidence. Score each hypothesis:
 
@@ -67,7 +67,7 @@ Check predictions against available evidence. Score each hypothesis:
 | H2: Redis | **weakens** | Redis adds infra complexity, session store is SPOF |
 | H3: OAuth2 | **supports** | Delegates auth risk, but adds external dependency |
 
-At this point, the decision is no longer gut feeling -- it is an informed comparison. You might still choose H1, but now you know the trade-offs and you have evidence to back it up. Six months from now, when someone asks "why JWT?", the ADI output answers the question.
+At this point, the decision is no longer gut feeling. It is an informed comparison. You might still choose H1, but now you know the trade-offs and you have evidence to back it up. Six months from now, when someone asks "why JWT?", the ADI output answers the question.
 
 ```mermaid
 flowchart TD
@@ -102,7 +102,7 @@ from the knowledge base. This is useful for decisions that involve trust
 calculus, bounded rationality, or exploration-exploitation trade-offs.
 
 ADI maps directly onto FPF sections **B.3 (Trust Calculus)** and
-**B.5 (Abduction / Deduction / Induction)** -- the reasoning backbone of
+**B.5 (Abduction / Deduction / Induction)**, the reasoning backbone of
 the First Principles Framework. You can browse these sections from the CLI:
 
 ```bash
@@ -154,17 +154,17 @@ H3 (PostgreSQL + pgvector):
 **Induction** (evidence check):
 - H3 eliminated: requires server, violates local-first constraint
 - H1 vs H2: LanceDB benchmark shows 10K artifact queries in <100ms (CL2). SQLite is proven but dual-system sync complexity is a maintenance burden
-- Decision: H2 (LanceDB) -- single engine simplicity outweighs ecosystem maturity risk; open data format provides migration escape hatch
+- Decision: H2 (LanceDB), because single engine simplicity outweighs ecosystem maturity risk; open data format provides migration escape hatch
 
 This entire analysis took 15 minutes and saved weeks of potential rework if the wrong choice had been made.
 
 ## Common Mistakes
 
-- **Generating fake hypotheses.** If your three hypotheses are "the right answer", "a strawman", and "another strawman", you are not doing ADI -- you are rationalizing a decision you already made. Each hypothesis should be a genuine contender.
+- **Generating fake hypotheses.** If your three hypotheses are "the right answer", "a strawman", and "another strawman", you are not doing ADI. You are rationalizing a decision you already made. Each hypothesis should be a genuine contender.
 - **Skipping Deduction.** Going straight from "here are three options" to "I pick this one" bypasses the most valuable step. Deduction forces you to articulate what success looks like for each option, which is where hidden assumptions surface.
 - **Using ADI for Tactical tasks.** If the fix is a one-line change, ADI is overhead. Reserve it for decisions where being wrong is expensive.
 - **Not recording the ADI output.** The reasoning is only valuable if it is captured. When you run `forgeplan reason`, the output is stored with the artifact. Do not do ADI in your head and skip the command.
-- **Treating ADI as a one-time event.** If new evidence emerges after your initial ADI (e.g., a benchmark shows unexpected results), re-run it. ADI is not a ceremony -- it is a thinking tool you use whenever you need clarity.
+- **Treating ADI as a one-time event.** If new evidence emerges after your initial ADI (e.g., a benchmark shows unexpected results), re-run it. ADI is not a ceremony. It is a thinking tool you use whenever you need clarity.
 
 ## Related
 

@@ -7,7 +7,7 @@ description: "Deprecate an artifact AND create a new draft successor - lineage-p
 
 ## When to use
 
-- An ADR went stale and a review concluded the approach itself needs rethinking, not just a validity extension.
+- An ADR went stale and a review concluded the approach itself needs rethinking from the ground up.
 - A PRD's original assumptions no longer match reality and you want to rewrite it rather than patch it.
 - A RefreshReport flagged multiple red signals on a previously active decision - reopen to start a fresh draft.
 - A ProblemCard you thought was solved has resurfaced in a new form and you need a new artifact to re-scope it.

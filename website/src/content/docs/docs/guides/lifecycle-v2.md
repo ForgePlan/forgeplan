@@ -3,7 +3,7 @@ title: Artifact Lifecycle v2 (stale, renew, reopen)
 description: "Full state machine for Forgeplan artifacts - from draft to active, terminal states, and the stale/renew/reopen pattern for decision freshness."
 ---
 
-Forgeplan artifacts are not just files - they are **decisions with a lifetime**.
+Forgeplan artifacts are files, but they carry **decisions with a lifetime**.
 A PRD that was correct six months ago may be wrong today. An ADR that
 captured your architecture may be superseded by a better one. Evidence that
 justified a choice may expire as the world changes.
@@ -18,7 +18,7 @@ a well-defined state machine so you can answer three questions at any time:
 This guide walks through the full state machine, explains terminal states,
 and shows four practical flows from real Forgeplan usage.
 
-## Why a lifecycle, not just `draft` / `active`?
+## Why a lifecycle beyond `draft` / `active`
 
 Early versions of Forgeplan had only two states. That was enough to ship a
 PRD, but it was not enough to answer "what happened to PRD-014?" six months
@@ -240,8 +240,7 @@ readers know **why** you trusted it.
 ### Flow 4 - Reopening a stale decision
 
 Same starting point: PRD-012 is stale. But this time you find that
-PROB-021 uncovered a flawed assumption. The PRD is not just out of date -
-it is **wrong in its current form** and needs re-thinking from scratch.
+PROB-021 uncovered a flawed assumption. The PRD is **wrong in its current form** and needs re-thinking from scratch.
 
 ```bash
 forgeplan reopen PRD-012 \

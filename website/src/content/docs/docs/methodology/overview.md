@@ -5,9 +5,9 @@ description: Why Forgeplan exists and how structured artifacts replace chaos
 
 ## Why This Matters
 
-Every engineering team accumulates invisible debt -- not in code, but in decisions. You pick a database, choose an auth strategy, design an API surface. Six months later, someone asks "why did we do it this way?" and nobody remembers. The Slack thread is buried. The Google Doc is stale. The person who made the call left the company.
+Every engineering team accumulates debt that is invisible: not in code, in its decisions. You pick a database, choose an auth strategy, design an API surface. Six months later, someone asks "why did we do it this way?" and nobody remembers. The Slack thread is buried. The Google Doc is stale. The person who made the call left the company.
 
-This is not a documentation problem. It is a **knowledge loss problem**. And it compounds: teams repeat the same mistakes, relitigate the same debates, and build on assumptions nobody can verify.
+The problem is not documentation. Teams lose knowledge. And it compounds: teams repeat the same mistakes, relitigate the same debates, and build on assumptions nobody can verify.
 
 Forgeplan exists to make decisions traceable, verifiable, and durable.
 
@@ -35,7 +35,7 @@ Consider a real scenario: your team decides to use JWT for authentication. Six m
 - **Not a task tracker.** Not for daily standups.
 - **Not a code generator.** AI assists, you decide.
 
-Forgeplan is a **structured knowledge base for engineering decisions** -- local-first, git-native, single binary. Think of it as a lab notebook for engineering: you record what you tried, why, and what the results were.
+Forgeplan is a **structured knowledge base for engineering decisions**: local-first, git-native, single binary. Think of it as a lab notebook for engineering: you record what you tried, why, and what the results were.
 
 ## Core Principles
 
@@ -43,7 +43,7 @@ Forgeplan is a **structured knowledge base for engineering decisions** -- local-
 Don't create all 10 artifact types for every task. Tactical depth = just code. Deep depth = full pipeline. If the answer is obvious and reversible, skip the paperwork. A one-line bug fix does not need a PRD.
 
 ### 2. Every requirement: "[Actor] can [capability]"
-No implementation leakage in PRDs. Describe WHAT, not HOW. Write "User can persist and query structured data with ACID guarantees" -- not "Use PostgreSQL for storage." The moment you name a technology in a requirement, you have closed off alternatives before evaluating them.
+No implementation leakage in PRDs. Describe WHAT, not HOW. Write "User can persist and query structured data with ACID guarantees", not "Use PostgreSQL for storage." The moment you name a technology in a requirement, you have closed off alternatives before evaluating them.
 
 ### 3. Child references parent
 PRD -> Epic, RFC -> PRD, ADR -> RFC. Always traceable upward. This means if you read any artifact, you can follow the links up to understand the full context of why it exists.
@@ -52,7 +52,7 @@ PRD -> Epic, RFC -> PRD, ADR -> RFC. Always traceable upward. This means if you 
 Old artifacts get `status: superseded`. History is preserved. When your team asks "didn't we try this approach before?", the superseded artifact shows what was tried, why it was abandoned, and what replaced it.
 
 ### 5. R_eff = min(evidence)
-Trust is the weakest link. Not average -- minimum. One blind spot drags everything down. If you have three solid benchmarks and one completely untested assumption about production load, your decision reliability equals that untested assumption.
+Trust is the weakest link: not the average, the minimum. One blind spot drags everything down. If you have three solid benchmarks and one completely untested assumption about production load, your decision reliability equals that untested assumption.
 
 ## The Full Cycle
 
@@ -70,7 +70,7 @@ Trust is the weakest link. Not average -- minimum. One blind spot drags everythi
 
 ## Common Mistakes
 
-- **Creating artifacts for everything.** A button color change does not need a PRD. Use `forgeplan route` to determine the right level of rigor -- most tasks are Tactical and need zero documentation.
+- **Creating artifacts for everything.** A button color change does not need a PRD. Use `forgeplan route` to determine the right level of rigor; most tasks are Tactical and need zero documentation.
 - **Leaving PRD stubs.** Creating an empty PRD and moving on to code means you now have a stub that clutters your project health. Either fill it immediately or do not create it.
 - **Activating without evidence.** An active PRD with no code, no tests, and R_eff = 0 is a false promise. It tells anyone reading your project that this decision is validated when it is not.
 - **Skipping ADI on Deep decisions.** If the router says Deep and you jump straight to code, you are betting on your first idea without checking alternatives. ADI takes 10 minutes; a wrong architecture takes weeks to undo.
@@ -93,21 +93,20 @@ Trust is the weakest link. Not average -- minimum. One blind spot drags everythi
 
 In practice, most teams use 5-6 types regularly: PRD, RFC, ADR, Evidence, Problem, and Epic. The rest (Note, Solution, Spec, Refresh) are situational. Do not feel obligated to use all 10.
 
-## When NOT to Create an Artifact
+## When not to create an artifact
 
 Not every task deserves structure. Here is a quick guide:
 
-- **Bug fix in one file** -- just fix it. Maybe a Note if the root cause was surprising.
-- **Obvious refactoring** -- no behavior change, no artifact needed.
-- **Internal tooling tweak** -- if only you use it and it is easily reversible, skip.
-- **Anything where the answer is obvious** -- do not document what does not need explaining.
+- **Bug fix in one file**: just fix it. Maybe a Note if the root cause was surprising.
+- **Obvious refactoring**: no behavior change, no artifact needed.
+- **Internal tooling tweak**: if only you use it and it is easily reversible, skip.
+- **Anything where the answer is obvious**: do not document what does not need explaining.
 
 The litmus test: "Will someone (including future me) ever ask why this decision was made?" If yes, create an artifact. If no, just ship.
 
 ## The 10 Rules (at a glance)
 
-The rest of the methodology expands on ten rules. Each has its own doc --
-this list is the index.
+The rest of the methodology expands on ten rules. Each has its own doc; this list is the index.
 
 1. **Route before you code** - [Routing & Depth](/docs/methodology/routing/)
 2. **Shape → Validate → ADI → Code → Evidence → Activate** - full cycle, not a checklist

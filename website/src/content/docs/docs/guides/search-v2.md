@@ -3,8 +3,8 @@ title: Smart Search (v0.18 BM25 + Russian morphology)
 description: "How Forgeplan's production BM25 engine finds artifacts - stemming, multi-language support, and CLI/MCP usage."
 ---
 
-Forgeplan ships a production-grade search engine that finds artifacts by meaning,
-not just by exact string match. v0.18.0 replaces the hand-written prototype with
+Forgeplan ships a production-grade search engine that finds artifacts by meaning
+instead of exact string match. v0.18.0 replaces the hand-written prototype with
 the `bm25` crate (v2.3.2), adds Russian Snowball stemming, strips template noise
 from the index, and cuts batch ranking from O(N²) to O(N). This guide explains
 how it works and how to use it from the CLI and MCP.

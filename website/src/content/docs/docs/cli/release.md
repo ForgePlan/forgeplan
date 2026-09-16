@@ -53,11 +53,11 @@ forgeplan release [OPTIONS] <ID>
 forgeplan release PRD-057 --agent worker-1
 ```
 
-**Release under the same identity you claimed with.** `release` does not inherit it — with no `--agent` it identifies as `cli/<version>`, which will not match a claim made as `worker-1`, and the command refuses.
+**Release under the same identity you claimed with.** `release` does not inherit it; with no `--agent` it identifies as `cli/<version>`, which will not match a claim made as `worker-1`, and the command refuses.
 
 If you claimed with no `--agent` at all, then plain `forgeplan release PRD-057` is correct: both sides use the same default identity. Calling again on an already-released artifact is a no-op (no error).
 
-When the identities do not match, the fix is to name the holder — **not** `--force`, which drops the claim regardless of who owns it (PROB-095).
+When the identities do not match, the fix is to name the holder. **Not** `--force`, which drops the claim regardless of who owns it (PROB-095).
 
 ### Example 2: Orchestrator reclaims a crashed sub-agent's slot
 

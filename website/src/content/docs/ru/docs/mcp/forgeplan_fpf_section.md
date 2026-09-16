@@ -54,7 +54,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::FpfSectionPar
 
 ## Типичная последовательность
 
-1. `forgeplan_fpf_search "trust"` - обнаружить, что `B.3` является лучшим совпадением.
+1. `forgeplan_fpf_search "trust"` - найти, что лучшее совпадение даёт `B.3`.
 2. `forgeplan_fpf_section { "id": "B.3" }` - прочитать полное тело.
 3. `forgeplan_fpf_section { "id": "B.3.1" }` - перейти в дочерний раздел.
 4. Использовать содержимое в качестве обоснования FPF для `forgeplan_reason`.

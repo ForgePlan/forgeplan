@@ -25,7 +25,7 @@ On one side, the developer. They built exactly what was written in the PRD. If a
 
 On the other, the manager. The final product feels different from how it was supposed to. Somewhere between "requirement" and "implementation" a shift occurred, and both sides missed it, because both were looking at different documents.
 
-I've seen this situation in a dozen teams. It almost always has one root cause: the Product Requirements Document (PRD) says **what we want**, not **how the system should behave**. These two things sound similar, but the difference is enormous. I want to unpack it through examples, show a spec format that closes the gap, and explain why a dependency graph between specifications works a lot like commit messages in a repository.
+I've seen this situation in a dozen teams. It almost always has one root cause: the Product Requirements Document (PRD) says **what we want**, not **how the system should behave**. These two things sound similar, but the difference is enormous. I want to walk through examples, show a spec format that closes the gap, and explain why a dependency graph between specifications works a lot like commit messages in a repository.
 
 ## Intent and behavior
 
@@ -74,7 +74,7 @@ The delta format is borrowed from `git diff`. A spec change is described as a se
 
 This format gives you two things. First - a requirement history you can read the same way you'd read commit messages in a code repository. "When did we add that constraint? Why?" Open the delta, see the date and reason. Second - a way for adjacent teams to learn about a meaningful change without re-reading the entire spec.
 
-In a team that uses the delta format, changing a spec becomes as disciplined an act as changing a public API: you can't just rewrite, you have to explain what and why.
+In a team that uses the delta format, changing a spec becomes as disciplined as changing a public API: you can't just rewrite, you have to explain what and why.
 
 ## The dependency graph between specifications
 

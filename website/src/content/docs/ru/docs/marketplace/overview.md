@@ -31,7 +31,7 @@ Marketplace поставляется с плагинами, охватывающ
 /plugin marketplace add ForgePlan/marketplace
 /plugin install dev-toolkit@ForgePlan-marketplace
 
-# Установить навык forge (методология) — офлайн, маркетплейс не нужен
+# Установить навык forge (методология): офлайн, маркетплейс не нужен
 forgeplan setup-skill
 ```
 

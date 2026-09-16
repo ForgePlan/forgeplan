@@ -127,7 +127,7 @@ Look up a specific UX law with examples, violations, and best practices.
 
 ---
 
-## Research & Build Commands (dev-toolkit)
+## Research & build commands (dev-toolkit)
 
 ### /research "topic"
 **Plugin**: dev-toolkit

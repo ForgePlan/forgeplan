@@ -71,7 +71,7 @@ created_at: 2026-03-24
 
 See [Depth Calibration guide](/docs/methodology/routing/) for routing heuristics.
 
-## `llm:` - LLM Provider
+## `llm:` - LLM provider
 
 Used by `forgeplan generate`, `forgeplan reason` (ADI), `forgeplan route` (Level 1+), and MCP tools that call an LLM.
 
@@ -94,7 +94,7 @@ llm:
 | `base_url` | `string?` | provider-specific | Override base URL for self-hosted or proxy endpoints. Useful for Ollama, LiteLLM, or Azure-compatible gateways. |
 | `max_tokens` | `u32` | `4096` | Max response tokens. Increase for long ADI reasoning; decrease to save cost. |
 | `temperature` | `f32` | `0.7` | Sampling temperature for `generate`. `0.0` = deterministic, `1.0` = creative. |
-| `reason_temperature` | `f32?` | - | Override used only by `forgeplan reason`. Structured ADI output benefits from a lower value (typically `0.2`–`0.3`). Falls back to `temperature` if unset. |
+| `reason_temperature` | `f32?` | - | Override used only by `forgeplan reason`. Structured ADI output benefits from a lower value, typically `0.2`–`0.3`. Falls back to `temperature` if unset. |
 
 ### Provider matrix
 
@@ -136,13 +136,13 @@ The following environment variables override `llm:` fields at runtime without ed
 
 Priority: **env var > config.yaml > default**.
 
-## `embedding:` - Semantic Search
+## `embedding:` - semantic search
 
 Configures the embedding model used for semantic search and the FPF KB vector index. Requires the `semantic-search` feature flag at build time.
 
-> **Only `bge-m3` is currently supported.** The engine computes pooling itself, and pooling differs per model — BGE families pool on CLS, the E5 and MiniLM families pool on the mean. Running a mean-pooled model through CLS pooling does not fail; it returns plausible vectors computed the wrong way. So other names are rejected outright rather than silently mis-served. Widening the list is tracked in PROB-091.
+> **Only `bge-m3` is currently supported.** The engine computes pooling itself, and pooling differs per model: BGE families pool on CLS, the E5 and MiniLM families pool on the mean. Running a mean-pooled model through CLS pooling does not fail; it returns plausible vectors computed the wrong way. So other names are rejected outright rather than silently mis-served. Widening the list is tracked in PROB-091.
 >
-> The model downloads on first use — ~2.1 GB, once per machine, cached in the platform cache directory (`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on Linux). Override with `FORGEPLAN_MODEL_CACHE`; `HF_HOME`, if set, takes precedence over both. Run `forgeplan setup` to fetch it deliberately rather than on first search.
+> The model downloads on first use, ~2.1 GB once per machine, cached in the platform cache directory (`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on Linux). Override with `FORGEPLAN_MODEL_CACHE`; `HF_HOME`, if set, takes precedence over both. Run `forgeplan setup` to fetch it deliberately rather than on first search.
 
 ```yaml
 embedding:
@@ -176,7 +176,7 @@ Embedding vectors from different models are **not compatible**. After changing `
 
 If the `semantic-search` feature is disabled at build time, Forgeplan still runs - it silently falls back to BM25 keyword search. See the [Search guide](/docs/guides/search-v2/) for details on the hybrid search stack.
 
-## `storage:` - Storage Backend
+## `storage:` - storage backend
 
 ```yaml
 storage:
@@ -204,7 +204,7 @@ storage:
 | `FORGEPLAN_STORAGE_DRIVER` | `driver` |
 | `FORGEPLAN_STORAGE_PATH` | `path` |
 
-## `memory:` - Decision Memory Bank
+## `memory:` - decision memory bank
 
 ```yaml
 memory:
@@ -221,7 +221,7 @@ memory:
 |---------|-----------|
 | `FORGEPLAN_MEMORY_DRIVER` | `driver` |
 
-## `estimate:` - Estimate Engine
+## `estimate:` - estimate engine
 
 Configures `forgeplan estimate` - the multi-grade estimation model that combines your domain expertise with AI task-type multipliers. Every field is optional; omit the whole section to use defaults.
 
@@ -293,7 +293,7 @@ estimate:
 
 See [`forgeplan estimate`](/docs/cli/estimate/) for the CLI reference.
 
-## `fpf:` - FPF Trust Calculus Engine
+## `fpf:` - FPF Trust Calculus engine
 
 Tunes the [FPF Engine](/docs/methodology/adi/): explore/exploit thresholds, reliability weights, congruence-level penalties, and ADI reasoning caps. Every sub-field has safe defaults - tune only if you have empirical reason to.
 
@@ -333,7 +333,7 @@ Components of the reliability score inside F-G-R. Values do not need to sum to 1
 | `links` | `0.3` | Max bonus awarded for incoming/outgoing typed links. |
 | `freshness` | `0.2` | Bonus if the artefact is not stale (`valid_until` in the future). |
 
-### `fpf.thresholds` - Explore/Exploit cutoffs
+### `fpf.thresholds` - explore/exploit cutoffs
 
 Decision thresholds used by hardcoded rules and by [`forgeplan route`](/docs/cli/route/).
 
@@ -345,7 +345,7 @@ Decision thresholds used by hardcoded rules and by [`forgeplan route`](/docs/cli
 | `exploit_fgr` | `0.6` | F-G-R overall required to confirm EXPLOIT (combined with `exploit_reff`). |
 | `explore_fgr` | `0.4` | F-G-R below this -> **EXPLORE** priority 1 (combined with `explore_reff`). |
 
-### `fpf.cl_penalties` - Congruence Level penalties
+### `fpf.cl_penalties` - congruence level penalties
 
 Penalty applied to evidence based on how well its context matches the artefact it informs. `CL3` (same context) is penalty-free; `CL0` (opposed context) is heavily discounted.
 
@@ -383,7 +383,7 @@ Optional list of user-defined explore/exploit rules (FPF Engine Phase 2). When e
 All `fpf.*` numeric fields must be finite and non-negative. Rule names must be unique. `forgeplan init` and `forgeplan health` will fail fast on malformed values.
 :::
 
-## `integrity:` - Health & MCP Input Limits
+## `integrity:` - health & MCP input limits
 
 Thresholds used by `forgeplan health` (duplicate detection, stub detection) and DoS-protection limits enforced by the MCP server on incoming `forgeplan_new` / `forgeplan_update` calls.
 
@@ -410,7 +410,7 @@ integrity:
 The MCP server is network-reachable when run over stdio by a shared LLM agent. The MCP limits protect against runaway prompts or buggy clients that would otherwise fill up `lance/` with multi-megabyte artefacts.
 :::
 
-## Environment Variables - Complete List
+## Environment variables - complete list
 
 | Variable | Section | Effect |
 |----------|---------|--------|
@@ -429,7 +429,7 @@ The MCP server is network-reachable when run over stdio by a shared LLM agent. T
 
 API keys themselves are **never** stored in `config.yaml` - only the **name** of the env variable is stored under `api_key_env`. This keeps the config file safe to share across machines (once `.forgeplan/config.yaml` itself is in `.gitignore`).
 
-## Critical Notes & Git Safety
+## Critical notes & git safety
 
 :::caution[.forgeplan/ is partially gitignored]
 - **Tracked**: `adrs/`, `rfcs/`, `prds/`, `epics/`, `specs/`, `problems/`, `solutions/`, `evidence/`, `notes/`, `refresh/`, `memory/` - these are the source of truth.
@@ -508,7 +508,7 @@ Use `forgeplan health` to confirm the LLM subsystem reports "ready".
 ### Embeddings fail to load / semantic search returns empty
 
 **Cause**: one of:
-- Forgeplan binary was built without the `semantic-search` feature — the usual case, since no prebuilt binary carries it. `forgeplan --version` does **not** report features; run `forgeplan embed` instead. A build without the feature refuses immediately with an install command; a build with it starts loading the model.
+- Forgeplan binary was built without the `semantic-search` feature, the usual case since no prebuilt binary carries it. `forgeplan --version` does **not** report features; run `forgeplan embed` instead. A build without the feature refuses immediately with an install command; a build with it starts loading the model.
 - `embedding.model` was changed and `lance/` was not reindexed.
 - The model cache is corrupted.
 

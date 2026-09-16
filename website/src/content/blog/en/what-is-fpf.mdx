@@ -20,7 +20,7 @@ The next morning the PM writes: "Great, let's start evaluating SaaS options." Th
 
 All three were in the same room. All three heard the same words. And each walked away carrying the part of the conversation that matched their picture of the world before the meeting started.
 
-Memory isn't the problem. When thirty arguments fly without a shared skeleton, everyone builds their own - and three skeletons look like three different decisions.
+Shared structure is the missing piece. When thirty arguments fly without a shared skeleton, everyone builds their own, and three skeletons look like three different decisions.
 
 ## 2. Who Levenchuk is, and what FPF is
 
@@ -58,7 +58,7 @@ Most design mistakes are level confusions. When the team says "let's optimize ch
 
 FPF requires explicitly naming the holon you are working with right now. Not "we're discussing the feature" but "we're discussing the feature as part of the strategy" or "we're discussing the feature as a set of tasks." This is not bureaucracy - it removes half the arguments that were actually running on different levels about the same object.
 
-## 5. Bounded Context and Strict Distinction
+## 5. Bounded context and strict distinction
 
 **`Bounded Context`**: the same word means different things in different contexts. "User" in auth is a row in the `users` table with a hashed password. "User" in marketing is a person with an account, purchase history, and a cookie. "User" in support is an open ticket with a response-time clock. Move reasoning between contexts without labeling the seam and you get a bug: marketing counts 10,000 users, the backend sees 6,000, support is handling 800. Everyone is right in their own context; nobody understands the gap.
 
@@ -81,7 +81,7 @@ FPF says: every context has a local meaning. Moving between them requires an exp
 
 Half of "misunderstanding" in teams lives right here: one person talks about role, another about plan, a third about method. Everyone thinks they're discussing the same thing. `Strict Distinction` forces you to say which one you mean.
 
-## 6. Open World and Closed World
+## 6. Open world and closed world
 
 Two modes of working with information that look similar but are wired in opposite directions.
 
@@ -111,21 +111,21 @@ Every fact has an expiry date. A benchmark from last year is history, not eviden
 
 The reasoning cycle: bold hypothesis (abduction) - formalize into a testable claim - collect evidence - apply in practice. This loop works for scientific research, product development, and architectural audits alike.
 
-More on how reliability is calculated and why averages lie: [Averages Lie](/blog/en/averages-lie-trust-calculus/) and the [Evidence methodology doc](/docs/methodology/evidence). The ADI reasoning cycle in practice: [ADI overview guide](/guides/adi-overview/) and the [ADI methodology doc](/docs/methodology/adi). How facts age out and the decay mechanics: [Evidence and Decay guide](/guides/evidence-and-decay/).
+More on how reliability is calculated and why averages lie: [Averages Lie](/blog/averages-lie-trust-calculus/) and the [Evidence methodology doc](/docs/methodology/evidence). The ADI reasoning cycle in practice: [ADI overview guide](/guides/adi-overview/) and the [ADI methodology doc](/docs/methodology/adi). How facts age out and the decay mechanics: [Evidence and Decay guide](/guides/evidence-and-decay/).
 
 ## 8. Where this works in practice
 
-Up to here it may sound abstract. A few concrete situations to anchor the ideas - across fields, not just engineering.
+Up to here it may sound abstract. A few concrete situations to anchor the ideas - across engineering and other fields.
 
 **A payments API mixes prohibitions, obligations, and penalties in one document.** Integrators break on every other integration. The fix is pattern `A.6 Boundary Discipline (L/A/D/E)` - route each statement by type: Law / Admissibility / Deontic / Effect. The lawyer then reads only L+D, SRE reads only E, the QA engineer writes separate suites for prohibitions and for obligations.
 
-**A radiologist writes "lesion, most likely benign".** The clinician reads it as a diagnosis and defers further imaging. A year later it turns out this was one of three hypotheses considered, and not the strongest one. The fix is `B.5.2.1 Creative Abduction` - return a Pareto front with weights, not a single winner. The report contains three hypotheses with criteria that discriminate between them.
+**A radiologist writes "lesion, most likely benign".** The clinician reads it as a diagnosis and defers further imaging. A year later the case is reopened: this was one of three hypotheses considered, and not the strongest one. The fix is `B.5.2.1 Creative Abduction` - return a Pareto front with weights, not a single winner. The report contains three hypotheses with criteria that discriminate between them.
 
 **A performance review reads "Anna does good work".** At calibration, the manager can't justify the promotion. The fix is `A.15 Role-Method-Work` - separate Role / Capability / Work. The review template demands: which new Capabilities were acquired, which Work was completed solo, how the Role expanded. "Good work" is no longer currency.
 
 **A couple has been debating relocation for three months.** Every conversation drifts to a different level: kids vs schools, taxes vs visas, climate vs in-laws. The fix is `A.1 Holon + A.7 Strict Distinction` - write out 4-5 explicit holons and discuss each separately. "Endless argument" becomes a structured decision over a weekend.
 
-The full catalogue of 25 situations is in a separate post: [Where FPF helps: 25 situations across 12 fields](/blog/en/where-fpf-helps/).
+The full catalogue of 25 situations is in a separate post: [Where FPF helps: 25 situations across 12 fields](/blog/where-fpf-helps/).
 
 ## 9. When FPF gets in the way - and when it doesn't
 
@@ -151,7 +151,7 @@ The second list describes most product teams after their first six months.
 
 ## 10. Where to start
 
-If you want to try it right now, the minimal three-step protocol is in a separate post: [How to start using FPF](/blog/en/how-to-use-fpf/).
+If you want to try it right now, the minimal three-step protocol is in a separate post: [How to start using FPF](/blog/how-to-use-fpf/).
 
 FPF itself: the [ailev/FPF](https://github.com/ailev/FPF) repository on GitHub - README with an introductory explanation, and seven megabytes of normative specification for anyone who wants the full picture.
 

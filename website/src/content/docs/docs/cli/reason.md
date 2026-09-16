@@ -62,7 +62,7 @@ Calculus, B.5 Reasoning loops) into the prompt. Use this when the decision
 involves trust boundaries, reversibility, or reasoning quality - the LLM will
 score hypotheses against FPF invariants instead of just engineering intuition.
 
-### Example 3: Persist the analysis as a Note
+### Example 3: persist the analysis as a Note
 
 ```bash
 forgeplan reason PRD-001 --save

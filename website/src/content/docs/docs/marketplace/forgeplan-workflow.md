@@ -30,7 +30,7 @@ If you already have the `forgeplan` binary installed:
 forgeplan setup-skill
 ```
 
-This writes the embedded skill file to `~/.claude/skills/forge/SKILL.md`. No network access, no marketplace fetching -- the skill definition is compiled into the binary. See [`forgeplan setup-skill`](/docs/cli/setup-skill/).
+This writes the embedded skill file to `~/.claude/skills/forge/SKILL.md`. No network access, no marketplace fetching: the skill definition is compiled into the binary. See [`forgeplan setup-skill`](/docs/cli/setup-skill/).
 
 ## Commands
 
@@ -44,17 +44,17 @@ This writes the embedded skill file to `~/.claude/skills/forge/SKILL.md`. No net
 
 When you invoke `/forge "Add rate limiting"`, the skill:
 
-1. **Route** -- calls `forgeplan_route` to determine depth (Tactical / Standard / Deep / Critical)
-2. **Shape** -- creates the right artifact (PRD, RFC, etc.) via `forgeplan_new`
-3. **Validate** -- checks quality gates via `forgeplan_validate`
-4. **Reason** -- runs ADI reasoning if Standard+ depth (3+ hypotheses)
-5. **Code** -- builds the solution with tests
-6. **Evidence** -- creates evidence pack, links to artifact, checks R_eff
-7. **Activate** -- marks artifact as active via `forgeplan_activate`
+1. **Route**: calls `forgeplan_route` to determine depth (Tactical / Standard / Deep / Critical)
+2. **Shape**: creates the right artifact (PRD, RFC, etc.) via `forgeplan_new`
+3. **Validate**: checks quality gates via `forgeplan_validate`
+4. **Reason**: runs ADI reasoning if Standard+ depth (3+ hypotheses)
+5. **Code**: builds the solution with tests
+6. **Evidence**: creates evidence pack, links to artifact, checks R_eff
+7. **Activate**: marks artifact as active via `forgeplan_activate`
 
 For Tactical depth, the skill skips artifacts and just executes the task directly.
 
-## /forge-cycle -- Explicit Step-by-Step
+## /forge-cycle: Explicit Step-by-Step
 
 When you need more control over each phase:
 
@@ -66,7 +66,7 @@ Runs 8 explicit phases:
 
 | Phase | Action |
 |-------|--------|
-| 0. OBSERVE | `forgeplan health` -- understand project state |
+| 0. OBSERVE | `forgeplan health`: understand project state |
 | 1. ROUTE | Determine depth and pipeline |
 | 2. SPRINT | Plan implementation waves |
 | 3. BUILD | Implement the solution |
@@ -75,13 +75,13 @@ Runs 8 explicit phases:
 | 6. EVIDENCE | Create evidence, link, score |
 | 7. COMMIT | Git commit + PR |
 
-## /forge-audit -- Methodology-Aware Audit
+## /forge-audit: Methodology-Aware Audit
 
 Combines code auditing with Forgeplan's quality framework. Reports findings against both code quality and methodology compliance (missing evidence, unlinked artifacts, R_eff gaps).
 
 ## Agentic RAG Architecture
 
-The skill uses **agentic RAG** -- it loads only the relevant portion of the methodology knowledge base for each step (~300 lines), not the entire specification. The `SKILL.md` file acts as a router:
+The skill uses **agentic RAG**: it loads only the relevant portion of the methodology knowledge base for each step (~300 lines), not the entire specification. The `SKILL.md` file is a router:
 
 - Maps user needs to specific methodology sections
 - Provides MCP tool reference (which `forgeplan_*` tool to call)
@@ -127,9 +127,9 @@ Agent: [calls forgeplan_activate("PRD-042")]
 
 ## See Also
 
-- [Methodology Overview](/docs/methodology/overview/) -- the 10 rules `/forge` enforces
-- [Quick Start](/docs/getting-started/quick-start/) -- manual walkthrough of the same cycle
-- [`forgeplan setup-skill`](/docs/cli/setup-skill/) -- offline installation
-- [Dev Toolkit](/docs/marketplace/dev-toolkit/) -- complementary `/audit`, `/sprint` commands
-- [Commands Reference](/docs/marketplace/commands/) -- all slash commands
-- [Marketplace Overview](/docs/marketplace/overview/) -- full plugin catalog
+- [Methodology Overview](/docs/methodology/overview/): the 10 rules `/forge` enforces
+- [Quick Start](/docs/getting-started/quick-start/): manual walkthrough of the same cycle
+- [`forgeplan setup-skill`](/docs/cli/setup-skill/): offline installation
+- [Dev Toolkit](/docs/marketplace/dev-toolkit/): complementary `/audit`, `/sprint` commands
+- [Commands Reference](/docs/marketplace/commands/): all slash commands
+- [Marketplace Overview](/docs/marketplace/overview/): full plugin catalog

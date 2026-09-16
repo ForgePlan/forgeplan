@@ -16,9 +16,10 @@ const raw = readFileSync(SRC, 'utf8');
 // Strip the leading "# Changelog" H1 since Starlight adds its own title from frontmatter.
 let stripped = raw.replace(/^# Changelog\s*\n+/, '');
 
-// Strip relative links to .forgeplan/* artifacts - they don't resolve on the website.
-// Keep the artifact ID as plain text. Pattern: [TEXT](.forgeplan/path/...)
-stripped = stripped.replace(/\[([^\]]+)\]\(\.forgeplan\/[^)]+\)/g, '$1');
+// Strip relative links to .forgeplan/* artifacts and repo-relative docs/* paths -
+// neither resolves on the website. Keep the link text as plain text.
+// Pattern: [TEXT](.forgeplan/path/...) or [TEXT](docs/path/...)
+stripped = stripped.replace(/\[([^\]]+)\]\((?:\.forgeplan\/|docs\/)[^)]+\)/g, '$1');
 
 // Normalise em-dashes to short hyphens on the published page (AI-tell avoidance).
 // The root CHANGELOG.md keeps its original punctuation; only the website copy is rewritten.

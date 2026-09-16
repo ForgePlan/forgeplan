@@ -8,7 +8,7 @@ tutorial with error recovery, see [First Artifact Tutorial](/docs/guides/first-a
 
 :::tip[Shortcut]
 In Claude Code, Cursor, Windsurf and similar AI agents the entire workflow below is packaged as the `/forge` skill. Install with `forgeplan setup-skill` and run `/forge "your task description"`.
-See [Marketplace -- Forgeplan Workflow](/docs/marketplace/forgeplan-workflow/).
+See [Marketplace: Forgeplan Workflow](/docs/marketplace/forgeplan-workflow/).
 :::
 
 By the end of this page you will have:
@@ -33,7 +33,7 @@ forgeplan --version
 :::caution[Do the three post-install steps first]
 Installing the binary is not the whole setup. The embedding model, the FPF
 knowledge base and the agent plugins each need one command, and skipping any
-of them degrades results **silently** — nothing errors out. See
+of them degrades results **silently**: nothing errors out. See
 [three things installing the binary does not do](/docs/getting-started/installation/#read-this-first-three-things-installing-the-binary-does-not-do).
 :::
 

@@ -9,10 +9,10 @@ Estimate effort (in hours) for an artifact by parsing its Functional Requirement
 
 ## When an agent calls it
 
-- **Sprint planning** - get hours for each PRD / RFC before committing scope.
-- **Grade matching** - see how many hours the task takes for your own grade via `my_grade`.
-- **AI-assisted plans** - `grade: "ai"` applies AI multipliers (typically 0.03–0.4× of senior) for tasks that can be delegated.
-- **Calibration feedback loop** - compare actual vs estimated after the sprint to tune the profile.
+- **Sprint planning**: get hours for each PRD / RFC before committing scope.
+- **Grade matching**: see how many hours the task takes for your own grade via `my_grade`.
+- **AI-assisted plans**: `grade: "ai"` applies AI multipliers (typically 0.03–0.4× of senior) for tasks that can be delegated.
+- **Calibration feedback loop**: compare actual vs estimated after the sprint to tune the profile.
 
 ## Input parameters
 

@@ -4,7 +4,7 @@ description: "Generate vector embeddings for all artifacts (semantic search)"
 ---
 
 Generate vector embeddings for every artifact in the workspace so semantic
-search can find related work by meaning, not just keywords. Embeddings are
+search can find related work by meaning, including synonyms and paraphrases. Embeddings are
 stored alongside the LanceDB metadata and used by `forgeplan search --semantic`
 and semantic MCP tools.
 

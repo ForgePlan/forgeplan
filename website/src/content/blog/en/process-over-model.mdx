@@ -48,7 +48,7 @@ CLAUDE.md (or its equivalent in other tools - `.cursorrules`, `AGENTS.md`, the s
 
 That solves the problem of one developer with one agent. And that's exactly where the next problem starts.
 
-Take a team of five, each with their own agent. Every agent is correctly configured, every one works within its own CLAUDE.md. Developer one's agent implements feature A over a few hours - opens a PR. Developer two's agent implements feature B in parallel - also opens a PR. Both PRs are technically sound. During review it turns out: feature A assumes event X is stored in the database, feature B assumes it's in a queue. Both agents worked "correctly" by their own conventions. They had no shared space to align on an architectural assumption.
+Take a team of five, each with their own agent. Every agent is correctly configured, every one works within its own CLAUDE.md. Developer one's agent implements feature A over a few hours and opens a PR. Developer two's agent implements feature B in parallel and opens another PR. Both PRs are technically sound. When review starts, the misalignment surfaces: feature A assumes event X is stored in the database, feature B assumes the same event lives in a queue. Both agents worked "correctly" by their own conventions. They had no shared space to align on an architectural assumption.
 
 Five developers with five agents isn't five people - it's twenty-five "workers" in one repository. To keep that from becoming Babel, you need a shared constitution: one PRD format, one architectural decision format, one depth scale for tasks. No single agent makes a unilateral decision, because "one person's rules" don't compose at "team scale."
 
@@ -56,7 +56,7 @@ BMAD (Breakthrough Method for Agile AI-Driven Development) is one format for tha
 
 Without it, a team scales speed. Along with it - misalignment.
 
-With it - each agent knows not just "how my developer works," but also "how decisions get made here." The difference between "I'm executing a task" and "I understand the context of a task" lives right there.
+With it - each agent knows both "how my developer works" and "how decisions get made here." The difference between "I'm executing a task" and "I understand the context of a task" lives right there.
 
 Details on coordinating two to five agents in one repository: [Multi-agent coordination](/guides/multi-agent-cycle). The hint contract - the language in which an agent and a tool speak to each other: [Agent protocol](/guides/agent-protocol-cycle).
 

@@ -17,7 +17,7 @@ field and typed [`forgeplan link`](/docs/cli/link/) edges.
 
 ## Not to use when
 
-- You need cross-link edges (not just parent/child) → use [`forgeplan graph`](/docs/cli/graph/)
+- You need cross-link edges (parent/child only is not enough) → use [`forgeplan graph`](/docs/cli/graph/)
 - You need execution order → use [`forgeplan order`](/docs/cli/order/)
 - You need a flat list → use [`forgeplan list`](/docs/cli/list/)
 
@@ -89,8 +89,8 @@ parenting under an existing Epic or a new one.
 `tree` answers "what is the shape of this project?" - the static structure.
 Use it together with:
 
-- `graph` - for arbitrary typed edges (not only parent/child)
-- `order` - when you need to know what to build first
+- `graph` for arbitrary typed edges (parent/child only is not enough)
+- `order` when you need to know what to build first
 
 ## See also
 

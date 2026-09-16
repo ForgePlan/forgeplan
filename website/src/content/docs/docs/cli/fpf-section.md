@@ -7,7 +7,7 @@ description: "Show a specific FPF section by ID (e.g. B.3 for Trust Calculus)"
 
 ## When to use
 
-- **After a promising `fpf search` hit** - read the full section, not just the snippet.
+- **After a promising `fpf search` hit** - read the full section once the snippet points you there.
 - **When a methodology doc or `forgeplan reason` output cites an FPF ID** - jump straight to the source.
 - **While writing ADRs or RFCs** - quote the section you're relying on verbatim.
 

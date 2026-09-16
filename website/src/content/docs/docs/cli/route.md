@@ -70,7 +70,7 @@ Alternatives:
   - Tactical (if single middleware with existing library)
 ```
 
-### Example 2: LLM-classified routing for nuanced tasks
+### Example 2: LLM-classified routing for ambiguous tasks
 
 ```bash
 forgeplan route --level 1 "refactor embedding pipeline to support BGE-M3"
@@ -130,7 +130,7 @@ Red flags:
 - Route says Tactical for what feels like a week of work - add detail about blast radius
 - Route says Critical for a one-liner - simplify the description
 
-## Routing Skills Memory (v0.17+, PRD-040)
+## Routing skills memory (v0.17+, PRD-040)
 
 As of v0.17.0 (PRD-040, Scoring Intelligence) the router keeps a **routing
 skills memory** - a rolling log of past depth predictions plus their

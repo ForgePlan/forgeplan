@@ -4,7 +4,7 @@ description: "Compute R_eff - the weakest-link evidence trust score for a decisi
 ---
 
 `forgeplan score` computes the **R_eff** (effective reliability) of a decision artifact
-based on the **non-terminal** EvidencePacks linked to it — packs that were displaced
+based on the **non-terminal** EvidencePacks linked to it. Packs that were displaced
 (`superseded`/`deprecated`) stay listed with an "excluded from min" mark but no longer
 feed the score. R_eff follows the weakest-link rule from
 Quint-code: `R_eff = min(evidence_scores)` - **never an average**. One weak piece of
@@ -70,7 +70,7 @@ PRD-001 - Auth System
 ```
 
 The weakest link (EVID-018) is pulling R_eff down. Either strengthen that evidence,
-refute it, or replace it — replacement means linking the new pack and running
+refute it, or replace it. Replacement means linking the new pack and running
 `forgeplan supersede EVID-018 --by <NEW-EVID>`: the displaced pack leaves the min
 and the score recovers on the spot.
 

@@ -86,6 +86,6 @@ discover_start → (many) discover_finding → discover_complete
 ## См. также
 
 - [Обзор MCP](/ru/docs/mcp/)
-- [`forgeplan_discover_start`](/ru/docs/mcp/forgeplan_discover_start/) - протокол, который является источником этого инструмента
+- [`forgeplan_discover_start`](/ru/docs/mcp/forgeplan_discover_start/) - протокол, откуда берёт данные этот инструмент
 - [`forgeplan_discover_complete`](/ru/docs/mcp/forgeplan_discover_complete/) - синтезирует обнаруженные факты в предложения
 - [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) - альтернатива для создания артефактов вне сессии

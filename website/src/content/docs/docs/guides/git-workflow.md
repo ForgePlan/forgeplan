@@ -51,7 +51,7 @@ Code → Audit → Fix → Test → Fmt → Lint → PR
 
 **Never create PR immediately after code.** PR means: "I tested, audited, formatted, and everything works."
 
-## Before Every Commit
+## Before every commit
 
 ```bash
 cargo fmt           # format

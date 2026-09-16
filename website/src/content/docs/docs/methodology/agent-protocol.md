@@ -37,7 +37,7 @@ Every Forgeplan output, regardless of surface, satisfies these:
 | `Done.` | Workflow complete (terminal) | Move on, do not loop |
 | `Fix: <command>` | Error remediation (paired with `Error:`) | Run the fix command immediately |
 
-## Where to Read the Hint
+## Where to read the hint
 
 | Surface | Location | Format |
 |---|---|---|
@@ -49,7 +49,7 @@ Every Forgeplan output, regardless of surface, satisfies these:
 
 **Special case**: `forgeplan list --json` and `forgeplan tree --json` preserve bare-array stdout (backward compat for `jq '.[]'` consumers). The hint is emitted to **stderr** in JSON mode.
 
-## Good Hints vs. Bad Hints
+## Good hints vs. bad hints
 
 ### Good ✅
 
@@ -89,7 +89,7 @@ or ask the orchestrator to force-release.
 ```
 Three options, none chosen as primary. Paradox of choice.
 
-## Agent Reading Protocol
+## Agent reading protocol
 
 When an agent receives any Forgeplan output:
 
@@ -114,7 +114,7 @@ When an agent receives any Forgeplan output:
 4. **Don't substitute `EVID-NNN` placeholders** - first run `forgeplan_new evidence`, then use the real ID
 5. **Don't panic on `Wait:`** - async/TTL is normal; just retry
 
-## Practical Workflow Patterns
+## Practical workflow patterns
 
 ### Pattern A: Shape → Validate → Activate
 
@@ -164,7 +164,7 @@ The contract is enforced by:
 1. **Integration test** `crates/forgeplan-cli/tests/hint_contract.rs` - 36 tests, fails CI if any command lacks contract marker
 2. **Audit script** `scripts/audit-hints.sh` - coverage metric, target 100%, currently 100% (70/70 commands)
 
-## Quick Reference Card
+## Quick reference card
 
 ```
 ┌─────────────────────────────────────────────────────────┐

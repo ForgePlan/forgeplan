@@ -70,7 +70,7 @@ Returns three buckets of draft PRDs that can be worked in parallel without file 
 forgeplan dispatch --agents 4 --epic EPIC-005 --status any
 ```
 
-Plans across all artifacts in `EPIC-005`, including active and superseded ones (not just drafts). Useful for retrospectives or when an Epic mixes draft and active work that all need attention.
+Plans across all artifacts in `EPIC-005`, including active and superseded ones. Useful for retrospectives or when an Epic mixes draft and active work that all need attention.
 
 ### Example 3: Stricter conflict detection
 

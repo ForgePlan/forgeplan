@@ -7,15 +7,15 @@ description: How Forgeplan measures trust in decisions
 
 Most teams make decisions based on intuition, experience, or authority ("the senior engineer said so"). This works until it does not. When a production incident happens and someone asks "why did we think this would work?", the answer is usually "we just... thought it would."
 
-Evidence-based decision making replaces "trust me" with "here is the data." It is not about bureaucracy -- it is about knowing which of your decisions are solid and which are standing on untested assumptions. Forgeplan's R_eff score gives you a single number that answers: **how much should I trust this decision?**
+Evidence-based decision making replaces "trust me" with "here is the data." It is not about bureaucracy. It is about knowing which of your decisions are solid and which are standing on untested assumptions. Forgeplan's R_eff score gives you a single number that answers: **how much should I trust this decision?**
 
-The most valuable insight is not a high score -- it is finding a low one. A decision with R_eff = 0.1 tells you exactly where your risk lives, before it becomes a production incident.
+The most valuable insight is not a high score. It is finding a low one. A decision with R_eff = 0.1 tells you exactly where your risk lives, before it becomes a production incident.
 
 ## The Principle
 
 **Trust is not a feeling. It's a measurement.**
 
-Every decision in Forgeplan has an R_eff score -- a number that tells you how reliable it is, based on actual evidence.
+Every decision in Forgeplan has an R_eff score: a number that tells you how reliable it is, based on actual evidence.
 
 ## R_eff Formula
 
@@ -23,7 +23,7 @@ Every decision in Forgeplan has an R_eff score -- a number that tells you how re
 R_eff = min(evidence_scores)
 ```
 
-**Not average -- minimum.** Your decision is only as strong as your weakest evidence. Three strong proofs + one untested assumption = untested decision.
+**Not average. Minimum.** Your decision is only as strong as your weakest evidence. Three strong proofs + one untested assumption = untested decision.
 
 ```mermaid
 flowchart TD
@@ -34,7 +34,7 @@ flowchart TD
 
 This design choice is deliberate. Averaging would let strong evidence mask weak spots. Imagine a bridge: if three pillars are solid but one is cracked, you do not average the pillar strength. You fix the cracked one.
 
-## Evidence Score Calculation
+## Evidence score calculation
 
 ```
 evidence_score = max(0, verdict_score - CL_penalty)
@@ -48,7 +48,7 @@ evidence_score = max(0, verdict_score - CL_penalty)
 | `weakens` | 0.5 | Evidence raises concerns |
 | `refutes` | 0.0 | Evidence contradicts the decision |
 
-### Congruence Level Penalties
+### Congruence level penalties
 
 How close is the evidence to your actual context? Evidence from your own project is worth more than evidence from a blog post.
 
@@ -70,27 +70,27 @@ You are deciding whether to use LanceDB for artifact storage. You gather three p
 3. **A Hacker News comment about production use**: weakens (0.5) at CL1 (external, unverified) -> score = 0.5 - 0.4 = **0.1**
 
 ```
-R_eff = min(0.9, 0.6, 0.1) = 0.1 -- AT RISK
+R_eff = min(0.9, 0.6, 0.1) = 0.1 (AT RISK)
 ```
 
 The weak link is the unverified production concern. To improve R_eff, you need either stronger evidence about production readiness (run your own production test, CL3) or remove that concern from your evidence set if it is not relevant to your use case.
 
 ## Which packs participate in the min
 
-R_eff ranges over the artifact's **current** evidence only. Packs with a terminal lifecycle status — `superseded` or `deprecated` — are excluded from the min: a displaced pack stays in the graph as history (and stays listed in `forgeplan score` with an "excluded from min" mark), but it no longer speaks for present reliability. Draft evidence **does** count (it is the normal state of a fresh measurement before activation), and an **active** `refutes` pack still zeroes the score.
+R_eff ranges over the artifact's **current** evidence only. Packs with a terminal lifecycle status (`superseded` or `deprecated`) are excluded from the min: a displaced pack stays in the graph as history (and stays listed in `forgeplan score` with an "excluded from min" mark), but it no longer speaks for present reliability. Draft evidence **does** count (it is the normal state of a fresh measurement before activation), and an **active** `refutes` pack still zeroes the score.
 
-The honest way to clear a stale weak pack is displacement, not deletion or verdict editing: link the re-verification pack, then `forgeplan supersede <old> --by <new>`. If *all* linked packs are terminal, the artifact degrades to "no active evidence" (R_eff 0.0) — recovery requires the replacement pack to be linked, not merely to exist. A refutes/weakens pack terminated *without* a successor is flagged by the `unbacked_displacement` anomaly.
+The honest way to clear a stale weak pack is displacement, not deletion or verdict editing: link the re-verification pack, then `forgeplan supersede <old> --by <new>`. If *all* linked packs are terminal, the artifact degrades to "no active evidence" (R_eff 0.0). Recovery requires the replacement pack to be linked, not merely to exist. A refutes/weakens pack terminated *without* a successor is flagged by the `unbacked_displacement` anomaly.
 
 ## Evidence Decay
 
 Evidence has a TTL (`valid_until` field). When it expires:
 
-- Evidence is **not deleted** -- it becomes **stale**
+- Evidence is **not deleted**. It becomes **stale**.
 - Score drops to **0.1** (stale is not the same as absent)
 - `forgeplan stale` detects expired evidence
 - `forgeplan renew` extends validity with new evidence
 
-Decay exists because the world changes. Your benchmark from six months ago was run on a different version of the library, different hardware, different data volume. Stale evidence is not worthless -- it tells you something was true once. But it should not give you full confidence in the present.
+Decay exists because the world changes. Your benchmark from six months ago was run on a different version of the library, different hardware, different data volume. Stale evidence is not worthless. It tells you something was true once. But it should not give you full confidence in the present.
 
 ## Creating Evidence
 
@@ -106,7 +106,7 @@ forgeplan score PRD-001
 # -> R_eff = 1.00
 ```
 
-### Required Structured Fields
+### Required structured fields
 
 Every evidence pack MUST contain in its body:
 
@@ -126,12 +126,12 @@ evidence_type: measurement
 
 Without these fields, the R_eff parser cannot extract scoring data and defaults to CL0 (0.9 penalty). This is the single most common reason for unexpectedly low R_eff scores.
 
-### What Makes Good Evidence
+### What makes good evidence
 
-- **Tests that pass in CI** -- CL3, evidence_type: test. The most reliable form because they run in your actual codebase.
-- **Benchmarks on your data** -- CL3, evidence_type: benchmark. Measures performance in your real context.
-- **PoC in a related module** -- CL2, evidence_type: measurement. Good but not as strong as production evidence.
-- **External documentation** -- CL1, evidence_type: measurement. Useful but carries a 0.4 penalty. Supplement with your own testing.
+- **Tests that pass in CI**, CL3, evidence_type: test. The most reliable form because they run in your actual codebase.
+- **Benchmarks on your data**, CL3, evidence_type: benchmark. Measures performance in your real context.
+- **PoC in a related module**, CL2, evidence_type: measurement. Good but not as strong as production evidence.
+- **External documentation**, CL1, evidence_type: measurement. Useful but carries a 0.4 penalty. Supplement with your own testing.
 
 ## Trust Thresholds
 
@@ -156,7 +156,7 @@ forgeplan health            # Full project health dashboard
 ## Gotchas
 
 - **Forgetting structured fields in evidence body.** This is the number one mistake. Without `verdict`, `congruence_level`, and `evidence_type`, the parser assigns CL0 and your R_eff drops to near zero.
-- **Over-claiming CL3.** A benchmark you ran once on your laptop is not CL3. CL3 means the evidence was gathered in the same context where the decision will be applied -- same codebase, same environment, same scale.
+- **Over-claiming CL3.** A benchmark you ran once on your laptop is not CL3. CL3 means the evidence was gathered in the same context where the decision will be applied (same codebase, same environment, same scale).
 - **Ignoring "weakens" evidence.** If you find evidence that a chosen approach has problems, record it with `verdict: weakens`. Hiding inconvenient evidence does not make it go away; it just makes your R_eff dishonest.
 - **Never refreshing evidence.** Benchmarks and test results have shelf lives. Set `valid_until` to 90-180 days and address stale evidence when `forgeplan health` flags it.
 - **Linking evidence to the wrong artifact.** Evidence should be linked to the decision it supports, not to the Epic or to an unrelated PRD. A mislinked evidence pack provides no R_eff benefit.

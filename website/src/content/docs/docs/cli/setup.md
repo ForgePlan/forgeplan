@@ -7,18 +7,18 @@ description: "One-time per-machine preparation: create the fpl alias and downloa
 
 The alias exists because the two installation paths land in different states. Homebrew and `install.sh` binaries are produced by cargo-dist, which creates the alias through its `bin-aliases` setting. `cargo install` has no equivalent and **no post-install hook at all**, so a source install has `forgeplan` and no `fpl`.
 
-The model download applies to **every** install. Semantic search is compiled into all released binaries (ADR-023), but the 2.1 GB of BGE-M3 weights are not — they are a lazy first-use download, and fetching them deliberately beats discovering the wait mid-task when the first semantic search appears to hang.
+The model download applies to **every** install. Semantic search is compiled into all released binaries (ADR-023), but the 2.1 GB of BGE-M3 weights are not; they are a lazy first-use download, and fetching them deliberately beats discovering the wait mid-task when the first semantic search appears to hang.
 
 ## When to use
 
-- Immediately after any install — Homebrew, `install.sh`, a GitHub Release archive or `cargo install`. All of them ship semantic search; none of them ship the model.
+- Immediately after any install: Homebrew, `install.sh`, a GitHub Release archive or `cargo install`. All of them ship semantic search; none of them ship the model.
 - Once per machine - both the alias and the model cache are machine-wide, not per project.
 - After moving or reinstalling the binary, to point the alias at the new location.
 - Before going offline, if you expect to use semantic search and have not fetched the model yet.
 
 ## When NOT to use
 
-- On a Homebrew or `install.sh` binary when you only want the alias — those installs already have `fpl` from cargo-dist. You would still want the model, so pass `--skip-alias` rather than skipping the command.
+- On a Homebrew or `install.sh` binary when you only want the alias: those installs already have `fpl` from cargo-dist. You would still want the model, so pass `--skip-alias` rather than skipping the command.
 - In CI. Runners rarely benefit from a 2.1 GB download; if you want only the alias there, pass `--skip-model`.
 - As a substitute for `forgeplan init` - this prepares the machine, not a workspace.
 

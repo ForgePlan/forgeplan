@@ -10,7 +10,7 @@ config so estimates get sharper.
 
 Without calibration, estimates drift silently: you think you're "senior on backend" but
 consistently overshoot 50%. This command surfaces that gap so you can adjust the
-multiplier, not just your intuition.
+multiplier based on evidence, not on intuition.
 
 ## When to use
 

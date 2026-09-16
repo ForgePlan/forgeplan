@@ -55,7 +55,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::CalibratePara
 1. `forgeplan_calibrate` - сканирует рабочее пространство.
 2. Для каждого несоответствия: перенаправьте задачу с помощью `forgeplan_route` или вручную установите глубину во фронтматтере.
 3. `forgeplan_validate` - повторно запустите валидацию с новой глубиной (более строгие правила MUST).
-4. `forgeplan_reason` - ADI является обязательным для уровней Deep / Critical.
+4. `forgeplan_reason` - для уровней Deep / Critical ADI обязателен.
 
 ## Эквивалент CLI
 

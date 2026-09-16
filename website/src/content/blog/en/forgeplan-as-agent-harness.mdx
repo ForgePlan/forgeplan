@@ -83,13 +83,13 @@ The lesson is not "we found a bug." The lesson is the one walkinglabs makes the 
 
 ### What ForgePlan harness *doesn't* do yet
 
-walkinglabs is honest about which subsystems most teams under-invest in, and I'm going to be honest about where ForgePlan is short. Three real gaps, ranked by how much they bother me when I'm running multiple agents.
+walkinglabs is honest about which subsystems most teams under-invest in, and so will I be about where ForgePlan is short. Three real gaps, ranked by how much they bother me when I'm running multiple agents.
 
 **H1 - Per-session task trace.** ForgePlan has process observability: `forgeplan graph`, `forgeplan blindspots`, `forgeplan blocked`. It does not have runtime observability. There is no OpenTelemetry-style trace of "this agent, in this session, ran these tools, made these decisions, tripped this gate." If a multi-agent run produces a weird outcome, I'm reconstructing it from git history and Hindsight memory, not from a structured trace. This is on the roadmap.
 
 **H2 - A "Sprint Contract" artifact.** Right now the spectrum goes Note (90-day TTL, lightweight) → PRD (full decision artifact, MUST sections, ADI required for Standard+). There's no middle: a one-week scope-bound contract with explicit acceptance criteria and a deadline. *Lecture 11* makes a strong argument for this primitive; PRD is too heavy for a one-week sprint and Note is too light. I have a draft and no implementation.
 
-**H9 - WIP=1 hard limit.** *Lecture 07*: **"Don't bite off more than you can chew' applies particularly well to AI agents."** ForgePlan's `forgeplan claim/release` is a soft lock with a TTL. Two agents can claim two different artifacts; nothing prevents one agent from claiming three artifacts at once. A hard limit (one in-flight claim per agent) would be a one-line policy change but the dispatch logic would need to learn about agent identity, not just artifact identity. Backlogged.
+**H9 - WIP=1 hard limit.** *Lecture 07*: **"Don't bite off more than you can chew' applies particularly well to AI agents."** ForgePlan's `forgeplan claim/release` is a soft lock with a TTL. Two agents can claim two different artifacts; nothing prevents one agent from claiming three artifacts at once. A hard limit (one in-flight claim per agent) would be a one-line policy change but the dispatch logic would need to learn about agent identity in addition to artifact identity. Backlogged, because the dispatch layer would need to track which agent holds which claim.
 
 I'm calling these out in public because *Lecture 12* has a separate principle that's relevant: **"'we'll clean it up later' equals 'never.'"** Honest gap lists in build-in-public posts are how I keep myself from quietly dropping items off the roadmap.
 
@@ -99,6 +99,6 @@ If "harness engineering" is a new term to you, walkinglabs's twelve lectures are
 
 If you want to try ForgePlan: `brew install ForgePlan/tap/forgeplan` or `cargo install forgeplan-cli`. The repo is at [github.com/ForgePlan/forgeplan](https://github.com/ForgePlan/forgeplan). Current state: v0.30.0, 343 artifacts in the live workspace, 1995 tests, 76 CLI commands, 73 MCP tools, single ~41 MB stripped binary, BGE-M3 semantic search runs entirely local. There's a marketplace at [github.com/ForgePlan/marketplace](https://github.com/ForgePlan/marketplace) with 12 plugins, 60+ agents, 16 skills.
 
-GitHub stars: 1. That's not a typo. The thing has been head-down dogfooded for six months and the marketing is a week old. If the harness framing makes the work easier to find for the people it's actually for, that's the win.
+GitHub stars: 1. That's not a typo. The thing has been head-down dogfooded for six months and the marketing is a week old. If the harness framing makes the work easier to find for the people it's meant for, that's the win.
 
 Documentation that diverges from code is more dangerous than no documentation, says *Lecture 03*. So is documentation that ships under the wrong word.

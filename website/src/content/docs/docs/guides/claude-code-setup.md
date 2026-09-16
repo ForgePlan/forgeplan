@@ -7,7 +7,7 @@ description: Configure Claude Code for maximum productivity with Forgeplan
 
 `CLAUDE.md` is Claude Code's project memory - a file at your repo root that tells Claude about your project, conventions, and workflows. Claude reads it at every session start.
 
-## Recommended CLAUDE.md Structure
+## Recommended CLAUDE.md structure
 
 Based on production configurations across multiple projects:
 
@@ -122,7 +122,7 @@ Add Forgeplan as MCP server for AI agents:
 
 This gives AI agents access to 73 tools: create, validate, score, search, graph, reason, route, plus playbook orchestration, FPF KB, dispatch, claims, and more.
 
-## Memory Integration (Hindsight)
+## Memory integration (Hindsight)
 
 Save knowledge between sessions:
 

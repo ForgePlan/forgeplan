@@ -9,7 +9,7 @@ description: "Show F-G-R quality scores - Formality, Granularity, Reliability - 
 - **G - Granularity**: how decomposed is it? FR count, phase checkboxes, leaf-level detail.
 - **R - Reliability**: how trusted is it? Linked evidence, R_eff, adversarial review status.
 
-Each axis is scored 0–3. F-G-R is **orthogonal to lifecycle** - a `draft` artifact can
+Each axis is scored 0–3. F-G-R is **orthogonal to lifecycle**: a `draft` artifact can
 already be F=3/G=3/R=2, and an `active` one can be F=1/G=1/R=0 (a blind spot). The FPF
 Trust Calculus uses `exploit_fgr ≥ 0.6` as the threshold to reuse a decision without
 re-deriving it.
@@ -23,7 +23,7 @@ re-deriving it.
 
 ## When NOT to use
 
-- As a substitute for `validate` - FGR is a summary, not a rule report.
+- As a substitute for `validate`: FGR is a summary, not a rule report.
 - On non-decision artifacts where the axes don't apply cleanly (Notes, RefreshReports).
 
 ## Usage
@@ -72,7 +72,7 @@ PRD-001 - Auth System
 forgeplan fgr --json | jq 'sort_by(.overall) | reverse | .[0:10]'
 ```
 
-Top 10 most mature artifacts - useful when deciding what to promote or cite.
+Top 10 most mature artifacts, useful when deciding what to promote or cite.
 
 ### Find the cheapest wins
 
