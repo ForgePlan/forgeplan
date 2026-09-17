@@ -601,8 +601,9 @@ CI также содержит **drift detector** (`scripts/check-mcp-tool-count
 - Project: **Development** — `ZB8WYUpwNskvAZdRK8Jh`
 - Two MCP roles: `orch` (`http://localhost:28173/mcp`) is the **global user-MCP** — admin
   (fields, spaces, workspaces), writes as `Eli Rum`. **Task work** (projects/tasks/checklists)
-  belongs to a per-workspace **agent** MCP; for `ForgePlan` none is provisioned yet, so `orch`
-  doubles as both until one exists. Verify with `get_current_context` + `list_workspaces`.
+  goes through the workspace's **agent** MCP: `orchestra-beta-forge-agent`
+  (`http://127.0.0.1:28174/mcp`, bot `Forge Agent`, `ForgePlan` only). Verify with
+  `get_current_context` + `list_workspaces`.
 - Tracker contract + field roles: `docs/agents/issue-tracker.md`.
 
 **Synchronization:**
