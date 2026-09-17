@@ -8,7 +8,7 @@ for the tracker or guess which board this repository writes to.
 | Tracker | **Orchestra** (desktop app; the MCP server runs inside it) |
 | Workspace | `ForgePlan` — `kgYnhWodYw7kNbJMAK5q` |
 | Project | **Development** — `ZB8WYUpwNskvAZdRK8Jh` |
-| Endpoint | `orch` — `http://localhost:28173/mcp` (app endpoint, writes as the human) |
+| Endpoint | admin: `orch` `http://localhost:28173/mcp` · task: `orchestra-beta-forge-agent` `http://127.0.0.1:28174/mcp` |
 | Rules | `docs/methodology/UNIFIED-WORKFLOW.ru.md` — sync rules |
 | Verify | `get_current_context` + `list_workspaces` before the first write; confirm the workspace is `ForgePlan` |
 
@@ -19,26 +19,41 @@ The program uses two Orchestra MCP servers with distinct jobs:
 | Role | Server | Port | Principal | What it is for |
 |---|---|---|---|---|
 | Global user-MCP | `orch` | `:28173` | user `gogocat` (`Eli Rum`) | admin: fields, spaces, workspaces, runtime config |
-| Task-MCP | per-workspace agent runtime | varies | bot | projects and tasks: create, move, checklists, close |
+| Task-MCP | `orchestra-beta-forge-agent` | `:28174` | agent `Forge Agent` | projects and tasks: create, move, checklists, close |
 
 **Admin/config** goes through `orch` — the only global, user-identity MCP (it sees five spaces).
 Writes through it land under the human (`Eli Rum`).
 
-**Task work** goes through a workspace's agent runtime (a bot). For `ForgePlan` none is provisioned
-yet — so until one exists, `orch` is the only endpoint authorized for this space and doubles as
-both. Once a `ForgePlan` agent runtime is created, move task writes there and keep `orch` for
-admin only.
+**Task work** goes through the workspace's agent runtime: `orchestra-beta-forge-agent`
+(`:28174`, bot `Forge Agent`, allowed in `ForgePlan` only). If it stops reaching the board, it was
+renamed or its allowlist shrank — re-verify, do not guess.
 
 Always verify identity before the first write: `get_current_context` (who am I) +
 `list_workspaces` (can this connection see the board). Never guess a server name — the
 `orchestra-beta-*` runtimes change as the Orchestra app is reconfigured.
 
-**The server is not declared in this repository.** `.mcp.json` here registers only
-`forgeplan` and `hindsight`; `orch` is wired per-machine in the runtime's own settings
-(verified 2026-09-17 — the port answers, the MCP server was absent from the session).
-So `mcp__orch__*` tools can be missing while the Orchestra app is running. If they are,
-the board is unreachable from this session — record the sync in `TODO.md` instead of
-guessing, and never hardcode a runtime name to "restore" the connection.
+**Neither endpoint is part of the repository.** `.mcp.json` is gitignored, so the
+server list is per-machine and a fresh clone has none of it — wire both endpoints
+locally before expecting the board to answer:
+
+```jsonc
+// .mcp.json — gitignored
+"orchestra-beta-forge-agent": {
+  "type": "http",
+  "url": "http://127.0.0.1:28174/mcp",
+  "headers": { "Authorization": "Bearer ${ORCHESTRA_FORGE_AGENT_TOKEN}" }
+}
+```
+
+The token goes in `.claude/settings.local.json` under `env` (also gitignored) and is
+referenced as `${VAR}` — never written into a file that git can see. The server name
+must also be listed in `enabledMcpjsonServers` or it stays dormant.
+
+**A listening port is not a reachable board.** Measured 2026-09-17: ports `28173` and
+`28174` both answered — the Orchestra app holds them — while neither MCP server was
+present in the session. If `mcp__orch__*` / `mcp__orchestra-beta-forge-agent__*` are
+absent, record the sync in `TODO.md` instead of guessing, and never hardcode a runtime
+name to "restore" the connection.
 
 ## Field roles → this board's fields
 
