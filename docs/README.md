@@ -20,6 +20,7 @@ build, not the published `0.38.0` release. It is not a full S1-G/S2 acceptance c
 docs/
 ├── README.md          ← this file — navigation index
 ├── ROADMAP.md         ← gap analysis + priority matrix (Architecture, UX, Distribution, Docs)
+├── agents/            ← contracts an agent reads before acting (tracker, boards)
 ├── methodology/       ← how the Forgeplan methodology works (for humans)
 ├── architecture/      ← system architecture references (C4, Constellation)
 ├── operations/        ← agent hooks, enforcement, repo protection (devops)
@@ -75,6 +76,14 @@ Setup, hooks, and repository protection.
 |---|---|
 | [constellation.md](architecture/constellation.md) | **Constellation** — versioned generations, pinned reads, federation registry, section-level semantic index, MCP read profile, invariants and known edges |
 | [c4-context.md](architecture/c4-context.md) | C4 context view of the system |
+
+## Agents
+
+Contracts an agent reads before acting, so it does not have to probe or guess.
+
+| Document | Purpose |
+|---|---|
+| [issue-tracker.md](agents/issue-tracker.md) | Which board this repo writes to — Orchestra workspace/project ids, the two MCP roles (admin vs task work), field roles → this board's fields, operation → call table |
 
 ## Schemas
 
