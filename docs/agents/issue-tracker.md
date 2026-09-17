@@ -28,6 +28,12 @@ Writes through it land under the human (`Eli Rum`).
 (`:28174`, bot `Forge Agent`, allowed in `ForgePlan` only). If it stops reaching the board, it was
 renamed or its allowlist shrank — re-verify, do not guess.
 
+**Task membership (verified 2026-09-18).** Project membership does NOT cascade to tasks: each
+task is its own chat with its own members, and the Task-MCP sees only tasks it is a member of.
+`Forge Agent` (`7eea6f7ad3fc4b3196385e9d3e3cb856`) must be added to every task it should work on —
+at creation time, and to any pre-existing tasks (project member with zero visible tasks until
+then). Admin adds are done through `orch` (`:28173`) or in the Orchestra UI.
+
 Always verify identity before the first write: `get_current_context` (who am I) +
 `list_workspaces` (can this connection see the board). Never guess a server name — the
 `orchestra-beta-*` runtimes change as the Orchestra app is reconfigured.
