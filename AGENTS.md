@@ -166,18 +166,126 @@ ForgePlan/
 │   ├── evidence/, problems/, solutions/, notes/
 │   ├── lance/             ← gitignored (derived)
 │   └── config.yaml        ← gitignored (local)
-├── docs/                  ← production documentation
+├── docs/                  ← contributor documentation — NOT the website (see below)
 │   ├── README.md          ← documentation index
 │   ├── methodology/       ← how to use Forgeplan
 │   ├── operations/        ← agent hooks, enforcement, repo protection
 │   └── schemas/           ← formal artifact schemas
 ├── templates/             ← markdown templates for each artifact kind
-├── website/               ← official website (Astro + Starlight)
+├── website/               ← forgeplan.dev — landing + docs + blog + guides (one Astro app)
 ├── marketplace/           ← plugin marketplace (plugins + skills)
 ├── scripts/               ← build + release + helper scripts
 ├── Formula/               ← Homebrew formula
 └── .local/                ← gitignored — local notes, research, sessions
 ```
+
+## The site: four surfaces in one Astro app
+
+`website/` is **one** Astro 6 app at `https://forgeplan.dev` — no separate repo,
+no subdomain, no second deploy. Four surfaces share it, and each one has a
+different content source. Confusing them is the most common mistake here:
+"update the docs" has four different answers depending on which one is meant.
+
+| Surface | Routes | Source of truth | Rendered by |
+|---|---|---|---|
+| **Landing** | `/` only — **EN, no RU twin** | `src/pages/index.astro` → `Hero.astro` (wraps the `HeroSection.tsx` island) + React islands (`TrustSection`, `PipelineSection`, `ArtifactsSection`, `GraphSection`, `AISection`) + `Install.astro` | Astro + Tailwind 4 + GSAP ScrollTrigger |
+| **Docs** | `/docs/*`, `/ru/docs/*` | `website/src/content/docs/docs/**` (225) + `ru/docs/**` (224) | Starlight — sidebar is hand-written in `astro.config.mjs` |
+| **Blog** | `/blog`, `/blog/<slug>`, `/blog/series/<name>`, `/blog/rss.xml` + `/ru/blog/*` | `website/src/content/blog/{en,ru}/*.mdx` (22 + 22) | Astro content collection `blog` |
+| **Guides** | `/guides`, `/guides/<slug>` + `/ru/guides/*` | `website/public/guides-raw/*.html` (21 files = 20 lessons + the standalone `index.html`) + catalog `src/data/guides.ts` (20 entries) | inlined at build via `src/lib/embed-html.ts` |
+
+**There is no RU landing page.** `src/pages/ru/` holds `blog/`, `docs/`,
+`guides/` and nothing else; `public/_redirects` sends `/ru` and `/ru/` to `/`
+with a 302. Three surfaces are bilingual, the landing is not.
+
+The docs EN/RU gap of exactly one is `changelog.md` — generated EN-only by the
+`prebuild` step, never translated. Any other gap is real drift.
+
+Counts drift; re-measure before quoting them:
+
+```bash
+cd website && echo "blog $(ls src/content/blog/en | wc -l)/$(ls src/content/blog/ru | wc -l)" \
+  "docs $(find src/content/docs/docs -type f | wc -l)/$(find src/content/docs/ru/docs -type f | wc -l)" \
+  "guides $(ls public/guides-raw | wc -l)/$(grep -c "^    slug: '" src/data/guides.ts)"
+```
+
+**Repo-root `docs/` is not the site.** It holds 178 contributor markdown files
+(198 files in total — methodology, operations, schemas) that never reach the
+browser. The site's docs live in `website/src/content/docs/`. Two different
+things, two different audiences.
+
+### Invariants that break silently
+
+- **Integration order in `astro.config.mjs` is load-bearing**: `sitemap()` →
+  `starlight()` → `mdx()` → `react()`. Starlight bundles `astro-expressive-code`,
+  which throws a hard error if `mdx()` is registered first. The generic Astro
+  docs say the opposite; the ECE constraint wins.
+- **Blog entry IDs are `{lang}/{slug}`**, forced by the `generateId` override in
+  `src/content.config.ts`, so EN and RU posts sharing a `slug` field don't
+  collide. Nine call-sites consume that format — the config comment lists all of
+  them. Change the format and every one must move in the same commit.
+- **Blog frontmatter fails the build, not the page.** `title`, `description`,
+  `slug`, `lang`, `publishedAt`, `kind`, `topic` are required; `cover` must
+  match `/^\/[\w\-/.]+\.(png|jpg|jpeg|webp|svg)$/` — a local path only, so
+  `javascript:`, `data:` and `//evil.tld` never reach `<img src>` or `og:image`.
+- **Editing `src/data/guides.ts` requires a dev-server restart.** `getStaticPaths`
+  reads it once at startup and HMR does not reload it — new slugs 404 in the
+  browser while `npm run build` passes. HTML/CSS/MDX changes do hot-reload.
+- **Guides are inlined, never iframed** (the owner rejected iframes twice).
+  `extractEmbed` pulls body + styles + scripts out of the standalone HTML,
+  scopes CSS under `.guide-embedded`, wraps inline scripts in an IIFE, and
+  strips the lesson's own footer so `BlogFooter` is the only one on the page.
+- **Three stylesheets, three scopes.** `global.css` (Tailwind tokens, used by
+  `Header.astro`), `blog-theme.css` (shared by blog *and* guides),
+  `forge-theme.css` (Starlight override). `blog-theme.css` carries `!important`
+  rules that beat lesson inline CSS inside `.guide-embedded` — read
+  `website/CLAUDE.md` before touching guide layout.
+- **Two font stacks, deliberately.** Landing/blog/docs use Space Grotesk +
+  Geist Mono (`@fontsource`, self-hosted). `public/guides-raw/*.html` still use
+  Inter + JetBrains Mono. Don't unify without asking.
+- **i18n is mirror routes, no middleware.** `/docs/...` = EN, `/ru/docs/...` =
+  RU; same for blog, guides. Bare `/docs` and `/ru/docs` 302 to the installation
+  page; `public/_redirects` sends `/ru` → `/`.
+
+### Generated docs — never hand-edit
+
+- `npm run build` runs a `prebuild` step: `scripts/copy-changelog.mjs` copies
+  the root `CHANGELOG.md` into `src/content/docs/docs/changelog.md`. Edit the
+  root file, not the copy.
+- `scripts/generate-cli-docs.mjs` writes `docs/cli/*.md` from
+  `forgeplan help <cmd>` against a real binary (`--binary <path>`).
+- `scripts/generate-mcp-docs.mjs` writes `docs/mcp/*.md` by parsing
+  `#[tool(...)]` attributes in `crates/forgeplan-mcp/src/server.rs`.
+- `scripts/generate-marketplace-docs.mjs` writes `docs/marketplace/*.md` from
+  the **separate marketplace repo** — `<MARKETPLACE_DIR>/.claude-plugin/
+  marketplace.json` plus per-plugin files. `MARKETPLACE_DIR` defaults to a local
+  absolute path, so set it explicitly or the run aborts on a clean machine.
+- All three emit **EN only**. RU comes from `scripts/translate-batch.mjs` /
+  `translate-page.mjs` (Gemini, term glossary `src/i18n/glossary-ru.yaml`).
+- Health checks: `check-dead-links.mjs` (needs a built `dist/`),
+  `check-translation-drift.mjs` (stale RU), `check-content-completeness.mjs`.
+- Only `copy-changelog` is wired into npm scripts (as `prebuild`). The rest are
+  run by hand — nothing regenerates the CLI/MCP/marketplace reference
+  automatically when the surface changes.
+
+### Build verify
+
+`npm run build` in `website/` must close green before commit — baseline
+**544 pages / ~15 s** (measured 2026-09-17: `build` 11.6 s + Pagefind index
+2.4 s). Two warnings are expected and not regressions:
+
+- `[vite] Some chunks are larger than 500 kB after minification` — the GSAP +
+  React island bundle.
+- `Entry docs → 404 was not found.` while generating `/404.html`.
+
+Anything beyond those two is new. `build` PASS does **not** validate layout:
+complex layout changes get checked in a browser (see the Playwright recipe in
+`website/CLAUDE.md`).
+
+### Design artifacts behind these surfaces
+
+`PRD-024` (site + docs portal), `PRD-046` (docs catch-up + Cloudflare Pages),
+`PRD-047` (RU locale), `PRD-079` (bilingual blog), `PRD-080` (blog nav / visual
+/ SEO), `RFC-011` (blog scaffold), `RFC-012` (blog foundation).
 
 ## Language
 
@@ -222,13 +330,20 @@ Forgeplan is a single-author project. When generating ANY author-attributed cont
 - **Name:** `Eli Rum`
 - **URL:** `https://elirum.me`
 
-This applies to:
+Five places in `website/src/` carry the name today — all five move together:
 
-- Blog post `AuthorBlock` (`website/src/components/blog/AuthorBlock.astro`)
-- Blog footer author line (`website/src/components/blog/BlogFooter.astro`)
-- JSON-LD `author.name` + `Person.url` (`website/src/components/blog/SeoMeta.astro`)
-- Schema.org `Organization.founder` (`website/src/components/SiteJsonLd.astro`)
-- OpenGraph `article:author` meta tags
+- Blog footer author line (`components/blog/BlogFooter.astro`)
+- Blog sidebar About card (`components/blog/BlogSidebar.astro`)
+- Blog aside byline in the TOC (`components/blog/TOC.astro`)
+- JSON-LD `author.name` + `Person.url` + OpenGraph `article:author`
+  (`components/blog/SeoMeta.astro`)
+- Schema.org `Organization.founder` (`components/SiteJsonLd.astro`)
+
+Guide pages (`src/pages/guides/[slug].astro`) emit `LearningResource` JSON-LD
+with **no author field at all** — an open gap, not a place to keep in sync.
+
+It also applies to:
+
 - `package.json` `author` field (if updated)
 - Any author byline in `docs/`, `.forgeplan/notes/`, blog `.mdx` frontmatter
 - Conventional commit `Co-Authored-By` lines for solo work (do not add — Eli Rum is sole author)

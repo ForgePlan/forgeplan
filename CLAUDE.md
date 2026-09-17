@@ -565,6 +565,15 @@ CI также содержит **drift detector** (`scripts/check-mcp-tool-count
 - **Orchestra** = WHO does it and WHEN (tasks, deadlines, assignments)
 - **Hindsight** = MEMORY (context between sessions)
 
+**Board (who + when lives here):**
+- Workspace: `ForgePlan` — `kgYnhWodYw7kNbJMAK5q`
+- Project: **Development** — `ZB8WYUpwNskvAZdRK8Jh`
+- Two MCP roles: `orch` (`http://localhost:28173/mcp`) is the **global user-MCP** — admin
+  (fields, spaces, workspaces), writes as `Eli Rum`. **Task work** (projects/tasks/checklists)
+  belongs to a per-workspace **agent** MCP; for `ForgePlan` none is provisioned yet, so `orch`
+  doubles as both until one exists. Verify with `get_current_context` + `list_workspaces`.
+- Tracker contract + field roles: `docs/agents/issue-tracker.md`.
+
 **Synchronization:**
 1. New artifact → task in Orchestra (if available)
 2. `forgeplan activate` → mark Orchestra task Done

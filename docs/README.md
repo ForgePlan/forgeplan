@@ -12,6 +12,7 @@ Production documentation for the Forgeplan project.
 docs/
 ├── README.md          ← this file — navigation index
 ├── ROADMAP.md         ← gap analysis + priority matrix (Architecture, UX, Distribution, Docs)
+├── agents/            ← contracts an agent reads before acting (tracker, boards)
 ├── methodology/       ← how the Forgeplan methodology works (for humans)
 ├── operations/        ← agent hooks, enforcement, repo protection (devops)
 └── schemas/           ← formal artifact schemas (contracts for the validator)
@@ -57,6 +58,14 @@ Setup, hooks, and repository protection.
 | [PLAYBOOK-AUTHORING.ru.md](operations/PLAYBOOK-AUTHORING.ru.md) | **v0.26.0+ playbook authoring** — declarative YAML workflows, 5 delegation types, fallback hints, DAG ordering. **v0.27.0+ Subprocess lifecycle** section (real dispatchers, kill_on_drop, timeout policy, security model) per ADR-010/PRD-072 |
 | [INGEST-MAPPINGS.ru.md](operations/INGEST-MAPPINGS.ru.md) | **v0.26.0+ ingest mapping authoring** — translate plugin output to forge artifacts with hallucination-proof `## Sources` invariant (PRD-066/SPEC-004) |
 | [QUALITY-GATES.ru.md](operations/QUALITY-GATES.ru.md) | **v0.28.0+ CI quality gates** — all CI gates (fmt, clippy, test, health, validate, drift detector) with local run commands and fix guides. Note: `docs/methodology/QUALITY-GATES.md` covers methodology gates (R_eff, Verification Gate). |
+
+## Agents
+
+Contracts an agent reads before acting, so it does not have to probe or guess.
+
+| Document | Purpose |
+|---|---|
+| [issue-tracker.md](agents/issue-tracker.md) | Which board this repo writes to — Orchestra workspace/project ids, the two MCP roles (admin vs task work), field roles → this board's fields, operation → call table |
 
 ## Schemas
 
