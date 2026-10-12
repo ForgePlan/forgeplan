@@ -10,7 +10,7 @@ links:
   relation: supports
 - target: PROB-042
   relation: supports
-status: draft
+status: active
 title: ADR-009 orchestrator pivot — research from c4-architecture + autoresearch + ddd-expert plugins
 updated: 2026-04-20
 ---
@@ -139,6 +139,7 @@ Penalty CL3 = 0.0 (exact match).
 | EPIC-007 | Epic | supports |
 | PROB-042 | Problem | supports (confirms ecosystem gap requires orchestrator pivot) |
 | EVID-079 | Evidence | informs (parallel research for ADR-008, similar methodology) |
+
 
 
 

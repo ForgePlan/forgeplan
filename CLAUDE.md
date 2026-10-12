@@ -88,6 +88,24 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 ## Current status
 
+- **v0.37.0** (2026-09-08) — **trust the number, the write, and the gate that checks it**.
+  An EvidencePack with no `verdict` and no `congruence_level` scored a flat **1.00** —
+  the opposite of what every document describing this system says. `forgeplan deprecate`
+  printed a reason and put it nowhere a fresh clone could ever see: the `## Deprecation`
+  section only reached LanceDB (`.forgeplan/lance/` is gitignored), and the next lifecycle
+  command synced the section-less file back over the index — the file/index disagreement
+  was temporary, the data loss was not. The embedding correctness oracle
+  (`embedding_reference.rs`) had never run in CI since it was written: the file is
+  entirely behind `semantic-search`, `check`/`clippy` compile it, `cargo nextest run
+  --workspace` does not, so its three assertions against the live engine never even
+  entered that build. **None of this looked broken** — each one reported success in the
+  right format, right up until someone read the file it claimed to have written to.
+  **Breaking**: R_eff for any artifact whose weakest evidence pack lacks `verdict`/
+  `congruence_level` drops from 1.0 to 0.1 — **run `forgeplan score --all` after
+  upgrading**. Also: a new CI job runs the embedding oracle with a cached model, plus
+  `--test-threads=1` for it — on the first cold run, two tests that both need the model
+  ran concurrently and raced for the same download. Open: PROB-104 (a leaf pack with an
+  evidence neighbour reports the neighbour's score).
 - **v0.36.0** (2026-09-04) — **вещи, которые отчитывались об успехе, ничего не проверяя**.
   Каждый дефект релиза вёл себя корректно — поиск возвращал правдоподобное, подсказки
   были исполнимы, сборка была зелёной, — и именно это их скрывало.
@@ -148,7 +166,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
   Migration: run `forgeplan score --all`; expect a small number of artifacts whose
   only evidence was retired to drop to 0 (1 of 89 here) — that is real debt the
   old formula masked.
-- **82 CLI commands** (+`setup`; прежние «82» считали авто-`help` от clap), **73 MCP tools**, **3290 tests + 9 doc-tests** (CI `nextest`), **0 warnings** on both feature configs
+- **82 CLI commands** (+`setup`; прежние «82» считали авто-`help` от clap), **73 MCP tools**, **3331 tests + 9 doc-tests** (CI `nextest`), **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**, **Epic #287 ✅** (brownfield). Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 on `tract` (pure-Rust inference — RFC-013; feature-gated, graceful fallback)
 

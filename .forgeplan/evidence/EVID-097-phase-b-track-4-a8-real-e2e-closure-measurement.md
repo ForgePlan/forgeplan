@@ -13,7 +13,7 @@ links:
   relation: informs
 - target: EVID-096
   relation: informs
-status: draft
+status: active
 title: Phase B + Track 4-A8 real E2E closure measurement
 ---
 
@@ -187,6 +187,7 @@ that's an honest accounting choice not a measurement artefact.
 | EVID-096 | informs (predecessor — Phase B Wave 1 closure; this evidence promotes its closure from fake-script to real binary) |
 | PROB-050 | informs (acceptance criteria A-3 closure + A-21..A-26 amendments) |
 | NOTE-049 | informs (parent verification note, hypotheses H1..H5 + H_PLUGIN) |
+
 
 
 

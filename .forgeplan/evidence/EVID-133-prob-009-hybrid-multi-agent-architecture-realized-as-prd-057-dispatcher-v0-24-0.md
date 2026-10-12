@@ -7,7 +7,7 @@ last_modified_by: claude-code/2.1.149
 links:
 - target: PROB-009
   relation: informs
-status: draft
+status: active
 title: PROB-009 Hybrid multi-agent architecture realized as PRD-057 dispatcher (v0.24.0)
 ---
 
@@ -60,4 +60,5 @@ PROB-009 в мае 2026 предложил 5 архитектурных подх
 
 - `Refs: PRD-057, EVID-077, ADR-003, project_v0_24_0_prd057_sprint memory`
 - CLAUDE.md sections: "Multi-agent (v0.24.0+)", "AgentTeams orchestration patterns", "Multi-agent worktree pattern"
+
 

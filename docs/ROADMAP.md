@@ -1,158 +1,168 @@
 # Forgeplan Roadmap — Gap Analysis & Priorities
 
-> Generated 2026-04-11 after v0.18.0 release. Based on /fpf DECOMPOSE
-> analysis of 193 artifacts, 3 completed EPICs, and 16 draft IDEAS.
+> Обновлено 2026-09-08 после релиза v0.37.0. Предыдущая версия этого файла
+> была датирована 2026-04-11 (после v0.18.0) — почти пять месяцев и ~19 minor
+> релизов назад, а её базовые цифры (193 артефакта, 76 CLI-команд, 1940
+> тестов) на момент этого обновления разошлись с реальностью в 2 раза.
+> Каждое число ниже — с указанием, откуда оно взято, а не переписано из
+> предыдущей версии файла.
 
-## Current State
+## Текущее состояние (измерено 2026-09-08)
 
-- **v0.18.0** released (Production BM25 + Russian morphology + quality gates)
-- **193 artifacts**, 112 active, health: "Project looks healthy!"
-- **1940 tests**, 76 CLI commands, 73 MCP tools
-- **3 EPICs complete**: EPIC-001 (foundation), EPIC-002 (v2.0 vision), EPIC-003 (search+intelligence)
-
----
-
-## Categories
-
-### 1. Architecture (Core Engine) — 85%
-
-| Done | Gap |
-|---|---|
-| LanceDB embedded (ADR-003 files-first) | Code-fence awareness in extract_field (PROB-035 remainder) |
-| 10 artifact types + lifecycle state machine | DSL scripting for custom rules (NOTE-039 — Lua/Rhai) |
-| R_eff weakest-link + CL penalty + fail-closed | Pluggable storage drivers (RFC-003 planned, not wired) |
-| FPF engine v2 (rule engine + bounded contexts) | Delta-specs (OpenSpec pattern, deferred from PRD-015) |
-| Graph (petgraph, topological sort, blocked/order) | |
-| Production BM25 + Russian stemming (v0.18.0) | |
-| Semantic search BGE-M3 (feature-gated) | |
-| Trust calculus hardening (F1/F2 fail-closed, v0.17.2) | |
-
-**Assessment:** Core is solid. Remaining gaps are extensibility and hardening.
-
-### 2. UX / Usability — 70%
-
-| Done | Gap |
-|---|---|
-| 56 CLI commands with clap derive | **Desktop App** (Tauri + React) — Phase 5, not started |
-| `--json` output on most commands | `forgeplan doctor` — workspace diagnostics (NOTE-029) |
-| Styled terminal (colors, progress bars, unicode) | `forgeplan links` — visual relationship graph (NOTE-029) |
-| `health` + `tree` + `blocked` dashboards | `forgeplan diff` — artifact comparison (NOTE-030) |
-| Error hints with suggested next commands | `forgeplan watch` v2 — hot-reload (NOTE-030) |
-| Duplicate guard + stub detection (PRD-043) | VS Code extension (NOTE-030) |
-| 73 MCP tools for AI agents | **Website** — landing + docs portal (PRD-024) |
-
-**Assessment:** CLI is mature, MCP is excellent. No GUI. Website and Desktop are the main gaps for user adoption.
-
-### 3. Performance — 80%
-
-| Done | Gap |
-|---|---|
-| O(N) batch BM25 search (v0.18.0) | Lazy loading for large workspaces (1000+ artifacts) |
-| 43 MB binary (strip+lto+codegen-units optimized) | Incremental reindex (currently full scan) |
-| 0.23s search on 193 artifacts | Background embedding (BGE-M3 blocks ~60s on first run) |
-| LanceDB columnar + Arrow (fast reads) | |
-
-**Assessment:** Fast for current scale (100-500 artifacts). Gaps matter only for scale-up to enterprise.
-
-### 4. Distribution — 65%
-
-| Done | Gap |
-|---|---|
-| `brew install forgeplan` (Homebrew tap) | **crates.io** (`cargo install forgeplan`) |
-| cargo-dist (macOS arm/x86, Linux, Windows) | **npm/npx wrapper** (JS ecosystem) |
-| GitHub Releases with prebuilt binaries | **Docker image** |
-| install.sh script | **Linux native** (apt, snap, flatpak) |
-| CI pipeline (fmt + clippy + tests + health gate) | **Auto-update** notification mechanism |
-
-**Assessment:** macOS excellent. Linux/Windows via GH releases but not via native package managers.
-
-### 5. Documentation — 60%
-
-| Done | Gap |
-|---|---|
-| CLAUDE.md (full AI agent guide) | **Public website** (landing + docs portal) |
-| docs/methodology/ (10 files) | **Public README.md** (current one is internal-focused) |
-| FORGEPLAN-GUIDE.md (full CLI + methodology ref) | **MCP tools API reference** |
-| CHANGELOG (v0.17.0 → v0.18.0) | **Video/tutorial** walkthrough |
-| FPF KB (204 sections, searchable) | **man pages** |
-| 8-point verification checklist (v0.18.0) | |
-
-**Assessment:** Internal docs are excellent. Public-facing documentation is the biggest gap for adoption.
-
-### 6. Integrations — 55%
-
-| Done | Gap |
-|---|---|
-| MCP server (73 tools, stdio transport) | **Linear/Jira sync** (NOTE-028) |
-| LLM integration (Gemini, configurable provider) | **GitHub Issues bridge** |
-| git-sync (frontmatter to LanceDB) | **Slack/Teams notifications** |
-| Claude Code hooks (safety, forge-mode) | **CI/CD pipeline gates** (NOTE-026) |
-| Orchestra integration (task management) | **VS Code / JetBrains extension** |
-
-**Assessment:** MCP-first approach is strong. Ecosystem integrations are the gap.
-
----
-
-## Priority Matrix
-
-| Category | Maturity | Biggest Gap | User Impact | Effort |
-|---|---|---|---|---|
-| Architecture | 85% | Code-fence, DSL | Low | Small |
-| **UX** | **70%** | **Desktop + Website** | **HIGH** | Large |
-| Performance | 80% | Incremental reindex | Medium | Medium |
-| **Distribution** | **65%** | **crates.io + Docker** | **HIGH** | Small |
-| **Documentation** | **60%** | **Public website + README** | **HIGH** | Medium |
-| **Integrations** | **55%** | **CI/CD gates + trackers** | **MEDIUM** | Medium |
-
----
-
-## Recommended Next Sprints
-
-### Sprint A: Public Presence (3-5 days)
-> Close the "people can't find us" gap.
-
-- [ ] Website landing page (PRD-024, Astro + Starlight)
-- [ ] Public README.md rewrite (user-facing, not internal)
-- [ ] crates.io publish (`cargo install forgeplan`)
-- [ ] Docker image (Dockerfile + GH Actions publish)
-
-### Sprint B: CI/CD Integration (1-2 days)
-> Make Forgeplan part of the dev workflow, not a separate tool.
-
-- [ ] `forgeplan validate --ci` exit code for pipeline gates
-- [ ] `forgeplan health --ci` with structured JSON output
-- [ ] GitHub Action reusable workflow (`forgeplan/action`)
-- [ ] CI/CD setup guide in docs
-
-### Sprint C: Desktop App (2-4 weeks)
-> For users who don't live in the terminal.
-
-- [ ] EPIC-004: Tauri 2.0 + React UI
-- [ ] Shared Rust core (forgeplan-core)
-- [ ] Dashboard view (health, tree, search)
-- [ ] Artifact editor with live validation
-
-### Sprint D: Ecosystem (1-2 weeks)
-> Connect Forgeplan to existing tools.
-
-- [ ] VS Code extension (tree view + search + score)
-- [ ] GitHub Issues bridge (artifact ↔ issue sync)
-- [ ] Linear/Jira export adapter
-- [ ] Slack notification hooks
-
----
-
-## Backlog (IDEAS — no commitment)
-
-| ID | Idea | Category |
+| Показатель | Значение | Источник измерения |
 |---|---|---|
-| NOTE-025 | Agent Memory Engine | Integrations |
-| NOTE-026 | CI/CD Architecture Linter | Integrations |
-| NOTE-027 | Ruflo/Gastown Integration | Integrations |
-| NOTE-028 | Task Tracker Bridges | Integrations |
-| NOTE-029 | CLI UX Polish (doctor, links) | UX |
-| NOTE-030 | Tier 2-3 features (diff, watch, dashboard) | UX |
-| NOTE-039 | DSL scripting (Lua/Rhai) | Architecture |
-| NOTE-042 | TECH DEBT: update --body file-first | Architecture |
-| PROB-022 | Brownfield onboarding improvements | UX |
-| PRD-025 | Nx Monorepo Migration | Architecture |
+| Версия | v0.37.0 | `Cargo.toml [workspace.package].version` + `git tag --sort=-v:refname \| head` (последние теги: v0.37.0, v0.36.0, v0.35.0, v0.34.0) |
+| Артефактов всего | 437 | `forgeplan health` (бинарь v0.37.0) |
+| Активных | 263 | `forgeplan health` — по статусам: active 263, draft 101, deprecated 68, superseded 5 |
+| Тестов | 3331 | Замерено прогоном по трём крейтам 2026-09-08 (core 2243 + cli 814 + mcp 274); `README.md` и CHANGELOG v0.37.0 обновлены из этого же замера, поэтому не являются независимым подтверждением |
+| CLI-команд | 82 | `README.md`; полный список — `Commands` enum в `crates/forgeplan-cli/src/main.rs` |
+| MCP-инструментов | 73 | `README.md`; число не менялось с v0.18.0 — единственная цифра из старой версии этого файла, которая совпала |
+| EPIC завершено | 3 (EPIC-001/002/003) + brownfield Epic #287 в работе | `forgeplan health` по kind=epic (9 всего, часть активна, часть — черновики новых направлений) |
+
+**На что стоит обратить внимание прямо сейчас** (из `forgeplan health` на момент этого измерения):
+- 2 артефакта at-risk: `PRD-005` и `RFC-004` — R_eff = 0.00/0.10, ниже порога 0.3.
+- 1 сирота без связей: `PROB-090`.
+- 10 артефактов с рассогласованием фазы (`phase mismatch`) — включая `PRD-082`, `PRD-083`, `PROB-083`.
+- 3 EvidencePack без структурных полей (`EVID-033`, `EVID-034`, `EVID-035`) — оценены в CL0 (0.1) автоматически. Это тот же класс дефекта, что в апреле 2026 был описан как «F6: Fix evidence blind spots (EVID-015/025/026/027)» — тогда закрыли конкретные ID, но не класс: спустя пять месяцев проблема воспроизвелась на новых ID. Стоит завести правило-проверку (`validate` или CI-гейт), а не чинить точечно в третий раз.
+
+Это не праздные наблюдения ради полноты — это самые дешёвые следующие шаги, дешевле любого пункта из списка ниже.
+
+---
+
+## Категории
+
+### 1. Архитектура (Core Engine) — предположительно ~85%, детально не пересчитывалось
+
+| Готово | Разрыв |
+|---|---|
+| LanceDB embedded (ADR-003, files-first) | Code-fence awareness в extract_field (PROB-035 remainder) — **не перепроверено**, возможно уже закрыто позже |
+| 10 типов артефактов + state machine | DSL-скриптинг для кастомных правил (NOTE-039 — Lua/Rhai) — по коду не найдено, разрыв реальный |
+| R_eff weakest-link + CL penalty + fail-closed, ADR-020 (терминальные паки исключены из min) | Pluggable storage drivers (RFC-003) — модуля `StorageDriver` в `crates/forgeplan-core/src/db/` не найдено, по-прежнему не вживлено |
+| FPF engine v2 (rule engine + bounded contexts) | Delta-specs (OpenSpec pattern) — по-прежнему отложено |
+| Graph (petgraph, topological sort, blocked/order) | |
+| Production BM25 + русская морфология | |
+| **Semantic search на `tract` (чистый Rust) — теперь во ВСЕХ 5 релизных бинарях** (v0.35.0, RFC-013). До этого релиза функция не попадала ни в один опубликованный бинарь вообще — старая версия файла ошибочно писала «feature-gated» как готовое | |
+| Git-delta provenance gate для code-claiming Evidence (PRD-082, v0.34.0) | |
+
+**Оценка:** ядро по-прежнему крепкое, самое заметное движение с апреля — semantic search реально доехал до пользователя, а не только до исходников.
+
+### 2. UX / Usability — было 70%, часть закрыта, часть — нет
+
+| Готово | Разрыв |
+|---|---|
+| 82 CLI-команды (было 56) | **Desktop App** (Tauri + React) — по-прежнему 0%, следов работы в репозитории нет |
+| Стилизованный терминал, `health`/`tree`/`blocked`/`order` дашборды | `forgeplan doctor` — верхнеуровневой команды по-прежнему нет; есть только `forgeplan plugins doctor` (диагностика detection/hints, не workspace в целом) — **другая функция под похожим именем**, легко перепутать |
+| Duplicate guard + stub detection (PRD-043) | `forgeplan links <id>` — визуализация связей артефакта — команды нет (проверено по `main.rs`) |
+| 73 MCP tools для AI-агентов | `forgeplan diff` — сравнение артефактов — команды нет |
+| `forgeplan watch` существует (проверено в CLI enum) — но не проверялось, соответствует ли он «v2 hot-reload» из старого пункта | VS Code расширение — не найдено |
+| **Website — landing + docs + blog, RU/EN** (385 markdown-файлов в `website/src/content/`) — это была помечена как «HIGH-impact, не начато» в апрельской версии; на деле это самый большой закрытый разрыв за пять месяцев | |
+| `health --ci --fail-on --strict` — конфигурируемые пороги для CI (см. категорию Integrations) | |
+
+**Оценка:** CLI и MCP по-прежнему сильная сторона. Публичный сайт закрыл главный UX/маркетинговый разрыв. Desktop и точечные CLI-утилиты (doctor/links/diff) остаются нетронутыми — это тот же список, что и пять месяцев назад.
+
+### 3. Производительность — было 80%, смешанная картина
+
+| Готово | Разрыв |
+|---|---|
+| O(N) batch BM25 | Background embedding на первом запуске — не найдено в исходниках (`grep` по `background.*embed` в `forgeplan-core/src` — 0 совпадений), разрыв реальный |
+| LanceDB columnar + Arrow | Lazy loading для крупных workspace (1000+ артефактов) — не тестировалось на таком масштабе, сейчас 437 артефактов; **unverified**, не «готово» и не «разрыв» — просто не измерено |
+| `forgeplan embed` теперь пропускает уже проиндексированные записи по content-hash (v0.36.0, часть исправления PROB-093) — это закрывает половину старого пункта «Incremental reindex» | **Новый пункт, не было в апреле**: холодный старт `search --semantic` вырос до ~2.0–2.7s (было ~1.5s), в одном из трёх прогонов с вытесненными из кеша весами — до 8.3s. Плата за переход на `tract` (v0.35.0, CHANGELOG). Полноценный `forgeplan reindex` (не `embed`) по-прежнему делает полное пересканирование — не проверялось, чинили ли инкрементальность и для него |
+| Бинарь 56.5 MB (было заявлено 43 MB в апреле) — рост объясним: движок эмбеддингов `tract` теперь встроен во все бинари вместо внешнего ONNX-рантайма | |
+
+**Оценка:** не ухудшение, а честная цена за то, что semantic search наконец доехал до пользователя — это ожидаемый trade-off, а не регресс без причины.
+
+### 4. Дистрибуция — было 65%, почти без изменений
+
+| Готово | Разрыв |
+|---|---|
+| `brew install forgeplan` | **crates.io** — проверено напрямую: `GET https://crates.io/api/v1/crates/forgeplan` → 404. Пакет не опубликован |
+| cargo-dist (macOS arm/x86, Linux, Windows) | **npm/npx-обёртка** — не найдено ни файлов, ни упоминаний в README/docs |
+| GitHub Releases с готовыми бинарями | **Docker-образ** — `Dockerfile` в корне репозитория отсутствует |
+| `install.sh` | **Linux native** (apt/snap/flatpak) — не найдено |
+| CI-пайплайн (fmt + clippy + test + health gate) | **Auto-update** — не найдено |
+| `forgeplan setup` (v0.35.0) — модель эмбеддингов + `fpl`-алиас, идемпотентно | |
+
+**Оценка:** этот раздел не двигался пять месяцев. Самый маленький по трудозатратам и самый недооценённый разрыв — `cargo install forgeplan` и Docker-образ оба небольшие по объёму работы относительно эффекта на охват аудитории.
+
+### 5. Документация — было 60%, главный пункт закрыт
+
+| Готово | Разрыв |
+|---|---|
+| CLAUDE.md (полный гайд для AI-агента) | **MCP tools API reference** — отдельного документа не искал целенаправленно, статус **unverified** |
+| `docs/methodology/` | Видео/tutorial walkthrough — не найдено |
+| **Публичный сайт (landing + docs + blog, RU/EN)** — был флагманским пунктом «HIGH impact» в апреле, теперь реализован: `website/src/content/docs/` (RU+EN) и `website/src/content/blog/` (RU+EN), 385 файлов суммарно | man pages — не найдено |
+| README.md — судя по фрагменту с таблицей метрик (437 артефактов / 3331 тестов / 82 команды / 73 MCP), файл уже user-facing, не «internal-focused», как было написано в апреле — **эта строка апрельской версии была неверной уже тогда или устарела первой** | |
+| CHANGELOG (актуален по v0.37.0) | |
+| FPF KB (204+ секций, ищется через `fpf search`) | |
+
+**Оценка:** самый большой разрыв из пяти категорий закрыт. Оставшиеся пункты (API reference, видео, man pages) — низкий приоритет, разово оценивались ниже остальных ещё в апреле.
+
+### 6. Интеграции — было 55%, CI/CD-часть закрыта
+
+| Готово | Разрыв |
+|---|---|
+| MCP-сервер (73 tools, stdio) | **Linear/Jira sync** (NOTE-028) — не найдено |
+| LLM-интеграция (настраиваемый провайдер) | **GitHub Issues bridge** (артефакт ↔ issue, автоматический) — не найдено; вручную роль трекера сейчас играет `gh issue list` (29 открытых issue на момент измерения), но это не автосинхронизация |
+| git-sync теперь **задокументирован и автоматизирован** — хуки `post-merge`/`post-checkout` через `forgeplan setup` (v0.36.0); в апреле это тоже числилось «готово», но задним числом выяснилось, что реально нигде не документировалось (PROB-097) | **Slack/Teams-уведомления** — не найдено |
+| Claude Code hooks (safety, forge-mode) | Переиспользуемый публичный **GitHub Action** (`forgeplan/action@v1`) — не найдено; есть только внутренние workflow этого репозитория (`ci.yml`, `forgeplan-health.yml`, `security.yml`, `perf.yml`, `release.yml`, `assign-id.yml`) |
+| Orchestra integration | VS Code / JetBrains расширение — не найдено |
+| **CI/CD pipeline gates — реализовано.** `validate --ci` и `health --ci --fail-on <thresholds> --strict` существуют и используются в этом репозитории (проверено флагами в `main.rs`). Апрельская версия файла числила это как HIGH-impact разрыв — на деле было реализовано ещё в Sprint 11 (2026-04), до самой предыдущей версии этого документа | |
+
+**Оценка:** MCP-подход по-прежнему сильный. CI/CD-гейты внутри репозитория работают — просто это не было замечено при последней ревизии файла. Внешние трекеры и уведомления остаются нетронутым разрывом.
+
+---
+
+## Priority Matrix (обновлено)
+
+| Категория | Состояние | Главный разрыв | Влияние на пользователя | Трудозатраты |
+|---|---|---|---|---|
+| Архитектура | стабильно | Pluggable storage drivers, DSL | Низкое | Среднее |
+| UX | сайт закрыт, CLI-утилиты и Desktop — нет | `doctor`/`links`/`diff`, Desktop App | Среднее (сайт снял давление) | Desktop — большое, утилиты — малое |
+| Производительность | стабильно, новый холодный старт | Background embedding, cold-start `tract` | Низкое-среднее | Среднее |
+| **Дистрибуция** | **без изменений 5 месяцев** | **crates.io + Docker** | **Высокое, дёшево** | **Малое** |
+| Документация | главный разрыв закрыт | API reference, видео | Низкое | Малое |
+| Интеграции | CI/CD закрыт | Linear/Jira, публичный GH Action | Среднее | Среднее |
+
+**Главный вывод этой ревизии:** самый дешёвый разрыв (Distribution: `cargo install forgeplan` + Docker) не двигался с апреля, при этом Website — самый дорогой разрыв из апрельского списка — уже закрыт. Стоит поменять порядок: Distribution вперёд Desktop.
+
+---
+
+## Рекомендуемые следующие спринты (пересмотрено)
+
+### Sprint A′: Distribution добивка (1-3 дня, было частью Sprint A)
+> Website и public README уже сделаны. Осталось дешёвое и высоковидимое.
+
+- [ ] `cargo publish` — Cargo.toml метаданные (homepage/keywords/categories) уже на месте по TODO-истории, публикация не выполнена. Красная линия репозитория требует ручного шага (`RED LINE`: safety hook блокирует `cargo publish`) — делать осознанно, с человеком у клавиатуры
+- [ ] Docker-образ (Dockerfile + публикация через GH Actions)
+- [ ] Проверить, не устарели ли инструкции install.sh/brew относительно v0.37.0 бинарей (56.5 MB)
+
+### Sprint B: CI/CD — уже сделано, закрыть формально
+> `validate --ci`, `health --ci --fail-on --strict` реализованы. Осталось единственное:
+
+- [ ] Опубликовать переиспользуемый `forgeplan/action@v1` для внешних репозиториев (сейчас гейты работают только внутри этого репо)
+
+### Sprint C: Desktop App (оценка не менялась: 2-4 недели)
+> Не начато, как и в апреле. Приоритет ниже Distribution по эффекту/трудозатратам.
+
+- [ ] EPIC-004: Tauri 2.0 + React UI (если решение остаётся в силе — почти 5 месяцев без движения стоит переспросить, актуален ли спрос)
+
+### Sprint D: Ecosystem (без изменений)
+- [ ] VS Code extension
+- [ ] GitHub Issues bridge (артефакт ↔ issue)
+- [ ] Linear/Jira export adapter
+
+---
+
+## Backlog (IDEAS — без обязательств, не пересчитывался детально)
+
+| ID | Идея | Категория | Статус на 2026-09-08 |
+|---|---|---|---|
+| NOTE-025 | Agent Memory Engine | Integrations | не проверено повторно |
+| NOTE-027 | Ruflo/Gastown Integration | Integrations | очень старый пункт (апрель), актуальность не подтверждена |
+| NOTE-028 | Task Tracker Bridges | Integrations | всё ещё открыт (см. категорию 6) |
+| NOTE-029/030 | CLI UX Polish (doctor, links, diff, watch v2) | UX | всё ещё открыт, подтверждено выше |
+| NOTE-039 | DSL scripting (Lua/Rhai) | Architecture | всё ещё открыт |
+| PROB-022 | Brownfield onboarding improvements | UX | вероятно частично закрыт Epic #287 (brownfield surface, v0.32) — не проверялось детально |
+| PRD-025 | Nx Monorepo Migration | Architecture | не проверялось |
+
+Живой источник для более мелких находок — `gh issue list --state open` (29 штук на момент этого измерения) и `forgeplan health` — оба меняются каждый день, в отличие от этого файла.

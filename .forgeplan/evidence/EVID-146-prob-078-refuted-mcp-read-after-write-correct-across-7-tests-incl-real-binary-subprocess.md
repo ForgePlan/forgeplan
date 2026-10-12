@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-078
   relation: informs
-status: draft
+status: active
 title: 'PROB-078 refuted: MCP read-after-write correct across 7 tests incl real-binary subprocess'
 ---
 
@@ -94,5 +94,6 @@ Verified on macOS (same machine and same scenario as the original repro). The
 mechanism (LanceDB handle snapshot semantics) is not OS-specific; the tests run
 on Linux CI once the branch is pushed. Residual risk is low and, regardless,
 carries no breaking-change surface (tests only; no product code changed).
+
 
 

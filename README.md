@@ -14,7 +14,7 @@ Structured artifacts (PRD, RFC, ADR, Epic, Spec), quality scoring, evidence, and
 [![License: MIT](https://img.shields.io/badge/license-MIT-000.svg?style=flat-square)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/ForgePlan/forgeplan?include_prereleases&style=flat-square&color=orange)](https://github.com/ForgePlan/forgeplan/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/ForgePlan/forgeplan/ci.yml?branch=main&style=flat-square)](https://github.com/ForgePlan/forgeplan/actions)
-[![Artifacts](https://img.shields.io/badge/artifacts-394-blue?style=flat-square)](.forgeplan/)
+[![Artifacts](https://img.shields.io/badge/artifacts-437-blue?style=flat-square)](.forgeplan/)
 
 **[Website](https://forgeplan.dev)** ·
 **[Documentation](docs/README.md)** ·
@@ -248,8 +248,8 @@ Three entry points — pick the one that matches what you need right now.
 
 <table>
 <tr>
-<td align="center"><b>394</b><br>tracked artifacts</td>
-<td align="center"><b>3290</b><br>tests passing</td>
+<td align="center"><b>437</b><br>tracked artifacts</td>
+<td align="center"><b>3331</b><br>tests passing</td>
 <td align="center"><b>82</b><br>CLI commands</td>
 <td align="center"><b>73</b><br>MCP tools</td>
 </tr>

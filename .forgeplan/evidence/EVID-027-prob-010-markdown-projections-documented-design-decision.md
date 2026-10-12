@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-010
   relation: informs
-status: draft
+status: active
 title: PROB-010 markdown projections — documented design decision
 ---
 
@@ -23,3 +23,4 @@ Markdown projections are NOT auto-synced on update by design:
 - forgeplan update only modifies LanceDB
 - Tracked as P2 in TODO.md for future improvement
 - This is a known limitation, not a bug
+

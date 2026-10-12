@@ -8,7 +8,7 @@ links:
   relation: refines
 - target: ADR-009
   relation: based_on
-status: draft
+status: active
 title: Ingest engine + mapping YAML format (c4-to-forge autoresearch-to-forge git-to-forge ddd-to-forge spec-to-forge)
 updated: 2026-04-20
 ---
@@ -79,6 +79,7 @@ updated: 2026-04-20
 | EPIC-007 | EPIC | refines |
 | PRD-065 | PRD | informs (playbook runtime invokes ingest) |
 | ADR-003 | ADR | informs (markdown source of truth) |
+
 
 
 

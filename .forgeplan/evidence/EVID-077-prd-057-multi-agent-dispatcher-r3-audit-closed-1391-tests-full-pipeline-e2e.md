@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-057
   relation: supports
-status: draft
+status: active
 title: PRD-057 multi-agent dispatcher — R3 audit closed, 1391 tests, full pipeline E2E
 ---
 
@@ -148,4 +148,5 @@ locations) are all traceable in-repo.
 |----------|----------|
 | PRD-057 | supports |
 | EPIC-005 | informs |
+
 

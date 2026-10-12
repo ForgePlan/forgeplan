@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-012
   relation: informs
-status: draft
+status: active
 title: PROB-012 integrity remediation — 5 fixes verified
 ---
 
@@ -37,3 +37,4 @@ evidence_type: test
 
 - 16 files, +388/-10 LOC
 - PR #53: fix/prob-012-integrity-remediation → dev
+

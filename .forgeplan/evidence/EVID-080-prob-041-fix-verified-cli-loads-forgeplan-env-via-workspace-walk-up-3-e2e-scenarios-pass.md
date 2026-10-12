@@ -6,7 +6,7 @@ kind: evidence
 links:
 - target: PROB-041
   relation: supports
-status: draft
+status: active
 title: PROB-041 fix verified — CLI loads .forgeplan/.env via workspace walk-up, 3 E2E scenarios PASS
 updated: 2026-04-20
 ---
@@ -72,5 +72,6 @@ Penalty CL3 = 0.0 (exact match).
 |----------|------|----------|
 | PROB-041 | Problem | supports (verifies fix) |
 | PROB-022 | Problem | informs (brownfield onboarding unblocked) |
+
 
 

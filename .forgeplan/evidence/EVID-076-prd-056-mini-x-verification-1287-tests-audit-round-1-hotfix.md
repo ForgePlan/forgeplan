@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PRD-056
   relation: informs
-status: draft
+status: active
 title: PRD-056 Mini-X verification — 1287 tests + audit Round 1 hotfix
 ---
 
@@ -142,4 +142,5 @@ Mini-X is shippable to v0.23.0-alpha:
 |----------|----------|
 | PRD-056 | informs (primary target — this evidence validates PRD-056 implementation) |
 | EPIC-005 | informs (Mini-X is first child; evidence feeds Epic progress) |
+
 

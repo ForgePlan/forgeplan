@@ -13,7 +13,7 @@ links:
   relation: informs
 - target: PRD-073
   relation: informs
-status: draft
+status: active
 title: Release v0.28.0 readiness measurement
 ---
 
@@ -194,6 +194,7 @@ only doc + version bump).
 | EVID-094 | informs (PRD-073 closure measurement, predecessor) |
 | EVID-097 | informs (Phase B real-E2E closure measurement, sibling в этом релизе) |
 | PROB-050 | informs (A-27 + A-28 added в этом sprint) |
+
 
 
 

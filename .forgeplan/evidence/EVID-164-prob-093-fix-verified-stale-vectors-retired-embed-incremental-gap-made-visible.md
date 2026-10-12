@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-093
   relation: informs
-status: draft
+status: active
 title: 'PROB-093 fix verified: stale vectors retired, embed incremental, gap made visible'
 ---
 
@@ -92,5 +92,6 @@ JSON несёт `unindexed_artifacts: 2`. После `embed` — предупр�
 
 - **PROB-093** — дефект
 - **EVID-160** — замер 13м18с, из которого следовала цена полного пересчёта
+
 
 

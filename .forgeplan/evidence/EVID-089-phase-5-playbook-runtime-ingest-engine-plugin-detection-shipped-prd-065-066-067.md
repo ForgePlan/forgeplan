@@ -17,7 +17,7 @@ links:
   relation: informs
 - target: EVID-088
   relation: based_on
-status: draft
+status: active
 title: Phase 5 — Playbook runtime + Ingest engine + Plugin detection shipped (PRD-065/066/067)
 ---
 
@@ -172,4 +172,5 @@ Implementation gate **passed** через 4 wave gates + Round 1 fix wave; relea
 - `docs/operations/PLAYBOOK-AUTHORING.ru.md` — pack-author guide
 - `docs/operations/INGEST-MAPPINGS.ru.md` — mapping-author guide
 - CHANGELOG.md v0.26.0 — release notes
+
 

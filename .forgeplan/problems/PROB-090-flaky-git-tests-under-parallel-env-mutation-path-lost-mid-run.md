@@ -4,6 +4,11 @@ id: PROB-090
 kind: problem
 last_modified_at: 2026-09-02T14:53:27.283511+00:00
 last_modified_by: claude-code/2.1.220
+links:
+- target: PRD-083
+  relation: references
+- target: PROB-085
+  relation: references
 status: draft
 title: Flaky git tests under parallel env mutation — PATH lost mid-run
 ---
@@ -90,4 +95,6 @@ git-тест вызывает `Command::new("git")` и получает пуст
 - `crates/forgeplan-core/Cargo.toml` — комментарий к `serial_test`, где ограничение уже
   описано
 - `crates/forgeplan-core/src/embed/mod.rs` — образец тестирования без мутации окружения
+
+
 
