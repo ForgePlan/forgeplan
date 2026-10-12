@@ -62,7 +62,7 @@ its own default. Set any other valid model id to pass it explicitly.
 | Provider | Binary | Login / status | No-write or isolation mode | Prompt transport | Known limitation | Production verdict |
 |---|---|---|---|---|---|---|
 | `codex-cli` | `codex` | `codex login` / `codex login status` | ephemeral session, read-only sandbox, isolated home | stdin; final answer in a generated output file | Uses the vendor's subscription quota | **Local only** |
-| `devin-cli` | `devin` | `devin auth login` / `devin auth status` | sandbox + normal permissions in an empty temporary workspace; no auto-approval flags | generated private prompt file; final stdout text | No documented strict read-only mode; disabled on Windows because stock Devin rejects the required sandbox flag | **Local only; weakest profile** |
+| `devin-cli` | `devin` | `devin auth login` / `devin auth status` | sandbox + `auto` permissions in an empty temporary workspace; only read-only tools are auto-approved | generated private prompt file; final stdout text | No documented strict read-only mode; disabled on Windows because stock Devin rejects the required sandbox flag | **Local only; weakest profile** |
 | `gemini-cli` | `gemini` | interactive `gemini` login | sandbox + default approval mode in an empty temporary workspace | stdin; JSON response | Headless subscription entitlement varies by Google account/product | **Local only** |
 | `cursor-agent` | `cursor-agent` | `cursor-agent login` / `cursor-agent status` | non-interactive `ask` + sandbox in an empty temporary workspace | stdin; JSON result | Agent CLI, not a completion API | **Local only** |
 
@@ -73,6 +73,12 @@ and context. ForgePlan never reads or copies the login token.
 
 Availability is still controlled by each vendor. An installed binary does not
 prove that the current login is entitled to headless use.
+
+Devin Desktop may bundle the agent CLI without adding `devin` to `PATH`
+(`/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin`
+on the verified macOS build). Expose that binary as `devin` in a trusted PATH
+directory, then run `devin auth login`; the Desktop login and CLI login are
+separate.
 
 Shared guardrails (RFC-014):
 

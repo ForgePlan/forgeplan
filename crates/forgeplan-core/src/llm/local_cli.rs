@@ -345,7 +345,7 @@ fn build_args(
         LocalCliProvider::Devin => vec![
             "--sandbox".into(),
             "--permission-mode".into(),
-            "normal".into(),
+            "auto".into(),
             "--respect-workspace-trust".into(),
             "false".into(),
             "--prompt-file".into(),
@@ -593,7 +593,7 @@ mod tests {
                 vec![
                     "--sandbox",
                     "--permission-mode",
-                    "normal",
+                    "auto",
                     "--respect-workspace-trust",
                     "false",
                     "--prompt-file",

@@ -111,9 +111,14 @@ llm:
 | `custom` | HTTP | explicit `api_key_env` | operator-defined | Must set `base_url` | supported |
 | `claude-code` | `claude`; prompt via stdin | `claude login` | no tools granted | Inherits the caller working directory | local only |
 | `codex-cli` | `codex`; prompt via stdin | `codex login` / `codex login status` | ephemeral read-only sandbox + isolated home | Subscription quota | local only |
-| `devin-cli` | `devin`; private prompt file | `devin auth login` / `devin auth status` | sandbox in an empty temporary workspace; no auto-approval | No documented strict read-only mode; disabled on Windows | local only |
+| `devin-cli` | `devin`; private prompt file | `devin auth login` / `devin auth status` | sandbox + `auto` in an empty temporary workspace; only read-only tools are auto-approved | No documented strict read-only mode; disabled on Windows | local only |
 | `gemini-cli` | `gemini`; prompt via stdin | interactive `gemini` login | sandbox + default approval in an empty temporary workspace | Headless entitlement varies by account/product | local only |
 | `cursor-agent` | `cursor-agent`; prompt via stdin | `cursor-agent login` / `cursor-agent status` | `ask` + sandbox in an empty temporary workspace | Agent CLI, not completion API | local only |
+
+Devin Desktop may bundle the agent CLI without adding `devin` to `PATH`
+(`/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin`
+on the verified macOS build). Expose that binary as `devin` in a trusted PATH
+directory, then run `devin auth login`; Desktop and CLI logins are separate.
 
 Subscription CLI providers are explicit opt-ins; ForgePlan never auto-detects
 them and never reads or copies their login tokens. They are for personal/local

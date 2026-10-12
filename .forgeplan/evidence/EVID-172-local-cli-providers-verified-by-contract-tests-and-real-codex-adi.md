@@ -51,9 +51,9 @@ evidence_type: test
 
 - Gemini CLI профиль был реально запущен. Локальная установка настроена на `GEMINI_API_KEY`, а не OAuth/subscription login; ForgePlan правильно не передал ключ и CLI завершился code 41 с требованием API key. Для положительного subscription smoke нужен интерактивный OAuth-вход.
 - Cursor Agent профиль был реально запущен и завершился `Authentication required`; нужен свежий `cursor-agent login`.
-- Devin CLI на машине отсутствует. Его fixed argv, prompt-file transport и parser прошли общий mock-binary E2E.
+- Devin CLI **установлен внутри Devin.app**, но не добавлен в `PATH`: `/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin`, версия `3000.10.48`. Проверка реального `--help` обнаружила дефект до релиза: профиль передавал несуществующий режим `normal`; установленный CLI принимает только `auto`, `accept-edits`, `smart`, `dangerous`. Профиль исправлен на безопасный `auto`, где автоматически разрешены только read-only tools. Реальный запуск через временный PATH прошёл разбор всех fixed args и дошёл до ожидаемой границы авторизации (`devin auth status`: `Not logged in`), не до ошибки argv.
 
-Эти три ограничения относятся к состоянию vendor login/installation на workstation, а не к профилю Codex или общему runner. ForgePlan не сделал небезопасный fallback на API key и не выбрал другой provider автоматически.
+Ограничения Gemini, Cursor и Devin относятся к состоянию vendor login на workstation. ForgePlan не сделал небезопасный fallback на API key и не выбрал другой provider автоматически.
 
 ## Сырые доказательства
 
@@ -77,12 +77,14 @@ evidence_type: test
 | `/tmp/mcp-local-cli-errors-round4.log` | 169,305 | `98bcffa2fbb2eeec9ef596e3a2b2f1b10ffcd08470fe67f2bb5114977c4144d4` |
 | `/tmp/gemini-profile-diagnostic.err` | 424 | `0242326d4c24972b70bf2534b000cfa448961fb89d61a079ff55991905b3dcf2` |
 | `/tmp/cursor-profile-diagnostic.err` | 108 | `4de7608ae6736aa85dde5c2817bc1ee0f62662e311cd742bcf09ec6ad788d225` |
+| `/tmp/devin-auto-profile-tests.log` | 5,350 | `c3ce6df28a8091a8ea70a923a80a0c6a8e0196dfd125f0cd36f7c8185a6a108e` |
+| `/tmp/devin-real-profile.err` | 686 | `60bf46929182a25b98a3ca01b4baf9c3e2490331a1ff764e0a1eb1f61ea2e7f4` |
 
 ## Границы
 
 - Полный `cargo test -p forgeplan-core local_cli` не стартует integration binaries из-за существующего несвязанного дефекта: integration tests обращаются к cfg(test)-only `LanceStore::create_artifact_for_test`/`add_relation_for_test`. Поэтому доказательство использует корректный unit target `--lib`; zero-run был явно обнаружен, не засчитан как PASS.
 - Отдельный запуск `cargo test -p forgeplan-mcp llm_error_tests` не дошёл до тестов: Cargo начал линковать несвязанный `integration_e2e`, диск заполнился, `ld` завершился с `errno=28`. `cargo check` трёх изменённых crates прошёл; этот запуск записан как ограничение, не как PASS.
-- Положительные реальные smoke для Gemini/Cursor и любой реальный Devin smoke остаются условными на vendor login/install. Mock coverage не выдаётся за действующую подписку.
+- Положительные реальные smoke для Gemini/Cursor и авторизованный Devin smoke остаются условными на vendor login. Установленный Devin `3000.10.48` реально исполнил исправленный профиль до auth boundary; mock coverage не выдаётся за действующую подписку.
 - Проверено на macOS arm64.
 
 ## Related
