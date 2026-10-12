@@ -180,14 +180,13 @@ pub async fn run_subprocess(
     // would deadlock before the previous timeout even started.
     let collect = async {
         let write_stdin = async {
-            if let (Some(mut stdin), Some(bytes)) = (stdin, spec.stdin_data) {
-                if let Err(error) = stdin.write_all(bytes).await
-                    && error.kind() != std::io::ErrorKind::BrokenPipe
-                {
-                    return Err(super::DispatchError::Transport(format!(
-                        "subprocess stdin write failed: {error}"
-                    )));
-                }
+            if let (Some(mut stdin), Some(bytes)) = (stdin, spec.stdin_data)
+                && let Err(error) = stdin.write_all(bytes).await
+                && error.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(super::DispatchError::Transport(format!(
+                    "subprocess stdin write failed: {error}"
+                )));
             }
             Ok::<(), super::DispatchError>(())
         };

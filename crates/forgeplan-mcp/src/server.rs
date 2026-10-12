@@ -1168,7 +1168,7 @@ fn llm_err(
         );
         return err_hinted(
             &format!("{operation} failed for local CLI provider `{provider}`: {detail}"),
-            &format!("{login_hint}; then retry. For shared/CI use an HTTP provider or `ollama`."),
+            format!("{login_hint}; then retry. For shared/CI use an HTTP provider or `ollama`."),
         );
     }
 
@@ -11287,11 +11287,13 @@ mod llm_error_tests {
     #[test]
     fn estimate_llm_config_keeps_the_resolved_workspace() {
         let workspace = std::path::Path::new("/tmp/selected-project/.forgeplan");
-        let mut config = Config::default();
-        config.llm = Some(LlmConfig {
-            provider: "codex-cli".into(),
+        let config = Config {
+            llm: Some(LlmConfig {
+                provider: "codex-cli".into(),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
 
         let scoped = llm_config_for_workspace(&config, workspace).expect("LLM config");
         assert_eq!(

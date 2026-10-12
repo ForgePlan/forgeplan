@@ -2,7 +2,7 @@
 depth: standard
 id: RFC-014
 kind: rfc
-last_modified_at: 2026-10-12T12:38:42.804509+00:00
+last_modified_at: 2026-10-12T12:53:54.099072+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
 - target: SPEC-007
@@ -100,7 +100,7 @@ updated: 2026-10-12
 - Installed Gemini CLI reached the profile, but its local configuration requested `GEMINI_API_KEY`; ForgePlan intentionally did not forward that secret, so an OAuth/subscription login is still required for a success smoke.
 - Installed Cursor Agent reached the profile and reported `Authentication required`; `cursor-agent login` must be renewed before a success smoke.
 - Devin is not installed on this workstation; the official CLI contract and mock-binary path are covered.
-- `cargo fmt --all -- --check`, `cargo check -p forgeplan-core -p forgeplan -p forgeplan-mcp`, the focused suites above, and the bilingual website build pass (436 pages; Pagefind indexed 457 HTML files).
+- `cargo fmt --all -- --check`, `cargo check -p forgeplan-core -p forgeplan -p forgeplan-mcp`, and `RUSTFLAGS=-Dwarnings cargo clippy --workspace --all-targets` pass; the focused suites above and bilingual website build also pass (436 pages; Pagefind indexed 457 HTML files).
 
 ## Risks and Mitigations
 

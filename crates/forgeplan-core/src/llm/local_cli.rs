@@ -302,7 +302,7 @@ fn emit_disclosure_once() {
     DISCLOSED.call_once(|| eprintln!("{DISCLOSURE}"));
 }
 
-fn validated_model<'a>(provider: LocalCliProvider, model: &'a str) -> Result<Option<&'a str>> {
+fn validated_model(provider: LocalCliProvider, model: &str) -> Result<Option<&str>> {
     let model = model.trim();
     if model.is_empty() {
         return Ok(None);
@@ -433,10 +433,10 @@ fn build_environment(
 
 fn resolve_binary(provider: LocalCliProvider, caller_workspace: &Path) -> Option<PathBuf> {
     #[cfg(test)]
-    if let Ok(path) = std::env::var(provider.binary_override_env()) {
-        if !path.is_empty() {
-            return Some(PathBuf::from(path));
-        }
+    if let Ok(path) = std::env::var(provider.binary_override_env())
+        && !path.is_empty()
+    {
+        return Some(PathBuf::from(path));
     }
     which_in_path_outside(provider.binary_name(), caller_workspace)
 }

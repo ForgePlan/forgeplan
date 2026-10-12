@@ -2,7 +2,7 @@
 depth: standard
 id: EVID-172
 kind: evidence
-last_modified_at: 2026-10-12T12:38:43.312812+00:00
+last_modified_at: 2026-10-12T12:53:54.505885+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
 - target: RFC-014
@@ -43,6 +43,7 @@ evidence_type: test
 - Routing: **42 passed**; HTTP config: **3 passed**; default-provider: **1 passed**; runtime-workspace: **1 passed**.
 - `cargo fmt --all -- --check`: PASS.
 - `cargo check -p forgeplan-core -p forgeplan -p forgeplan-mcp`: PASS.
+- После первого CI-сигнала устранены пять предупреждений Clippy; точная команда CI `RUSTFLAGS=-Dwarnings cargo clippy --workspace --all-targets`: **PASS**.
 - Реальный `forgeplan reason PROB-001 --json` с `provider: codex-cli`, `model: ""`, без `OPENAI_API_KEY`: **exit 0**, **62.82 s**, **11,037 bytes** структурированного ADI JSON. Disclosure появился один раз в stderr; prompt прошёл через новый профиль end-to-end.
 - `npm run build` в `website/`: PASS, **436 pages**, Pagefind **457 HTML files**. EN/RU configuration docs собираются.
 
@@ -69,6 +70,7 @@ evidence_type: test
 | `/tmp/runtime-workspace-config-test.log` | 782 | `4032c3e61d09fdd2cfc6095c474aebfbfa340dc2b1f9999ccaff065f89241d70` |
 | `/tmp/provider-selection-regression.log` | 894 | `8f9c0b5cb38e71415c5acf2d30d1625b8195dc8101ad8056b7b66fcde3b123c9` |
 | `/tmp/local-cli-check-round4.log` | 14,877 | `ee3c6a14ec4ae61b53bceaf305d95628718a07658db6cd0c31f63589ee92405d` |
+| `/tmp/local-cli-clippy-ci-fix-round2.log` | 271 | `d7fb33c76d2ba55e3d34d8680bdb318fd942abac5dfa1a5beb3e0f658c99097f` |
 | `/tmp/forgeplan-codex-adi-smoke.out` | 11,037 | `fe7b452553499938941f1c9d0d816a8b10f63dcbf5cc17e86f6bd5b41b0487b7` |
 | `/tmp/forgeplan-codex-adi-smoke.err` | 294 | `ce235f79b24ca5525904fc417adbbbbc7068a042f97da25b43bf98e69c3be9ac` |
 | `/tmp/website-build-local-cli.log` | 28,607 | `52cdf2a0540c5859730b18f80e1e7a6c1ddee8cbe9c1418c1afacb34fb2455f7` |
