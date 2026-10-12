@@ -2,7 +2,7 @@
 depth: standard
 id: EVID-172
 kind: evidence
-last_modified_at: 2026-10-12T11:26:11.415849+00:00
+last_modified_at: 2026-10-12T12:38:43.312812+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
 - target: RFC-014
@@ -38,7 +38,7 @@ evidence_type: test
 ## Результат
 
 - `cargo test -p forgeplan-core --lib local_cli`: **13 passed, 0 failed**. Покрыты exact provider mapping, fixed safe argv всех четырёх профилей, prompt как data, vendor parsers, env allowlist, missing binary, non-zero exit, timeout и recursion guard.
-- `cargo test -p forgeplan-core --lib claude_code`: **21 passed, 0 failed**. Существующий keyless Claude provider сохранил config/result/envelope contract; system и user text теперь идут через stdin.
+- После интеграции PR #493 `cargo test -p forgeplan-core --lib claude_code`: **22 passed, 0 failed**. Keyless Claude provider сохранил config/result/envelope contract, принял Claude CLI 2.x event-array envelope; system и user text идут через stdin. Более широкий фильтр `--lib claude` дал **63 passed, 0 failed**.
 - `cargo test -p forgeplan-core --lib playbook::dispatch::helpers::tests`: **21 passed, 0 failed**; после усиления cancellation regression отдельный тест `run_subprocess_kill_on_drop_reaps_direct_child_pid` также прошёл и доказал исчезновение PID прямого потомка.
 - Routing: **42 passed**; HTTP config: **3 passed**; default-provider: **1 passed**; runtime-workspace: **1 passed**.
 - `cargo fmt --all -- --check`: PASS.
@@ -62,6 +62,8 @@ evidence_type: test
 | `/tmp/subprocess-helper-tests-round3.log` | 2,555 | `83d378680050ac483df2dea098d90577ae43d36af7ed1516833ab6de6e5db04d` |
 | `/tmp/subprocess-cancellation-regression.log` | 16,172 | `26422539b8634bc66233e279ef1ae4a9665039cdb1e745e98c9b4059a79c1b6d` |
 | `/tmp/claude-code-regression-round3.log` | 2,455 | `266d9bdac37de15bb084f4e82498b304c3d7886c5d5a15719b066b553f6ffaca` |
+| `/tmp/claude-code-merged-provider.log` | 2,532 | `65f4e65e3a5e4bcba859594b1706cb7b47a1259e3a0df69158a2bc711ecd6043` |
+| `/tmp/claude-merged-feature.log` | 21,867 | `a78ae6d267a37c4d952c8063565e0b957fa874be479dc8cad921a68d60869c33` |
 | `/tmp/routing-tests-round3.log` | 3,661 | `37424bcf03422975e2b387a6eaa1ac204dbdb7ec7a1d17a868e91833cf392122` |
 | `/tmp/http-provider-regression-round3.log` | 890 | `f49c4845c2c0285d0afa9e7a3b7877479b626168bc1e3c848f692f91168d1eb1` |
 | `/tmp/runtime-workspace-config-test.log` | 782 | `4032c3e61d09fdd2cfc6095c474aebfbfa340dc2b1f9999ccaff065f89241d70` |

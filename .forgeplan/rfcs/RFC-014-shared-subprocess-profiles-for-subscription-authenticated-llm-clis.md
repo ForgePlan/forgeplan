@@ -2,7 +2,7 @@
 depth: standard
 id: RFC-014
 kind: rfc
-last_modified_at: 2026-10-12T11:26:11.862491+00:00
+last_modified_at: 2026-10-12T12:38:42.804509+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
 - target: SPEC-007
@@ -92,7 +92,7 @@ updated: 2026-10-12
 ## Verification Results
 
 - 13 focused local-profile tests pass: exact mapping, fixed safe flags, prompt transport, strict parsers, actual child env/cwd, workspace PATH rejection, missing binary, non-zero exit with stderr withholding, full-lifecycle timeout and cross-profile recursion.
-- 21 existing `claude-code` tests pass after migration to the shared runner; its public config/result/envelope contract remains compatible while system and user text no longer enter argv.
+- 22 `claude-code` tests pass after migration to the shared runner and integration of the Claude CLI 2.x event-array envelope fix; its public config/result/envelope contract remains compatible while system and user text no longer enter argv.
 - 21 shared-runner tests pass; the cancellation regression was then strengthened and independently passed by observing the direct child PID disappear after task abort. Coverage includes blocked-stdin timeout, 10 MiB cap/truncation, workspace binary rejection, kill-on-drop and direct-child timeout reaping.
 - 42 routing tests, 3 HTTP-provider configuration regressions, 1 default-provider regression and 1 runtime-workspace regression pass.
 - The MCP estimate path now scopes local binary and secret lookup to the request-selected workspace. Its dedicated test compiles under `cargo check`; executing the `forgeplan-mcp` test target was blocked before test execution because the linker exhausted the shared target disk (`errno=28`), so it is not counted as a pass.
