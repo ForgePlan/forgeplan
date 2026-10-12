@@ -45,13 +45,13 @@ The runner MUST:
 | Provider | Binary | Fixed safe mode | Prompt transport | Final response | Login/status hint |
 |---|---|---|---|---|---|
 | `codex-cli` | `codex` | `exec --ephemeral --sandbox read-only --skip-git-repo-check --ignore-user-config --ignore-rules` | stdin (`-`) | `--output-last-message <tempfile>` | `codex login` |
-| `devin-cli` | `devin` | macOS/Linux only: `--print --sandbox --permission-mode normal --respect-workspace-trust false` in empty temp dir; no auto-approval flags | generated `--prompt-file` | stdout text | `devin auth login` / `devin auth status` |
+| `devin-cli` | `devin` | macOS/Linux only: `--print --sandbox --permission-mode auto --respect-workspace-trust false` in empty temp dir; only read-only tools are auto-approved | generated `--prompt-file` | stdout text | `devin auth login` / `devin auth status` |
 | `gemini-cli` | `gemini` | `--sandbox --approval-mode default --output-format json` in empty temp dir | stdin appended to empty `--prompt` | JSON response field | interactive `gemini` login |
 | `cursor-agent` | `cursor-agent` | `--print --mode ask --output-format json --sandbox enabled --trust` in empty temp dir | stdin | JSON result field | `cursor-agent login` / `cursor-agent status` |
 
 `gemini --approval-mode plan` is not portable: Gemini CLI 0.28.2 rejects it unless an experimental flag is enabled. The fixed profile therefore uses sandbox + default approval mode in an empty temporary directory.
 
-`devin-cli` has no documented strict read-only mode. The contract therefore treats it as weaker than Codex/Gemini/Cursor: empty temporary workspace, sandbox enabled, normal approval policy, no `accept-edits`/`smart`/`dangerous`/`autonomous` flags. The stock CLI rejects the required sandbox on Windows, so ForgePlan rejects this profile there before spawn. Both limitations MUST be disclosed.
+`devin-cli` has no documented strict read-only mode. The contract therefore treats it as weaker than Codex/Gemini/Cursor: empty temporary workspace, sandbox enabled, `auto` policy (only read-only tools auto-approved), no `accept-edits`/`smart`/`dangerous` flags. The stock CLI rejects the required sandbox on Windows, so ForgePlan rejects this profile there before spawn. Both limitations MUST be disclosed.
 
 ## Data Models
 

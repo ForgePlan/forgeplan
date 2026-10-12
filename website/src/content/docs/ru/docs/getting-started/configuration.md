@@ -111,9 +111,15 @@ llm:
 | `custom` | HTTP | явный `api_key_env` | задаёт оператор | Нужно задать `base_url` | поддерживается |
 | `claude-code` | `claude`; промпт через stdin | `claude login` | инструменты не разрешены | Наследует рабочий каталог вызывающего процесса | только локально |
 | `codex-cli` | `codex`; промпт через stdin | `codex login` / `codex login status` | одноразовая сессия, read-only sandbox, отдельный home | Квота подписки | только локально |
-| `devin-cli` | `devin`; закрытый файл промпта | `devin auth login` / `devin auth status` | sandbox в пустом временном каталоге, без автоодобрения | Нет документированного строгого read-only; отключён на Windows | только локально |
+| `devin-cli` | `devin`; закрытый файл промпта | `devin auth login` / `devin auth status` | sandbox + `auto` в пустом временном каталоге; автоматически разрешены только read-only tools | Нет документированного строгого read-only; отключён на Windows | только локально |
 | `gemini-cli` | `gemini`; промпт через stdin | интерактивный вход в `gemini` | sandbox + обычное одобрение в пустом временном каталоге | Headless-доступ зависит от аккаунта/продукта | только локально |
 | `cursor-agent` | `cursor-agent`; промпт через stdin | `cursor-agent login` / `cursor-agent status` | `ask` + sandbox в пустом временном каталоге | Агентский CLI, не completion API | только локально |
+
+Devin Desktop может содержать агентский CLI, но не добавлять `devin` в `PATH`
+(`/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin`
+в проверенной сборке для macOS). Выведите этот бинарь как `devin` в доверенном
+каталоге `PATH`, затем выполните `devin auth login`: входы Desktop и CLI
+раздельны.
 
 CLI-провайдеры с подпиской включаются только явно: ForgePlan не выбирает их
 автоматически, не читает и не копирует токены входа. Они предназначены для
