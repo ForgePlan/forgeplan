@@ -10,7 +10,8 @@ pub const FORGEPLAN_DIR: &str = ".forgeplan";
 /// Commented configuration sections appended to config.yaml on init.
 /// All optional — uncomment what you need.
 const CONFIG_TEMPLATES: &str = r#"
-# ─── LLM provider (uncomment to configure) ───────────────────────────
+# ─── LLM provider (uncomment one configuration) ──────────────────────
+# HTTP provider:
 # llm:
 #   provider: gemini           # openai | claude | gemini | ollama | custom
 #   model: gemini-3-flash-preview
@@ -18,7 +19,16 @@ const CONFIG_TEMPLATES: &str = r#"
 #   # base_url: https://...    # override for custom endpoints
 #   max_tokens: 4096
 #   temperature: 0.7
-#   # reason_temperature: 0.3  # lower temp for structured ADI output
+#   # reason_temperature: 0.3
+#   timeout_seconds: 120        # ordinary LLM calls
+#   reason_timeout_seconds: 600 # `reason` overrides the ordinary timeout
+#
+# Local subscription CLI (personal development only; no ForgePlan API key):
+# llm:
+#   provider: codex-cli        # claude-code | codex-cli | devin-cli | gemini-cli | cursor-agent
+#   model: ""                  # empty = stock CLI default
+#   timeout_seconds: 120
+#   reason_timeout_seconds: 600
 
 # ─── Embedding model (uncomment to configure) ────────────────────────
 # embedding:

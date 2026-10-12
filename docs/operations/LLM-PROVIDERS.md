@@ -11,9 +11,11 @@ no provider is configured these features degrade gracefully with a clear
 
 ```yaml
 llm:
-  provider: openai        # openai | claude | gemini | ollama | claude-code
-  model: gpt-4o-mini      # provider-specific model id
-  api_key_env: OPENAI_API_KEY   # name of the env var holding the key (HTTP providers)
+  provider: openai        # HTTP: openai | claude | gemini | ollama | custom
+                           # Local CLI: claude-code | codex-cli | devin-cli |
+                           #            gemini-cli | cursor-agent
+  model: gpt-4o-mini      # use model: "" for the stock CLI default
+  api_key_env: OPENAI_API_KEY   # HTTP providers only
 ```
 
 The key itself lives in `.forgeplan/secrets.env` (gitignored), referenced by
@@ -21,17 +23,75 @@ name via `api_key_env` — never hardcode a key in `config.yaml`. Override any
 field at runtime with `FORGEPLAN_LLM_PROVIDER` / `FORGEPLAN_LLM_MODEL` /
 `FORGEPLAN_LLM_API_KEY_ENV`.
 
-| Provider | Key needed | Notes |
+| Provider | ForgePlan API key | Authentication |
 |---|---|---|
-| `openai` | yes (`api_key_env`) | default provider |
-| `claude` | yes | Anthropic API (metered API key) |
-| `gemini` | yes | Google AI |
-| `ollama` | **no** | fully local, free; runs your own model |
-| `claude-code` | **no** | reuses your local `claude login` session — see the disclosure below |
+| `openai` | yes (`api_key_env`) | OpenAI HTTP API; default provider |
+| `claude` | yes | Anthropic HTTP API |
+| `gemini` | yes | Google AI HTTP API |
+| `ollama` | **no** | local server |
+| `claude-code` | **no** | existing `claude login` |
+| `codex-cli` | **no** | existing `codex login` / ChatGPT-Codex subscription |
+| `devin-cli` | **no** | existing `devin auth login` |
+| `gemini-cli` | **no** | existing interactive Gemini CLI login |
+| `cursor-agent` | **no** | existing `cursor-agent login` |
 
-`ollama` and `claude-code` are **keyless**. Auto-detection is key-based
-(`openai`→`anthropic`→`gemini`); a keyless provider is **never** selected
-automatically — you must set it explicitly.
+The last six providers are **keyless to ForgePlan**. They are never
+auto-detected: set `llm.provider` explicitly. A subscription-authenticated CLI
+is not free; each request draws from that vendor's plan or account limits.
+Use HTTP providers or `ollama` in production, shared machines, and CI.
+Local subscription CLIs are a personal-development convenience.
+
+## Subscription-authenticated local CLI providers
+
+The four shared profiles below run stock vendor binaries with fixed reviewed
+arguments. Configure both timeout budgets explicitly when local generation can
+be slow:
+
+```yaml
+llm:
+  provider: codex-cli       # or devin-cli | gemini-cli | cursor-agent
+  model: ""                 # empty = stock CLI default
+  timeout_seconds: 120      # route/generate/capture/decompose
+  reason_timeout_seconds: 600
+```
+
+If `model` is omitted, ForgePlan treats the historical HTTP default
+`gpt-4o-mini` as unspecified for these local profiles, so the stock CLI chooses
+its own default. Set any other valid model id to pass it explicitly.
+
+| Provider | Binary | Login / status | No-write or isolation mode | Prompt transport | Known limitation | Production verdict |
+|---|---|---|---|---|---|---|
+| `codex-cli` | `codex` | `codex login` / `codex login status` | ephemeral session, read-only sandbox, isolated home | stdin; final answer in a generated output file | Uses the vendor's subscription quota | **Local only** |
+| `devin-cli` | `devin` | `devin auth login` / `devin auth status` | sandbox + normal permissions in an empty temporary workspace; no auto-approval flags | generated private prompt file; final stdout text | No documented strict read-only mode; disabled on Windows because stock Devin rejects the required sandbox flag | **Local only; weakest profile** |
+| `gemini-cli` | `gemini` | interactive `gemini` login | sandbox + default approval mode in an empty temporary workspace | stdin; JSON response | Headless subscription entitlement varies by Google account/product | **Local only** |
+| `cursor-agent` | `cursor-agent` | `cursor-agent login` / `cursor-agent status` | non-interactive `ask` + sandbox in an empty temporary workspace | stdin; JSON result | Agent CLI, not a completion API | **Local only** |
+
+`codex-cli` is the recommended subscription route for OpenAI users. It reuses
+Codex authentication under `CODEX_HOME`, but gives the child an isolated
+`HOME`; this prevents accidental discovery of unrelated home-directory skills
+and context. ForgePlan never reads or copies the login token.
+
+Availability is still controlled by each vendor. An installed binary does not
+prove that the current login is entitled to headless use.
+
+Shared guardrails (RFC-014):
+
+- prompts go through stdin, or a private file for Devin; prompt text never
+  becomes an argv flag;
+- model identifiers are limited to 64 ASCII characters from
+  `[A-Za-z0-9._:-]` and cannot start with `-`;
+- each invocation runs in a new private temporary directory with a timeout
+  covering stdin, output drain, and process wait; stdout/stderr capture is
+  bounded and truncated model answers are rejected;
+- stock binaries are resolved outside the current workspace, and workspace
+  entries are removed from the child `PATH`;
+- API-key environment variables are not forwarded; `CODEX_HOME` is forwarded
+  only to Codex;
+- `FORGEPLAN_LOCAL_LLM_PROVIDER_ACTIVE` blocks nesting across all five local
+  providers, including `claude-code`;
+- only the four exact provider names above are accepted. There is no
+  user-defined command template or shell interpolation.
+
 
 ## `claude-code` provider (personal/local use only)
 
@@ -52,7 +112,7 @@ automatically — you must set it explicitly.
 ```yaml
 llm:
   provider: claude-code
-  model: claude-sonnet-4-5   # optional; omit to let claude pick its default
+  model: ""   # empty = stock Claude CLI default
   # no api_key_env — keyless
 ```
 
@@ -65,13 +125,14 @@ fails with a clear message pointing at `claude login` (never a crash).
 ForgePlan shells out to `claude --print --output-format json` and parses the
 `result` field. Security guardrails:
 
-- **Prompt via stdin**, never an argv flag — a prompt that starts with `-`/`--`
-  cannot be re-parsed as a `claude` flag.
+- **Prompt and repository-controlled system instructions via stdin**, never
+  argv — text that starts with `-`/`--` cannot be re-parsed as a `claude` flag
+  or exposed through process listings.
 - **Model string is charset-gated** (`^[A-Za-z0-9._:-]{1,64}$`) before it reaches
   argv — an untrusted config value cannot inject extra `claude` flags.
-- **Recursion guard**: if ForgePlan's MCP server is itself running inside Claude
-  Code, a nested `claude --print` is refused (bounded depth 1) via the
-  `FORGEPLAN_CLAUDE_CODE_PROVIDER_ACTIVE` sentinel.
+- **Recursion guard**: if ForgePlan's MCP server is itself running inside any
+  local CLI provider, a nested local-CLI call is refused (bounded depth 1) via
+  the shared `FORGEPLAN_LOCAL_LLM_PROVIDER_ACTIVE` sentinel.
 - **Env hygiene**: the child gets only `PATH` / `HOME` / `USER` (+ Linux `XDG_*`
   for keychain); `ANTHROPIC_API_KEY` and other secrets are not forwarded.
 - **No tool grant**: the prompt is untrusted artifact/user text; the provider

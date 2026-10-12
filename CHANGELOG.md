@@ -11,6 +11,21 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Added
+
+- **Subscription-authenticated local CLI providers for ADI and every other
+  LLM-backed command** (PRD-087, RFC-014, ADR-027). Set `llm.provider` to
+  `codex-cli`, `devin-cli`, `gemini-cli`, or `cursor-agent` to reuse the stock
+  CLI's existing login without giving ForgePlan an API key. Each closed profile
+  uses fixed reviewed arguments, the strongest documented safety mode, a
+  private temporary workspace, bounded process output and timeout, filtered
+  environment variables, validated model names, and one recursion guard shared
+  with `claude-code`. `codex-cli` runs ephemeral/read-only and is the recommended
+  OpenAI subscription route. Devin has no documented strict read-only mode and
+  is disabled on Windows because its required sandbox flag is unsupported.
+  These profiles are explicit opt-ins for personal/local development, not
+  production, shared machines, or CI.
+
 ## [0.37.0] - 2026-09-08
 
 Sprint headline: **Trust the number, and the write, and the gate that proves it.**
@@ -26,7 +41,6 @@ Scope note for scripted consumers: no new CLI flag, no new config key, MCP tool
 count unchanged (73). One breaking behaviour change: R_eff for any artifact
 whose weakest evidence pack lacks `verdict`/`congruence_level` drops from 1.0 to
 0.1 — **run `forgeplan score --all` after upgrading** (see below).
-
 ### Changed — BREAKING, re-score required
 
 - **Evidence that declares nothing no longer scores full marks** (PROB-101,

@@ -77,12 +77,26 @@ pub struct SubprocessOutcome {
     pub exit_code: Option<i32>,
     /// Captured stdout bytes (cap: 10 MiB — see [`MAX_OUTPUT_BYTES`]).
     pub stdout: Vec<u8>,
+    /// `true` when stdout exceeded [`MAX_OUTPUT_BYTES`].
+    pub stdout_truncated: bool,
     /// Captured stderr bytes (cap: 10 MiB).
     pub stderr: Vec<u8>,
+    /// `true` when stderr exceeded [`MAX_OUTPUT_BYTES`].
+    pub stderr_truncated: bool,
     /// `true` if `tokio::time::timeout` fired and child was killed.
     pub timed_out: bool,
     /// Wall-clock duration from spawn to wait completion (or kill).
     pub duration: Duration,
+}
+
+/// Bounded stream capture with an explicit overflow signal.
+///
+/// Callers that parse a final response MUST reject `truncated`; a retained
+/// prefix is diagnostic data, not a complete model answer.
+#[derive(Debug)]
+pub(crate) struct CapturedStream {
+    pub bytes: Vec<u8>,
+    pub truncated: bool,
 }
 
 /// Maximum captured output per stream (per ADR-010 Negative Trade-offs).
@@ -156,32 +170,34 @@ pub async fn run_subprocess(
         ))
     })?;
 
-    if let Some(bytes) = spec.stdin_data
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        // Best-effort: a child that closes stdin early (e.g. exits before
-        // reading) yields BrokenPipe. We tolerate it — surface only as
-        // Transport if the write itself errors for another reason.
-        if let Err(e) = stdin.write_all(bytes).await
-            && e.kind() != std::io::ErrorKind::BrokenPipe
-        {
-            return Err(super::DispatchError::Transport(format!(
-                "subprocess stdin write failed: {e}"
-            )));
-        }
-        // Dropping `stdin` here signals EOF to the child.
-        drop(stdin);
-    }
-
+    let stdin = child.stdin.take();
     let stdout = child.stdout.take().expect("stdout was configured as piped");
     let stderr = child.stderr.take().expect("stderr was configured as piped");
 
+    // The timeout covers the entire post-spawn lifecycle. In particular,
+    // stdin delivery MUST run concurrently with both output drains: a child
+    // that stops reading stdin may also fill stdout/stderr, and serial writes
+    // would deadlock before the previous timeout even started.
     let collect = async {
-        let (out_res, err_res, status_res) = tokio::join!(
+        let write_stdin = async {
+            if let (Some(mut stdin), Some(bytes)) = (stdin, spec.stdin_data)
+                && let Err(error) = stdin.write_all(bytes).await
+                && error.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(super::DispatchError::Transport(format!(
+                    "subprocess stdin write failed: {error}"
+                )));
+            }
+            Ok::<(), super::DispatchError>(())
+        };
+
+        let (stdin_res, out_res, err_res, status_res) = tokio::join!(
+            write_stdin,
             read_capped(stdout, MAX_OUTPUT_BYTES),
             read_capped(stderr, MAX_OUTPUT_BYTES),
             child.wait()
         );
+        stdin_res?;
         let out = out_res.map_err(|e| {
             super::DispatchError::Transport(format!("subprocess stdout drain failed: {e}"))
         })?;
@@ -190,29 +206,33 @@ pub async fn run_subprocess(
         })?;
         let status = status_res
             .map_err(|e| super::DispatchError::Transport(format!("subprocess wait failed: {e}")))?;
-        Ok::<(Vec<u8>, Vec<u8>, std::process::ExitStatus), super::DispatchError>((out, err, status))
+        Ok::<(CapturedStream, CapturedStream, std::process::ExitStatus), super::DispatchError>((
+            out, err, status,
+        ))
     };
 
     match tokio::time::timeout(spec.timeout, collect).await {
-        Ok(Ok((stdout_buf, stderr_buf, status))) => Ok(SubprocessOutcome {
+        Ok(Ok((stdout, stderr, status))) => Ok(SubprocessOutcome {
             exit_code: status.code(),
-            stdout: stdout_buf,
-            stderr: stderr_buf,
+            stdout: stdout.bytes,
+            stdout_truncated: stdout.truncated,
+            stderr: stderr.bytes,
+            stderr_truncated: stderr.truncated,
             timed_out: false,
             duration: started.elapsed(),
         }),
         Ok(Err(e)) => Err(e),
         Err(_) => {
-            // Timeout fired — kill child, then synthesize timed_out outcome.
-            // We deliberately do NOT re-await the drain futures (they were
-            // dropped with `collect`); kill_on_drop ensures cleanup.
+            // `collect` is dropped before this arm: its stdin/stdout/stderr
+            // handles close, then the explicit kill/wait reaps the child.
             let _ = child.kill().await;
-            // Best-effort wait so the OS reaps the child before we return.
             let _ = child.wait().await;
             Ok(SubprocessOutcome {
                 exit_code: None,
                 stdout: Vec::new(),
+                stdout_truncated: false,
                 stderr: Vec::new(),
+                stderr_truncated: false,
                 timed_out: true,
                 duration: started.elapsed(),
             })
@@ -238,26 +258,44 @@ pub async fn run_subprocess(
 /// directly; dropping the returned future drops the reader, which is exactly
 /// the property the provider's timeout path relies on (CR-2/CR-3) to release
 /// the pipes before `kill()` + `wait()`.
-pub(crate) async fn read_capped<R>(mut reader: R, max_bytes: usize) -> std::io::Result<Vec<u8>>
+pub(crate) async fn read_capped<R>(
+    mut reader: R,
+    max_bytes: usize,
+) -> std::io::Result<CapturedStream>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut buf = Vec::with_capacity(max_bytes.min(64 * 1024));
     let mut chunk = [0u8; 8 * 1024];
     let mut overflow = [0u8; 16 * 1024];
+    let mut truncated = false;
     loop {
         let remaining = max_bytes.saturating_sub(buf.len());
         if remaining == 0 {
-            // Continue draining without retaining bytes.
+            // Continue draining without retaining bytes, but preserve the
+            // fact that the captured prefix is incomplete.
             match reader.read(&mut overflow).await {
-                Ok(0) => return Ok(buf),
-                Ok(_) => continue,
+                Ok(0) => {
+                    return Ok(CapturedStream {
+                        bytes: buf,
+                        truncated,
+                    });
+                }
+                Ok(_) => {
+                    truncated = true;
+                    continue;
+                }
                 Err(e) => return Err(e),
             }
         }
         let to_read = remaining.min(chunk.len());
         match reader.read(&mut chunk[..to_read]).await {
-            Ok(0) => return Ok(buf),
+            Ok(0) => {
+                return Ok(CapturedStream {
+                    bytes: buf,
+                    truncated,
+                });
+            }
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
             Err(e) => return Err(e),
         }
@@ -280,6 +318,17 @@ pub fn build_env_allowlist(
         }
     }
     out
+}
+
+/// Resolve the active ForgePlan project root from the process CWD.
+///
+/// `workspace::find_workspace` returns the `.forgeplan/` directory itself.
+/// Outside a ForgePlan workspace, CWD is the conservative exclusion root.
+pub(crate) fn current_workspace_root() -> std::io::Result<PathBuf> {
+    let cwd = std::env::current_dir()?;
+    Ok(crate::workspace::find_workspace(&cwd)
+        .and_then(|forgeplan_dir| forgeplan_dir.parent().map(Path::to_path_buf))
+        .unwrap_or(cwd))
 }
 
 /// Helper: resolve path to prebuilt forgeplan binary. Per ADR-010: never
@@ -359,40 +408,99 @@ pub fn resolve_forgeplan_binary(workspace_root: &Path) -> Option<PathBuf> {
 /// on Windows the permission gates are skipped by `cfg(unix)`. Cross-platform
 /// behavior is preserved (PATH lookup + canonicalize) — only the Unix-only
 /// permission gate is gated по `cfg(unix)`.
-pub(super) fn which_in_path(program: &str) -> Option<PathBuf> {
+pub(crate) fn which_in_path(program: &str) -> Option<PathBuf> {
+    which_in_path_excluding(program, None)
+}
+
+/// Resolve a stock binary while rejecting candidates inside an untrusted
+/// workspace. This closes the `node_modules/.bin` / `PATH=./bin:$PATH`
+/// substitution path for local LLM providers without changing the legacy
+/// dispatcher lookup contract.
+pub(crate) fn which_in_path_outside(program: &str, excluded_root: &Path) -> Option<PathBuf> {
+    let excluded_root = std::fs::canonicalize(excluded_root).ok();
+    which_in_path_excluding(program, excluded_root.as_deref())
+}
+
+/// Filter an inherited PATH before passing it to an untrusted subprocess.
+///
+/// Only absolute entries survive. Entries under any excluded root are removed
+/// in both their lexical and canonical forms so `/tmp` → `/private/tmp`
+/// aliases cannot preserve a workspace-controlled executable directory.
+pub(crate) fn filtered_path_outside(path: &str, excluded_roots: &[&Path]) -> Option<String> {
+    let roots = excluded_roots
+        .iter()
+        .flat_map(|root| {
+            let canonical = std::fs::canonicalize(root).ok();
+            std::iter::once((*root).to_path_buf()).chain(canonical)
+        })
+        .collect::<Vec<_>>();
+    let entries = std::env::split_paths(std::ffi::OsStr::new(path))
+        .filter(|entry| !entry.as_os_str().is_empty() && entry.is_absolute())
+        .filter(|entry| {
+            let canonical = std::fs::canonicalize(entry).ok();
+            !roots.iter().any(|root| {
+                entry.starts_with(root)
+                    || canonical
+                        .as_ref()
+                        .is_some_and(|resolved| resolved.starts_with(root))
+            })
+        })
+        .collect::<Vec<_>>();
+    std::env::join_paths(entries)
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+fn which_in_path_excluding(program: &str, excluded_root: Option<&Path>) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
-        // Round 7 audit MED-4: skip empty PATH entries explicitly. POSIX
-        // interprets `PATH=":/usr/bin"` as `[".", "/usr/bin"]` — implicit
-        // cwd lookup is a hijack vector if the workspace contains an
-        // attacker-planted binary. Refuse the implicit-cwd case rather
-        // than relying on the parent-mode gate to catch a 0o755
-        // user-owned cwd.
-        if dir.as_os_str().is_empty() {
+        // Empty and relative entries can resolve from an attacker-controlled
+        // repository. Stock CLI discovery accepts absolute install roots only.
+        if dir.as_os_str().is_empty() || !dir.is_absolute() {
             continue;
         }
-        let candidate = dir.join(program);
-        match resolve_safe_path(&candidate) {
-            Ok(Some(real)) => return Some(real),
-            Ok(None) => continue,
-            Err(reason) => {
-                // Round 7 audit MED-1/MED-2: log injection (CWE-117/CWE-150)
-                // hardening — `Display` of attacker-influenceable PATH
-                // entries can carry newlines / ANSI escapes that forge log
-                // lines. Use `escape_debug` to neutralize, mirroring the
-                // PROB-053 shell-exec warning pattern.
-                let candidate_safe = candidate.display().to_string().escape_debug().to_string();
-                let reason_safe = reason.escape_debug().to_string();
-                eprintln!(
-                    "warning: which_in_path: rejected unsafe candidate {candidate_safe}: {reason_safe}"
-                );
-                tracing::warn!(
-                    target = "playbook::dispatch::helpers",
-                    candidate = %candidate_safe,
-                    reason = %reason_safe,
-                    "which_in_path: rejected unsafe candidate"
-                );
-                continue;
+
+        #[cfg(windows)]
+        let mut candidates = vec![dir.join(program)];
+        #[cfg(not(windows))]
+        let candidates = vec![dir.join(program)];
+        #[cfg(windows)]
+        if Path::new(program).extension().is_none() {
+            let pathext =
+                std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+            for extension in pathext.to_string_lossy().split(';') {
+                let extension = extension.trim();
+                if !extension.is_empty() {
+                    candidates.push(dir.join(format!("{program}{extension}")));
+                }
+            }
+        }
+
+        for candidate in candidates {
+            match resolve_safe_path(&candidate) {
+                Ok(Some(real)) if excluded_root.is_some_and(|root| real.starts_with(root)) => {
+                    let candidate_safe = candidate.display().to_string().escape_debug().to_string();
+                    tracing::warn!(
+                        target = "playbook::dispatch::helpers",
+                        candidate = %candidate_safe,
+                        "which_in_path: rejected workspace-controlled candidate"
+                    );
+                }
+                Ok(Some(real)) => return Some(real),
+                Ok(None) => continue,
+                Err(reason) => {
+                    let candidate_safe = candidate.display().to_string().escape_debug().to_string();
+                    let reason_safe = reason.escape_debug().to_string();
+                    eprintln!(
+                        "warning: which_in_path: rejected unsafe candidate {candidate_safe}: {reason_safe}"
+                    );
+                    tracing::warn!(
+                        target = "playbook::dispatch::helpers",
+                        candidate = %candidate_safe,
+                        reason = %reason_safe,
+                        "which_in_path: rejected unsafe candidate"
+                    );
+                }
             }
         }
     }
@@ -666,10 +774,56 @@ mod tests {
             outcome.stdout.len(),
             MAX_OUTPUT_BYTES
         );
+        assert!(outcome.stdout_truncated);
+        assert!(!outcome.stderr_truncated);
         assert!(
             outcome.stdout.len() >= MAX_OUTPUT_BYTES - 64 * 1024,
             "stdout {} significantly under cap — drain stopped early?",
             outcome.stdout.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn run_subprocess_caps_stderr_at_10mib() {
+        let env = empty_env();
+        let args = vec![
+            "-c".to_string(),
+            "yes error | head -c 12582912 >&2".to_string(),
+        ];
+        let spec = spec_for("sh", &args, &env, Duration::from_secs(15));
+        let outcome = run_subprocess(spec).await.expect("ok");
+        assert_eq!(outcome.exit_code, Some(0));
+        assert!(outcome.stdout.is_empty());
+        assert!(outcome.stderr.len() <= MAX_OUTPUT_BYTES);
+        assert!(!outcome.stdout_truncated);
+        assert!(outcome.stderr_truncated);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_reaps_the_direct_child_pid() {
+        let env = empty_env();
+        let temp = tempfile::tempdir().unwrap();
+        let pid_file = temp.path().join("pid");
+        let args = vec![
+            "-c".to_string(),
+            format!("echo $$ > '{}'; exec sleep 60", pid_file.display()),
+        ];
+        let spec = spec_for("sh", &args, &env, Duration::from_millis(500));
+        let outcome = run_subprocess(spec).await.expect("timeout outcome");
+        assert!(outcome.timed_out);
+
+        let pid: libc::pid_t = std::fs::read_to_string(pid_file)
+            .expect("child wrote pid")
+            .trim()
+            .parse()
+            .expect("numeric pid");
+        // SAFETY: signal 0 probes existence without delivering a signal.
+        let probe = unsafe { libc::kill(pid, 0) };
+        assert_eq!(probe, -1, "direct child PID {pid} still exists");
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
         );
     }
 
@@ -690,36 +844,74 @@ mod tests {
         assert_eq!(outcome.stdout, b"hello");
     }
 
-    /// Drop semantics: spawn a long-running child via a future we cancel,
-    /// then verify the child gets reaped (no zombie). We approximate this by
-    /// dropping the future before completion and re-checking pid liveness.
     #[tokio::test]
-    async fn run_subprocess_kill_on_drop_no_zombie() {
-        // We cannot directly observe `kill_on_drop` from outside without
-        // racing the runtime, so the assertion is structural: cancelling the
-        // future via `tokio::time::timeout` (smaller than the child sleep)
-        // returns promptly AND the runtime does not leak the spawned child
-        // beyond the test boundary. A leaked child would surface as the
-        // outer `tokio::test` runtime hanging at shutdown — which the test
-        // harness flags as a hard failure.
+    async fn timeout_covers_blocked_stdin_delivery() {
+        let env = empty_env();
+        let args = vec!["60".to_string()];
+        let payload = vec![b'x'; 1024 * 1024];
+        let spec = SubprocessSpec {
+            program: "sleep",
+            args: &args,
+            env: &env,
+            cwd: None,
+            timeout: Duration::from_millis(100),
+            stdin_data: Some(&payload),
+        };
+
+        let outcome = run_subprocess(spec).await.expect("timeout is an outcome");
+        assert!(outcome.timed_out);
+        assert!(
+            outcome.duration < Duration::from_secs(5),
+            "stdin write escaped timeout: {:?}",
+            outcome.duration
+        );
+    }
+
+    /// Cancelling the runner future must trigger `kill_on_drop` and remove the
+    /// direct child from the process table.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_subprocess_kill_on_drop_reaps_direct_child_pid() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_file = temp.path().join("cancelled-child.pid");
         let env = Arc::new(empty_env());
         let env_ref = env.clone();
         let task = tokio::spawn(async move {
-            let args = vec!["60".to_string()];
-            let spec = spec_for("sleep", &args, &env_ref, Duration::from_secs(60));
+            let args = vec![
+                "-c".to_string(),
+                format!("echo $$ > '{}'; exec sleep 60", pid_file.display()),
+            ];
+            let spec = spec_for("sh", &args, &env_ref, Duration::from_secs(60));
             run_subprocess(spec).await
         });
 
-        // Yield to let the child spawn, then abort.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let pid = {
+            let pid_file = temp.path().join("cancelled-child.pid");
+            let mut observed = None;
+            for _ in 0..100 {
+                if let Ok(value) = std::fs::read_to_string(&pid_file)
+                    && let Ok(pid) = value.trim().parse::<libc::pid_t>()
+                {
+                    observed = Some(pid);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            observed.expect("child wrote its PID before cancellation")
+        };
+
         task.abort();
         let _ = task.await;
 
-        // If kill_on_drop didn't fire, the runtime would still hold a child
-        // handle and the test process would not exit cleanly. We don't have
-        // a direct probe here — the post-condition is asserted by the test
-        // harness completing (and ADR-010 DoD's `ps` snapshot at integration
-        // level).
+        for _ in 0..100 {
+            // SAFETY: signal 0 probes existence without delivering a signal.
+            let probe = unsafe { libc::kill(pid, 0) };
+            if probe == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("cancelled direct child PID {pid} still exists");
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -778,6 +970,58 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial(env_path)]
+    #[allow(clippy::await_holding_lock)]
+    async fn which_in_path_outside_rejects_workspace_owned_stock_name() {
+        let _guard = super::super::claude_print::DISPATCH_ENV_LOCK.lock().await;
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let bin_dir = workspace.path().join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let binary = bin_dir.join("codex");
+        std::fs::write(&binary, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let original_path = std::env::var_os("PATH");
+        unsafe { std::env::set_var("PATH", &bin_dir) };
+        let resolved = which_in_path_outside("codex", workspace.path());
+        unsafe {
+            match original_path {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        assert!(
+            resolved.is_none(),
+            "workspace-controlled stock binary must be rejected: {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn filtered_path_removes_workspace_and_relative_entries() {
+        let workspace = tempfile::tempdir().unwrap();
+        let nested = workspace.path().join("node_modules/.bin");
+        std::fs::create_dir_all(&nested).unwrap();
+        let safe = tempfile::tempdir().unwrap();
+        let raw = std::env::join_paths([
+            nested.as_path(),
+            std::path::Path::new("relative-bin"),
+            safe.path(),
+        ])
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+        let filtered = filtered_path_outside(&raw, &[workspace.path()]).unwrap();
+        let entries = std::env::split_paths(std::ffi::OsStr::new(&filtered)).collect::<Vec<_>>();
+        assert_eq!(entries, vec![safe.path().to_path_buf()]);
+    }
+
     /// AC-2 — Group/world-writable binary MUST be rejected on Unix
     /// (mode bits 0o022 set). Pre-PROB-052 this was a CWE-426 hijack vector
     /// because `is_file()` made no permission distinction.
@@ -834,14 +1078,20 @@ mod tests {
         std::fs::write(&bin, b"stub").unwrap();
 
         let original_path = std::env::var_os("PATH");
+        let original_pathext = std::env::var_os("PATHEXT");
         unsafe {
             std::env::set_var("PATH", &bin_dir);
+            std::env::set_var("PATHEXT", ".EXE;.CMD");
         }
-        let resolved = which_in_path("anybin.exe");
+        let resolved = which_in_path("anybin");
         unsafe {
             match original_path {
                 Some(p) => std::env::set_var("PATH", p),
                 None => std::env::remove_var("PATH"),
+            }
+            match original_pathext {
+                Some(value) => std::env::set_var("PATHEXT", value),
+                None => std::env::remove_var("PATHEXT"),
             }
         }
 

@@ -189,20 +189,28 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             );
             let id = sanitize_for_hint(&record.id);
             eprintln!("Error: ADI reasoning failed: {}", safe_msg);
-            if lower.contains("auth") || lower.contains("401") || lower.contains("403") {
-                eprintln!(
-                    "Fix: API key rejected by `{provider}` — rotate `{env}` in \
-                     .forgeplan/secrets.env (or run `forgeplan setup-skill`)"
-                );
-            } else if lower.contains("rate") || lower.contains("429") || lower.contains("quota") {
+            if lower.contains("rate") || lower.contains("429") || lower.contains("quota") {
                 eprintln!(
                     "Fix: rate-limit hit on `{provider}` — wait 60 s and retry, \
                      or switch model in .forgeplan/config.yaml::llm.model"
                 );
-            } else if lower.contains("network")
-                || lower.contains("timeout")
-                || lower.contains("dns")
-            {
+            } else if lower.contains("timeout") || lower.contains("timed out") {
+                eprintln!(
+                    "Fix: increase .forgeplan/config.yaml::llm.reason_timeout_seconds, \
+                     verify `{provider}` is responsive, then retry `forgeplan reason {id}`"
+                );
+            } else if let Some(login_hint) = llm_config.local_cli_login_hint() {
+                let login_hint = sanitize_for_hint(login_hint);
+                eprintln!(
+                    "Fix: local provider `{provider}` is unavailable — {login_hint}; \
+                     then retry `forgeplan reason {id}`"
+                );
+            } else if lower.contains("auth") || lower.contains("401") || lower.contains("403") {
+                eprintln!(
+                    "Fix: API key rejected by `{provider}` — rotate `{env}` in \
+                     .forgeplan/secrets.env (or run `forgeplan setup-skill`)"
+                );
+            } else if lower.contains("network") || lower.contains("dns") {
                 eprintln!(
                     "Fix: network error reaching `{provider}` — check connectivity, \
                      then retry `forgeplan reason {id}`"

@@ -366,35 +366,28 @@ pub async fn route_with_llm_and_context(
         return route(description);
     }
 
-    // Route-specific timeout: 15 seconds (vs 120s global LLM timeout).
-    // Route should be fast — if LLM takes too long, fall back to keywords.
-    let llm_future = crate::llm::route::route_with_context(llm_config, description, fpf_context);
-    let timeout_result = tokio::time::timeout(std::time::Duration::from_secs(15), llm_future).await;
-
-    match timeout_result {
-        Err(_elapsed) => {
-            // Timeout — fallback to Level 0
-            route(description)
-        }
-        Ok(llm_result) => match llm_result {
-            Ok(response) => match parse_llm_route_response(&response) {
-                Some((depth, explanation)) => {
-                    let pipeline = pipeline::for_depth(&depth);
-                    let alternatives = generate_alternatives(&depth, &[]);
-                    RoutingResult {
-                        depth,
-                        pipeline,
-                        triggers: vec![],
-                        confidence: 0.9,
-                        level: 1,
-                        explanation: Some(explanation),
-                        alternatives,
-                    }
+    // `LlmClient` owns the configured `timeout_seconds` budget for every
+    // transport. A shorter outer deadline would silently downgrade slower
+    // subscription CLIs to the keyword fallback before their configured
+    // budget expires.
+    match crate::llm::route::route_with_context(llm_config, description, fpf_context).await {
+        Ok(response) => match parse_llm_route_response(&response) {
+            Some((depth, explanation)) => {
+                let pipeline = pipeline::for_depth(&depth);
+                let alternatives = generate_alternatives(&depth, &[]);
+                RoutingResult {
+                    depth,
+                    pipeline,
+                    triggers: vec![],
+                    confidence: 0.9,
+                    level: 1,
+                    explanation: Some(explanation),
+                    alternatives,
                 }
-                None => route(description),
-            },
-            Err(_) => route(description),
+            }
+            None => route(description),
         },
+        Err(_) => route(description),
     }
 }
 
@@ -531,12 +524,10 @@ pub async fn route_with_reasoning(
         system.push_str(ctx);
     }
 
-    // 30s timeout for Level 2 (more generous than Level 1, but not unbounded)
-    let llm_future = client.generate(&reasoning_prompt, Some(&system));
-    let timeout_result = tokio::time::timeout(std::time::Duration::from_secs(30), llm_future).await;
-
-    match timeout_result {
-        Ok(Ok(response)) => {
+    // Level 2 uses the same explicit `timeout_seconds` transport budget.
+    // `reason_timeout_seconds` is reserved for `forgeplan reason`.
+    match client.generate(&reasoning_prompt, Some(&system)).await {
+        Ok(response) => {
             // Parse ADI output
             let adi = crate::llm::reason::parse_adi_output(&response);
 
@@ -569,8 +560,8 @@ pub async fn route_with_reasoning(
             result.explanation = Some(reasoning_text);
             result
         }
-        _ => {
-            // Timeout or error — return Level 1 result as-is
+        Err(_) => {
+            // LLM error or configured timeout — return Level 1 result as-is.
             result
         }
     }

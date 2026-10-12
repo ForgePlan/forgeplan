@@ -131,14 +131,16 @@ pub(crate) const DEFAULT_CLAUDE_BINARY: &str = "claude";
 ///    boundary that PROB-050 A-14 established. The override is the hook
 ///    the ADR-017 mock-binary tests use to point at a fake `claude`
 ///    script without a real install.
-/// 2. `which claude` on `$PATH` via [`super::helpers::which_in_path`],
-///    which canonicalizes symlinks and applies the PROB-052 permission
-///    gates (rejects group/world-writable binaries + parent dirs).
+/// 2. `which claude` on `$PATH` via
+///    [`super::helpers::which_in_path_outside`], which canonicalizes symlinks,
+///    applies the PROB-052 permission gates, and rejects the caller workspace.
 ///
 /// Returns `None` when `claude` is not discoverable — the caller
 /// ([`crate::llm::LlmClient`]) maps that to a graceful "run `claude
 /// login`" error (AC-4), never a panic.
-pub(crate) fn resolve_claude_binary_for_provider() -> Option<std::path::PathBuf> {
+pub(crate) fn resolve_claude_binary_for_provider(
+    caller_workspace: &std::path::Path,
+) -> Option<std::path::PathBuf> {
     // PROB-050 A-14 / ADR-017 AC-2 boundary: do NOT widen this
     // `#[cfg(test)]` gate — a release-honoured `FORGEPLAN_CLAUDE_BIN`
     // would reopen CWE-426 binary substitution on the provider path.
@@ -149,7 +151,7 @@ pub(crate) fn resolve_claude_binary_for_provider() -> Option<std::path::PathBuf>
             return Some(p);
         }
     }
-    super::helpers::which_in_path(DEFAULT_CLAUDE_BINARY)
+    super::helpers::which_in_path_outside(DEFAULT_CLAUDE_BINARY, caller_workspace)
 }
 
 /// Structured envelope returned by `claude --print --output-format json`.

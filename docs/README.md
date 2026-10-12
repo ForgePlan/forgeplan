@@ -47,7 +47,7 @@ Setup, hooks, and repository protection.
 |---|---|
 | [AGENT-ENFORCEMENT.md](operations/AGENT-ENFORCEMENT.md) | Rules and guardrails for AI agents working in this project |
 | [AGENT-HOOKS.md](operations/AGENT-HOOKS.md) | PreToolUse / PostToolUse hooks (safety, formatting, tests) |
-| [LLM-PROVIDERS.md](operations/LLM-PROVIDERS.md) | **v0.33.0+** LLM provider config (openai/claude/gemini/ollama/**claude-code**) — keyless `claude-code` reuses local `claude login` (personal/local only, ADR-017 disclosure) |
+| [LLM-PROVIDERS.md](operations/LLM-PROVIDERS.md) | LLM configuration: HTTP/Ollama plus explicit subscription CLI profiles (`claude-code`, `codex-cli`, `devin-cli`, `gemini-cli`, `cursor-agent`), safety modes, login recovery, and personal/local-only limits |
 | [MULTI-AGENT.md](operations/MULTI-AGENT.md) | **v0.24.0+ multi-agent dispatch** — `forgeplan_dispatch/claim/release/claims` MCP tools, file-overlap detection, skill routing |
 | [REPO-PROTECTION-GUIDE.md](operations/REPO-PROTECTION-GUIDE.md) | Branch protection, PR rules, destructive-action prevention |
 | [GIT-WORKFLOW.ru.md](operations/GIT-WORKFLOW.ru.md) | Full Git rules — branching lifecycle, PR pipeline, release process, worktrees |
