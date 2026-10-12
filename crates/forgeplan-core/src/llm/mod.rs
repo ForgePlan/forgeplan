@@ -1,9 +1,9 @@
 pub mod capture;
 pub mod decompose;
 pub mod generate;
+mod local_cli;
 pub mod reason;
 pub mod route;
-
 use serde::{Deserialize, Serialize};
 
 use crate::config::LlmConfig;
@@ -123,7 +123,9 @@ impl LlmClient {
 
     /// Generate text from a prompt with optional system message.
     pub async fn generate(&self, prompt: &str, system: Option<&str>) -> anyhow::Result<String> {
-        if self.config.is_claude_code() {
+        if let Some(provider) = self.config.local_cli_provider() {
+            local_cli::generate(&self.config, provider, prompt, system).await
+        } else if self.config.is_claude_code() {
             // ADR-017: local `claude --print` shell-out — NOT the HTTP path.
             // Reuses the user's `claude login` session; no API key required.
             self.generate_claude_code(prompt, system).await
@@ -170,17 +172,28 @@ impl LlmClient {
         // AC-1 — one-time disclosure to stderr.
         emit_claude_code_disclosure_once();
 
-        // AC-2 — resolve the *stock* claude binary (test override → PATH,
-        // canonicalized + permission-gated). AC-4 — graceful error if absent.
-        let binary = crate::playbook::dispatch::claude_print::resolve_claude_binary_for_provider()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "claude-code provider: `claude` CLI not found on PATH. This provider reuses \
-                     your local Claude Code session — install the Claude CLI and run `claude \
-                     login` first. It is personal/local-only (see ADR-017); for shared/CI use \
-                     configure a real API provider."
-                )
-            })?;
+        // AC-2 — resolve the *stock* claude binary outside the active
+        // ForgePlan workspace (test override → PATH, canonicalized +
+        // permission-gated). AC-4 — graceful error if the workspace or
+        // binary cannot be resolved.
+        let caller_workspace = if let Some(root) = self.config.runtime_workspace_root() {
+            root.to_path_buf()
+        } else {
+            crate::playbook::dispatch::helpers::current_workspace_root().map_err(|error| {
+                anyhow::anyhow!("claude-code provider: cannot resolve current workspace: {error}")
+            })?
+        };
+        let binary = crate::playbook::dispatch::claude_print::resolve_claude_binary_for_provider(
+            &caller_workspace,
+        )
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "claude-code provider: `claude` CLI not found on a safe PATH outside the current workspace. This provider reuses \
+                 your local Claude Code session — install the Claude CLI and run `claude \
+                 login` first. It is personal/local-only (see ADR-017); for shared/CI use \
+                 configure a real API provider."
+            )
+        })?;
 
         // F-2 — charset/leading-dash gate on the configured model BEFORE it
         // reaches argv. An empty configured model is the documented "let
@@ -195,23 +208,20 @@ impl LlmClient {
             Some(model)
         };
 
-        // F-1 — length-cap the system prompt (a legitimate argv value slot,
-        // not a flag) so a pathological configured preamble cannot blow the
-        // OS argv budget / bloat process listings. The prompt itself travels
-        // via stdin (below), so it is never length-bound here.
+        // Keep repository-controlled system instructions bounded before they
+        // are framed with the user request and delivered on stdin.
         if let Some(sys) = system
             && sys.len() > MAX_SYSTEM_PROMPT_BYTES
         {
             anyhow::bail!(
                 "claude-code provider: system prompt is {} bytes, exceeding the {}-byte cap. \
-                 Move bulk steering into the prompt (delivered via stdin) and keep \
-                 --append-system-prompt short.",
+                 Move bulk steering into the user prompt; both fields are delivered through stdin.",
                 sys.len(),
                 MAX_SYSTEM_PROMPT_BYTES
             );
         }
 
-        let args = build_claude_code_argv(system, model_opt);
+        let args = build_claude_code_argv(model_opt);
 
         // AC-5 — env hygiene: PATH/HOME/USER allowlist only, PLUS the
         // recursion sentinel set on the CHILD so a nested forgeplan refuses
@@ -223,21 +233,17 @@ impl LlmClient {
         // them makes a logged-in user hit a spurious "claude login" error.
         // Forward those three (and only those) so the keychain session
         // resolves. ANTHROPIC_API_KEY and other secrets stay OUT.
-        let base_env: std::collections::HashMap<String, String> = std::env::vars().collect();
-        let mut env = crate::playbook::dispatch::helpers::build_env_allowlist(
-            CLAUDE_CODE_EXTRA_ENV,
-            &base_env,
-        );
-        env.insert(CLAUDE_CODE_PROVIDER_ACTIVE_ENV.to_string(), "1".to_string());
+        let env = build_claude_code_environment(&caller_workspace);
 
         // F-1/F-2 — the prompt is delivered on stdin (NOT argv), so a
         // dash-leading prompt (`"--foo bar"`) is inert data, never re-parsed
         // as a `claude` flag.
+        let combined_prompt = local_cli::combine_prompt(prompt, system);
         let stdout = spawn_claude_code(
             &binary,
             &args,
             &env,
-            prompt.as_bytes(),
+            combined_prompt.as_bytes(),
             self.config_timeout(),
         )
         .await?;
@@ -270,8 +276,19 @@ impl LlmClient {
         }
 
         match response.result {
-            Some(text) if !text.trim().is_empty() => Ok(text),
-            _ => anyhow::bail!(
+            Some(text) => {
+                let text = local_cli::strip_terminal_controls(&text);
+                let text = text.trim();
+                if text.is_empty() {
+                    anyhow::bail!(
+                        "claude-code provider: `claude --print` returned an empty result. The session may \
+                         be unauthenticated or rate-limited — try `claude login`, or configure a real API \
+                         provider for non-interactive use."
+                    );
+                }
+                Ok(text.to_owned())
+            }
+            None => anyhow::bail!(
                 "claude-code provider: `claude --print` returned an empty result. The session may \
                  be unauthenticated or rate-limited — try `claude login`, or configure a real API \
                  provider for non-interactive use."
@@ -418,11 +435,13 @@ impl LlmClient {
 // unit-testable without an `LlmClient` / live HTTP client).
 // =====================================================================
 
-/// Recursion-guard sentinel env var (ADR-017 AC-3). Set on the spawned
-/// `claude` child; if a nested forgeplan sees it already set, the
-/// claude-code provider refuses to spawn again. Bounded depth 1 — no
-/// fork-bomb.
-pub(crate) const CLAUDE_CODE_PROVIDER_ACTIVE_ENV: &str = "FORGEPLAN_CLAUDE_CODE_PROVIDER_ACTIVE";
+/// Recursion-guard sentinel shared by every subscription-authenticated local
+/// LLM process. A provider may invoke ForgePlan through its tool surface, so
+/// provider-specific sentinels can be bypassed by alternating providers.
+pub(crate) const LOCAL_LLM_PROVIDER_ACTIVE_ENV: &str = "FORGEPLAN_LOCAL_LLM_PROVIDER_ACTIVE";
+
+/// Backward-compatible internal name used by the ADR-017 test module.
+pub(crate) const CLAUDE_CODE_PROVIDER_ACTIVE_ENV: &str = LOCAL_LLM_PROVIDER_ACTIVE_ENV;
 
 /// Extra env keys (beyond the base PATH/HOME/USER allowlist) the spawned
 /// `claude` child needs for credential resolution (ADR-017 CR-4).
@@ -440,6 +459,26 @@ pub(crate) const CLAUDE_CODE_PROVIDER_ACTIVE_ENV: &str = "FORGEPLAN_CLAUDE_CODE_
 const CLAUDE_CODE_EXTRA_ENV: &[&str] = &["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"];
 #[cfg(not(target_os = "linux"))]
 const CLAUDE_CODE_EXTRA_ENV: &[&str] = &[];
+
+fn build_claude_code_environment(
+    caller_workspace: &std::path::Path,
+) -> std::collections::HashMap<String, String> {
+    let base_env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let mut env =
+        crate::playbook::dispatch::helpers::build_env_allowlist(CLAUDE_CODE_EXTRA_ENV, &base_env);
+    match base_env.get("PATH").and_then(|path| {
+        crate::playbook::dispatch::helpers::filtered_path_outside(path, &[caller_workspace])
+    }) {
+        Some(path) => {
+            env.insert("PATH".to_string(), path);
+        }
+        None => {
+            env.remove("PATH");
+        }
+    }
+    env.insert(CLAUDE_CODE_PROVIDER_ACTIVE_ENV.to_string(), "1".to_string());
+    env
+}
 
 /// Disclosure text (ADR-017 AC-1). Stated verbatim-in-substance: reuses the
 /// local `claude login` session under the user's Claude subscription;
@@ -481,12 +520,10 @@ fn claude_code_model_regex() -> &'static regex::Regex {
     })
 }
 
-/// Maximum byte length accepted for the `--append-system-prompt` value
-/// (ADR-017 F-1). The system text is a legitimate argv value slot (not a
-/// flag), so it is not charset-restricted — but it IS length-capped so a
-/// pathological configured system prompt cannot blow the OS `ARG_MAX` argv
-/// budget or bloat process listings. 4 KiB is generous for a steering
-/// preamble; the bulk content travels via stdin.
+/// Maximum byte length accepted for repository-controlled system
+/// instructions. The text is framed with the user request and delivered on
+/// stdin, never argv; the cap still bounds unexpected prompt expansion before
+/// spawning the provider.
 const MAX_SYSTEM_PROMPT_BYTES: usize = 4096;
 
 /// Validate a configured `claude-code` model id before it reaches argv
@@ -534,8 +571,8 @@ pub(crate) fn validate_claude_code_model(model: &str) -> anyhow::Result<()> {
 
 /// Build the argv vector for the `claude-code` provider (ADR-017).
 ///
-/// Shape: `["--print", "--output-format", "json",
-///          ("--model", <model>)?, ("--append-system-prompt", <system>)?]`
+/// Shape: `["--print", "--output-format", "json", ("--model", <model>)?]`.
+/// System instructions and the user prompt are framed together on stdin.
 ///
 /// # Security (CWE-78 command injection + F-1/F-2 defense-in-depth)
 ///
@@ -552,27 +589,23 @@ pub(crate) fn validate_claude_code_model(model: &str) -> anyhow::Result<()> {
 /// shell string (the caller spawns the resolved binary directly via
 /// `tokio::process::Command`, no shell). `model` is additionally
 /// charset/leading-dash gated by [`validate_claude_code_model`] BEFORE it
-/// reaches this builder (the caller runs the gate and propagates the error);
-/// `system` is length-capped by the caller to [`MAX_SYSTEM_PROMPT_BYTES`].
+/// reaches this builder. Repository-controlled system instructions are framed
+/// with the user request and delivered on stdin, so neither prompt appears in
+/// process listings or reaches the vendor option parser.
 ///
 /// AC-2 (no identity spoofing): stock flags only — no header/identity
 /// overrides are added here or by the caller.
 ///
 /// `--model` is omitted when `model` is `None` (empty configured model →
-/// `claude` picks its own default). `--append-system-prompt` is omitted when
-/// `system` is `None`.
-pub(crate) fn build_claude_code_argv(system: Option<&str>, model: Option<&str>) -> Vec<String> {
-    let mut args: Vec<String> = Vec::with_capacity(7);
+/// `claude` picks its own default).
+pub(crate) fn build_claude_code_argv(model: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = Vec::with_capacity(5);
     args.push("--print".to_string());
     args.push("--output-format".to_string());
     args.push("json".to_string());
     if let Some(m) = model {
         args.push("--model".to_string());
         args.push(m.to_string());
-    }
-    if let Some(sys) = system {
-        args.push("--append-system-prompt".to_string());
-        args.push(sys.to_string());
     }
     args
 }
@@ -615,6 +648,15 @@ const MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
 /// - non-zero exit → surfaces a bounded stderr preview with a `claude
 ///   login` hint (covers the not-logged-in case, which `claude` reports on
 ///   stderr with a non-zero code).
+fn reject_claude_truncated_stdout(truncated: bool) -> anyhow::Result<()> {
+    if truncated {
+        anyhow::bail!(
+            "claude-code provider: output exceeded the {MAX_OUTPUT_BYTES}-byte limit. Run `claude login` if the CLI is emitting an error stream."
+        );
+    }
+    Ok(())
+}
+
 async fn spawn_claude_code(
     binary: &std::path::Path,
     args: &[String],
@@ -622,108 +664,41 @@ async fn spawn_claude_code(
     stdin_bytes: &[u8],
     timeout: std::time::Duration,
 ) -> anyhow::Result<Vec<u8>> {
-    use tokio::io::AsyncWriteExt;
-
-    let mut cmd = tokio::process::Command::new(binary);
-    cmd.args(args)
-        .env_clear()
-        .envs(env)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-
-    let mut child = cmd.spawn().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            anyhow::anyhow!(
-                "claude-code provider: could not execute `{}` (not found). Install the Claude \
-                 CLI and run `claude login`. Personal/local-only (ADR-017).",
-                binary.display()
-            )
-        } else {
-            anyhow::anyhow!(
-                "claude-code provider: failed to spawn `{}`: {e}. Ensure the Claude CLI is \
-                 installed and you have run `claude login`.",
-                binary.display()
-            )
-        }
+    let program = binary.to_str().ok_or_else(|| {
+        anyhow::anyhow!("claude-code provider: resolved binary path is not valid UTF-8")
     })?;
-
-    // F-1/F-2: feed the prompt on stdin, then drop the writer so the child
-    // observes EOF. Best-effort: a child that exits before reading yields
-    // BrokenPipe, which we tolerate (we still surface the non-zero exit /
-    // timeout below). Mirrors the dispatcher's stdin-feed in
-    // `helpers::run_subprocess`.
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Err(e) = stdin.write_all(stdin_bytes).await
-            && e.kind() != std::io::ErrorKind::BrokenPipe
-        {
-            anyhow::bail!("claude-code provider: failed to write prompt to stdin: {e}");
-        }
-        drop(stdin);
-    }
-
-    // CR-2/CR-3: MOVE the reader handles into the drain future so that
-    // dropping `collect` on timeout closes the pipes before kill()/wait().
-    let stdout_pipe = child.stdout.take().expect("stdout configured as piped");
-    let stderr_pipe = child.stderr.take().expect("stderr configured as piped");
-
-    let collect = async {
-        // CR-1: bounded drain (NOT read_to_end) — reuse the dispatcher's
-        // read_capped so the 10 MiB cap is actually enforced while still
-        // draining-past-cap to avoid a pipe-buffer deadlock on a chatty child.
-        let (out_res, err_res, status_res) = tokio::join!(
-            crate::playbook::dispatch::helpers::read_capped(stdout_pipe, MAX_OUTPUT_BYTES),
-            crate::playbook::dispatch::helpers::read_capped(stderr_pipe, MAX_OUTPUT_BYTES),
-            child.wait()
-        );
-        let out = out_res
-            .map_err(|e| anyhow::anyhow!("claude-code provider: stdout drain failed: {e}"))?;
-        let err = err_res
-            .map_err(|e| anyhow::anyhow!("claude-code provider: stderr drain failed: {e}"))?;
-        let status =
-            status_res.map_err(|e| anyhow::anyhow!("claude-code provider: wait failed: {e}"))?;
-        Ok::<(Vec<u8>, Vec<u8>, std::process::ExitStatus), anyhow::Error>((out, err, status))
+    let spec = crate::playbook::dispatch::helpers::SubprocessSpec {
+        program,
+        args,
+        env,
+        cwd: None,
+        timeout,
+        stdin_data: Some(stdin_bytes),
     };
+    let outcome = crate::playbook::dispatch::helpers::run_subprocess(spec)
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "claude-code provider: failed to invoke `{}`: {error}. Ensure the Claude CLI is installed and run `claude login`.",
+                binary.display()
+            )
+        })?;
 
-    let (stdout_buf, stderr_buf, status) = match tokio::time::timeout(timeout, collect).await {
-        Ok(inner) => inner?,
-        Err(_) => {
-            // `collect` is dropped here (the `Err(_)` arm does not bind it),
-            // which drops the moved stdout/stderr readers → our pipe ends are
-            // closed BEFORE we kill()/wait() (CR-2/CR-3). kill_on_drop is a
-            // backstop; the explicit kill/wait reaps deterministically.
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            anyhow::bail!(
-                "claude-code provider: `claude --print` timed out after {}s.",
-                timeout.as_secs()
-            );
-        }
-    };
-
-    if !status.success() {
-        // `claude` reports not-logged-in / API errors with a non-zero exit
-        // code and a stderr message. Surface a bounded preview + the
-        // canonical remediation (AC-4). Bound to 500 bytes (UTF-8-safe) to
-        // limit info-leak through error chains. CR-5: reuse the dispatcher's
-        // `truncate_for_log` instead of a private copy.
-        let stderr_str = String::from_utf8_lossy(&stderr_buf);
-        let preview = crate::playbook::dispatch::claude_print::truncate_for_log(
-            stderr_str.trim(),
-            crate::playbook::dispatch::claude_print::MAX_PREVIEW_BYTES,
-        );
-        let code = status
-            .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "signal".to_string());
+    if outcome.timed_out {
         anyhow::bail!(
-            "claude-code provider: `claude --print` exited non-zero (code={code}). Are you \
-             logged in? Try `claude login`. stderr: {preview}"
+            "claude-code provider: `claude --print` timed out after {}s.",
+            timeout.as_secs()
         );
     }
+    if outcome.exit_code != Some(0) {
+        anyhow::bail!(
+            "claude-code provider: `claude --print` exited non-zero (code={:?}). Run `claude login`. Vendor stderr was withheld because it may contain prompt or environment data.",
+            outcome.exit_code
+        );
+    }
+    reject_claude_truncated_stdout(outcome.stdout_truncated)?;
 
-    Ok(stdout_buf)
+    Ok(outcome.stdout)
 }
 
 #[cfg(test)]
@@ -793,51 +768,100 @@ mod tests {
 mod claude_code_tests {
     use super::*;
 
+    #[test]
+    fn every_local_profile_uses_the_same_recursion_sentinel() {
+        assert_eq!(
+            CLAUDE_CODE_PROVIDER_ACTIVE_ENV,
+            LOCAL_LLM_PROVIDER_ACTIVE_ENV
+        );
+    }
+
+    #[test]
+    fn claude_rejects_truncated_and_terminal_control_output() {
+        let error =
+            reject_claude_truncated_stdout(true).expect_err("truncated stdout must be rejected");
+        assert!(error.to_string().contains("exceeded"));
+        reject_claude_truncated_stdout(false).expect("complete output");
+        assert_eq!(
+            local_cli::strip_terminal_controls("\u{001b}[31mCLAUDE_OK\u{001b}[0m"),
+            "CLAUDE_OK"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(env_path)]
+    fn claude_child_path_excludes_the_explicit_workspace() {
+        let selected = tempfile::tempdir().unwrap();
+        let workspace_dir = selected.path().join(".forgeplan");
+        std::fs::create_dir(&workspace_dir).unwrap();
+        let workspace_bin = selected.path().join("node_modules/.bin");
+        let path = std::env::join_paths([
+            workspace_bin.as_path(),
+            std::path::Path::new("relative-bin"),
+            std::path::Path::new("/usr/bin"),
+            std::path::Path::new("/bin"),
+        ])
+        .unwrap();
+        let previous = std::env::var_os("PATH");
+        unsafe { std::env::set_var("PATH", &path) };
+
+        let config = LlmConfig::default().with_workspace_dir(workspace_dir);
+        let env = build_claude_code_environment(
+            config
+                .runtime_workspace_root()
+                .expect("selected project root"),
+        );
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("PATH", value),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        let child_path = env.get("PATH").expect("safe PATH remains");
+        let entries = std::env::split_paths(std::ffi::OsStr::new(child_path)).collect::<Vec<_>>();
+        assert!(entries.iter().all(|entry| entry.is_absolute()));
+        assert!(
+            entries
+                .iter()
+                .all(|entry| !entry.starts_with(selected.path()))
+        );
+        assert!(!child_path.contains("relative-bin"));
+        assert_eq!(
+            env.get(LOCAL_LLM_PROVIDER_ACTIVE_ENV).map(String::as_str),
+            Some("1")
+        );
+    }
+
     // ── Pure arg-builder tests (no spawn, no env) ──────────────────────
 
     #[test]
-    fn build_argv_minimal_no_model_no_system() {
-        // F-1/F-2: the prompt is NOT in argv (it travels via stdin). The
-        // minimal argv is just the stock print/json flags.
-        let argv = build_claude_code_argv(None, None);
+    fn build_argv_contains_only_fixed_flags_and_validated_model() {
         assert_eq!(
-            argv,
+            build_claude_code_argv(None),
             vec![
                 "--print".to_string(),
                 "--output-format".to_string(),
                 "json".to_string(),
             ]
         );
-    }
-
-    #[test]
-    fn build_argv_with_model_and_system() {
-        let argv = build_claude_code_argv(Some("be terse"), Some("claude-sonnet"));
         assert_eq!(
-            argv,
+            build_claude_code_argv(Some("claude-sonnet")),
             vec![
                 "--print".to_string(),
                 "--output-format".to_string(),
                 "json".to_string(),
                 "--model".to_string(),
                 "claude-sonnet".to_string(),
-                "--append-system-prompt".to_string(),
-                "be terse".to_string(),
             ]
         );
-    }
-
-    #[test]
-    fn build_argv_omits_model_when_none_keeps_system() {
-        let argv = build_claude_code_argv(Some("sys"), None);
-        assert!(!argv.iter().any(|a| a == "--model"));
-        assert!(argv.iter().any(|a| a == "--append-system-prompt"));
-        // system value is its own argv slot, not concatenated
-        let idx = argv
-            .iter()
-            .position(|a| a == "--append-system-prompt")
-            .unwrap();
-        assert_eq!(argv[idx + 1], "sys");
+        let argv = build_claude_code_argv(None);
+        assert!(!argv.iter().any(|arg| arg == "--append-system-prompt"));
+        assert!(!argv.iter().any(|arg| arg == "--evil-system"));
+        assert_eq!(
+            local_cli::combine_prompt("user", Some("--evil-system")),
+            "<system-instructions>\n--evil-system\n</system-instructions>\n\n<user-request>\nuser\n</user-request>"
+        );
     }
 
     /// F-1/F-2 (CWE-78 single-slot guarantee, restated for the stdin design):
@@ -849,7 +873,7 @@ mod claude_code_tests {
     #[test]
     fn build_argv_omits_prompt_entirely_cwe78() {
         let nasty = "--evil; rm -rf / && $(whoami) `id` | cat";
-        let argv = build_claude_code_argv(None, None);
+        let argv = build_claude_code_argv(None);
         // No `-p` slot, and nothing in argv equals the prompt.
         assert!(!argv.iter().any(|a| a == "-p"), "prompt must not be argv");
         assert!(
@@ -1250,7 +1274,7 @@ mod claude_code_tests {
 
         // (1) argv has no `-p` and does not carry the prompt.
         let dash_prompt = "--foo bar --output-format=evil";
-        let argv = build_claude_code_argv(None, None);
+        let argv = build_claude_code_argv(None);
         assert!(!argv.iter().any(|a| a == "-p"), "argv must have no -p slot");
         assert!(
             !argv.iter().any(|a| a.as_str() == dash_prompt),

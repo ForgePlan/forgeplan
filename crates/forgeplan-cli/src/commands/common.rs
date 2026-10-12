@@ -274,27 +274,29 @@ pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::Llm
         .llm
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "LLM not configured. Missing `llm:` block in .forgeplan/config.yaml — \
-                 the `reason` command requires an external LLM provider.\n\
-                 Fix: edit .forgeplan/config.yaml and add an `llm:` block; \
-                 then export the API key via .forgeplan/secrets.env\n\
-                 Copy-paste:\n\
+                "LLM not configured. Missing `llm:` block in .forgeplan/config.yaml.\n\
+                 Fix: add either an HTTP provider with `api_key_env`, or an explicit \
+                 subscription CLI provider with its stock login\n\
+                 Copy-paste (OpenAI subscription via Codex CLI):\n\
                  \n\
-                 # 1) .forgeplan/config.yaml\n\
+                 # .forgeplan/config.yaml\n\
                  llm:\n\
-                 \x20\x20provider: gemini\n\
-                 \x20\x20model: models/gemini-2.5-flash\n\
-                 \x20\x20api_key_env: GEMINI_API_KEY\n\
+                 \x20\x20provider: codex-cli\n\
+                 \x20\x20model: \"\"\n\
                  \n\
-                 # 2) .forgeplan/secrets.env  (gitignored; source it from your shell rc)\n\
-                 export GEMINI_API_KEY=<your-key-here>"
+                 # one-time stock CLI login\n\
+                 codex login\n\
+                 \n\
+                 API alternative: set `provider: openai`, `model: gpt-5-mini`, \
+                 `api_key_env: OPENAI_API_KEY`, then export that key from \
+                 .forgeplan/secrets.env"
             )
         })?
         .with_env_overrides();
-    // Keyless providers (ollama, claude-code per ADR-017) operate without
-    // an `api_key_env`: ollama hits a local HTTP server, claude-code reuses
-    // the local `claude login` keychain session. Requiring an API key for
-    // them would reject a valid config (ADR-017 AC-7) — short-circuit OK.
+    // Keyless providers operate without `api_key_env`: ollama uses local HTTP;
+    // claude-code and the closed local CLI profile set reuse each stock CLI's
+    // login session. Requiring an API key for them would reject a valid config,
+    // so the key gate short-circuits here.
     if llm.is_keyless_provider() {
         return Ok(llm);
     }
@@ -311,10 +313,10 @@ pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::Llm
         let env_raw = llm.api_key_env.as_deref().unwrap_or("GEMINI_API_KEY");
         let env = sanitize_for_hint(env_raw);
         anyhow::bail!(
-            "API key not found for LLM provider '{provider}'. Environment variable \
-             `{env}` is unset — the `reason` command needs this to call the LLM.\n\
-             Fix: export {env} in .forgeplan/secrets.env (gitignored) and source \
-             it from your shell rc\n\
+            "API key not found for HTTP LLM provider '{provider}'. Environment variable \
+             `{env}` is unset.\n\
+             Fix: export {env} in .forgeplan/secrets.env (gitignored), or choose an explicit \
+             local provider such as `codex-cli` after running its stock login\n\
              Copy-paste:\n\
              \n\
              # .forgeplan/secrets.env\n\

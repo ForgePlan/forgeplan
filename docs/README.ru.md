@@ -46,6 +46,7 @@ docs/
 |---|---|
 | [AGENT-ENFORCEMENT.md](operations/AGENT-ENFORCEMENT.md) | Правила и ограничения для AI-агентов, работающих в проекте |
 | [AGENT-HOOKS.md](operations/AGENT-HOOKS.md) | Хуки PreToolUse / PostToolUse (безопасность, форматирование, тесты) |
+| [LLM-PROVIDERS.md](operations/LLM-PROVIDERS.md) | Настройка LLM: HTTP/Ollama и явные подписочные CLI-профили (`claude-code`, `codex-cli`, `devin-cli`, `gemini-cli`, `cursor-agent`), режимы безопасности, восстановление входа и ограничения personal/local-only |
 | [MULTI-AGENT.md](operations/MULTI-AGENT.md) | **v0.24.0+ multi-agent dispatch** — MCP-инструменты `forgeplan_dispatch/claim/release/claims`, file-overlap detection, skill routing |
 | [REPO-PROTECTION-GUIDE.md](operations/REPO-PROTECTION-GUIDE.md) | Защита веток, правила PR, предотвращение деструктивных действий |
 | [GIT-WORKFLOW.ru.md](operations/GIT-WORKFLOW.ru.md) | Полные Git-правила — lifecycle веток, PR pipeline, процесс релиза, worktrees |

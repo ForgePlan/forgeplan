@@ -1,5 +1,6 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 use crate::fpf::core::config::FpfConfig;
 
@@ -256,9 +257,24 @@ pub struct GradeProfileYaml {
     pub domains: std::collections::HashMap<String, String>,
 }
 
+/// Subscription-authenticated local CLIs supported as explicit LLM providers.
+///
+/// Closed by design: each variant maps to a reviewed stock binary and fixed
+/// argv profile. Arbitrary command templates would turn `config.yaml` into a
+/// command-execution surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalCliProvider {
+    Codex,
+    Devin,
+    Gemini,
+    Cursor,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    /// Provider: openai, claude, gemini, ollama, custom
+    /// Provider: HTTP (`openai`, `claude`, `gemini`, `ollama`, `custom`) or
+    /// subscription CLI (`claude-code`, `codex-cli`, `devin-cli`, `gemini-cli`,
+    /// `cursor-agent`).
     #[serde(default = "default_provider")]
     pub provider: String,
     /// Model name
@@ -300,6 +316,13 @@ pub struct LlmConfig {
     /// `route` or `capture` should still fail in seconds, not minutes.
     #[serde(default)]
     pub reason_timeout_seconds: Option<u64>,
+    /// Runtime-only `.forgeplan` directory selected by the caller.
+    ///
+    /// MCP requests can target a workspace other than the server process CWD.
+    /// This field is never read from or written to `config.yaml`.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub runtime_workspace_dir: Option<PathBuf>,
 }
 
 fn default_provider() -> String {
@@ -346,6 +369,7 @@ impl Default for LlmConfig {
             reason_temperature: None,
             timeout_seconds: default_timeout_seconds(),
             reason_timeout_seconds: None,
+            runtime_workspace_dir: None,
         }
     }
 }
@@ -380,6 +404,20 @@ impl LlmConfig {
             self.api_key_env = Some(v);
         }
         self
+    }
+
+    /// Attach the workspace selected by the command/MCP resolver.
+    ///
+    /// `workspace_dir` is the `.forgeplan/` directory, not the project root.
+    pub fn with_workspace_dir(mut self, workspace_dir: impl Into<PathBuf>) -> Self {
+        self.runtime_workspace_dir = Some(workspace_dir.into());
+        self
+    }
+
+    /// Project root used to exclude workspace-owned executables from local
+    /// provider PATH resolution.
+    pub(crate) fn runtime_workspace_root(&self) -> Option<&Path> {
+        self.runtime_workspace_dir.as_deref().and_then(Path::parent)
     }
 
     /// Resolve base URL from provider preset or custom override.
@@ -423,7 +461,11 @@ impl LlmConfig {
                 _ => None,
             })?;
 
-        // Try workspace-aware resolver first (process env → secrets.env).
+        // Prefer the workspace explicitly selected by the command/MCP
+        // resolver. Fall back to CWD discovery for legacy callers.
+        if let Some(ws) = self.runtime_workspace_dir.as_deref() {
+            return crate::config::secrets::resolve_api_key(ws, env_name);
+        }
         let cwd = std::env::current_dir().ok();
         if let Some(cwd) = cwd
             && let Some(ws) = crate::workspace::find_workspace(&cwd)
@@ -455,27 +497,56 @@ impl LlmConfig {
     pub fn is_claude_code(&self) -> bool {
         self.provider == "claude-code"
     }
+    /// Resolve an opt-in subscription-authenticated local CLI provider.
+    ///
+    /// This mapping is deliberately exact and does not participate in
+    /// provider auto-detection.
+    pub(crate) fn local_cli_provider(&self) -> Option<LocalCliProvider> {
+        match self.provider.as_str() {
+            "codex-cli" => Some(LocalCliProvider::Codex),
+            "devin-cli" => Some(LocalCliProvider::Devin),
+            "gemini-cli" => Some(LocalCliProvider::Gemini),
+            "cursor-agent" => Some(LocalCliProvider::Cursor),
+            _ => None,
+        }
+    }
 
-    /// Whether this provider needs NO API key to operate. Two providers
-    /// qualify:
-    /// - `ollama` — local HTTP server, no auth header.
-    /// - `claude-code` — reuses the local `claude login` keychain session
-    ///   (ADR-017), so it must NOT be gated behind an `api_key_env`.
+    /// Effective model for the closed local-CLI profiles.
     ///
-    /// Callers that decide "is the LLM usable?" by probing
-    /// [`Self::resolve_api_key`] MUST treat these providers as available
-    /// even when `resolve_api_key()` returns `None` (it always does for
-    /// keyless providers). Used by `routing::route_with_llm_and_context`
-    /// and `cli::commands::common::require_llm_config` so an explicitly
-    /// configured `claude-code` provider is reachable (ADR-017 AC-6/AC-7).
+    /// `gpt-4o-mini` is the historical HTTP default, not a portable CLI
+    /// model. Treat it as "unspecified" when the provider is switched to a
+    /// local CLI unless the operator supplies another model explicitly.
+    pub(crate) fn local_cli_model(&self) -> &str {
+        if self.model == default_model() {
+            ""
+        } else {
+            &self.model
+        }
+    }
+
+    /// Stock recovery command for subscription-authenticated CLI providers.
     ///
-    /// NOTE (ADR-017 AC-6): this method does NOT make `claude-code` an
-    /// *auto-detected* default — it only stops the keyless providers from
-    /// being mis-classified as "unavailable". Provider selection still
-    /// requires explicit `provider: claude-code` (or
-    /// `FORGEPLAN_LLM_PROVIDER=claude-code`).
+    /// Static strings only: callers may safely surface these without echoing
+    /// vendor stderr, prompts, paths, or environment values.
+    pub fn local_cli_login_hint(&self) -> Option<&'static str> {
+        match self.provider.as_str() {
+            "claude-code" => Some("run `claude login`"),
+            "codex-cli" => Some("run `codex login`"),
+            "devin-cli" => Some("run `devin auth login` and verify with `devin auth status`"),
+            "gemini-cli" => Some("start `gemini` interactively and complete its login flow"),
+            "cursor-agent" => {
+                Some("run `cursor-agent login` and verify with `cursor-agent status`")
+            }
+            _ => None,
+        }
+    }
+    /// Whether this provider needs no API key in ForgePlan itself.
+    ///
+    /// `ollama` is local HTTP. `claude-code` and the providers returned by
+    /// [`Self::local_cli_provider`] reuse the stock CLI's local login session.
+    /// None are auto-detected; users must opt in via `provider`.
     pub fn is_keyless_provider(&self) -> bool {
-        self.provider == "ollama" || self.is_claude_code()
+        self.provider == "ollama" || self.is_claude_code() || self.local_cli_provider().is_some()
     }
 }
 
@@ -831,11 +902,10 @@ mod llm_resolve_api_key_tests {
 }
 
 #[cfg(test)]
-mod claude_code_provider_tests {
-    //! ADR-017 AC-6 — `claude-code` must NEVER be the auto-detected
-    //! default. Provider selection stays key-based / explicit. These tests
-    //! pin that the keyless-provider helper does not silently route
-    //! subscription usage.
+mod local_cli_provider_tests {
+    //! Local subscription providers must NEVER be auto-detected. Provider
+    //! selection stays key-based / explicit; keyless classification only
+    //! lets an explicitly configured provider reach its stock CLI.
     use super::*;
 
     #[test]
@@ -846,6 +916,43 @@ mod claude_code_provider_tests {
         assert_eq!(cfg.provider, "openai");
         assert!(!cfg.is_claude_code());
         assert!(!cfg.is_keyless_provider());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(env_path)]
+    fn installed_stock_binaries_do_not_change_the_default_provider() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        for binary in ["claude", "codex", "devin", "gemini", "cursor-agent"] {
+            let path = directory.path().join(binary);
+            std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+        let previous_path = std::env::var_os("PATH");
+        let previous_provider = std::env::var_os("FORGEPLAN_LLM_PROVIDER");
+        unsafe {
+            std::env::set_var("PATH", directory.path());
+            std::env::remove_var("FORGEPLAN_LLM_PROVIDER");
+        }
+
+        let config = LlmConfig::default().with_env_overrides();
+
+        unsafe {
+            match previous_path {
+                Some(value) => std::env::set_var("PATH", value),
+                None => std::env::remove_var("PATH"),
+            }
+            match previous_provider {
+                Some(value) => std::env::set_var("FORGEPLAN_LLM_PROVIDER", value),
+                None => std::env::remove_var("FORGEPLAN_LLM_PROVIDER"),
+            }
+        }
+        assert_eq!(config.provider, "openai");
+        assert!(config.local_cli_provider().is_none());
     }
 
     #[test]
@@ -867,18 +974,33 @@ mod claude_code_provider_tests {
     }
 
     #[test]
-    fn keyless_provider_set_is_exactly_ollama_and_claude_code() {
+    fn keyless_provider_set_includes_only_local_or_subscription_transports() {
         let mut cfg = LlmConfig::default();
-        for (p, expect) in [
-            ("openai", false),
-            ("claude", false),
-            ("gemini", false),
-            ("custom", false),
-            ("ollama", true),
-            ("claude-code", true),
+        for (provider, expected_keyless, expected_local) in [
+            ("openai", false, None),
+            ("claude", false, None),
+            ("gemini", false, None),
+            ("custom", false, None),
+            ("ollama", true, None),
+            ("claude-code", true, None),
+            ("codex-cli", true, Some(LocalCliProvider::Codex)),
+            ("devin-cli", true, Some(LocalCliProvider::Devin)),
+            ("gemini-cli", true, Some(LocalCliProvider::Gemini)),
+            ("cursor-agent", true, Some(LocalCliProvider::Cursor)),
+            ("codex", false, None),
+            ("devin", false, None),
         ] {
-            cfg.provider = p.to_string();
-            assert_eq!(cfg.is_keyless_provider(), expect, "provider={p}");
+            cfg.provider = provider.to_string();
+            assert_eq!(
+                cfg.is_keyless_provider(),
+                expected_keyless,
+                "provider={provider}"
+            );
+            assert_eq!(
+                cfg.local_cli_provider(),
+                expected_local,
+                "provider={provider}"
+            );
         }
     }
 }
@@ -1070,6 +1192,17 @@ mod integrity_tests {
         .expect("both budgets must be settable from config.yaml");
         assert_eq!(parsed.timeout_seconds, 45);
         assert_eq!(parsed.reason_timeout_seconds, Some(900));
+    }
+
+    #[test]
+    fn runtime_workspace_is_not_serialized_and_exposes_project_root() {
+        let cfg = LlmConfig::default().with_workspace_dir("/tmp/project/.forgeplan");
+        assert_eq!(
+            cfg.runtime_workspace_root(),
+            Some(Path::new("/tmp/project"))
+        );
+        let yaml = serde_yaml::to_string(&cfg).expect("serialize config");
+        assert!(!yaml.contains("runtime_workspace"));
     }
 
     /// A config written before these fields existed must still load.

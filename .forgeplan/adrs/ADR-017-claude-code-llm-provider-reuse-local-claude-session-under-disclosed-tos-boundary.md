@@ -2,6 +2,8 @@
 depth: standard
 id: ADR-017
 kind: adr
+last_modified_at: 2026-10-12T11:08:53.315589+00:00
+last_modified_by: omp-coding-agent/1.0.0
 status: active
 title: claude-code LLM provider — reuse local Claude session under disclosed ToS boundary
 ---
@@ -29,17 +31,17 @@ The decision is whether — and how — to add a `claude-code` LLM provider, giv
 
 Chosen: **Option 1 — `claude-code` provider via local `claude --print`**, BUT shipped as an explicitly-bounded, disclosed feature, not a default.
 
-`LlmClient::generate` (`crates/forgeplan-core/src/llm/mod.rs`) gains a `provider == "claude-code"` branch that, instead of `http.post`, spawns `claude --print --output-format json [--model <model>] [--append-system-prompt <system>]` (interactive auth — reuse `claude login` keychain creds, never `--bare`), reusing the `claude_print` spawn + envelope parse, and returns the `.result` text. **The prompt is fed on the child's stdin, NOT as a `-p` argv element** — a dash-leading prompt would otherwise be mis-parsed as a flag (security review F-2, verified live against `claude` v2.1.165) and this removes the external-parser dependency for prompt content. The `model` string is **charset-gated** (`^[A-Za-z0-9._:-]{1,64}$`, leading `-` rejected) before it reaches argv, as defence-in-depth against argv/flag injection through an untrusted config value (security review F-1) — the sibling dispatcher allowlists its argv strings and this provider now does too. Config: `provider: claude-code` with NO `api_key_env`. Model default follows the configured `model` (omitted → claude picks its default); overridable.
+`LlmClient::generate` (`crates/forgeplan-core/src/llm/mod.rs`) uses a `provider == "claude-code"` branch that, instead of `http.post`, spawns `claude --print --output-format json [--model <model>]` (interactive auth — reuse `claude login` keychain creds, never `--bare`), reuses the shared bounded subprocess runner + envelope parser, and returns the `.result` text. **Repository-controlled system instructions and the user prompt are framed together and fed on the child's stdin, never argv.** A dash-leading value would otherwise reach the vendor option parser or process listing. The `model` string is charset-gated (`^[A-Za-z0-9._:-]{1,64}$`, leading `-` rejected) before it reaches argv.
 
 ### Mandatory guardrails (acceptance criteria)
 
 - **AC-1 Disclosure**: first use (and the docs + config template) MUST state, verbatim in substance: *"claude-code provider reuses your local `claude login` session under your Claude subscription. Personal/local development use only — not for production or shared/CI environments. Subject to Anthropic's Terms; ForgePlan does not spoof the Claude Code client identity."*
 - **AC-2 No identity spoofing**: invoke the stock `claude` binary with stock flags. Do NOT set headers / env to impersonate the Claude Code client. (This is the specific behavior Anthropic enforced against.)
-- **AC-3 Recursion guard**: because `forgeplan serve` may itself run inside Claude Code, shelling `claude --print` could nest. Set a sentinel env (e.g. `FORGEPLAN_CLAUDE_CODE_PROVIDER_ACTIVE=1`) on the child and refuse (clear error) if already set — bounded depth 1, no fork-bomb.
+- **AC-3 Recursion guard**: because `forgeplan serve` may itself run inside Claude Code, shelling `claude --print` could nest. Set the shared sentinel env `FORGEPLAN_LOCAL_LLM_PROVIDER_ACTIVE=1` on the child and refuse (clear error) if already set — bounded depth 1, no fork-bomb.
 - **AC-4 Graceful degradation**: if `claude` is not on PATH / not logged in, fail with a helpful message (mirrors the existing "LLM provider unavailable" pattern), never a panic.
 - **AC-5 Env hygiene**: do not leak unrelated secrets to the child beyond what `claude` needs; document the known subprocess-env caveat.
 - **AC-6 Not the auto-detect default**: the provider auto-detect order stays key-based (`openai`→`anthropic`→`gemini`); `claude-code` is opt-in only (explicit `provider: claude-code` or `FORGEPLAN_LLM_PROVIDER=claude-code`), so nobody silently routes subscription usage.
-- **AC-7 Keyless config valid**: `provider: claude-code` MUST be a valid configuration with NO `api_key_env` (the HTTP providers require a key; `claude-code`, like `ollama`, is keyless). The api-key validation gate (CLI `require_llm_config`, `routing`) MUST exempt keyless providers — without making them auto-defaults (AC-6 still holds). The set of keyless providers is exactly `{ollama, claude-code}`.
+- **AC-7 Keyless config valid**: `provider: claude-code` MUST be a valid configuration with NO `api_key_env` (the HTTP providers require a key; `claude-code`, like `ollama`, is keyless). The api-key validation gate (CLI `require_llm_config`, `routing`) MUST exempt keyless providers — without making them auto-defaults (AC-6 still holds). The keyless set is `{ollama, claude-code, codex-cli, devin-cli, gemini-cli, cursor-agent}`; all local profiles remain explicit opt-ins.
 
 ### Consequences
 
@@ -49,7 +51,7 @@ Chosen: **Option 1 — `claude-code` provider via local `claude --print`**, BUT 
 
 ## Validation
 
-Security review (CWE-78 command-injection surface: prompt passed as a single argv element, fixed binary, no shell string; recursion guard; env hygiene) + tester (mock-binary harness via `FORGEPLAN_CLAUDE_BIN`) gate before activation. Guardian gate confirms AC-1..AC-7 before merge.
+Security review (CWE-78 command-injection surface: system and user prompt passed through stdin, fixed binary, no shell string; recursion guard; env hygiene) + tester (mock-binary harness via `FORGEPLAN_CLAUDE_BIN`) gate before activation. Guardian gate confirms AC-1..AC-7 before merge.
 
 ## More Information
 
@@ -57,6 +59,4 @@ Security review (CWE-78 command-injection surface: prompt passed as a single arg
 - ForgePlan existing shell-out: ADR-011 (plugin/agent dispatch via `claude --print`), EVID-093 (spike), `claude_print.rs`.
 - Anthropic Jan-2026 enforcement against subscription-OAuth third-party tools / client-identity spoofing.
 - Supersedes the workaround in issue #382 (recommend `ollama` for key-free local use).
-
-
 

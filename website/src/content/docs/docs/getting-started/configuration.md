@@ -84,27 +84,47 @@ llm:
   # max_tokens: 4096
   # temperature: 0.7
   # reason_temperature: 0.3      # lower temp for structured ADI output
+  # timeout_seconds: 120         # ordinary LLM-backed calls
+  # reason_timeout_seconds: 600  # forgeplan reason only
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `provider` | `enum` | `openai` | One of `openai`, `claude`, `gemini`, `ollama`, or `custom`. Determines default base URL and header style. |
-| `model` | `string` | `gpt-4o-mini` | Model identifier passed verbatim to the provider. See recommended models below. |
-| `api_key_env` | `string?` | provider-specific | Name of the environment variable holding the API key. If omitted, a provider-specific default is used. |
-| `base_url` | `string?` | provider-specific | Override base URL for self-hosted or proxy endpoints. Useful for Ollama, LiteLLM, or Azure-compatible gateways. |
+| `provider` | `enum` | `openai` | HTTP: `openai`, `claude`, `gemini`, `ollama`, `custom`. Subscription CLI: `claude-code`, `codex-cli`, `devin-cli`, `gemini-cli`, `cursor-agent`. |
+| `model` | `string` | `gpt-4o-mini` | HTTP model id. Local CLI ids are limited to `[A-Za-z0-9._:-]` (64 bytes); set `model: ""` to use the CLI default. |
+| `api_key_env` | `string?` | provider-specific | HTTP providers only: name of the environment variable holding the API key. |
+| `base_url` | `string?` | provider-specific | HTTP providers only: override for self-hosted or proxy endpoints. Useful for Ollama, LiteLLM, or Azure-compatible gateways. |
 | `max_tokens` | `u32` | `4096` | Max response tokens. Increase for long ADI reasoning; decrease to save cost. |
 | `temperature` | `f32` | `0.7` | Sampling temperature for `generate`. `0.0` = deterministic, `1.0` = creative. |
 | `reason_temperature` | `f32?` | - | Override used only by `forgeplan reason`. Structured ADI output benefits from a lower value (typically `0.2`–`0.3`). Falls back to `temperature` if unset. |
+| `timeout_seconds` | `u64` | `120` | Total timeout for ordinary LLM-backed calls, including local CLI stdin delivery and output drain. |
+| `reason_timeout_seconds` | `u64?` | effective `600` | `forgeplan reason`-only override; it replaces `timeout_seconds` for ADI. |
 
 ### Provider matrix
 
-| Provider | Default API key env | Default base URL | Notes |
-|----------|---------------------|------------------|-------|
-| `openai` | `OPENAI_API_KEY` | `https://api.openai.com/v1` | OpenAI-compatible. |
-| `claude` | `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1` | Uses Anthropic-specific headers automatically. |
-| `gemini` | `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com/v1beta/openai` | Uses Google's OpenAI-compatible shim. |
-| `ollama` | - (none) | `http://localhost:11434/v1` | Fully local. No API key required. |
-| `custom` | - | - | You **must** set `base_url` and `api_key_env` explicitly. |
+| Provider | Binary / transport | Login | Safety mode | Limitation | Production |
+|----------|--------------------|-------|-------------|------------|------------|
+| `openai` | HTTP | `OPENAI_API_KEY` | API boundary | Billable API | supported |
+| `claude` | HTTP | `ANTHROPIC_API_KEY` | API boundary | Billable API | supported |
+| `gemini` | HTTP | `GEMINI_API_KEY` | API boundary | Billable API | supported |
+| `ollama` | local HTTP | none | local model | Operator-owned server | supported |
+| `custom` | HTTP | explicit `api_key_env` | operator-defined | Must set `base_url` | supported |
+| `claude-code` | `claude`; prompt via stdin | `claude login` | no tools granted | Inherits the caller working directory | local only |
+| `codex-cli` | `codex`; prompt via stdin | `codex login` / `codex login status` | ephemeral read-only sandbox + isolated home | Subscription quota | local only |
+| `devin-cli` | `devin`; private prompt file | `devin auth login` / `devin auth status` | sandbox in an empty temporary workspace; no auto-approval | No documented strict read-only mode; disabled on Windows | local only |
+| `gemini-cli` | `gemini`; prompt via stdin | interactive `gemini` login | sandbox + default approval in an empty temporary workspace | Headless entitlement varies by account/product | local only |
+| `cursor-agent` | `cursor-agent`; prompt via stdin | `cursor-agent login` / `cursor-agent status` | `ask` + sandbox in an empty temporary workspace | Agent CLI, not completion API | local only |
+
+Subscription CLI providers are explicit opt-ins; ForgePlan never auto-detects
+them and never reads or copies their login tokens. They are for personal/local
+development, not production, shared machines, or CI. Prompts are passed as
+stdin/private files, model names are validated, and API-key variables are not
+forwarded. The four new profiles (`codex-cli`, `devin-cli`, `gemini-cli`,
+`cursor-agent`) run in new temporary workspaces; the existing `claude-code`
+provider retains its caller-working-directory behavior while sharing the
+bounded subprocess runner and recursion guard. If `model` is omitted for one
+of the four new profiles, the historical HTTP default `gpt-4o-mini` is treated
+as unspecified; set `model: ""` explicitly for the same result.
 
 ### Recommended models (2026)
 
