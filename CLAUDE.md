@@ -88,6 +88,17 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 ## Current status
 
+- **v0.38.0** (2026-10-12) — **используем уже оплаченную AI-подписку, не
+  превращая ForgePlan в лазейку для произвольных команд**. `codex-cli`,
+  `devin-cli`, `gemini-cli` и `cursor-agent` запускают штатные локальные CLI
+  через закрытые профили: фиксированные аргументы, приватный временный каталог,
+  ограниченные stdout/stderr и время выполнения, отфильтрованное окружение,
+  проверенное имя модели и общий с `claude-code` запрет рекурсии. Для OpenAI
+  рекомендован `codex-cli`: ephemeral + read-only, реальный ADI подтверждён без
+  API-ключа (PRD-087, SPEC-007, RFC-014, ADR-027, EVID-172). Заодно восстановлена
+  совместимость с массивом событий `claude --print` 2.x (#493). Security:
+  `rustls` 0.23.45 закрывает RUSTSEC-2026-0285, `xxhash-rust` 0.8.16 закрывает
+  LOW advisory; остаток разобран в dependabot-triage за 2026-10-12.
 - **v0.37.0** (2026-09-08) — **trust the number, the write, and the gate that checks it**.
   An EvidencePack with no `verdict` and no `congruence_level` scored a flat **1.00** —
   the opposite of what every document describing this system says. `forgeplan deprecate`
@@ -166,7 +177,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
   Migration: run `forgeplan score --all`; expect a small number of artifacts whose
   only evidence was retired to drop to 0 (1 of 89 here) — that is real debt the
   old formula masked.
-- **82 CLI commands** (+`setup`; прежние «82» считали авто-`help` от clap), **73 MCP tools**, **3331 tests + 9 doc-tests** (CI `nextest`), **0 warnings** on both feature configs
+- **82 CLI commands** (+`setup`; прежние «82» считали авто-`help` от clap), **73 MCP tools**, **3349 tests + 9 doc-tests** (CI `nextest`; 5 doc-tests pass, 4 ignored), **0 warnings** on both feature configs
 - **EPIC-001/002/003 ✅**, **Epic #287 ✅** (brownfield). Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 on `tract` (pure-Rust inference — RFC-013; feature-gated, graceful fallback)
 

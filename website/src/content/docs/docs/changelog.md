@@ -23,20 +23,51 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-10-12
+
+Sprint headline: **Use the AI subscription you already have - without turning
+ForgePlan into a shell escape hatch.**
+
+Scope note: no existing provider name, command, flag, or artifact schema changes.
+The four new providers are explicit local-development opt-ins. No migration is
+required.
+
 ### Added
 
 - **Subscription-authenticated local CLI providers for ADI and every other
-  LLM-backed command** (PRD-087, RFC-014, ADR-027). Set `llm.provider` to
-  `codex-cli`, `devin-cli`, `gemini-cli`, or `cursor-agent` to reuse the stock
-  CLI's existing login without giving ForgePlan an API key. Each closed profile
-  uses fixed reviewed arguments, the strongest documented safety mode, a
-  private temporary workspace, bounded process output and timeout, filtered
-  environment variables, validated model names, and one recursion guard shared
-  with `claude-code`. `codex-cli` runs ephemeral/read-only and is the recommended
-  OpenAI subscription route. Devin has no documented strict read-only mode and
-  is disabled on Windows because its required sandbox flag is unsupported.
-  These profiles are explicit opt-ins for personal/local development, not
+  LLM-backed command** (PRD-087, SPEC-007, RFC-014, ADR-027, EVID-172). Set
+  `llm.provider` to `codex-cli`, `devin-cli`, `gemini-cli`, or `cursor-agent`
+  to reuse the stock CLI's existing login without giving ForgePlan an API key.
+  Each closed profile uses fixed reviewed arguments, the strongest documented
+  safety mode, a private temporary workspace, bounded process output and
+  timeout, filtered environment variables, validated model names, and the same
+  recursion guard as `claude-code`. `codex-cli` runs ephemeral/read-only and is
+  the recommended OpenAI subscription route. Devin has no documented strict
+  read-only mode and is disabled on Windows because its required sandbox flag
+  is unsupported. These profiles are for personal/local development, not
   production, shared machines, or CI.
+
+### Fixed
+
+- **Claude CLI 2.x responses work again** (#493). The CLI now accepts the
+  event-array envelope emitted by current `claude --print`, while retaining the
+  legacy object response and rejecting malformed or unsuccessful results with
+  their real error.
+
+### Security
+
+- Patched `rustls` 0.23.40 → 0.23.45 for RUSTSEC-2026-0285 and
+  `xxhash-rust` 0.8.15 → 0.8.16 for its Dependabot advisory. Remaining alerts
+  are classified in
+  `docs/operations/dependabot-triage-2026-10-12.md`: unreachable `rmcp`
+  transports are scheduled in #515, the static website dependency wave in
+  #485, and the transitive `lru` finding remains accepted with a concrete
+  upstream trigger.
+
+### Internal
+
+- Activated 51 already-shipped evidence packs and nine PRDs, then linked the
+  final graph orphan; no runtime behavior changed.
 
 ## [0.37.0] - 2026-09-08
 
