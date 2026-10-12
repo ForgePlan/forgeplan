@@ -9,7 +9,7 @@ links:
   relation: informs
 - target: ADR-003
   relation: informs
-status: draft
+status: active
 title: Phase 3c sprint closure — typed MutationResult migration with 2-round audit (Wave 1+2 + R1+R2 fixes)
 ---
 
@@ -151,5 +151,6 @@ gap.
 | ADR-003 | supports |
 | EVID-094 | informs (PR #230 baseline measurement, pre-Phase-3c) |
 | PROB-049 | informs (Phase 3d follow-up tracker, created from these audits) |
+
 
 

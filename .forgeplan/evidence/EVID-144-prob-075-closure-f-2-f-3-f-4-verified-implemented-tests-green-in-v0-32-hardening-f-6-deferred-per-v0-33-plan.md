@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-075
   relation: informs
-status: draft
+status: active
 title: 'PROB-075 closure: F-2/F-3/F-4 verified implemented + tests green in v0.32 hardening; F-6 deferred per v0.33 plan'
 ---
 
@@ -44,5 +44,6 @@ PROB-075 is closed as **resolved (F-2/F-3/F-4)** with **F-6 deferred**. F-6 is a
 
 - Verified on `origin/dev` @ post-#369 merge.
 - Code: `crates/forgeplan-core/src/db/store.rs` (with_retry_on_stale, is_stale_manifest_error, should_skip_refresh), `crates/forgeplan-core/src/projection/error.rs` (MutationError::RetryExhausted), `crates/forgeplan-mcp/src/server.rs` (RetryExhausted hint).
+
 
 

@@ -9,7 +9,7 @@ links:
   relation: informs
 - target: ADR-018
   relation: informs
-status: draft
+status: active
 title: 'Ресёрч space-mesh: 5 досье движков + 4 гипотезы, композиция H3+H4 выбрана'
 ---
 
@@ -228,3 +228,4 @@ realtime / группировка (ergonomics) и события (reactivity).
   `shape/space-mesh` от `origin/dev`, версия 0.33.0 (ресёрч делался на 0.32.1 —
   ни один из затронутых choke-point'ов между версиями не менялся, но это
   проверяется чтением кода перед реализацией, а не считается доказанным здесь).
+

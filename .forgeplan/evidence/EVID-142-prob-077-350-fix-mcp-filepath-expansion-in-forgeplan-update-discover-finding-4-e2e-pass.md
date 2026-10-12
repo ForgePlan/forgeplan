@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-077
   relation: informs
-status: draft
+status: active
 title: 'PROB-077/#350 fix: MCP @filepath expansion in forgeplan_update + discover_finding — 4 e2e PASS'
 ---
 
@@ -49,5 +49,6 @@ Gate: forgeplan-mcp **259 passed / 0 failed**, clippy 0 (`--all-targets`), fmt 0
 - Branch: `fix/issue-350-mcp-update-filepath` (off `origin/dev`)
 - Fix commit: `0e3d8f6`
 - Files: `crates/forgeplan-mcp/src/server.rs` (helper + 2 handler call-sites), `crates/forgeplan-mcp/tests/mcp_update_filepath_e2e.rs` (new)
+
 
 

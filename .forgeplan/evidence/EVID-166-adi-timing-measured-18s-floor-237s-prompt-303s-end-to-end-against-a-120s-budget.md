@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: PROB-096
   relation: informs
-status: draft
+status: active
 title: 'ADI timing measured: 18s floor, 237s prompt, 303s end-to-end against a 120s budget'
 ---
 
@@ -86,5 +86,6 @@ ADI-разбор: 4 гипотезы, дедукции, evidence-needed, рек�
 
 - **PROB-096** — дефект
 - **PRD-020** — LLM-first routing, где живёт провайдерный слой
+
 
 

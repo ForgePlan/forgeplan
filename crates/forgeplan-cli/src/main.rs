@@ -378,22 +378,21 @@ enum Commands {
     },
     /// Analyze an artifact using FPF ADI reasoning cycle (Abduction→Deduction→Induction)
     ///
-    /// REQUIRES LLM: This is the ONLY forgeplan command that calls an external LLM
-    /// to generate structured 3-hypothesis ADI output. The provider is configured
-    /// in `.forgeplan/config.yaml::llm` (default: gemini / models/gemini-2.5-flash).
+    /// REQUIRES LLM: generates structured three-hypothesis ADI output through
+    /// the provider configured in `.forgeplan/config.yaml::llm`.
     ///
-    /// API KEY: A real API key MUST be set in the environment variable named by
-    /// `llm.api_key_env` (default `GEMINI_API_KEY`). For local development the
-    /// recommended pattern is to source `.forgeplan/secrets.env` (gitignored,
-    /// dotenv/direnv convention) which exports the key. Example:
+    /// AUTHENTICATION: HTTP providers use the API-key environment variable
+    /// named by `llm.api_key_env`. Local subscription providers reuse an
+    /// existing stock CLI login and need no API key in ForgePlan:
     ///
-    ///     # .forgeplan/secrets.env (gitignored, sourced by your shell rc)
-    ///     export GEMINI_API_KEY=<your-key-here>
+    ///     llm:
+    ///       provider: codex-cli
+    ///       model: gpt-5.1-codex
     ///
-    /// Without the key the command exits with `Error: API key not found...` and
-    /// emits a `Fix:` hint pointing at the setup-skill workflow. Every other
-    /// forgeplan command (list, search, validate, score, dispatch, ...) is
-    /// pure-Rust and does NOT require an LLM.
+    /// Supported local profiles are `claude-code`, `codex-cli`, `devin-cli`,
+    /// `gemini-cli`, and `cursor-agent`. They are explicit opt-ins for personal
+    /// local development, not production/shared/CI use. Each invocation consumes
+    /// the corresponding vendor plan and is subject to that vendor's terms.
     #[command(long_about)]
     Reason {
         /// Artifact ID to analyze

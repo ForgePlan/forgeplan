@@ -5,7 +5,7 @@ kind: evidence
 links:
 - target: ADR-017
   relation: informs
-status: draft
+status: active
 title: 'ADR-017 claude-code provider: guardian PASS + 2 audits resolved + AC-1..7 verified'
 ---
 
@@ -54,5 +54,6 @@ All seven satisfied: AC-1 disclosure (runtime `Once` + `LLM-PROVIDERS.md` + CHAN
 - Branch `feat/v0.33-claude-code-provider`; commits `146973d` (impl), `c553a66` (fix), `f8e7561`+`5d94326` (AC-7+docs).
 - Guardian PASS; security + code-review CONCERNS both resolved.
 - Prior art: Hindsight `HINDSIGHT_LLM_PROVIDER=claude-code` (personal/local-only).
+
 
 

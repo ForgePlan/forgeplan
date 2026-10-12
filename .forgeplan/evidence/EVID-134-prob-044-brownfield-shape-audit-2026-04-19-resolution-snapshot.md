@@ -7,7 +7,7 @@ last_modified_by: claude-code/2.1.149
 links:
 - target: PROB-044
   relation: informs
-status: draft
+status: active
 title: PROB-044 brownfield Shape audit 2026-04-19 resolution snapshot
 ---
 
@@ -89,4 +89,5 @@ TOTAL     41   →   4 resolved + 1 partial + 35 deferred-with-owner + 1 pending
 
 - `Refs: ADR-008, ADR-009, EPIC-006, EPIC-007, EPIC-008, PRD-059..064, PRD-066, PRD-067, PRD-069, PRD-070, EVID-079, EVID-081, EVID-082`
 - PROB-040 (historical, superseded by PROB-044 on closed PR #200)
+
 

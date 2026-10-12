@@ -9,7 +9,7 @@ links:
   relation: informs
 - target: ADR-015
   relation: informs
-status: draft
+status: active
 title: 'PROB-073/SC-2: detect_multi_worktree latency bench — p95 ~12-13ms steady, WEAKENS but gated to cold-start (not per-call)'
 ---
 
@@ -68,6 +68,7 @@ PROB-073's actual user complaint ("медленно через MCP, file-first �
 - Command: `cargo test -p forgeplan-core --test workspace_detection_bench -- --ignored --nocapture`
 - Branch: `feat/prob-073-detection-bench` (off `origin/dev` @ PRD-078 merged)
 - Gate at commit: clippy 0 (`--all-targets --features test-helpers`), fmt 0, bench green.
+
 
 
 

@@ -8,7 +8,7 @@ links:
   relation: refines
 - target: ADR-009
   relation: based_on
-status: draft
+status: active
 title: Playbook YAML schema + runtime executor
 updated: 2026-04-20
 ---
@@ -80,6 +80,7 @@ updated: 2026-04-20
 | EPIC-007 | EPIC | refines |
 | PRD-066 | PRD | informs (runtime invokes ingest engine) |
 | PRD-067 | PRD | informs (runtime uses plugin detection) |
+
 
 
 

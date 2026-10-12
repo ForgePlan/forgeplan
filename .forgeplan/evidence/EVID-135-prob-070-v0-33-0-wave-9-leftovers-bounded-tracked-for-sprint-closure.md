@@ -7,7 +7,7 @@ last_modified_by: claude-code/2.1.149
 links:
 - target: PROB-070
   relation: informs
-status: draft
+status: active
 title: PROB-070 v0.33.0 Wave 9 leftovers bounded + tracked for sprint closure
 ---
 
@@ -72,4 +72,5 @@ Per memory `project_v033_planning.md` (2026-05-22): "Recommended 2-week scope: P
 
 - `Refs: PROB-051, PROB-072, PROB-073, PROB-075, EVID-122, project_v033_planning memory, docs/v0.33-plan.md`
 - Wave 9 audit reviewers: security-expert + code-reviewer (combined report)
+
 

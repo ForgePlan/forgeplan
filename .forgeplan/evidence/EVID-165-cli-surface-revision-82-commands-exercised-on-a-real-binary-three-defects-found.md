@@ -7,7 +7,7 @@ links:
   relation: informs
 - target: PROB-095
   relation: informs
-status: draft
+status: active
 title: 'CLI surface revision: 82 commands exercised on a real binary, three defects found'
 ---
 
@@ -95,6 +95,7 @@ EXTERNAL печатается отдельно от PASS намеренно: «�
 
 - **PROB-094**, **PROB-095**, **PROB-096** — найденное
 - **PROB-093** — дефект, который мотивировал ревизию
+
 
 
 

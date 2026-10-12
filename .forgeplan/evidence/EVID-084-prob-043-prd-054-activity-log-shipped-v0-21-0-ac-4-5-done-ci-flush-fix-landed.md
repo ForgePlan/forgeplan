@@ -7,7 +7,7 @@ links:
   relation: informs
 - target: PROB-043
   relation: informs
-status: draft
+status: active
 title: PROB-043 + PRD-054 activity log shipped — v0.21.0, AC 4/5 done, CI flush fix landed
 ---
 
@@ -62,5 +62,6 @@ CL3: same context — measurements taken on the actual binary built from the sam
 |---|---|
 | PRD-054 | informs |
 | PROB-043 | informs |
+
 
 
