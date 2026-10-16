@@ -1,0 +1,91 @@
+/*
+ * ForgePlan design tokens — GRAPH MODULE (v1.1)
+ *
+ * Optional extension for graph / map / canvas surfaces (forgeplan-web
+ * composed map, DAG explorers, dependency trees). Load AFTER tokens.css.
+ *
+ * Provenance: ported from forgeplan-web `template/src/app/styles/app.css`
+ * (battle-tested in @forgeplan/web), neutrals rebased onto the canonical
+ * palette (#0D0D0D / #F5F5F0, ink #1A1A1A). Edge hues kept as shipped —
+ * they are a data-viz palette, distinct from the one-accent brand rule.
+ * The forgeplan-web "orch" theme is app-specific and NOT part of the canon.
+ */
+:root,
+[data-theme="dark"] {
+  /* Graph edges (relation palette). */
+  --forge-edge-default: rgba(232, 232, 232, 0.85);
+  --forge-edge-soft: rgba(232, 232, 232, 0.55);
+  --forge-edge-informs: rgba(232, 232, 232, 0.65);
+  --forge-edge-refines: rgba(160, 192, 255, 0.65);
+  --forge-edge-contains: rgba(255, 200, 120, 0.65);
+  --forge-edge-supersedes: rgba(255, 160, 200, 0.65);
+
+  /* Canvas strokes and labels (SVG scene chrome). */
+  --forge-canvas-stroke: rgba(255, 255, 255, 0.45);
+  --forge-canvas-stroke-2: rgba(255, 255, 255, 0.32);
+  --forge-canvas-stroke-soft: rgba(255, 255, 255, 0.16);
+  --forge-canvas-stroke-faint: rgba(255, 255, 255, 0.04);
+  --forge-canvas-label: rgba(232, 232, 232, 0.78);
+  --forge-canvas-label-faded: rgba(232, 232, 232, 0.32);
+  --forge-canvas-label-strong: #FFFFFF;
+  --forge-canvas-stroke-on-fill: rgba(0, 0, 0, 0.40);
+  --forge-canvas-overlay: rgba(13, 13, 13, 0.85);
+
+  /* Node defaults. */
+  --forge-node-border: rgba(255, 255, 255, 0.70);
+  --forge-node-fg: #E8E8E8;
+
+  /* Composed-map zone chrome + accent slots. */
+  --forge-map-zone: rgba(255, 255, 255, 0.03);
+  --forge-map-zone-line: rgba(255, 255, 255, 0.14);
+  --forge-map-clay: #D9785A;
+  --forge-map-olive: #A8A23C;
+  --forge-map-accent-cyan: #22B8CF;
+  --forge-map-accent-emerald: #22C58E;
+  --forge-map-accent-violet: #A78BFA;
+  --forge-map-accent-amber: #F0B429;
+  --forge-map-accent-rose: #FB7185;
+  --forge-map-accent-orange: #FB8B4C;
+  --forge-map-accent-slate: #94A3B8;
+
+  /* Dot grid (decorative, never printed). */
+  --forge-dot-grid-color: rgba(255, 255, 255, 0.10);
+  --forge-dot-grid-size: 24px;
+  --forge-dot-grid-radius: 0.9px;
+}
+
+[data-theme="light"] {
+  --forge-edge-default: rgba(26, 26, 26, 0.62);
+  --forge-edge-soft: rgba(26, 26, 26, 0.36);
+  --forge-edge-informs: rgba(26, 26, 26, 0.45);
+  --forge-edge-refines: rgba(60, 90, 160, 0.55);
+  --forge-edge-contains: rgba(170, 110, 30, 0.55);
+  --forge-edge-supersedes: rgba(180, 60, 110, 0.55);
+
+  --forge-canvas-stroke: rgba(0, 0, 0, 0.45);
+  --forge-canvas-stroke-2: rgba(0, 0, 0, 0.30);
+  --forge-canvas-stroke-soft: rgba(0, 0, 0, 0.10);
+  --forge-canvas-stroke-faint: rgba(0, 0, 0, 0.03);
+  --forge-canvas-label: rgba(26, 26, 26, 0.85);
+  --forge-canvas-label-faded: rgba(26, 26, 26, 0.42);
+  --forge-canvas-label-strong: #1A1A1A;
+  --forge-canvas-stroke-on-fill: rgba(255, 255, 255, 0.70);
+  --forge-canvas-overlay: rgba(245, 245, 240, 0.88);
+
+  --forge-node-border: rgba(0, 0, 0, 0.62);
+  --forge-node-fg: #1A1A1A;
+
+  --forge-map-zone: rgba(0, 0, 0, 0.025);
+  --forge-map-zone-line: rgba(0, 0, 0, 0.12);
+  --forge-map-clay: #B8563A;
+  --forge-map-olive: #6B6B24;
+  --forge-map-accent-cyan: #0E7490;
+  --forge-map-accent-emerald: #0F7A56;
+  --forge-map-accent-violet: #6D28D9;
+  --forge-map-accent-amber: #92400E;
+  --forge-map-accent-rose: #BE123C;
+  --forge-map-accent-orange: #C2410C;
+  --forge-map-accent-slate: #475569;
+
+  --forge-dot-grid-color: rgba(0, 0, 0, 0.07);
+}
