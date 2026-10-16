@@ -21,7 +21,18 @@ One-line justification: Build passes and all RFC-011 invariants hold structurall
 
 ## Structured Fields
 
-verdict: concerns
+verdict: weakens
+
+<!-- Was `concerns` until 2026-09-07. That is a review STATUS, not an evidence
+     DIRECTION, and the scorer had no such value — it silently resolved to
+     `supports` and scored 1.0, so a review saying "three issues require coder
+     attention before merge" was counted as full confirmation of the thing it
+     objected to. PRD-086 FR-008 closed that fall-through; this pack is the one
+     artifact in the graph it exposed.
+
+     `weakens` is the honest reading: the review does not refute PRD-079, it
+     lowers confidence in the state reviewed. The three HIGH findings below are
+     the substance of that. -->
 congruence_level: 3
 evidence_type: audit
 
@@ -81,6 +92,7 @@ evidence_type: audit
 - Parent: PRD-079
 - RFC: RFC-011 (architecture spec, Invariants 1-6, Risk table)
 - Reviewer agent: claude-code/sonnet-4-6/code-reviewer-task-blog-scaffold
+
 
 
 
