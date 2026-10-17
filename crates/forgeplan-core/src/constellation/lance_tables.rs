@@ -962,6 +962,44 @@ impl OpenedTable {
                 detail: format!("reading the pinned reader stream failed: {e}"),
             })
     }
+
+    /// Cosine ANN over the `embedding` column at the pinned version, restricted
+    /// by `predicate` before ranking (`only_if` is a prefilter).
+    ///
+    /// The predicate is supplied already-escaped by the caller — this method
+    /// never concatenates raw strings into SQL itself. The result keeps
+    /// lance's `_distance` column; the caller converts distance to similarity
+    /// so the score semantics stay visible at the call site.
+    pub async fn nearest_embeddings(
+        &self,
+        vector: &[f32],
+        predicate: &str,
+        limit: usize,
+    ) -> Result<Vec<arrow_array::RecordBatch>, ConstellationError> {
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase};
+
+        let stream = self
+            .table
+            .vector_search(vector)
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("building the pinned vector query failed: {e}"),
+            })?
+            .distance_type(lancedb::DistanceType::Cosine)
+            .only_if(predicate)
+            .limit(limit)
+            .execute()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("executing the pinned vector query failed: {e}"),
+            })?;
+        stream
+            .try_collect()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("reading the pinned vector stream failed: {e}"),
+            })
+    }
 }
 
 /// Open an existing table at an **exact** version, on the wrapped route.

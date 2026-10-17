@@ -1177,9 +1177,13 @@ pub async fn search_pinned_lexical(
         if row >= column.len() || column.is_null(row) {
             return None;
         }
+        // `body` is LargeUtf8, the rest are Utf8 — read both.
+        if let Some(a) = column.as_any().downcast_ref::<arrow_array::StringArray>() {
+            return Some(a.value(row).to_string());
+        }
         column
             .as_any()
-            .downcast_ref::<arrow_array::StringArray>()
+            .downcast_ref::<arrow_array::LargeStringArray>()
             .map(|a| a.value(row).to_string())
     };
 
@@ -1200,7 +1204,7 @@ pub async fn search_pinned_lexical(
             }
             hits.push(LexicalHit {
                 canonical_key: key,
-                display_id: read_str(batch, "display_id", row),
+                display_id: read_str(batch, "id", row),
                 title,
                 kind: read_str(batch, "kind", row),
                 status: read_str(batch, "status", row),
@@ -1219,6 +1223,240 @@ pub async fn search_pinned_lexical(
         truncated: hits.len() >= limit,
         hits,
     })
+}
+
+/// One semantic hit at the pinned generation.
+#[derive(Debug, serde::Serialize)]
+pub struct SemanticHit {
+    pub canonical_key: String,
+    pub display_id: Option<String>,
+    pub title: String,
+    /// Cosine similarity derived from lance's `_distance`: `1.0 - distance`.
+    /// Reported as a score, never as a fake rank position.
+    pub similarity: f64,
+}
+
+/// What a semantic search over the pinned projection returned.
+#[derive(Debug)]
+pub struct SemanticSearchOutcome {
+    pub generation_id: String,
+    pub pinned_artifacts_version: u64,
+    /// How many stored vectors were eligible to rank — ready under *this*
+    /// profile. Distinct from `hits.len()`: a corpus can hold zero ready
+    /// rows under the profile and still contain plenty under another.
+    pub eligible_rows: usize,
+    pub hits: Vec<SemanticHit>,
+}
+
+/// ANN search over the artifacts table **at the version the published
+/// manifest pins**, restricted to rows whose vectors were computed for
+/// `profile_id` and reached `ready`.
+///
+/// The `query_vector` is produced by the caller — the core never picks or
+/// loads a model — and its profile is the caller's claim. The prefilter
+/// (`semantic_state = 'ready' AND profile_id = '<profile>'`) is what makes
+/// that claim real: a vector stored under another profile never enters the
+/// ranking, so a similarity number is never computed against a foreign
+/// embedding space.
+///
+/// Returns `Ok(outcome)` even with an empty `hits` — "no vectors ready" is
+/// honest coverage the client sees via `eligible_rows`, not an error.
+pub async fn search_pinned_semantic(
+    index_root: &Path,
+    query_vector: &[f32],
+    profile_id: &str,
+    limit: usize,
+) -> Result<SemanticSearchOutcome, ConstellationError> {
+    if limit == 0 {
+        return Err(ConstellationError::Io {
+            detail: "a semantic search with limit 0 cannot return anything".to_string(),
+        });
+    }
+    let descriptor = super::storage::read_current(index_root)?.ok_or_else(|| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: "no published generation to search".to_string(),
+        }
+    })?;
+    let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    if !manifest.table_versions.is_publishable() {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "generation `{}` names non-publishable table versions {:?}",
+                manifest.generation_id, manifest.table_versions
+            ),
+        });
+    }
+    let marker = marker_for(&manifest);
+    let table = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "artifacts",
+        manifest.table_versions.artifacts,
+    )
+    .await?;
+
+    let predicate = format!(
+        "semantic_state = 'ready' AND profile_id = '{}'",
+        super::publisher::escape_predicate_literal(profile_id)
+    );
+    let batches = table
+        .nearest_embeddings(query_vector, &predicate, limit)
+        .await?;
+
+    let read_str = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<String> {
+        use arrow_array::Array;
+        let column = batch.column_by_name(col)?;
+        if row >= column.len() || column.is_null(row) {
+            return None;
+        }
+        if let Some(a) = column.as_any().downcast_ref::<arrow_array::StringArray>() {
+            return Some(a.value(row).to_string());
+        }
+        column
+            .as_any()
+            .downcast_ref::<arrow_array::LargeStringArray>()
+            .map(|a| a.value(row).to_string())
+    };
+    let read_dist = |batch: &arrow_array::RecordBatch, row: usize| -> Option<f64> {
+        use arrow_array::Array;
+        let column = batch.column_by_name("_distance")?;
+        if row >= column.len() || column.is_null(row) {
+            return None;
+        }
+        column
+            .as_any()
+            .downcast_ref::<arrow_array::Float32Array>()
+            .map(|a| f64::from(a.value(row)))
+            .or_else(|| {
+                column
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .map(|a| a.value(row))
+            })
+    };
+
+    let mut hits = Vec::new();
+    let mut eligible_rows = 0usize;
+    for batch in &batches {
+        eligible_rows += batch.num_rows();
+        for row in 0..batch.num_rows() {
+            hits.push(SemanticHit {
+                canonical_key: read_str(batch, "canonical_key", row).unwrap_or_default(),
+                display_id: read_str(batch, "id", row),
+                title: read_str(batch, "title", row).unwrap_or_default(),
+                similarity: read_dist(batch, row).map_or(0.0, |d| 1.0 - d),
+            });
+        }
+    }
+    hits.truncate(limit);
+
+    Ok(SemanticSearchOutcome {
+        generation_id: manifest.generation_id.clone(),
+        pinned_artifacts_version: manifest.table_versions.artifacts,
+        eligible_rows,
+        hits,
+    })
+}
+
+/// A single artifact row at the pinned generation, by canonical key or
+/// display id — the `get` half of the read surface.
+#[derive(Debug)]
+pub struct PinnedArtifact {
+    pub canonical_key: String,
+    pub display_id: Option<String>,
+    pub title: String,
+    pub kind: Option<String>,
+    pub status: Option<String>,
+    pub body: Option<String>,
+    pub source_path: Option<String>,
+    pub source_digest: Option<String>,
+    pub semantic_state: Option<String>,
+}
+
+/// Exact read at the pinned generation: one row by `canonical_key`, or by
+/// `display_id` when the caller hands over the human-facing id (`SPEC-001`).
+///
+/// Like the lexical search this opens an independent pinned reader — the row
+/// returned is the row the published manifest guarantees, not whatever a
+/// later commit may have landed. A miss is a miss: `Ok(None)`, never a
+/// substitute row.
+pub async fn get_pinned_artifact(
+    index_root: &Path,
+    key_or_id: &str,
+) -> Result<Option<(PinnedArtifact, String, u64)>, ConstellationError> {
+    if key_or_id.trim().is_empty() {
+        return Err(ConstellationError::Io {
+            detail: "an empty key cannot identify an artifact".to_string(),
+        });
+    }
+    let descriptor = super::storage::read_current(index_root)?.ok_or_else(|| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: "no published generation to read".to_string(),
+        }
+    })?;
+    let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    if !manifest.table_versions.is_publishable() {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "generation `{}` names non-publishable table versions {:?}",
+                manifest.generation_id, manifest.table_versions
+            ),
+        });
+    }
+    let marker = marker_for(&manifest);
+    let table = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "artifacts",
+        manifest.table_versions.artifacts,
+    )
+    .await?;
+    let batches = table.query_batches().await?;
+
+    let read_str = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<String> {
+        use arrow_array::Array;
+        let column = batch.column_by_name(col)?;
+        if row >= column.len() || column.is_null(row) {
+            return None;
+        }
+        // `body` is LargeUtf8, the rest are Utf8 — read both.
+        if let Some(a) = column.as_any().downcast_ref::<arrow_array::StringArray>() {
+            return Some(a.value(row).to_string());
+        }
+        column
+            .as_any()
+            .downcast_ref::<arrow_array::LargeStringArray>()
+            .map(|a| a.value(row).to_string())
+    };
+
+    let wanted = key_or_id.to_lowercase();
+    for batch in &batches {
+        for row in 0..batch.num_rows() {
+            let key = read_str(batch, "canonical_key", row).unwrap_or_default();
+            let display = read_str(batch, "id", row);
+            if key.to_lowercase() != wanted
+                && display.as_deref().map(str::to_lowercase).as_deref() != Some(wanted.as_str())
+            {
+                continue;
+            }
+            return Ok(Some((
+                PinnedArtifact {
+                    canonical_key: key,
+                    display_id: display,
+                    title: read_str(batch, "title", row).unwrap_or_default(),
+                    kind: read_str(batch, "kind", row),
+                    status: read_str(batch, "status", row),
+                    body: read_str(batch, "body", row),
+                    source_path: read_str(batch, "relative_path", row),
+                    source_digest: read_str(batch, "source_digest", row),
+                    semantic_state: read_str(batch, "semantic_state", row),
+                },
+                manifest.generation_id.clone(),
+                manifest.table_versions.artifacts,
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// The inner object store the publisher's tracking store wraps.

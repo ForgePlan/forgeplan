@@ -129,6 +129,15 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
                                 view.manifest.generation_id,
                                 outcome.commits.len()
                             );
+                            // 0B: a configured model means the queue drains
+                            // here too — normal operation needs no manual
+                            // `forgeplan embed`. Unconfigured is a no-op.
+                            crate::commands::index::drain_queue_if_configured(
+                                &capability,
+                                std::time::Instant::now() + std::time::Duration::from_secs(300),
+                                "watch",
+                            )
+                            .await;
                         }
                         Err(e) => {
                             // A failed pass leaves the published generation

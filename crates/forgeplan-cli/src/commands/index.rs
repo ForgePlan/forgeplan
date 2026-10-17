@@ -173,70 +173,91 @@ pub fn spawn_background(cwd: PathBuf) {
             Err(e) => eprintln!("auto-index: maintenance failed: {e}"),
         }
 
-        #[cfg(feature = "semantic-search")]
-        {
-            use forgeplan_core::embed::Embedder;
-            let config = crate::commands::common::config().unwrap_or_default();
-            let Some(model) = config.embedding.as_ref().map(|e| e.model.clone()) else {
-                return;
-            };
-            let prefix = config
-                .embedding
-                .as_ref()
-                .map(|e| e.chunk_size)
-                .unwrap_or(2000);
-            let Some(repo) = forgeplan_core::embed::resolve_repo(&model) else {
-                eprintln!("auto-index: embedding model `{model}` unsupported — queue skipped");
-                return;
-            };
-            let cache_dir = forgeplan_core::embed::resolve_cache_dir();
-            let profile_id =
-                match forgeplan_core::constellation::jobs::snapshot_checksums(&cache_dir, repo)
-                    .and_then(|checksums| {
-                        forgeplan_core::constellation::jobs::ResolvedProfile::open(
-                            &cache_dir,
-                            repo,
-                            &checksums,
-                            forgeplan_core::constellation::facade::ENGINE_VERSION,
-                        )
-                        .map(|resolved| resolved.profile.profile_id())
-                    }) {
-                    Ok(id) => id,
-                    Err(e) => {
-                        eprintln!(
-                            "auto-index: profile for `{model}` unresolved — queue skipped: {e}"
-                        );
-                        return;
-                    }
-                };
-            let Ok(mut embedder) = Embedder::with_model(&model) else {
-                eprintln!("auto-index: embedding model `{model}` unavailable — queue skipped");
-                return;
-            };
-            match facade::drain_embedding_queue(
-                &capability,
-                &profile_id,
-                prefix,
-                |inputs| {
-                    let texts: Vec<&str> = inputs.iter().map(|(_, t)| t.as_str()).collect();
-                    embedder.embed_batch(&texts).map_err(|e| {
-                        forgeplan_core::constellation::ConstellationError::ModelUnavailable {
-                            detail: format!("embedding failed: {e}"),
-                        }
-                    })
-                },
-                deadline,
-            )
-            .await
-            {
-                Ok(outcome) => eprintln!(
-                    "auto-index: queue drained — {} embedded, {} stale, {} still eligible",
-                    outcome.embedded,
-                    outcome.stale_completions,
-                    outcome.after.eligible_keys().len()
-                ),
-                Err(e) => eprintln!("auto-index: queue drain failed: {e}"),
-            }
-        }
+        drain_queue_if_configured(&capability, deadline, "auto-index").await;
     });
+}
+
+/// Drain the pending embedding queue **only when** a model is configured and
+/// resolvable — the 0B "no manual `embed`" half for long-running hosts.
+///
+/// Feature-off or unconfigured is a silent no-op: the queue drains through
+/// binding-predicated publish, so a skipped drain means pending rows stay
+/// pending — visible in `constellation_status` coverage — never corrupted.
+/// `label` prefixes the stderr report so `watch` and `serve` log lines are
+/// distinguishable.
+#[cfg(feature = "semantic-search")]
+pub(crate) async fn drain_queue_if_configured(
+    capability: &MaintainCapability,
+    deadline: std::time::Instant,
+    label: &str,
+) {
+    use forgeplan_core::embed::Embedder;
+
+    let config = crate::commands::common::config().unwrap_or_default();
+    let Some(model) = config.embedding.as_ref().map(|e| e.model.clone()) else {
+        return;
+    };
+    let prefix = config
+        .embedding
+        .as_ref()
+        .map(|e| e.chunk_size)
+        .unwrap_or(2000);
+    let Some(repo) = forgeplan_core::embed::resolve_repo(&model) else {
+        eprintln!("{label}: embedding model `{model}` unsupported — queue skipped");
+        return;
+    };
+    let cache_dir = forgeplan_core::embed::resolve_cache_dir();
+    let profile_id = match forgeplan_core::constellation::jobs::snapshot_checksums(&cache_dir, repo)
+        .and_then(|checksums| {
+            forgeplan_core::constellation::jobs::ResolvedProfile::open(
+                &cache_dir,
+                repo,
+                &checksums,
+                forgeplan_core::constellation::facade::ENGINE_VERSION,
+            )
+            .map(|resolved| resolved.profile.profile_id())
+        }) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{label}: profile for `{model}` unresolved — queue skipped: {e}");
+            return;
+        }
+    };
+    let Ok(mut embedder) = Embedder::with_model(&model) else {
+        eprintln!("{label}: embedding model `{model}` unavailable — queue skipped");
+        return;
+    };
+    match facade::drain_embedding_queue(
+        capability,
+        &profile_id,
+        prefix,
+        |inputs| {
+            let texts: Vec<&str> = inputs.iter().map(|(_, t)| t.as_str()).collect();
+            embedder.embed_batch(&texts).map_err(|e| {
+                forgeplan_core::constellation::ConstellationError::ModelUnavailable {
+                    detail: format!("embedding failed: {e}"),
+                }
+            })
+        },
+        deadline,
+    )
+    .await
+    {
+        Ok(outcome) => eprintln!(
+            "{label}: queue drained — {} embedded, {} stale, {} still eligible",
+            outcome.embedded,
+            outcome.stale_completions,
+            outcome.after.eligible_keys().len()
+        ),
+        Err(e) => eprintln!("{label}: queue drain failed: {e}"),
+    }
+}
+
+/// No-op without the `semantic-search` feature — same call sites compile.
+#[cfg(not(feature = "semantic-search"))]
+pub(crate) async fn drain_queue_if_configured(
+    _capability: &MaintainCapability,
+    _deadline: std::time::Instant,
+    _label: &str,
+) {
 }
