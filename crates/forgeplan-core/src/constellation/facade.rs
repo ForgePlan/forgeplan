@@ -1142,13 +1142,22 @@ pub async fn drain_embedding_queue(
     // without it the next reconcile would read the movement as divergence
     // and restore over the vectors this drain just wrote. The publisher is
     // still held, so nothing else can move the head before this republish.
+    //
+    // `profile_id` follows the same rule: when this drain put or confirmed
+    // vectors under `profile_id`, that is the space pinned semantic reads
+    // must query — the manifest's `pending_jobs` never named it because the
+    // profile arrived after publication.
+    let claims_space = embedded > 0 || !after.current_keys().is_empty();
+    let head = tables.artifacts_version().await?;
+    let mut next = descriptor.clone();
     if embedded > 0 {
-        let head = tables.artifacts_version().await?;
-        if descriptor.embedding_artifacts_head != Some(head) {
-            let mut next = descriptor.clone();
-            next.embedding_artifacts_head = Some(head);
-            publisher.republish_current(&next)?;
-        }
+        next.embedding_artifacts_head = Some(head);
+    }
+    if claims_space {
+        next.profile_id = Some(profile_id.to_string());
+    }
+    if next != descriptor {
+        publisher.republish_current(&next)?;
     }
 
     drop(tables);
@@ -1633,8 +1642,11 @@ pub async fn search_pinned_semantic(
     )
     .await?;
 
+    // `escape_predicate_literal` already returns a delimited literal —
+    // wrapping it in quotes again would produce `''x''`, which parses as an
+    // empty string beside a bare identifier and matches nothing.
     let predicate = format!(
-        "semantic_state = 'ready' AND profile_id = '{}'",
+        "semantic_state = 'ready' AND profile_id = {}",
         super::publisher::escape_predicate_literal(profile_id)
     );
     let batches = table
@@ -2504,6 +2516,19 @@ mod tests {
             second.after
         );
         assert!(second.after.eligible_keys().is_empty());
+
+        // The vector itself is reachable: querying with the same vector the
+        // drain published must return the row — similarity 1.0 modulo f32.
+        let query = vec![0.25f32; crate::db::schema::EMBEDDING_DIM as usize];
+        let found = search_pinned_semantic(capability.index_root(), &query, "test-profile", 10)
+            .await
+            .unwrap();
+        assert!(
+            !found.hits.is_empty(),
+            "a ready row at the completed head must be queryable: {:?}/{:?}",
+            found.eligible_rows,
+            found.pinned_artifacts_version
+        );
     }
 
     #[tokio::test]

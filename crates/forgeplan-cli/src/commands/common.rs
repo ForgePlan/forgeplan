@@ -16,7 +16,20 @@ pub async fn open_store() -> anyhow::Result<(PathBuf, LanceStore)> {
     // This ensures IntegrityConfig::validate() runs for all code paths
     // (new, score, list, etc. — not just commands that explicitly load config).
     let _config = workspace::load_config(&ws)?;
-    let store = LanceStore::open(&ws).await?;
+    let store = LanceStore::open(&ws).await.map_err(|e| {
+        if index_migrated(&ws) {
+            anyhow::anyhow!(
+                "This workspace's index moved to the constellation protocol \
+                 (.forgeplan/lance/CURRENT.json is set; the legacy artifacts.lance \
+                 is retired). This command still reads the legacy store.\n\
+                 Fix: use `forgeplan constellation search|get`, `forgeplan index --list`, \
+                 or `forgeplan get`/`forgeplan search` (they route to the pinned index \
+                 on this layout). Underlying error: {e}"
+            )
+        } else {
+            e
+        }
+    })?;
     Ok((ws, store))
 }
 

@@ -43,6 +43,24 @@ pub async fn run(
         None
     };
 
+    // A workspace whose index moved to the constellation protocol has no
+    // legacy store to open — route reads to the pinned generation instead
+    // of letting Lance report a missing table.
+    let cwd = std::env::current_dir()?;
+    if let Some(ws) = forgeplan_core::workspace::find_workspace(&cwd)
+        && common::index_migrated(&ws)
+    {
+        let unsupported = [
+            (depth.is_some(), "--depth"),
+            (with_evidence, "--with-evidence"),
+            (no_evidence, "--no-evidence"),
+            (since.is_some(), "--since"),
+        ]
+        .into_iter()
+        .find_map(|(set, flag)| set.then_some(flag));
+        return run_constellation(&ws, query, kind, status, unsupported, mode, limit, json).await;
+    }
+
     // Build composite filter from CLI flags.
     let filter = build_filter(kind, status, depth, with_evidence, no_evidence, since_dt);
 
@@ -51,6 +69,207 @@ pub async fn run(
         SearchMode::Semantic => run_semantic_only(query, kind, json).await,
         SearchMode::Smart => run_smart(query, filter, no_expand, limit, json).await,
     }
+}
+
+/// Read path for a workspace whose index is constellation-owned: hits come
+/// from the pinned generation, not the retired legacy store.
+///
+/// The pinned row carries `kind`/`status` but not depth, evidence or
+/// timestamps — a filter the index cannot answer is refused up front rather
+/// than silently dropped (a filtered-out hit that was never evaluated reads
+/// exactly like an empty index).
+///
+/// `Smart` merges both channels: semantic hits ordered by similarity first,
+/// then lexical hits that were not already named. When no profile is pinned
+/// the semantic half is skipped and reported, not faked.
+#[allow(clippy::too_many_arguments)]
+async fn run_constellation(
+    ws: &std::path::Path,
+    query: &str,
+    kind: Option<&str>,
+    status: Option<&str>,
+    unsupported: Option<&'static str>,
+    mode: SearchMode,
+    limit: usize,
+    json: bool,
+) -> anyhow::Result<()> {
+    use forgeplan_core::constellation::facade;
+    let index_root = ws.join("lance");
+
+    if let Some(flag) = unsupported {
+        anyhow::bail!(
+            "This workspace's index is constellation-owned and the pinned read \
+             carries kind/status only — {flag} is not answerable.\n\
+             Fix: drop {flag} (kind/status still apply)."
+        );
+    }
+
+    struct Hit {
+        id: String,
+        key: String,
+        kind: Option<String>,
+        status: Option<String>,
+        title: String,
+        score: Option<f64>,
+        channel: &'static str,
+    }
+
+    let kindf = kind.map(str::to_string);
+    let statusf = status.map(str::to_string);
+    let mut hits: Vec<Hit> = Vec::new();
+
+    if matches!(mode, SearchMode::Keyword | SearchMode::Smart) {
+        let out = facade::search_pinned_lexical(&index_root, query, limit).await?;
+        hits.extend(out.hits.into_iter().map(|h| {
+            Hit {
+                id: h
+                    .display_id
+                    .clone()
+                    .unwrap_or_else(|| h.canonical_key.clone()),
+                key: h.canonical_key,
+                kind: h.kind,
+                status: h.status,
+                title: h.title,
+                score: None,
+                channel: "keyword",
+            }
+        }));
+    }
+
+    let mut semantic_available = false;
+    #[cfg(feature = "semantic-search")]
+    if matches!(mode, SearchMode::Semantic | SearchMode::Smart) {
+        // The descriptor's profile_id names the space ready vectors live in;
+        // without it there is nothing to query.
+        let profile = forgeplan_core::constellation::storage::read_current(&index_root)?
+            .and_then(|d| d.profile_id);
+        match profile {
+            Some(profile) => {
+                let v = forgeplan_core::embed::Embedder::new()?.embed(query)?;
+                let out = facade::search_pinned_semantic(&index_root, &v, &profile, limit.max(10))
+                    .await?;
+                semantic_available = true;
+                // Semantic hits carry no kind/status — resolve them through
+                // the pinned get only when a filter actually needs it.
+                let mut sem = Vec::new();
+                for h in out.hits {
+                    let (k, s) = if kindf.is_some() || statusf.is_some() {
+                        match facade::get_pinned_artifact(&index_root, &h.canonical_key).await? {
+                            Some((a, _, _)) => (a.kind, a.status),
+                            None => (None, None),
+                        }
+                    } else {
+                        (None, None)
+                    };
+                    sem.push(Hit {
+                        id: h.display_id.unwrap_or_else(|| h.canonical_key.clone()),
+                        key: h.canonical_key,
+                        kind: k,
+                        status: s,
+                        title: h.title,
+                        score: Some(h.similarity),
+                        channel: "semantic",
+                    });
+                }
+                // Semantic first (similarity order), then lexical leftovers.
+                let seen: std::collections::BTreeSet<_> =
+                    sem.iter().map(|h| h.key.clone()).collect();
+                hits.retain(|h| !seen.contains(&h.key));
+                sem.extend(hits);
+                hits = sem;
+            }
+            None if matches!(mode, SearchMode::Semantic) => {
+                anyhow::bail!(
+                    "No embedding profile is pinned for this index — vectors were \
+                     never published.\nFix: forgeplan index --embed-profile <profile-id>"
+                );
+            }
+            None => {} // Smart: lexical half stands on its own; reported below.
+        }
+    }
+    #[cfg(not(feature = "semantic-search"))]
+    if matches!(mode, SearchMode::Semantic) {
+        anyhow::bail!("Semantic search requires the `semantic-search` build feature.");
+    }
+
+    hits.retain(|h| {
+        kindf
+            .as_ref()
+            .is_none_or(|k| h.kind.as_deref() == Some(k.as_str()))
+            && statusf
+                .as_ref()
+                .is_none_or(|s| h.status.as_deref() == Some(s.as_str()))
+    });
+    hits.truncate(limit);
+
+    if hits.is_empty() {
+        let advisory = forgeplan_core::hints::search_hints(query, 0);
+        if json {
+            let payload = serde_json::json!({
+                "results": [],
+                "index": "constellation",
+                "_next_action": hints::primary_action(&advisory),
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        } else {
+            ui::info(&format!("No results for \"{query}\""));
+            print!("{}", forgeplan_core::hints::format_hints(&advisory));
+            print!("{}", hints::render_next_action_line(&advisory));
+        }
+        return Ok(());
+    }
+
+    let top_id = hits[0].id.clone();
+    if json {
+        let rows: Vec<_> = hits
+            .iter()
+            .map(|h| {
+                serde_json::json!({
+                    "id": h.id,
+                    "canonical_key": h.key,
+                    "kind": h.kind,
+                    "status": h.status,
+                    "title": h.title,
+                    "mode": h.channel,
+                    "score": h.score,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "results": rows,
+            "index": "constellation",
+            "_next_action": format!("forgeplan get {top_id}"),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    let mut lines = vec![format!("{:<14} {:<22} {}", "ID", "KIND", "TITLE")];
+    for h in &hits {
+        let score = h.score.map(|s| format!(" {:.3}", s)).unwrap_or_default();
+        lines.push(format!(
+            "{:<14} {:<22} {}{}",
+            h.id,
+            h.kind.as_deref().unwrap_or("—"),
+            h.title,
+            score
+        ));
+    }
+    ui::info(&lines.join("\n"));
+    if matches!(mode, SearchMode::Smart) && !semantic_available {
+        let advisory = vec![
+            Hint::info("Smart search ran without embeddings (no profile pinned)")
+                .with_action("forgeplan index --embed-profile <profile-id>".to_string()),
+        ];
+        print!("{}", hints::format_hints(&advisory));
+    }
+    print!(
+        "{}",
+        hints::render_next_action_line(&[
+            Hint::info("Top result").with_action(format!("forgeplan get {top_id}"))
+        ])
+    );
+    Ok(())
 }
 
 fn build_filter(
