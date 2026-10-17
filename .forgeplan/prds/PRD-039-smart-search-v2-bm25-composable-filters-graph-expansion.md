@@ -3,8 +3,6 @@ depth: standard
 id: PRD-039
 kind: prd
 links:
-- target: PRD-040
-  relation: refines
 - target: EPIC-003
   relation: refines
 status: active
@@ -184,6 +182,8 @@ Smart Search v2 заменяет примитивный substring grep на по
 |----------|----------|--------|
 | PRD-040 | Sibling (Scoring Intelligence) | Draft |
 | sources/RuVector | Pattern source (BM25, Filter DSL) | External |
+
+
 
 
 
