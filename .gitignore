@@ -49,6 +49,8 @@ plan-dist-manifest.json
 .forgeplan-backup/
 .forgeplan-backup-*/
 .forgeplan-export-*.json
+# Constellation/architecture docx exports — regenerable, canon lives in .forgeplan/
+/*.docx
 
 # Playwright MCP cache
 .playwright-mcp/
