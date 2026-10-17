@@ -196,7 +196,10 @@ mod inner {
     /// else gets a clear error instead of a silent substitution. Widening it
     /// is a contained follow-up: add the repo, confirm its pooling, capture
     /// reference vectors, done.
-    fn resolve_repo(model_name: &str) -> Option<&'static str> {
+    /// The HF repo a configured model name resolves to — the single map every
+    /// caller (embed, queue profile resolution, setup) must share, so the
+    /// identity the index records is never a caller's guess.
+    pub fn resolve_repo(model_name: &str) -> Option<&'static str> {
         match model_name {
             "bge-m3" => Some("BAAI/bge-m3"),
             _ => None,

@@ -1,5 +1,6 @@
 pub mod bm25;
 pub mod filter;
+pub mod semantic;
 pub mod smart;
 
 use std::path::Path;

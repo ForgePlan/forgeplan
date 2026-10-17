@@ -2292,8 +2292,10 @@ dependencies = [
  "futures",
  "globset",
  "hf-hub",
+ "lance-io",
  "lancedb",
  "libc",
+ "object_store",
  "petgraph",
  "proptest",
  "pulldown-cmark",
@@ -2316,6 +2318,7 @@ dependencies = [
  "tracing-test",
  "tract-onnx",
  "walkdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

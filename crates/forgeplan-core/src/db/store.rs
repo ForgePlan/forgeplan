@@ -1146,7 +1146,7 @@ impl LanceStore {
     /// Lance's optimistic-concurrency commit loop with retries.
     ///
     /// See Sprint 13.3 audit finding H3 for context.
-    async fn replace_record(&self, record: &ArtifactRecord) -> anyhow::Result<()> {
+    pub(crate) async fn replace_record(&self, record: &ArtifactRecord) -> anyhow::Result<()> {
         validate_artifact_id(&record.id)?;
         let schema = schema::artifacts_schema();
         let tags_slices: Vec<&[String]> = vec![record.tags.as_slice()];
@@ -1715,47 +1715,23 @@ impl LanceStore {
         Ok(hits)
     }
 
-    /// Update the embedding column for an artifact.
-    pub async fn update_embedding(&self, id: &str, embedding: &[f32]) -> anyhow::Result<()> {
-        let embedding_str = format!(
-            "[{}]",
-            embedding
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
-        self.artifacts
-            .update()
-            .only_if(predicate)
-            .column("embedding", &embedding_str)
-            .execute()
-            .await?;
-        Ok(())
-    }
-
-    /// Stamp the content hash a vector was computed from.
-    ///
-    /// Public for the same reason [`Self::update_embedding`] is, and it is not
-    /// an ADR-003 bypass: both write **derived index metadata**, never artifact
-    /// content. The markdown file stays the source of truth — nothing here can
-    /// change what an artifact says. That is why neither appears in the
-    /// `FORBIDDEN_METHODS` list guarded by `tests/adr_003_invariant.rs`.
-    ///
-    /// Written by `forgeplan embed` right after the vector, so the next run can
-    /// tell an already-current record from one that moved (PROB-093).
-    pub async fn update_body_hash(&self, id: &str, hash: &str) -> anyhow::Result<()> {
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
-        let escaped = hash.replace('\'', "''");
-        self.artifacts
-            .update()
-            .only_if(predicate)
-            .column("body_hash", format!("'{}'", escaped))
-            .execute()
-            .await?;
-        Ok(())
-    }
+    // `update_embedding` and `update_body_hash` were DELETED, not demoted.
+    //
+    // Both were unguarded `pub` writes onto an artifacts row: no binding, no
+    // incarnation check, no profile identity. `forgeplan embed` reached the first
+    // one directly, so a vector could be stamped onto a row whose binding had
+    // moved — the exact staleness this protocol exists to prevent. `body_hash`
+    // stamped alongside it was then used as an "already embedded" test, which
+    // cannot see a profile change.
+    //
+    // After the migration to `constellation::facade::embed_with_publisher`, which
+    // publishes through the conditional `Binding::predicate` guard, they had zero
+    // production callers — only their own unit tests, which is not coverage but a
+    // reason for the function to survive. Per the cutover rule, old paths are
+    // deleted once every consumer has migrated.
+    //
+    // A vector is now written only by
+    // `IndexTables::publish_embedding_into_artifacts`.
 
     /// Find artifacts where `valid_until` is set and is earlier than the current date.
     pub async fn find_stale(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
@@ -4320,57 +4296,17 @@ mod tests {
         assert_eq!(rev[0].id, "PRD-121");
     }
 
-    /// PROB-093 regression. The defect this pins is not "the vector is old" —
-    /// it is that a rewritten artifact kept matching text it no longer
-    /// contained, *better* than text it did. Measured before the fix: a note
-    /// rewritten from submarines to bread baking still scored 0.80 on the
-    /// deleted subject (unchanged to the hundredth) against 0.62 on the actual
-    /// content.
-    #[tokio::test]
-    async fn update_body_retires_the_vector_of_the_previous_text() {
-        let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store
-            .create_artifact(&sample_artifact("PRD-300"))
-            .await
-            .unwrap();
-        store
-            .update_embedding("PRD-300", &vec![0.5f32; 1024])
-            .await
-            .unwrap();
-        assert!(
-            store
-                .get_record("PRD-300")
-                .await
-                .unwrap()
-                .unwrap()
-                .embedding
-                .is_some(),
-            "precondition: the record must carry a vector before the rewrite"
-        );
-
-        store
-            .update_body("PRD-300", "Completely different subject matter.")
-            .await
-            .unwrap();
-
-        let after = store.get_record("PRD-300").await.unwrap().unwrap();
-        assert!(
-            after.embedding.is_none(),
-            "a vector describing the previous body must not survive the rewrite — \
-             a missing vector is reportable, a wrong one is not"
-        );
-        assert_eq!(
-            after.body_hash.as_deref(),
-            Some(compute_content_hash(&after.title, &after.body).as_str()),
-            "the hash must track the new content so `embed` re-encodes this \
-             record alone rather than all of them"
-        );
-    }
-
-    /// The hash must cover the title, because `embedding_text` embeds title +
-    /// body — hashing the body alone would call a title-only edit "unchanged"
-    /// and leave the stale vector in place, reintroducing PROB-093 by a side door.
+    /// PROB-093 regression for the hash.
+    ///
+    /// The original test also asserted that `update_body` retires a stale
+    /// vector. **That half is gone with `update_embedding`**: seeding a vector
+    /// now requires the conditional publisher path, which needs a real
+    /// workspace, an owner and a resolved profile. The vector-retirement
+    /// property is therefore no longer pinned at this layer; it is a property
+    /// of `publish_embedding_into_artifacts`, whose predicate refuses to write
+    /// onto a row whose `row_revision` moved.
+    ///
+    /// What remains here is the part that is still this layer's to pin.
     #[test]
     fn content_hash_changes_when_only_the_title_moves() {
         let a = compute_content_hash("Submarine navigation", "same body");
@@ -4406,24 +4342,6 @@ mod tests {
             "a fresh artifact has no vector yet — hash present + vector absent \
              is exactly the state `embed` must recognise as work to do"
         );
-    }
-
-    #[tokio::test]
-    async fn update_body_hash_writes_the_stamp() {
-        let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store
-            .create_artifact(&sample_artifact("PRD-302"))
-            .await
-            .unwrap();
-
-        store
-            .update_body_hash("PRD-302", "abc123-deadbeef")
-            .await
-            .unwrap();
-
-        let rec = store.get_record("PRD-302").await.unwrap().unwrap();
-        assert_eq!(rec.body_hash.as_deref(), Some("abc123-deadbeef"));
     }
 
     #[tokio::test]
