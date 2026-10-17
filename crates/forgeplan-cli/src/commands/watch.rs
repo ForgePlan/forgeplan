@@ -21,29 +21,17 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
     // workspace `LanceStore::open` fails with a bare ENOENT; detect that
     // state explicitly so the failure names the cause and `--constellation`
     // keeps watching through the corrected index alone.
-    let (ws, store) = match common::open_store().await {
-        Ok((ws, store)) => (ws, Some(store)),
-        Err(e) => {
-            let cwd = std::env::current_dir()?;
-            let Some(ws) = forgeplan_core::workspace::find_workspace(&cwd) else {
-                return Err(e);
-            };
-            let migrated = ws.join("lance").join("CURRENT.json").exists()
-                && !ws.join("lance").join("artifacts.lance").exists();
-            if !migrated {
-                return Err(e);
-            }
-            if !constellation {
-                anyhow::bail!(
-                    "this workspace's index moved to the constellation protocol — run `forgeplan watch --constellation`"
-                );
-            }
-            println!(
-                "Legacy index retired (constellation owns .forgeplan/lance) — constellation maintenance only."
+    let (ws, store) = common::open_store_tolerating_constellation().await?;
+    if store.is_none() {
+        if !constellation {
+            anyhow::bail!(
+                "this workspace's index moved to the constellation protocol — run `forgeplan watch --constellation`"
             );
-            (ws, None)
         }
-    };
+        println!(
+            "Legacy index retired (constellation owns .forgeplan/lance) — constellation maintenance only."
+        );
+    }
 
     let (tx, rx) = std::sync::mpsc::channel();
     let mut debouncer = new_debouncer(Duration::from_millis(500), tx)?;

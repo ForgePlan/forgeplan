@@ -10,7 +10,7 @@ use crate::commands::common;
 /// Detects .forgeplan/ files changed since a git ref (default: ORIG_HEAD from last pull/merge)
 /// and syncs them into LanceDB with source=git_sync and commit_hash.
 pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, store) = common::open_store_tolerating_constellation().await?;
 
     // PRD-071 contract: errors emit `Fix:` markers so agents have a
     // deterministic next action.
@@ -56,6 +56,22 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
         println!("\nDone.");
         return Ok(());
     }
+
+    // On a migrated workspace the legacy store is retired: the per-file
+    // writes below have no target, and the canonical reconcile subsumes the
+    // whole diff. List what changed for visibility, reconcile once, done.
+    let Some(store) = store else {
+        println!(
+            "  {} file(s) changed — legacy index retired; constellation reconcile owns them:",
+            changed.len()
+        );
+        for file in &changed {
+            println!("    {} {}", file.status, file.path);
+        }
+        reconcile_and_drain(&ws).await?;
+        println!("\nDone.");
+        return Ok(());
+    };
 
     let mut synced = 0usize;
     let mut deleted = 0usize;

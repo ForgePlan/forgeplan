@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use forgeplan_core::config::types::Config;
 use forgeplan_core::db::store::{ArtifactRecord, LanceStore};
@@ -37,6 +37,37 @@ pub fn config() -> anyhow::Result<Config> {
 pub async fn store() -> anyhow::Result<LanceStore> {
     let (_, store) = open_store().await?;
     Ok(store)
+}
+
+/// Whether the workspace's index has moved to the constellation protocol:
+/// bootstrap renamed `artifacts.lance`/`relations.lance` aside (single live
+/// writer per logical index) and `CURRENT.json` names the owner. A bare
+/// `LanceStore::open` failure on that layout is not corruption — the legacy
+/// store is retired on purpose.
+pub fn index_migrated(workspace: &Path) -> bool {
+    let lance = workspace.join("lance");
+    lance.join("CURRENT.json").exists() && !lance.join("artifacts.lance").exists()
+}
+
+/// Open the legacy store if it still owns the index; `None` when the
+/// constellation protocol has claimed `.forgeplan/lance/`. Other open
+/// failures propagate unchanged.
+pub async fn open_store_tolerating_constellation() -> anyhow::Result<(PathBuf, Option<LanceStore>)>
+{
+    match open_store().await {
+        Ok((ws, store)) => Ok((ws, Some(store))),
+        Err(e) => {
+            let cwd = std::env::current_dir()?;
+            let Some(ws) = workspace::find_workspace(&cwd) else {
+                return Err(e);
+            };
+            if index_migrated(&ws) {
+                Ok((ws, None))
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 /// Open workspace store AND acquire the exclusive workspace lock.
