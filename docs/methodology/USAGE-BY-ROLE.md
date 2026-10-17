@@ -129,9 +129,10 @@ Flow:
   4. forgeplan drift → any violations?
   5. Report: compliance + gaps + drift
 
-Rule: Adversarial Review — MUST find at least 1 problem.
-Zero findings = incomplete review.
+Rule: Adversarial Review — follow [`QUALITY-GATES.md` §2](./QUALITY-GATES.md#2-adversarial-review-protocol). Zero real defects is permitted only when D1.1-D1.7, mandatory rounds and preserved gates are satisfied on the current complete candidate; the reviewer never invents findings to manufacture a non-zero count and never accepts risk on the owner's behalf; unresolved HIGH / Critical means BLOCKER.
 ```
+
+Full protocol: [`QUALITY-GATES.md` §2](./QUALITY-GATES.md#2-adversarial-review-protocol).
 
 ---
 

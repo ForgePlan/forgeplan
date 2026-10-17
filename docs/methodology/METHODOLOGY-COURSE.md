@@ -536,7 +536,7 @@ Phase 0: OBSERVE    <- forgeplan health + stale + fpf
 Phase 1: ROUTE      <- forgeplan route -> depth + pipeline
 Phase 2: SPRINT     <- /sprint -> wave-based plan
 Phase 3: BUILD      <- /team-up -> code with Rust skills
-Phase 4: AUDIT      <- /audit -> adversarial review (MUST find issues)
+Phase 4: AUDIT      <- /audit -> adversarial review (see [`QUALITY-GATES.md` §2](./QUALITY-GATES.md#2-adversarial-review-protocol))
 Phase 5: FIXES      <- /team-up -> fix findings
 Phase 6: EVIDENCE   <- forgeplan new evidence + score + activate
 Phase 7: COMMIT     <- git commit + PR + hindsight
@@ -750,15 +750,15 @@ forgeplan route "task description"
 
 ---
 
-### 11.8. Adversarial Review Without Findings (rubber stamp)
+### 11.8. Unverified Approval (rubber-stamp review)
 
-**What it is**: `/audit` -> "everything is great, 0 problems found".
+**What it is**: `/audit` reports no coverage or no evidence of checking — just "everything is great" with no recorded scope, criteria or artifacts actually examined.
 
-**Why it's bad**: 0 findings = review wasn't done. In any code with more than 100 LOC **there is** something to improve. A rubber-stamp review creates a false sense of security.
+**Why it's bad**: A rubber-stamp review creates a false sense of security. The defect is the missing verification, not the missing finding. Per [`QUALITY-GATES.md` §2](./QUALITY-GATES.md#2-adversarial-review-protocol), independent review MAY end at PASS with zero real defects only when the seven D1 conditions (generator ≠ verifier, current version pinned, coverage, evidence sufficiency, preserved gates, finite report) are satisfied on the current complete candidate. Zero findings alone is not approval.
 
-**How to do it right**: The reviewer **must** find at least 1 problem. If none found -- re-review with a different focus (security? performance? error handling?).
+**How to do it right**: Show what was actually checked — explicit scope, criteria, examined artifacts, evidence references and the strongest counterargument. If a focused pass finds no real defect, record the active search and the D1 conditions satisfied; do not invent findings to manufacture a non-zero count.
 
-**In plain terms**: "everything is perfect" = "I didn't check". A good review always finds something.
+**In plain terms**: "everything is perfect, I checked nothing" = approval bias. A good review shows what it actually verified.
 
 ---
 
@@ -812,6 +812,6 @@ gh pr create --base dev
 | 5 | No route | No routing | Code without depth | `forgeplan route` first |
 | 6 | Average trust | Inflated score | R_eff seems OK | Fix min (weakest link) |
 | 7 | Over-document | Bureaucracy | 10 docs for a fix | Route -> create by depth |
-| 8 | Rubber stamp | Formal review | 0 audit findings | Re-review with focus |
+| 8 | Rubber stamp | No coverage / no evidence of checking | "0 audit findings" recorded without scope or examined artifacts | Show scope, criteria, examined artifacts, evidence; re-pin per §2 |
 | 9 | No structured fields | Missing magic words | R_eff=0.1 with evidence | Add verdict+CL+type |
 | 10 | Direct commit | No PR | No PR | Feature branch + PR |

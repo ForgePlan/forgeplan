@@ -206,7 +206,7 @@ Ask yourself:
 
 ### Adversarial Review -- for important PRDs and ADRs:
 
-Rule: the reviewer MUST find problems. 0 problems = review not counted.
+Rule: independent review follows the core protocol in [`QUALITY-GATES.md` §2 — Adversarial Review](./QUALITY-GATES.md#2-adversarial-review-protocol). Zero real defects is permitted only when the seven D1 conditions, mandatory rounds and all preserved gates are satisfied on the current complete candidate; the reviewer never invents findings to manufacture a non-zero count.
 
 **When**: Deep+ artifacts. Not needed for tactical/standard.
 
@@ -434,7 +434,7 @@ Asks the user **only** if the decision is irreversible (DB schema, public API).
 Skills: rust-expert, m06-error-handling (minimum 2)
 ```
 
-The reviewer **must** find problems. 0 findings -> re-review with deeper focus.
+The reviewer follows the core protocol in [`QUALITY-GATES.md` §2 — Adversarial Review](./QUALITY-GATES.md#2-adversarial-review-protocol): active counterexample search, mandatory rounds, structured severity/state reporting, no manufactured non-zero count, HIGH/Critical unresolved = BLOCKER.
 
 #### Phase 5: FIXES
 

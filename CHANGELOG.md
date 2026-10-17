@@ -11,6 +11,9 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Changed
+- Core review policy: `docs/methodology/QUALITY-GATES.md` §2 (and RU twin) now carry the single normative core protocol — bounded zero-defect PASS under seven D1 conditions, re-review triggers, strict scoped PASS, owner-approved quota-only precedence; governed by [ADR-027](.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md). Short references in `HOW-TO-USE`, `GLOSSARY`, `FORGEPLAN-GUIDE`, `METHODOLOGY-COURSE`, `USAGE-BY-ROLE`, `PRD-SCHEMA`, `CLAUDE.md` audit mandate and `templates/prd/_TEMPLATE.md` link to §2 instead of repeating the protocol. All other gates (reviewer counts/roles, ≥5 commits OR new public API trigger, Critical ≥ 2 rounds, validation / ADI / Verification Gate / R_eff / security / runtime / consent / activation) are preserved. Source docs only — shipped binary, installed plugin copies, public website surfaces and historical artifacts keep their prior text until independently updated.
+
 ## [0.37.0] - 2026-09-08
 
 Sprint headline: **Trust the number, and the write, and the gate that proves it.**

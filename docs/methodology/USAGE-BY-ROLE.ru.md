@@ -129,9 +129,10 @@ Flow:
   4. forgeplan drift → есть ли нарушения?
   5. Отчёт: compliance + gaps + drift
 
-Правило: Adversarial Review — ОБЯЗАН найти хотя бы 1 проблему.
-Zero findings = неполный review.
+Правило: Adversarial Review — следуй [`QUALITY-GATES.ru.md` §2](./QUALITY-GATES.ru.md#2-adversarial-review-protocol). Ноль реальных дефектов допустим только когда выполнены D1.1-D1.7, обязательные раунды и сохранённые gates на текущем полном candidate; ревьюер не выдумывает находки ради ненулевого счётчика и не принимает риск за владельца; неразрешённые HIGH / Critical означают BLOCKER.
 ```
+
+Полный протокол: [`QUALITY-GATES.ru.md` §2](./QUALITY-GATES.ru.md#2-adversarial-review-protocol).
 
 ---
 

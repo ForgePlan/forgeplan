@@ -577,7 +577,7 @@ Phase 0: OBSERVE    → forgeplan health + stale + fpf (что происход�
 Phase 1: ROUTE      → forgeplan route (какой depth?)
 Phase 2: SPRINT     → /sprint (план волн)
 Phase 3: BUILD      → /team-up (реализация с Rust skills)
-Phase 4: AUDIT      → /audit (adversarial review, MUST find issues)
+Phase 4: AUDIT      → /audit (adversarial review — см. [`QUALITY-GATES.ru.md` §2](./QUALITY-GATES.ru.md#2-adversarial-review-protocol))
 Phase 5: FIXES      → /team-up (исправления по аудиту)
 Phase 6: EVIDENCE   → forgeplan new evidence + score + activate
 Phase 7: COMMIT     → git commit + PR + hindsight

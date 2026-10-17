@@ -70,16 +70,16 @@
 6. **No Implementation Leakage** — PRD описывает ЧТО, не КАК
 7. **Consistency** — Goals и Requirements не противоречат друг другу
 
-### Adversarial Review (из BMAD)
+### Adversarial Review
 
-При review PRD, reviewer **ОБЯЗАН** найти хотя бы 1 проблему:
+Применяй core-протокол из [`QUALITY-GATES.ru.md` §2 — Adversarial Review](../methodology/QUALITY-GATES.ru.md#2-adversarial-review-protocol). При review PRD активно ищи контрпримеры, в частности по вопросам:
 - Неизмеримый Goal?
-- Missing edge case?
-- Unrealistic timeline?
+- Отсутствующий edge case?
+- Нереалистичный timeline?
 - Забытый stakeholder?
 - Security/privacy concern?
 
-Если ревьюер не нашёл ни одной проблемы — **пересмотреть более внимательно**.
+Ревьюер не выдумывает находки ради ненулевого счётчика и не принимает риск за владельца; неразрешённые HIGH / Critical означают BLOCKER. PASS с нулём дефектов требует семи условий D1 (generator ≠ verifier, закреплена текущая версия, покрытие, достаточность доказательств, сохранённые gates, конечный отчёт) на текущем полном candidate.
 
 ## Numbering
 

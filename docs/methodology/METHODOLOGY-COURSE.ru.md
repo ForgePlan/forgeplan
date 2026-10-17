@@ -536,7 +536,7 @@ Phase 0: OBSERVE    ← forgeplan health + stale + fpf
 Phase 1: ROUTE      ← forgeplan route → depth + pipeline
 Phase 2: SPRINT     ← /sprint → wave-based plan
 Phase 3: BUILD      ← /team-up → код с Rust skills
-Phase 4: AUDIT      ← /audit → adversarial review (MUST find issues)
+Phase 4: AUDIT      ← /audit → adversarial review (см. [`QUALITY-GATES.ru.md` §2](./QUALITY-GATES.ru.md#2-adversarial-review-protocol))
 Phase 5: FIXES      ← /team-up → починка findings
 Phase 6: EVIDENCE   ← forgeplan new evidence + score + activate
 Phase 7: COMMIT     ← git commit + PR + hindsight
@@ -750,15 +750,15 @@ forgeplan route "описание задачи"
 
 ---
 
-### 11.8. Adversarial review без findings (формальная проверка)
+### 11.8. Неподтверждённый approval (формальная проверка)
 
-**Что это**: `/audit` → "всё отлично, 0 проблем найдено".
+**Что это**: `/audit` отчитывается без покрытия или без доказательств проверки — просто «всё отлично» без зафиксированного объёма, критериев или реально рассмотренных артефактов.
 
-**Почему плохо**: 0 findings = review не сделан. В любом коде > 100 LOC **есть** что улучшить. Формальный review создаёт ложное чувство безопасности.
+**Почему плохо**: Формальный review создаёт ложное чувство безопасности. Дефект — отсутствие проверки, а не отсутствие находки. Согласно [`QUALITY-GATES.ru.md` §2](./QUALITY-GATES.ru.md#2-adversarial-review-protocol), независимое ревью **MAY** завершиться PASS с нулём реальных дефектов только когда выполнены семь условий D1 (generator ≠ verifier, закреплена текущая версия, покрытие, достаточность доказательств, сохранённые gates, конечный отчёт) на текущем полном candidate. Сам по себе ноль findings не является одобрением.
 
-**Как правильно**: Reviewer **обязан** найти хотя бы 1 проблему. Если не нашёл — пере-review с другим фокусом (security? performance? error handling?).
+**Как правильно**: Покажите, что именно было проверено — явный объём, критерии, рассмотренные артефакты, ссылки на доказательства и сильнейший контраргумент. Если сфокусированный проход не нашёл реального дефекта, зафиксируйте активный поиск и выполненные условия D1; не выдумывайте находки ради ненулевого счётчика.
 
-**Простыми словами**: "всё идеально" = "я не проверял". Хороший review всегда находит что-то.
+**Простыми словами**: «всё идеально, я ничего не проверил» = approval bias. Хороший review показывает, что он реально проверил.
 
 ---
 
@@ -812,6 +812,6 @@ gh pr create --base dev
 | 5 | No route | Без маршрута | Код без depth | `forgeplan route` первым |
 | 6 | Average trust | Завышение | R_eff кажется OK | Починить min (weakest link) |
 | 7 | Over-document | Бюрократия | 10 docs на fix | Route → создавай по depth |
-| 8 | Rubber stamp | Формальный review | 0 audit findings | Re-review с фокусом |
+| 8 | Rubber stamp | Нет покрытия / нет доказательств проверки | «0 audit findings» записано без объёма или рассмотренных артефактов | Показать объём, критерии, рассмотренные артефакты, доказательства; re-pin по §2 |
 | 9 | No structured fields | Нет magic-слов | R_eff=0.1 при evidence | Добавить verdict+CL+type |
 | 10 | Direct commit | Прямой коммит | Нет PR | Feature branch + PR |

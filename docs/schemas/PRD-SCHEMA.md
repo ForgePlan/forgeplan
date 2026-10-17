@@ -70,16 +70,16 @@
 6. **No Implementation Leakage** — PRD describes WHAT, not HOW
 7. **Consistency** — Goals and Requirements do not contradict each other
 
-### Adversarial Review (from BMAD)
+### Adversarial Review
 
-When reviewing a PRD, the reviewer **MUST** find at least 1 issue:
+Apply the core protocol in [`QUALITY-GATES.md` §2 — Adversarial Review](../methodology/QUALITY-GATES.md#2-adversarial-review-protocol). When reviewing a PRD, actively search for counterexamples against, among others:
 - Unmeasurable Goal?
 - Missing edge case?
 - Unrealistic timeline?
 - Forgotten stakeholder?
 - Security/privacy concern?
 
-If the reviewer found zero issues — **review more carefully**.
+The reviewer never invents findings to manufacture a non-zero count and never accepts risk on the owner's behalf; unresolved HIGH / Critical means BLOCKER. A zero-defect PASS requires the seven D1 conditions (generator ≠ verifier, current version pinned, coverage, evidence sufficiency, preserved gates, finite report) on the current complete candidate.
 
 ## Numbering
 

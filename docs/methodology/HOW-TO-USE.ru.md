@@ -206,7 +206,7 @@ FR-003: User can persist and query structured data with ACID guarantees
 
 ### Adversarial Review — для важных PRD и ADR:
 
-Правило: ревьюер ОБЯЗАН найти проблемы. 0 проблем = ревью не засчитано.
+Правило: независимое ревью следует core-протоколу в [`QUALITY-GATES.ru.md` §2 — Adversarial Review](./QUALITY-GATES.ru.md#2-adversarial-review-protocol). Ноль реальных дефектов допустим только когда выполнены семь условий D1, обязательные раунды и все сохранённые gates на текущем полном candidate; ревьюер не выдумывает находки ради ненулевого счётчика.
 
 **Когда**: Deep+ артефакты. Не нужно для tactical/standard.
 
@@ -434,7 +434,7 @@ Skills: rust-expert, m01-ownership, m06-error-handling
 Skills: rust-expert, m06-error-handling (minimum 2)
 ```
 
-Reviewer **обязан** найти проблемы. 0 findings → пере-review с более глубоким фокусом.
+Ревьюер следует core-протоколу в [`QUALITY-GATES.ru.md` §2 — Adversarial Review](./QUALITY-GATES.ru.md#2-adversarial-review-protocol): активный поиск контрпримеров, обязательные раунды, структурированная отчётность по severity/state, ноль — не повод для re-spawn, неразрешённые HIGH/Critical = BLOCKER.
 
 #### Phase 5: FIXES
 

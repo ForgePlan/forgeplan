@@ -107,7 +107,7 @@ What limits system reliability. System reliability <= min(component reliability)
 ## Workflow
 
 ### Adversarial Review
-A review protocol from BMAD: the reviewer **MUST** find problems; 0 problems found = redo the review. Ensures quality through constructive confrontation.
+A review protocol applied at Deep and Critical levels. The reviewer actively searches for counterexamples and contradictions, reports findings with severity / location / consequence / state, and may end at **PASS with zero real defects** only when the seven conditions in [`QUALITY-GATES.md` §2](./QUALITY-GATES.md#2-adversarial-review-protocol) are satisfied on the current complete candidate (generator ≠ verifier, current version pinned, coverage and evidence sufficient, preserved gates intact, finite report). The reviewer never invents findings to manufacture a non-zero count and never accepts risk on the owner's behalf; unresolved `HIGH` / `Critical` means `BLOCKER`. See [`QUALITY-GATES.md` §2](./QUALITY-GATES.md#2-adversarial-review-protocol) for the canonical core protocol.
 
 ### Contextual Chain
 A pattern from BMAD: the output of each phase = the input to the next. Automatic context transfer without loss. Guarantees that no intermediate step result is lost.
