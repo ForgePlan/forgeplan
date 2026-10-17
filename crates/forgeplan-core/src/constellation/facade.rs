@@ -30,11 +30,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::ConstellationError;
 use super::capture::{CaptureLimits, CaptureRequest, CapturedSourceView, capture_source};
 use super::manifest::{CurrentDescriptor, GenerationManifest};
 use super::storage::{self, IndexProtocolState};
 use super::view::ReadView;
+use super::{ConstellationError, checked_increment};
 
 /// Whether this process still admits maintenance.
 ///
@@ -1036,6 +1036,115 @@ pub async fn maintain_index(
             lexical_index,
         },
     ))
+}
+
+/// What [`rebind_index_identity`] changed about one physical index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebindReport {
+    /// The checkout the marker claimed before the rewrite.
+    pub old_checkout_id: String,
+    /// The path-bound checkout id the marker now claims — always
+    /// `path_bound_checkout_id(index_root)` for the root the call rebound.
+    pub new_checkout_id: String,
+    /// The durable epoch before the rewrite.
+    pub old_epoch: u64,
+    /// The durable epoch after: `old_epoch + 1`, checked. Bumping retires
+    /// every pending embedding job honestly — job eligibility is the tuple
+    /// `(index_epoch, checkout_id, incarnation)`, and work queued under the
+    /// old epoch can never satisfy it again.
+    pub new_epoch: u64,
+}
+
+/// The checkout id an index at `index_root` would mint with no marker at
+/// all — `local-<sha256(root)[..16]>` over the root **as spelled**.
+///
+/// Pure: a function of the path's bytes, no I/O. Callers spell the root
+/// exactly as a maintainer would (canonical), and use the id to reason
+/// about a marker's claim *before* deciding to rewrite it — a marker whose
+/// `checkout_id` equals this value belongs to this path; anything else is
+/// a foreign index. This is the one piece of identity the rebind flow
+/// needs outside the owner module, so it is named here rather than through
+/// a wider `IndexIdentity` export.
+pub fn path_bound_checkout_id(index_root: &Path) -> String {
+    super::owner::IndexIdentity::path_bound_checkout_id(&super::owner::IndexLocation::new(
+        index_root,
+    ))
+}
+
+/// Rebind a moved index to the path it now sits at.
+///
+/// The marker's `checkout_id` is path-derived, so a checkout that moved
+/// leaves an index claiming its old home — the next `maintain_index`
+/// refuses it with `index_identity_mismatch`, loudly and correctly. This
+/// is the explicit operator step that lifts the refusal: take the owner
+/// (the same discipline a publisher keeps — a rewrite must never race a
+/// live publish), read the marker, rewrite the identity, and put it back
+/// under the platform durability barrier.
+///
+/// Two deliberate choices:
+///
+/// * `index_epoch` is **bumped**, not preserved. Eligibility for pending
+///   embedding jobs is the tuple `(index_epoch, checkout_id, incarnation)`;
+///   keeping the epoch would let work queued under the old checkout still
+///   apply.
+/// * Already-published generations are **not** rewritten. `CURRENT` and
+///   its manifest keep the identity they were published under — they are
+///   the record of what was true then; the marker governs what the *next*
+///   publisher claims.
+///
+/// Returns `None` when there is nothing to rewrite: no marker at all (a
+/// fresh workspace — the next publish mints its own identity), or a marker
+/// already bound to this path (a re-run must not burn an epoch).
+///
+/// # Errors
+///
+/// [`ConstellationError::IndexBusy`] when another live process owns the
+/// index or this process is shutting down, and the marker-read / barrier
+/// errors a publisher would also report.
+pub fn rebind_index_identity(
+    index_root: &Path,
+) -> Result<Option<RebindReport>, ConstellationError> {
+    if !is_admitting() {
+        return Err(ConstellationError::IndexBusy {
+            detail: "this process is shutting down and admits no new maintenance".to_string(),
+        });
+    }
+    let location = super::owner::IndexLocation::new(index_root);
+    // Owner first, before the marker is read or written: the rewrite is
+    // serialised against a live publisher exactly as a publish would be.
+    // `acquire_owner` verifies the canonical parent itself.
+    let _owner = super::owner::acquire_owner(
+        &location,
+        std::time::Duration::from_millis(super::owner::OWNER_ACQUIRE_BUDGET_MS),
+    )?;
+    let marker = match storage::read_marker(index_root)?.marker().cloned() {
+        Some(marker) => marker,
+        None => return Ok(None),
+    };
+    let new_checkout_id = super::owner::IndexIdentity::path_bound_checkout_id(&location);
+    if marker.checkout_id == new_checkout_id {
+        return Ok(None);
+    }
+    let (_support, platform, diagnostic) = super::durability::platform_barrier(index_root);
+    if let Some(diagnostic) = diagnostic {
+        return Err(ConstellationError::UnsupportedIndexFilesystem {
+            detail: diagnostic.detail,
+        });
+    }
+    let platform = platform.ok_or_else(|| ConstellationError::UnsupportedIndexFilesystem {
+        detail: "the index root has no write barrier".to_string(),
+    })?;
+    let mut rewritten = marker.clone();
+    let old_epoch = rewritten.index_epoch;
+    rewritten.checkout_id = new_checkout_id.clone();
+    rewritten.index_epoch = checked_increment("index_epoch", old_epoch)?;
+    storage::write_marker(index_root, &rewritten, platform.as_ref())?;
+    Ok(Some(RebindReport {
+        old_checkout_id: marker.checkout_id,
+        new_checkout_id,
+        old_epoch,
+        new_epoch: rewritten.index_epoch,
+    }))
 }
 
 /// What one embedding-queue drain did, as the caller reports it.
@@ -2280,6 +2389,96 @@ mod tests {
             err.code(),
             crate::constellation::DiagnosticCode::IndexProtocolMismatch
         );
+    }
+
+    #[test]
+    fn rebind_of_a_root_with_no_marker_rewrites_nothing() {
+        let tmp = workspace();
+        let root = tmp.path().canonicalize().unwrap().join("lance");
+        // The index root itself need not exist — the owner lock lives in
+        // the (existing) canonical parent, and there is no marker to move.
+        assert_eq!(rebind_index_identity(&root).unwrap(), None);
+        assert_eq!(
+            super::super::storage::read_marker(&root).unwrap(),
+            IndexProtocolState::Uninitialized,
+            "a fresh workspace mints its own identity at first publish"
+        );
+    }
+
+    #[test]
+    fn rebind_rewrites_a_moved_marker_and_burns_an_epoch() {
+        let tmp = workspace();
+        // The root must exist for the marker to exist, and an existing root
+        // is classified component-wise — a TempDir's uncanonicalized `/var`
+        // is itself a symlink on macOS, so the canonical spelling is used.
+        let base = tmp.path().canonicalize().unwrap();
+        let root = base.join("lance");
+        let barrier = barrier_for(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        // The marker an index carries after its checkout moved: it still
+        // claims the identity of the old location.
+        let old_root = tmp.path().join("old-home").join("lance");
+        let old_bound = path_bound_checkout_id(&old_root);
+        let new_bound = path_bound_checkout_id(&root);
+        assert_ne!(old_bound, new_bound);
+        let marker = ProtocolMarker {
+            protocol_version: crate::constellation::FORMAT_VERSION,
+            state: BootstrapState::Active,
+            index_epoch: 1,
+            checkout_id: old_bound.clone(),
+            table_names: ProtocolMarker::active_table_names(),
+            storage_scheme: STORAGE_SCHEME_FILE_OBJECT_STORE.to_string(),
+            bootstrap_attempt: 2,
+        };
+        super::super::storage::write_marker(&root, &marker, barrier.as_ref()).unwrap();
+
+        // Before the rebind the path-bound check refuses the index — the
+        // `index_identity_mismatch` `maintain_index` would report.
+        marker.check_identity(&new_bound).unwrap_err();
+
+        let report = rebind_index_identity(&root)
+            .unwrap()
+            .expect("a marker exists");
+        assert_eq!(report.old_checkout_id, old_bound);
+        assert_eq!(report.new_checkout_id, new_bound);
+        assert_eq!(report.old_epoch, 1);
+        assert_eq!(report.new_epoch, 2);
+
+        // After the rewrite the marker claims this path — `forgeplan index`
+        // at the new location passes `check_identity`.
+        match super::super::storage::read_marker(&root).unwrap() {
+            IndexProtocolState::Active(read) => {
+                read.check_identity(&new_bound).unwrap();
+                assert_eq!(read.index_epoch, 2);
+                // State survives the rewrite: an active index stays active.
+                assert_eq!(read.state, BootstrapState::Active);
+            }
+            other => panic!("expected Active, got {other:?}"),
+        }
+
+        // The identity the next publisher derives is the rebound one — jobs
+        // bound to the old `(index_epoch, checkout_id)` pair can never match.
+        let identity = super::super::publisher::identity_for(&root);
+        assert_eq!(identity.checkout_id(), new_bound);
+        assert_eq!(identity.index_epoch(), 2);
+
+        // A second rebind is a no-op: already bound, so no epoch is burned.
+        assert_eq!(rebind_index_identity(&root).unwrap(), None);
+        match super::super::storage::read_marker(&root).unwrap() {
+            IndexProtocolState::Active(read) => assert_eq!(read.index_epoch, 2),
+            other => panic!("expected Active, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn path_bound_checkout_id_tracks_the_spelled_root() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("a").join("lance");
+        let b = tmp.path().join("b").join("lance");
+        assert_ne!(path_bound_checkout_id(&a), path_bound_checkout_id(&b));
+        assert_eq!(path_bound_checkout_id(&a), path_bound_checkout_id(&a));
+        assert!(path_bound_checkout_id(&a).starts_with("local-"));
     }
 
     #[test]

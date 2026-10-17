@@ -187,25 +187,15 @@ pub fn use_constellation(
     Ok(())
 }
 
-/// Validate and add a source to a constellation.
+/// Canonicalize a would-be source root under the rules every registration
+/// path enforces.
 ///
 /// The path must resolve to a real `.forgeplan` workspace (artifact dirs
 /// present) and must not be a symlink — the same confinement rule the
 /// reader applies, enforced at registration time so a bad entry fails loud
-/// at `add`, not quietly at every later read. Adding the same canonical
-/// path twice is an error; aliases of one workspace would double-count
-/// every hit.
-pub fn add_source(
-    registry: &mut ConstellationRegistry,
-    constellation: &str,
-    spelled_path: &Path,
-) -> Result<String, ConstellationError> {
-    let def = registry
-        .constellations
-        .get_mut(constellation)
-        .ok_or_else(|| ConstellationError::Io {
-            detail: format!("no constellation named {constellation:?}"),
-        })?;
+/// at `add`/`rebind`, not quietly at every later read. Returns the
+/// canonical spelling every stored path carries.
+fn canonical_source_root(spelled_path: &Path) -> Result<String, ConstellationError> {
     let meta = std::fs::symlink_metadata(spelled_path).map_err(|e| ConstellationError::Io {
         detail: format!("cannot stat {}: {e}", spelled_path.display()),
     })?;
@@ -233,7 +223,29 @@ pub fn add_source(
             ),
         });
     }
-    let canonical_string = canonical.display().to_string();
+    Ok(canonical.display().to_string())
+}
+
+/// Validate and add a source to a constellation.
+///
+/// The path must resolve to a real `.forgeplan` workspace (artifact dirs
+/// present) and must not be a symlink — the same confinement rule the
+/// reader applies, enforced at registration time so a bad entry fails loud
+/// at `add`, not quietly at every later read. Adding the same canonical
+/// path twice is an error; aliases of one workspace would double-count
+/// every hit.
+pub fn add_source(
+    registry: &mut ConstellationRegistry,
+    constellation: &str,
+    spelled_path: &Path,
+) -> Result<String, ConstellationError> {
+    let def = registry
+        .constellations
+        .get_mut(constellation)
+        .ok_or_else(|| ConstellationError::Io {
+            detail: format!("no constellation named {constellation:?}"),
+        })?;
+    let canonical_string = canonical_source_root(spelled_path)?;
     if def.sources.iter().any(|s| s.path == canonical_string) {
         return Err(ConstellationError::Io {
             detail: format!("{canonical_string} is already a source of {constellation:?}"),
@@ -271,6 +283,146 @@ pub fn remove_source(
         });
     }
     Ok(canonical)
+}
+
+/// What [`rebind_source`] changed: the identity the registry dropped and
+/// the one it now points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebindOutcome {
+    /// The canonical path the source had before the rebind — the moved
+    /// checkout's old home. It typically no longer exists; that is the
+    /// normal case, not an error.
+    pub old_path: String,
+    /// The canonical path the source has now.
+    pub new_path: String,
+    /// `src:` id derived from `old_path`. Every `KEY@src:` reference held
+    /// against the old location stops resolving — a moved checkout is a new
+    /// source identity, by the same path-derived rule that minted this id.
+    pub old_source_id: String,
+    /// `src:` id derived from `new_path`.
+    pub new_source_id: String,
+}
+
+/// The `src:` identity a *stored* path reports.
+///
+/// Stored paths are canonical by construction, so the id is a pure function
+/// of the string — no I/O. That is exactly why a moved source, whose whole
+/// reason for a rebind is that its path is dead, still answers to its old
+/// id: [`super::federation::spec_source_id`] resolves the path live and so
+/// cannot serve this case.
+fn stored_source_id(stored_path: &str) -> String {
+    super::federation::source_id_for(Path::new(stored_path))
+}
+
+/// Find the one source `selector` names inside `def`.
+///
+/// A selector is a fragment of the stored canonical path, or the `src:` id
+/// (whole or a prefix of it) — the same two readings the `@qualifier` match
+/// in `get` accepts, with one deliberate difference: the id is computed
+/// from the *stored* path rather than a live resolution. A source that
+/// needs rebinding is usually dead on disk, and dead is when the id match
+/// matters most.
+///
+/// Zero matches is a miss that names what is registered — never a silent
+/// pick. More than one is an ambiguity the caller resolves with a longer
+/// fragment; picking the first could rebind the wrong checkout.
+fn find_source(
+    def: &ConstellationDef,
+    constellation: &str,
+    selector: &str,
+) -> Result<usize, ConstellationError> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return Err(ConstellationError::Io {
+            detail: "an empty selector names every source and none".to_string(),
+        });
+    }
+    let matches: Vec<usize> = def
+        .sources
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            s.path.contains(selector) || stored_source_id(&s.path).starts_with(selector)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let describe = |index: usize| {
+        let s = &def.sources[index];
+        format!("{} ({})", s.path, stored_source_id(&s.path))
+    };
+    match matches.as_slice() {
+        [] => Err(ConstellationError::Io {
+            detail: format!(
+                "selector {selector:?} matches no source of {constellation:?}. Registered:\n  {}",
+                (0..def.sources.len())
+                    .map(describe)
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            ),
+        }),
+        [one] => Ok(*one),
+        many => Err(ConstellationError::Io {
+            detail: format!(
+                "selector {selector:?} is ambiguous in {constellation:?} — it matches {} sources; \
+                 give a longer fragment:\n  {}",
+                many.len(),
+                many.iter()
+                    .map(|&i| describe(i))
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            ),
+        }),
+    }
+}
+
+/// Rebind a source to a new path — the moved-checkout verb.
+///
+/// Source identity is path-derived, so a checkout that moved is a new
+/// source: this rewrites the one registry field that carries that identity
+/// and leaves `added_at` alone — it records when the workspace first
+/// joined the constellation, which stays true across the move.
+///
+/// `selector` is resolved by [`find_source`]; `new_path` is validated under
+/// exactly the rules [`add_source`] applies (no symlink, canonicalized,
+/// forgeplan-shaped). A `new_path` already claimed by a *different* source
+/// is refused; rebinding to the path the source already holds is allowed —
+/// it is how a caller adopts a foreign index's marker without moving
+/// anything.
+///
+/// The registry is mutated in memory; persisting it is the caller's
+/// `save`, exactly as with [`add_source`] — a caller that refuses the
+/// target afterwards leaves the file untouched.
+pub fn rebind_source(
+    registry: &mut ConstellationRegistry,
+    constellation: &str,
+    selector: &str,
+    new_path: &Path,
+) -> Result<RebindOutcome, ConstellationError> {
+    let def = registry
+        .constellations
+        .get_mut(constellation)
+        .ok_or_else(|| ConstellationError::Io {
+            detail: format!("no constellation named {constellation:?}"),
+        })?;
+    let index = find_source(def, constellation, selector)?;
+    let canonical = canonical_source_root(new_path)?;
+    if def
+        .sources
+        .iter()
+        .enumerate()
+        .any(|(j, s)| j != index && s.path == canonical)
+    {
+        return Err(ConstellationError::Io {
+            detail: format!("{canonical} is already a source of {constellation:?}"),
+        });
+    }
+    let old_path = std::mem::replace(&mut def.sources[index].path, canonical.clone());
+    Ok(RebindOutcome {
+        old_source_id: stored_source_id(&old_path),
+        new_source_id: stored_source_id(&canonical),
+        old_path,
+        new_path: canonical,
+    })
 }
 
 /// The current constellation's sources as reader input. `None` when no
@@ -443,6 +595,156 @@ mod tests {
         let mut registry = ConstellationRegistry::default();
         create(&mut registry, "c").unwrap();
         assert!(add_source(&mut registry, "c", tmp.path()).is_err());
+    }
+
+    #[test]
+    fn rebind_by_stored_path_rewrites_the_entry_and_reports_both_ids() {
+        let old = workspace();
+        let new = workspace();
+        let mut registry = ConstellationRegistry::default();
+        create(&mut registry, "c").unwrap();
+        let old_canonical = add_source(&mut registry, "c", old.path()).unwrap();
+
+        let outcome = rebind_source(&mut registry, "c", &old_canonical, new.path()).unwrap();
+        assert_eq!(outcome.old_path, old_canonical);
+        assert!(Path::new(&outcome.new_path).is_absolute());
+        assert_eq!(registry.constellations["c"].sources.len(), 1);
+        assert_eq!(
+            registry.constellations["c"].sources[0].path,
+            outcome.new_path
+        );
+        assert!(outcome.old_source_id.starts_with("src:"));
+        assert!(outcome.new_source_id.starts_with("src:"));
+        assert_ne!(outcome.old_source_id, outcome.new_source_id);
+        // A moved checkout is a new source identity: the new id is exactly
+        // what an `add` of the new path would have minted.
+        assert_eq!(outcome.new_source_id, stored_source_id(&outcome.new_path));
+    }
+
+    #[test]
+    fn rebind_by_src_fragment_selects_a_moved_source() {
+        // The classic rebind case: the checkout was renamed, so the stored
+        // path is dead — and the `src:` selector must still resolve it.
+        let holder = TempDir::new().unwrap();
+        let before = holder.path().join("before");
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(before.join(dir)).unwrap();
+        }
+        let mut registry = ConstellationRegistry::default();
+        create(&mut registry, "c").unwrap();
+        let old_canonical = add_source(&mut registry, "c", &before).unwrap();
+
+        // The checkout moves; the stored path is dead from here on.
+        let after = holder.path().join("after");
+        std::fs::rename(&before, &after).unwrap();
+        assert!(!Path::new(&old_canonical).exists());
+
+        let old_id = stored_source_id(&old_canonical);
+        let fragment = &old_id[..12]; // "src:" + first id chars
+        let outcome = rebind_source(&mut registry, "c", fragment, &after).unwrap();
+        assert_eq!(outcome.old_path, old_canonical);
+        assert_eq!(outcome.old_source_id, old_id);
+        assert_eq!(
+            registry.constellations["c"].sources[0].path,
+            outcome.new_path
+        );
+    }
+
+    #[test]
+    fn rebind_selector_miss_names_what_is_registered() {
+        let ws = workspace();
+        let mut registry = ConstellationRegistry::default();
+        create(&mut registry, "c").unwrap();
+        let canonical = add_source(&mut registry, "c", ws.path()).unwrap();
+
+        let err = rebind_source(&mut registry, "c", "no-such-fragment", ws.path()).unwrap_err();
+        let text = format!("{err}");
+        assert!(text.contains("matches no source"), "{text}");
+        assert!(text.contains(&canonical), "{text}");
+        // The registry is untouched by a miss.
+        assert_eq!(registry.constellations["c"].sources[0].path, canonical);
+    }
+
+    #[test]
+    fn rebind_refuses_a_path_another_source_already_claims() {
+        let a = workspace();
+        let b = workspace();
+        let mut registry = ConstellationRegistry::default();
+        create(&mut registry, "c").unwrap();
+        let a_canonical = add_source(&mut registry, "c", a.path()).unwrap();
+        add_source(&mut registry, "c", b.path()).unwrap();
+
+        let err = rebind_source(&mut registry, "c", &a_canonical, b.path()).unwrap_err();
+        assert!(format!("{err}").contains("already a source"));
+    }
+
+    #[test]
+    fn rebind_refuses_a_target_that_is_not_a_workspace() {
+        let ws = workspace();
+        let plain = TempDir::new().unwrap();
+        let mut registry = ConstellationRegistry::default();
+        create(&mut registry, "c").unwrap();
+        let canonical = add_source(&mut registry, "c", ws.path()).unwrap();
+
+        assert!(rebind_source(&mut registry, "c", &canonical, plain.path()).is_err());
+        assert_eq!(registry.constellations["c"].sources[0].path, canonical);
+    }
+
+    #[test]
+    fn rebind_to_the_same_path_is_allowed_and_reports_identity_unchanged() {
+        // Adopting a foreign marker without moving the checkout needs a
+        // rebind that changes nothing in the registry — the marker rewrite
+        // is the real work in that case.
+        let ws = workspace();
+        let mut registry = ConstellationRegistry::default();
+        create(&mut registry, "c").unwrap();
+        let canonical = add_source(&mut registry, "c", ws.path()).unwrap();
+
+        let outcome = rebind_source(&mut registry, "c", &canonical, ws.path()).unwrap();
+        assert_eq!(outcome.old_path, outcome.new_path);
+        assert_eq!(outcome.old_source_id, outcome.new_source_id);
+    }
+
+    #[test]
+    fn an_ambiguous_selector_is_an_error_not_a_first_match() {
+        let holder = TempDir::new().unwrap();
+        let mut registry = ConstellationRegistry::default();
+        create(&mut registry, "c").unwrap();
+        for name in ["one", "two"] {
+            let dir = holder.path().join(name);
+            for artifact in ARTIFACT_DIRS {
+                std::fs::create_dir_all(dir.join(artifact)).unwrap();
+            }
+            add_source(&mut registry, "c", &dir).unwrap();
+        }
+        // Both stored paths contain the holder's canonical path — the
+        // fragment resolves nothing on its own. (Stored paths are
+        // canonical, so the selector must be too: a bare TempDir path is
+        // not a substring of its canonicalized self on every platform.)
+        let err = rebind_source(
+            &mut registry,
+            "c",
+            &holder.path().canonicalize().unwrap().display().to_string(),
+            holder.path(),
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("ambiguous"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rebind_refuses_a_symlinked_new_path() {
+        let ws = workspace();
+        let target = workspace();
+        let holder = TempDir::new().unwrap();
+        let link = holder.path().join("alias");
+        std::os::unix::fs::symlink(target.path(), &link).unwrap();
+        let mut registry = ConstellationRegistry::default();
+        create(&mut registry, "c").unwrap();
+        let canonical = add_source(&mut registry, "c", ws.path()).unwrap();
+
+        let err = rebind_source(&mut registry, "c", &canonical, &link).unwrap_err();
+        assert!(format!("{err}").contains("symlink"));
     }
 
     #[cfg(unix)]

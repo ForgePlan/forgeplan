@@ -10,18 +10,20 @@
 //! markdown, and a source that cannot answer is a named failure — never
 //! zero silent matches.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Subcommand;
 
 use forgeplan_core::constellation::context_pack::{self, ContextPack};
 use forgeplan_core::constellation::export as exp;
+use forgeplan_core::constellation::facade;
 use forgeplan_core::constellation::federation::{self, FederatedGet};
 use forgeplan_core::constellation::graph::{self, GraphBounds, GraphOutcome};
 use forgeplan_core::constellation::impact::{self, ImpactBounds, ImpactReport, ImpactSeverity};
 use forgeplan_core::constellation::registry;
 use forgeplan_core::constellation::snapshot as snap;
+use forgeplan_core::constellation::storage;
 
 #[derive(Subcommand)]
 pub enum ConstellationAction {
@@ -44,6 +46,27 @@ pub enum ConstellationAction {
         /// Constellation to remove from (default: the active one)
         #[arg(long)]
         from: Option<String>,
+    },
+    /// Rebind a source after its checkout moved. Source identity is
+    /// path-derived, so a moved checkout is a new source: this rewrites
+    /// the registry path and, by default, the index's path-bound marker so
+    /// `forgeplan index` answers at the new location. References qualified
+    /// by the old `src:` id stop resolving — that is the contract.
+    Rebind {
+        /// Stored path, path fragment, or `src:` id (or fragment) of the source
+        source: String,
+        /// The `.forgeplan` directory's new location
+        new_path: PathBuf,
+        /// Constellation to rebind in (default: the active one)
+        #[arg(long)]
+        of: Option<String>,
+        /// Do not rewrite the index's PROTOCOL marker at the new path
+        #[arg(long)]
+        skip_index_marker: bool,
+        /// Rebind even when the marker at the new path names a checkout
+        /// other than the moved one
+        #[arg(long)]
+        force: bool,
     },
     /// List all constellations and which is active.
     List,
@@ -149,6 +172,19 @@ pub enum ConstellationAction {
     },
 }
 
+/// What the index marker at a rebind target claims, classified against
+/// both sides of the move — the rebind continuity check.
+enum MarkerClaim {
+    /// No `PROTOCOL.json` — a fresh workspace; nothing to verify or rewrite.
+    Absent,
+    /// The marker claims the *old* path's bound id — provably the moved index.
+    BoundToOld,
+    /// The marker already claims the *new* path's bound id — a re-run.
+    BoundToNew,
+    /// The marker claims a third checkout — a foreign index at this path.
+    Foreign(String),
+}
+
 fn load_registry() -> Result<(PathBuf, registry::ConstellationRegistry)> {
     let path = registry::default_registry_path().map_err(|e| anyhow::anyhow!("{e}"))?;
     let registry = registry::load(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -199,6 +235,102 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             save_registry(&reg_path, &registry)?;
             println!("Removed {canonical} from '{name}'");
+            Ok(())
+        }
+        ConstellationAction::Rebind {
+            source,
+            new_path,
+            of,
+            skip_index_marker,
+            force,
+        } => {
+            let (reg_path, mut registry) = load_registry()?;
+            let name = resolve_name(&registry, of.as_deref())?;
+            // Resolve the selector and validate the new path in memory
+            // first. The registry is saved only after the marker check
+            // passes, so a refusal here costs the file nothing.
+            let outcome = registry::rebind_source(&mut registry, &name, &source, &new_path)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let new_index_root = Path::new(&outcome.new_path).join("lance");
+            let old_index_root = Path::new(&outcome.old_path).join("lance");
+
+            // Continuity check — cheap, and it is what keeps `rebind` from
+            // pointing the registry at a *different* checkout's index. A
+            // marker claiming the old path's bound id is provably the moved
+            // index; one claiming the new path's is already rebound;
+            // anything else is a foreign index that only --force may claim.
+            let old_bound = facade::path_bound_checkout_id(&old_index_root);
+            let new_bound = facade::path_bound_checkout_id(&new_index_root);
+            let marker_state =
+                storage::read_marker(&new_index_root).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let claim = match marker_state.marker() {
+                None => MarkerClaim::Absent,
+                Some(marker) if marker.checkout_id == old_bound => MarkerClaim::BoundToOld,
+                Some(marker) if marker.checkout_id == new_bound => MarkerClaim::BoundToNew,
+                Some(marker) => MarkerClaim::Foreign(marker.checkout_id.clone()),
+            };
+            match &claim {
+                MarkerClaim::Foreign(claimed) if !force && !skip_index_marker => {
+                    anyhow::bail!(
+                        "the index at {} claims checkout `{claimed}` — the moved workspace's index \
+                         would claim `{old_bound}`. Refusing to rebind a foreign index; rerun with \
+                         --force to claim it anyway.",
+                        new_index_root.display()
+                    );
+                }
+                MarkerClaim::Foreign(claimed) if skip_index_marker => {
+                    eprintln!(
+                        "warning: the index at {} claims checkout `{claimed}` — left untouched \
+                         (--skip-index-marker); `forgeplan index` will refuse it until rebound",
+                        new_index_root.display()
+                    );
+                }
+                _ => {}
+            }
+
+            save_registry(&reg_path, &registry)?;
+            println!("Rebound in '{name}':");
+            println!("  path:      {} → {}", outcome.old_path, outcome.new_path);
+            println!(
+                "  source id: {} → {}",
+                outcome.old_source_id, outcome.new_source_id
+            );
+            if skip_index_marker {
+                println!("  index:     marker left untouched (--skip-index-marker)");
+            } else {
+                match facade::rebind_index_identity(&new_index_root)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                {
+                    Some(report) => println!(
+                        "  index:     checkout {} → {}, epoch {} → {}",
+                        report.old_checkout_id,
+                        report.new_checkout_id,
+                        report.old_epoch,
+                        report.new_epoch
+                    ),
+                    None => match claim {
+                        MarkerClaim::Absent => println!(
+                            "  index:     no marker at {} — nothing to rewrite",
+                            new_index_root.display()
+                        ),
+                        MarkerClaim::BoundToNew => {
+                            println!("  index:     marker already bound to this path")
+                        }
+                        MarkerClaim::BoundToOld | MarkerClaim::Foreign(_) => {
+                            // Unreachable in practice — a present marker
+                            // bound to neither path is Foreign, and Foreign
+                            // without --force bailed above — but the only
+                            // wrong move here is claiming a rewrite that
+                            // did not happen.
+                            println!("  index:     nothing rewritten")
+                        }
+                    },
+                }
+            }
+            match Path::new(&outcome.new_path).parent() {
+                Some(root) => println!("Next: cd {} && forgeplan index", root.display()),
+                None => println!("Next: forgeplan index"),
+            }
             Ok(())
         }
         ConstellationAction::List => {
