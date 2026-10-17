@@ -18,6 +18,7 @@ use clap::Subcommand;
 use forgeplan_core::constellation::context_pack::{self, ContextPack};
 use forgeplan_core::constellation::export as exp;
 use forgeplan_core::constellation::federation::{self, FederatedGet};
+use forgeplan_core::constellation::graph::{self, GraphBounds, GraphOutcome};
 use forgeplan_core::constellation::impact::{self, ImpactBounds, ImpactReport, ImpactSeverity};
 use forgeplan_core::constellation::registry;
 use forgeplan_core::constellation::snapshot as snap;
@@ -94,6 +95,20 @@ pub enum ConstellationAction {
         #[arg(long, default_value = "8000")]
         budget: usize,
         /// Pack at a recorded snapshot instead of the live sources
+        #[arg(long)]
+        snapshot: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// The relation graph of the active constellation (or a recorded
+    /// snapshot): every artifact as a source-qualified node, every
+    /// declared link as a typed edge with its provenance.
+    Graph {
+        /// Maximum nodes and edges each (default 500)
+        #[arg(long, default_value = "500")]
+        limit: usize,
+        /// Read at a recorded snapshot instead of the live sources
         #[arg(long)]
         snapshot: Option<String>,
         /// Output as JSON
@@ -485,6 +500,36 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             }
             Ok(())
         }
+        ConstellationAction::Graph {
+            limit,
+            snapshot,
+            json,
+        } => {
+            let (_path, registry) = load_registry()?;
+            let bounds = GraphBounds { limit };
+            let outcome = if let Some(snap_id) = &snapshot {
+                let home = dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
+                let snap = snap::load_snapshot(&snap::snapshot_path(&home, snap_id))
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                graph::graph_snapshot(&snap, bounds).map_err(|e| anyhow::anyhow!("{e}"))?
+            } else {
+                let specs = registry::current_sources(&registry)
+                    .ok_or_else(|| anyhow::anyhow!("no active constellation"))?;
+                if specs.is_empty() {
+                    anyhow::bail!("the active constellation has no sources");
+                }
+                graph::graph_live(&specs, bounds)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&outcome)?);
+            } else {
+                print_graph_text(&outcome);
+            }
+            Ok(())
+        }
         ConstellationAction::Impact {
             id,
             depth,
@@ -629,6 +674,55 @@ fn print_impact_text(report: &ImpactReport) {
                 u.from, u.relation, u.target, u.source_id
             );
         }
+    }
+}
+
+/// Human-readable graph: nodes grouped under their source, then the
+/// typed edges with resolution and provenance. Unread sources warn on
+/// stderr; `truncated`/`partial` name the boundary at the end.
+fn print_graph_text(outcome: &GraphOutcome) {
+    for failure in &outcome.failures {
+        eprintln!(
+            "warning: source {} unread — {}",
+            failure.path, failure.reason
+        );
+    }
+    for source in &outcome.sources {
+        println!(
+            "source {} [{}:{}]",
+            source.path,
+            source.channel.channel_str(),
+            source.source_id,
+        );
+    }
+    if outcome.nodes.is_empty() && outcome.edges.is_empty() && outcome.failures.is_empty() {
+        println!("Empty graph — no artifacts in scope.");
+    }
+    for node in &outcome.nodes {
+        println!(
+            "node {:<20} {:<8} {} ({})",
+            node.display_id.as_deref().unwrap_or(&node.canonical_key),
+            node.kind.as_deref().unwrap_or("artifact"),
+            node.title,
+            node.source.source_id,
+        );
+    }
+    for edge in &outcome.edges {
+        let to = edge.resolved.as_deref().unwrap_or(&edge.target);
+        let provenance = match &edge.declared_in {
+            Some(file) => format!("{}:{}", edge.source_id, file),
+            None => edge.source_id.clone(),
+        };
+        println!(
+            "edge {} --{}--> {} [{}]",
+            edge.from, edge.relation, to, provenance
+        );
+    }
+    if outcome.truncated {
+        println!("(truncated — raise --limit)");
+    }
+    if outcome.partial {
+        println!("(partial — some sources did not answer)");
     }
 }
 

@@ -10358,7 +10358,7 @@ impl ForgeplanServer {
                 )
                 .ok()?;
                 let profile_id = resolved.profile.profile_id();
-                let mut engine = tract_engine::TractEmbedder::from_snapshot(
+                let engine = tract_engine::TractEmbedder::from_snapshot(
                     &snapshot,
                     DEFAULT_MODEL_REPO,
                     resolved.profile.dimensions as usize,

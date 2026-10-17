@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use forgeplan_core::constellation::context_pack;
 use forgeplan_core::constellation::federation::{self, FederatedGet};
+use forgeplan_core::constellation::graph::{self, GraphBounds};
 use forgeplan_core::constellation::impact::{self, ImpactBounds};
 use forgeplan_core::constellation::registry;
 use forgeplan_core::constellation::snapshot::{self, ConstellationSnapshot};
@@ -98,6 +99,14 @@ pub struct ImpactParams {
     pub depth: Option<usize>,
     /// Maximum impacted nodes (default 256).
     pub max_nodes: Option<usize>,
+    pub scope_handle: Option<String>,
+    pub snapshot_handle: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GraphParams {
+    /// Maximum nodes and edges each (default 500).
+    pub limit: Option<usize>,
     pub scope_handle: Option<String>,
     pub snapshot_handle: Option<String>,
 }
@@ -535,6 +544,50 @@ impl ConstellationReadServer {
                     Err(e) => fail("io", e),
                 }
             }
+            Some(Handle::Snapshot(_)) => {
+                fail("wrong_handle_kind", "use snapshot_handle for a snapshot")
+            }
+            None => fail(
+                "unknown_handle",
+                p.scope_handle.unwrap_or_else(|| "(none given)".into()),
+            ),
+        }
+    }
+
+    #[tool(
+        description = "The relation graph of the scope's live sources or a snapshot's                        pinned revisions: every artifact as a source-qualified node,                        every declared link as a typed edge carrying its relation and                        the source/file that declared it. Bounded — `truncated` marks                        a view cut at the limit, `partial` marks sources that did not                        answer.",
+        annotations(title = "Constellation Graph", read_only_hint = true)
+    )]
+    async fn constellation_graph(
+        &self,
+        Parameters(p): Parameters<GraphParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let bounds = GraphBounds {
+            limit: p.limit.unwrap_or(500),
+        };
+        let handles = self.handles.lock().await;
+        if let Some(snap_handle) = &p.snapshot_handle {
+            return match handles.get(snap_handle) {
+                Some(Handle::Snapshot(snap)) => match graph::graph_snapshot(snap, bounds) {
+                    Ok(outcome) => ok_json(
+                        serde_json::to_value(&outcome)
+                            .unwrap_or_else(|_| json!({"error":"serialize"})),
+                    ),
+                    Err(e) => fail("io", e),
+                },
+                Some(Handle::Scope(_)) => {
+                    fail("wrong_handle_kind", "scope handle is not a snapshot")
+                }
+                None => fail("snapshot_expired", snap_handle),
+            };
+        }
+        match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
+            Some(Handle::Scope(scope)) => match graph::graph_live(&scope.specs, bounds).await {
+                Ok(outcome) => ok_json(
+                    serde_json::to_value(&outcome).unwrap_or_else(|_| json!({"error":"serialize"})),
+                ),
+                Err(e) => fail("io", e),
+            },
             Some(Handle::Snapshot(_)) => {
                 fail("wrong_handle_kind", "use snapshot_handle for a snapshot")
             }

@@ -135,26 +135,36 @@ pub struct ImpactBoundsSerde {
 }
 
 /// One node in a source's graph.
-struct Node {
-    canonical_key: String,
-    display_id: Option<String>,
-    title: String,
-    kind: String,
+///
+/// `pub(crate)` so [`super::graph`] can emit the raw node/edge set without
+/// rebuilding the per-source projection a second time.
+pub(crate) struct Node {
+    pub(crate) canonical_key: String,
+    pub(crate) display_id: Option<String>,
+    pub(crate) title: String,
+    pub(crate) kind: String,
+    /// The file inside the source that declares this node, when the
+    /// channel knows it (the pinned relations table does not record one).
+    pub(crate) relative_path: Option<String>,
 }
 
 /// The per-source graph: nodes keyed canonically, edges as written.
-struct SourceGraph {
-    source: SourceRef,
+pub(crate) struct SourceGraph {
+    pub(crate) source: SourceRef,
     /// canonical_key → node
-    nodes: HashMap<String, Node>,
+    pub(crate) nodes: HashMap<String, Node>,
     /// display_id (lowered) → canonical_key, for resolving `target` refs.
-    by_display: HashMap<String, String>,
+    pub(crate) by_display: HashMap<String, String>,
     /// (from canonical_key, target-as-written, relation)
-    edges: Vec<(String, String, String)>,
+    pub(crate) edges: Vec<(String, String, String)>,
 }
 
 impl SourceGraph {
-    fn resolve(&self, target: &str) -> Option<String> {
+    /// Resolve a `target` string as written — an exact canonical key, else
+    /// a case-insensitive display id — to the canonical key it names in
+    /// this source. Nothing outside the source is consulted: `ADR-001` in
+    /// two checkouts stays two nodes.
+    pub(crate) fn resolve(&self, target: &str) -> Option<String> {
         if self.nodes.contains_key(target) {
             return Some(target.to_string());
         }
@@ -185,6 +195,7 @@ fn build_graph(source: SourceRef, artifacts: Vec<GraphArtifact>) -> SourceGraph 
                 display_id: a.display_id,
                 title: a.title,
                 kind: a.kind,
+                relative_path: a.relative_path,
             },
         );
     }
@@ -202,10 +213,15 @@ struct GraphArtifact {
     display_id: Option<String>,
     title: String,
     kind: String,
+    relative_path: Option<String>,
     edges: Vec<(String, String)>,
 }
 
-async fn graph_live(spec: &SourceSpec) -> Result<SourceGraph, SourceFailure> {
+/// Build one live source's graph on whichever channel it honestly
+/// offers — the pinned relations table when a generation is published,
+/// parsed frontmatter links otherwise. `pub(crate)` for
+/// [`super::graph`], which emits the raw set instead of walking it.
+pub(crate) async fn source_graph_live(spec: &SourceSpec) -> Result<SourceGraph, SourceFailure> {
     let canonical = spec.path.canonicalize().map_err(|e| SourceFailure {
         path: spec.path.display().to_string(),
         reason: format!("cannot canonicalize: {e}"),
@@ -238,6 +254,7 @@ async fn graph_live(spec: &SourceSpec) -> Result<SourceGraph, SourceFailure> {
                 display_id: d,
                 title: t,
                 kind,
+                relative_path: None,
                 edges: Vec::new(),
             })
             .collect::<Vec<_>>();
@@ -261,6 +278,7 @@ async fn graph_live(spec: &SourceSpec) -> Result<SourceGraph, SourceFailure> {
             display_id: Some(a.display_id.clone()),
             title: a.title.clone(),
             kind: a.kind.clone(),
+            relative_path: Some(a.relative_path.clone()),
             edges: a
                 .outgoing
                 .iter()
@@ -271,7 +289,9 @@ async fn graph_live(spec: &SourceSpec) -> Result<SourceGraph, SourceFailure> {
     Ok(build_graph(s, artifacts))
 }
 
-fn graph_snapshot(entry: &SnapshotSourceEntry) -> Result<SourceGraph, String> {
+/// The same graph for one snapshot source, parsed out of pinned Git
+/// objects. `pub(crate)` for [`super::graph`].
+pub(crate) fn source_graph_snapshot(entry: &SnapshotSourceEntry) -> Result<SourceGraph, String> {
     let repo = PathBuf::from(&entry.checkout_root);
     let names =
         super::snapshot::list_files_at(&repo, &entry.git_oid).map_err(|e| format!("{e}"))?;
@@ -289,6 +309,7 @@ fn graph_snapshot(entry: &SnapshotSourceEntry) -> Result<SourceGraph, String> {
                 display_id: Some(p.display_id.clone()),
                 title: p.title.clone(),
                 kind: p.kind.clone(),
+                relative_path: Some(p.relative_path.clone()),
                 edges: p
                     .outgoing
                     .iter()
@@ -499,7 +520,7 @@ pub async fn impact_live(
         sources: Vec::new(),
     };
     for spec in specs {
-        match graph_live(spec).await {
+        match source_graph_live(spec).await {
             Ok(graph) => {
                 report.sources.push(graph.source.clone());
                 walk(&graph, changed, bounds, &mut report);
@@ -537,7 +558,7 @@ pub fn impact_snapshot(
         sources: Vec::new(),
     };
     for entry in &snapshot.sources {
-        match graph_snapshot(entry) {
+        match source_graph_snapshot(entry) {
             Ok(graph) => {
                 report.sources.push(graph.source.clone());
                 walk(&graph, changed, bounds, &mut report);

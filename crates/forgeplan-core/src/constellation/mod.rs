@@ -51,6 +51,7 @@ pub mod export;
 pub mod facade;
 pub mod federation;
 pub mod generations;
+pub mod graph;
 pub mod impact;
 pub mod jobs;
 pub mod lance_tables;
