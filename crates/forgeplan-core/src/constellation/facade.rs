@@ -1205,6 +1205,9 @@ pub async fn list_pinned_documents(
         }
     })?;
     let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    // Stage 8 — pin this generation for the read's duration: GC may not
+    // delete a generation a live reader is about to open.
+    let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
     let marker = marker_for(&manifest);
     let table = super::lance_tables::open_table_at_version(
         index_root,
@@ -1266,6 +1269,9 @@ pub async fn list_pinned_graph(index_root: &Path) -> Result<PinnedGraph, Constel
         }
     })?;
     let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    // Stage 8 — pin this generation for the read's duration: GC may not
+    // delete a generation a live reader is about to open.
+    let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
     let marker = marker_for(&manifest);
     let artifacts = super::lance_tables::open_table_at_version(
         index_root,
@@ -1357,6 +1363,9 @@ pub async fn search_pinned_lexical(
         }
     })?;
     let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    // Stage 8 — pin this generation for the read's duration: GC may not
+    // delete a generation a live reader is about to open.
+    let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
     if !manifest.table_versions.is_publishable() {
         return Err(ConstellationError::IndexGenerationUnavailable {
             detail: format!(
@@ -1577,6 +1586,9 @@ pub async fn search_pinned_semantic(
         }
     })?;
     let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    // Stage 8 — pin this generation for the read's duration: GC may not
+    // delete a generation a live reader is about to open.
+    let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
     if !manifest.table_versions.is_publishable() {
         return Err(ConstellationError::IndexGenerationUnavailable {
             detail: format!(
@@ -1694,6 +1706,9 @@ pub async fn get_pinned_artifact(
         }
     })?;
     let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    // Stage 8 — pin this generation for the read's duration: GC may not
+    // delete a generation a live reader is about to open.
+    let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
     if !manifest.table_versions.is_publishable() {
         return Err(ConstellationError::IndexGenerationUnavailable {
             detail: format!(
@@ -2438,12 +2453,41 @@ mod tests {
             .unwrap();
         apply_final_state(incremental.path());
         apply_final_state(fresh.path());
-        let (updated, _) = maintain_index(&incremental_cap, CaptureLimits::default(), deadline())
-            .await
-            .unwrap();
-        let (rebuilt, _) = maintain_index(&fresh_cap, CaptureLimits::default(), deadline())
-            .await
-            .unwrap();
+        // Stage 8 requires the equivalence to be *measured*: both the
+        // delta pass and the fresh build report their wall time and their
+        // commit counters, and the resulting row sets must coincide.
+        let t_delta = std::time::Instant::now();
+        let (updated, delta_outcome) =
+            maintain_index(&incremental_cap, CaptureLimits::default(), deadline())
+                .await
+                .unwrap();
+        let delta_elapsed = t_delta.elapsed();
+        let t_fresh = std::time::Instant::now();
+        let (rebuilt, fresh_outcome) =
+            maintain_index(&fresh_cap, CaptureLimits::default(), deadline())
+                .await
+                .unwrap();
+        let fresh_elapsed = t_fresh.elapsed();
+        let rows_of = |outcome: &ReconcileOutcome| -> u64 {
+            outcome.commits.iter().map(|c| c.rows_affected).sum()
+        };
+        eprintln!(
+            "equivalence measurement: delta pass {delta_elapsed:?} ({} commits, {} rows) vs fresh build {fresh_elapsed:?} ({} commits, {} rows)",
+            delta_outcome.commits.len(),
+            rows_of(&delta_outcome),
+            fresh_outcome.commits.len(),
+            rows_of(&fresh_outcome),
+        );
+        // On a two-doc fixture a delta pass can legitimately touch as
+        // many rows as a fresh build — deletes and merges are counted on
+        // both sides. The assertion that carries the spec's weight is
+        // below: identical resulting key/path/digest sets. The counters
+        // above exist so a regression that makes "incremental" mean
+        // "rewrite everything" shows up in the numbers, not the verdict.
+        assert!(
+            !delta_outcome.commits.is_empty(),
+            "a changed corpus produced no delta commits"
+        );
         let page = |rows: Vec<IndexedDocument>| {
             rows.into_iter()
                 .map(|row| (row.canonical_key, row.relative_path, row.source_digest))

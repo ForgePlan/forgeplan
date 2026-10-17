@@ -49,6 +49,7 @@ pub mod capture;
 pub mod context_pack;
 pub mod facade;
 pub mod federation;
+pub mod generations;
 pub mod impact;
 pub mod jobs;
 pub mod lance_tables;

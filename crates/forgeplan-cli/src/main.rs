@@ -842,6 +842,15 @@ enum Commands {
         /// First document to show with --list
         #[arg(long, default_value = "0", requires = "list")]
         offset: usize,
+        /// List all generations under lance/ with size and protection
+        /// state (current / leased / keepable) — the generation index
+        #[arg(long, conflicts_with_all = ["embed_profile", "list"])]
+        generations: bool,
+        /// Garbage-collect generations: keep the newest N deletable ones
+        /// plus CURRENT and anything a live reader leases
+        #[arg(long, conflicts_with_all = ["embed_profile", "list", "generations"],
+               value_name = "KEEP")]
+        gc: Option<usize>,
     },
     /// Generate embeddings for all artifacts (semantic search)
     Embed,
@@ -1516,9 +1525,15 @@ async fn main() -> anyhow::Result<()> {
             deadline_secs,
             list,
             offset,
+            generations,
+            gc,
         } => {
             if list {
                 commands::index::list(offset).await
+            } else if generations {
+                commands::index::generations()
+            } else if let Some(keep) = gc {
+                commands::index::gc(keep).await
             } else {
                 commands::index::run(embed_profile, deadline_secs).await
             }

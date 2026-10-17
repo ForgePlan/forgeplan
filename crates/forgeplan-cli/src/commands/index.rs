@@ -50,12 +50,96 @@ pub async fn list(offset: usize) -> Result<()> {
     Ok(())
 }
 
+/// The generation index: every published generation with its size and
+/// protection state — current, live-leased, keepable. Read-only.
+pub fn generations() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let canonical = ws.canonicalize()?;
+    let capability = MaintainCapability::for_strict_maintenance(canonical);
+    let index =
+        forgeplan_core::constellation::generations::generation_index(capability.index_root())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("generations under {}:", capability.index_root().display());
+    for g in &index.generations {
+        let mut flags = Vec::new();
+        if g.is_current {
+            flags.push("current".to_string());
+        }
+        if !g.leased_by.is_empty() {
+            flags.push(format!("leased:{}", g.leased_by.len()));
+        }
+        if !g.manifest_ok {
+            flags.push("manifest-unreadable".to_string());
+        }
+        println!(
+            "  {:<40} {:>8}B  v{}/{}  {}",
+            g.generation_id,
+            g.manifest_bytes,
+            g.artifacts_version
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into()),
+            g.relations_version
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into()),
+            flags.join(" ")
+        );
+    }
+    println!(
+        "total: {}B over {} generation(s)",
+        index.lance_bytes,
+        index.generations.len()
+    );
+    Ok(())
+}
+
+/// Manual GC — the only deletion path, and it is a verb the operator
+/// runs. Removes generations that are neither CURRENT, leased, nor among
+/// the newest `keep` deletable ones. Every verdict is printed.
+pub async fn gc(keep: usize) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let canonical = ws.canonicalize()?;
+    let capability = MaintainCapability::for_strict_maintenance(canonical);
+    let report =
+        forgeplan_core::constellation::generations::gc_generations(capability.index_root(), keep)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    for (id, why) in &report.protected {
+        println!("kept   {id} ({why})");
+    }
+    for id in &report.removed_manifests {
+        println!("removed {id} (manifest)");
+    }
+    for prune in &report.pruned {
+        match &prune.skipped {
+            Some(why) => println!("prune  {}: skipped — {why}", prune.table),
+            None => println!(
+                "prune  {}: {} version(s), {}B freed (kept after {})",
+                prune.table, prune.versions_removed, prune.bytes_removed, prune.kept_after
+            ),
+        }
+    }
+    println!(
+        "{} manifest(s) removed, {} protected (keep={})",
+        report.removed_manifests.len(),
+        report.protected.len(),
+        report.keep
+    );
+    Ok(())
+}
+
 /// One maintenance pass plus an optional queue drain.
 pub async fn run(embed_profile: Option<String>, deadline_secs: u64) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-    let _config = workspace::load_config(&ws)?;
+    // Config is optional for a maintenance pass — a workspace restored
+    // from markdown alone (no config.yaml) must still index. The drain
+    // path below falls back to defaults the same way.
+    let _config = workspace::load_config(&ws).unwrap_or_default();
 
     let canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
     let capability = MaintainCapability::for_strict_maintenance(canonical);
