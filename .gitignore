@@ -154,3 +154,6 @@ design/
 ref/
 log_*.md
 *.jpg
+
+# tgrep trigram index + server state — generated locally, never committed.
+.tgrep/
