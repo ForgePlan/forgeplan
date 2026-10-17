@@ -100,6 +100,25 @@ Two related traps, same family:
   disk-full trap above — the number is real, it is just measuring something
   else.
 
+## Working mode: /smith first, then role-matched subagents
+
+Standing owner rule (2026-10): every **non-trivial** task goes through two
+steps, in order:
+
+1. **`/smith`** — routing. Reads state (`forgeplan health`, git, memory),
+   classifies the context against the routing matrix, and returns a Plan that
+   names which specialist subagents to dispatch and in what order. Smith picks
+   the route; it never writes code itself.
+2. **Role-matched dispatch** — each plan step goes to a subagent of the right
+   profile: `subagent_explore` for read-only research, `subagent_general` for
+   implementation. File-disjoint steps may run in parallel; **at most one
+   agent compiles at a time** (see "Parallel agents and the build directory" —
+   the disk rule above applies to every dispatch, no exceptions).
+
+Exempt: single-line tactical fixes, conversational answers, and **stateful
+runs** (live processes, DB observation, interactive sessions) — a subagent has
+no long-lived process and no session memory, so those stay in the main thread.
+
 ## Searching the tree: tgrep, not rg
 
 This repo has a **tgrep** server (`microsoft/tgrep`, trigram index + watcher).
