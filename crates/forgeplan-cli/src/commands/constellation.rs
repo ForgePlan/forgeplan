@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Subcommand;
 
+use forgeplan_core::constellation::context_pack::{self, ContextPack};
 use forgeplan_core::constellation::federation::{self, FederatedGet};
+use forgeplan_core::constellation::impact::{self, ImpactBounds, ImpactReport, ImpactSeverity};
 use forgeplan_core::constellation::registry;
 use forgeplan_core::constellation::snapshot as snap;
 
@@ -76,6 +78,39 @@ pub enum ConstellationAction {
     Get {
         id: String,
         /// Read at a recorded snapshot instead of the live sources
+        #[arg(long)]
+        snapshot: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stage 6 — build a budgeted ContextPack for a task: lexical ranking,
+    /// evidence units with roles, omissions and a spend receipt.
+    Pack {
+        /// What the agent must do — the ranking terms come from this text
+        task: String,
+        /// Token budget for the whole pack (estimated tokens, chars/4)
+        #[arg(long, default_value = "8000")]
+        budget: usize,
+        /// Pack at a recorded snapshot instead of the live sources
+        #[arg(long)]
+        snapshot: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stage 7 — explainable impact: who depends on this artifact, by
+    /// which relation path, and where the bounded walk stopped.
+    Impact {
+        /// The changed artifact's canonical key or display id
+        id: String,
+        /// Maximum structural hops (default 4)
+        #[arg(long, default_value = "4")]
+        depth: usize,
+        /// Maximum impacted nodes (default 256)
+        #[arg(long, default_value = "256")]
+        max_nodes: usize,
+        /// Walk at a recorded snapshot instead of the live sources
         #[arg(long)]
         snapshot: Option<String>,
         /// Output as JSON
@@ -403,6 +438,177 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                 }
             }
             Ok(())
+        }
+        ConstellationAction::Pack {
+            task,
+            budget,
+            snapshot,
+            json,
+        } => {
+            let (_path, registry) = load_registry()?;
+            let pack = if let Some(id) = &snapshot {
+                let home = dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
+                let snap = snap::load_snapshot(&snap::snapshot_path(&home, id))
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                context_pack::pack_snapshot(&snap, &task, budget)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+            } else {
+                let specs = registry::current_sources(&registry)
+                    .ok_or_else(|| anyhow::anyhow!("no active constellation"))?;
+                if specs.is_empty() {
+                    anyhow::bail!("the active constellation has no sources");
+                }
+                context_pack::pack_live(&specs, &task, budget)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&pack)?);
+            } else {
+                print_pack_text(&pack);
+            }
+            Ok(())
+        }
+        ConstellationAction::Impact {
+            id,
+            depth,
+            max_nodes,
+            snapshot,
+            json,
+        } => {
+            let (_path, registry) = load_registry()?;
+            let bounds = ImpactBounds {
+                max_depth: depth,
+                max_nodes,
+            };
+            let report = if let Some(snap_id) = &snapshot {
+                let home = dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
+                let snap = snap::load_snapshot(&snap::snapshot_path(&home, snap_id))
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                impact::impact_snapshot(&snap, &id, bounds).map_err(|e| anyhow::anyhow!("{e}"))?
+            } else {
+                let specs = registry::current_sources(&registry)
+                    .ok_or_else(|| anyhow::anyhow!("no active constellation"))?;
+                if specs.is_empty() {
+                    anyhow::bail!("the active constellation has no sources");
+                }
+                impact::impact_live(&specs, &id, bounds)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print_impact_text(&report);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Human-readable impact: each reached node with severity and the path
+/// that explains it, then the named stops and dangling edges.
+fn print_impact_text(report: &ImpactReport) {
+    for failure in &report.failures {
+        eprintln!(
+            "warning: source {} unread — {}",
+            failure.path, failure.reason
+        );
+    }
+    for source_id in &report.absent_in {
+        println!("'{}' is not defined in {source_id}", report.changed);
+    }
+    for node in &report.impacted {
+        let severity = match node.severity {
+            ImpactSeverity::Direct => "direct",
+            ImpactSeverity::Transitive => "transitive",
+            ImpactSeverity::Noted => "noted",
+        };
+        println!(
+            "{:<10} depth={} {:<10} {} — {}",
+            severity,
+            node.depth,
+            node.display_id.as_deref().unwrap_or(&node.canonical_key),
+            node.kind,
+            node.title,
+        );
+        // Path is stored leafward (changed → node); print it node-first
+        // so the chain reads "who depends on whom".
+        let trail: Vec<String> = node
+            .path
+            .iter()
+            .rev()
+            .map(|s| format!("{} --{}-->", s.dependent, s.relation))
+            .collect();
+        println!("    {} {}", trail.join(" "), report.changed);
+        println!("    {} ({})", node.source.path, node.source.source_id);
+    }
+    if report.impacted.is_empty() && report.failures.is_empty() {
+        println!("Nothing depends on '{}' structurally.", report.changed);
+    }
+    if !report.stops.is_empty() {
+        println!("stops:");
+        for stop in &report.stops {
+            println!("  {} — {}", stop.at, stop.reason);
+        }
+    }
+    if !report.unresolved.is_empty() {
+        println!("unresolved edges:");
+        for u in &report.unresolved {
+            println!(
+                "  {} --{}--> {} ({})",
+                u.from, u.relation, u.target, u.source_id
+            );
+        }
+    }
+}
+
+/// Human-readable pack: the selected units with role and reasons, then
+/// the receipt — budget, spend, per-role/source counts — then omissions.
+fn print_pack_text(pack: &ContextPack) {
+    for failure in &pack.failures {
+        eprintln!(
+            "warning: source {} unread — {}",
+            failure.path, failure.reason
+        );
+    }
+    for unit in &pack.units {
+        println!(
+            "{}  {:<12} {:<10} score={:<5} ~{}tok",
+            unit.unit_id,
+            format!("{:?}", unit.role).to_lowercase(),
+            unit.display_id.as_deref().unwrap_or(&unit.canonical_key),
+            unit.score,
+            unit.tokens,
+        );
+        println!("      {} — {}", unit.relative_path, unit.title);
+        for reason in &unit.reasons {
+            println!("      · {reason}");
+        }
+        println!("      | {}", unit.excerpt.lines().next().unwrap_or(""));
+    }
+    let r = &pack.receipt;
+    println!(
+        "receipt: {}/{} tokens ({}) — {} unit(s){}",
+        r.used_tokens,
+        r.budget_tokens,
+        r.token_kind,
+        r.units,
+        if pack.failures.is_empty() {
+            String::new()
+        } else {
+            format!(", {} source(s) failed", pack.failures.len())
+        }
+    );
+    for (role, count) in &r.per_role {
+        println!("  {role}: {count}");
+    }
+    if !pack.omitted.is_empty() {
+        println!("omitted:");
+        for o in &pack.omitted {
+            println!("  {} ({}, score={})", o.canonical_key, o.reason, o.score);
         }
     }
 }

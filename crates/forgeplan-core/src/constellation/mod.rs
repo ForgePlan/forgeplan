@@ -46,8 +46,10 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub mod capture;
+pub mod context_pack;
 pub mod facade;
 pub mod federation;
+pub mod impact;
 pub mod jobs;
 pub mod lance_tables;
 pub mod lexical_index;

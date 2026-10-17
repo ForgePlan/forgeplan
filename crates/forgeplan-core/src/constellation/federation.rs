@@ -199,7 +199,7 @@ fn resolve_source(spec: &SourceSpec) -> Result<PathBuf, SourceFailure> {
     Ok(canonical)
 }
 
-fn source_id_for(canonical: &Path) -> String {
+pub(crate) fn source_id_for(canonical: &Path) -> String {
     format!(
         "src:{}",
         &sha256_hex(canonical.to_string_lossy().as_bytes())[..16]

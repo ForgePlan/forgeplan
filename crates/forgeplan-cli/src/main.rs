@@ -1553,7 +1553,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::Watch { constellation } => commands::watch::run(constellation).await,
         Commands::Constellation { action } => commands::constellation::run(action).await,
         Commands::GitSync { since } => commands::git_sync::run(since.as_deref()).await,
-        Commands::Serve { auto_index, profile } => match profile.as_str() {
+        Commands::Serve {
+            auto_index,
+            profile,
+        } => match profile.as_str() {
             "constellation-read" => forgeplan_mcp::constellation_read::run_read_stdio().await,
             "full" => {
                 let cwd = std::env::current_dir()?;
@@ -1562,7 +1565,9 @@ async fn main() -> anyhow::Result<()> {
                 }
                 forgeplan_mcp::run_stdio(cwd).await
             }
-            other => anyhow::bail!("unknown serve profile {other:?} — `full` or `constellation-read`"),
+            other => {
+                anyhow::bail!("unknown serve profile {other:?} — `full` or `constellation-read`")
+            }
         },
         Commands::Mcp { action } => match action {
             McpAction::Serve => {

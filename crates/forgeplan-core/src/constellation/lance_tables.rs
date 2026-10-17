@@ -963,6 +963,33 @@ impl OpenedTable {
             })
     }
 
+    /// All rows of the named scalar columns — the cheap shape a reader
+    /// takes when it needs every key/edge but never a body or vector.
+    /// Column list is fixed by the caller, never user text.
+    pub async fn select_columns(
+        &self,
+        columns: &[&str],
+    ) -> Result<Vec<arrow_array::RecordBatch>, ConstellationError> {
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase, Select};
+
+        let stream = self
+            .table
+            .query()
+            .select(Select::columns(columns))
+            .execute()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("executing the pinned column scan failed: {e}"),
+            })?;
+        stream
+            .try_collect()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("reading the pinned column scan failed: {e}"),
+            })
+    }
+
     /// Bounded scalar page for the per-document index inventory. Never loads
     /// bodies or embeddings into memory just to display index coverage.
     pub async fn artifact_page(

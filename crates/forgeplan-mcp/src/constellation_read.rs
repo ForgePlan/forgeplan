@@ -17,14 +17,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use forgeplan_core::constellation::context_pack;
 use forgeplan_core::constellation::federation::{self, FederatedGet};
+use forgeplan_core::constellation::impact::{self, ImpactBounds};
 use forgeplan_core::constellation::registry;
 use forgeplan_core::constellation::snapshot::{self, ConstellationSnapshot};
+use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content};
-use rmcp::{ErrorData as McpError, tool, tool_router};
-use rmcp::handler::server::tool::ToolRouter;
 use rmcp::schemars::{self, JsonSchema};
+use rmcp::{ErrorData as McpError, tool, tool_router};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -79,6 +81,28 @@ pub struct SearchParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct PackParams {
+    /// What the agent must do — ranking terms come from this text.
+    pub task: String,
+    /// Token budget (estimated tokens, chars/4; default 8000).
+    pub budget: Option<usize>,
+    pub scope_handle: Option<String>,
+    pub snapshot_handle: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ImpactParams {
+    /// The changed artifact's canonical key or display id.
+    pub id: String,
+    /// Maximum structural hops (default 4).
+    pub depth: Option<usize>,
+    /// Maximum impacted nodes (default 256).
+    pub max_nodes: Option<usize>,
+    pub scope_handle: Option<String>,
+    pub snapshot_handle: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetParams {
     /// Canonical key or display id; a `key@source-fragment` qualifier
     /// narrows the scope before reading.
@@ -100,6 +124,12 @@ fn fail(reason: &str, detail: impl std::fmt::Display) -> Result<CallToolResult, 
     )]))
 }
 
+impl Default for ConstellationReadServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConstellationReadServer {
     pub fn new() -> Self {
         Self {
@@ -110,7 +140,10 @@ impl ConstellationReadServer {
     }
 
     fn issue(&self, prefix: &str) -> String {
-        format!("{prefix}-{}", self.next_handle.fetch_add(1, Ordering::SeqCst))
+        format!(
+            "{prefix}-{}",
+            self.next_handle.fetch_add(1, Ordering::SeqCst)
+        )
     }
 }
 
@@ -137,11 +170,7 @@ impl ConstellationReadServer {
             Ok(r) => r,
             Err(e) => return fail("io", e),
         };
-        let name = match p
-            .constellation
-            .clone()
-            .or_else(|| registry.current.clone())
-        {
+        let name = match p.constellation.clone().or_else(|| registry.current.clone()) {
             Some(n) => n,
             None => return fail("no_scope", "no constellation selected and none is active"),
         };
@@ -163,10 +192,13 @@ impl ConstellationReadServer {
                 })
             })
             .collect();
-        self.handles
-            .lock()
-            .await
-            .insert(handle.clone(), Handle::Scope(ScopeHandle { name: name.clone(), specs }));
+        self.handles.lock().await.insert(
+            handle.clone(),
+            Handle::Scope(ScopeHandle {
+                name: name.clone(),
+                specs,
+            }),
+        );
         ok_json(json!({
             "scope_handle": handle,
             "constellation": name,
@@ -201,9 +233,10 @@ impl ConstellationReadServer {
                     "sources": sources,
                 }))
             }
-            Some(Handle::Snapshot(_)) => {
-                fail("wrong_handle_kind", "a snapshot handle has no live source list")
-            }
+            Some(Handle::Snapshot(_)) => fail(
+                "wrong_handle_kind",
+                "a snapshot handle has no live source list",
+            ),
             None => fail("unknown_handle", &p.handle),
         }
     }
@@ -285,7 +318,9 @@ impl ConstellationReadServer {
                         Err(e) => fail("io", e),
                     }
                 }
-                Some(Handle::Scope(_)) => fail("wrong_handle_kind", "scope handle is not a snapshot"),
+                Some(Handle::Scope(_)) => {
+                    fail("wrong_handle_kind", "scope handle is not a snapshot")
+                }
                 None => fail("snapshot_expired", snap_handle),
             };
         }
@@ -303,7 +338,9 @@ impl ConstellationReadServer {
                     Err(e) => fail("io", e),
                 }
             }
-            Some(Handle::Snapshot(_)) => fail("wrong_handle_kind", "use snapshot_handle for a snapshot"),
+            Some(Handle::Snapshot(_)) => {
+                fail("wrong_handle_kind", "use snapshot_handle for a snapshot")
+            }
             None => fail(
                 "unknown_handle",
                 p.scope_handle.unwrap_or_else(|| "(none given)".into()),
@@ -322,32 +359,34 @@ impl ConstellationReadServer {
         let handles = self.handles.lock().await;
         if let Some(snap_handle) = &p.snapshot_handle {
             return match handles.get(snap_handle) {
-                Some(Handle::Snapshot(snap)) => {
-                    match snapshot::snapshot_get(snap, &p.id) {
-                        Ok(found) => match found.len() {
-                            0 => ok_json(json!({"result": "not_found", "id": p.id})),
-                            1 => {
-                                let (source, rel, bytes) = &found[0];
-                                ok_json(json!({
-                                    "result": "found",
-                                    "id": p.id,
-                                    "source": source,
-                                    "relative_path": rel,
-                                    "body": String::from_utf8_lossy(bytes),
-                                }))
-                            }
-                            _ => {
-                                let claimers: Vec<serde_json::Value> = found
-                                    .iter()
-                                    .map(|(s, rel, _)| json!({"source": s, "relative_path": rel}))
-                                    .collect();
-                                ok_json(json!({"result": "ambiguous", "id": p.id, "claimers": claimers}))
-                            }
-                        },
-                        Err(e) => fail("io", e),
-                    }
+                Some(Handle::Snapshot(snap)) => match snapshot::snapshot_get(snap, &p.id) {
+                    Ok(found) => match found.len() {
+                        0 => ok_json(json!({"result": "not_found", "id": p.id})),
+                        1 => {
+                            let (source, rel, bytes) = &found[0];
+                            ok_json(json!({
+                                "result": "found",
+                                "id": p.id,
+                                "source": source,
+                                "relative_path": rel,
+                                "body": String::from_utf8_lossy(bytes),
+                            }))
+                        }
+                        _ => {
+                            let claimers: Vec<serde_json::Value> = found
+                                .iter()
+                                .map(|(s, rel, _)| json!({"source": s, "relative_path": rel}))
+                                .collect();
+                            ok_json(
+                                json!({"result": "ambiguous", "id": p.id, "claimers": claimers}),
+                            )
+                        }
+                    },
+                    Err(e) => fail("io", e),
+                },
+                Some(Handle::Scope(_)) => {
+                    fail("wrong_handle_kind", "scope handle is not a snapshot")
                 }
-                Some(Handle::Scope(_)) => fail("wrong_handle_kind", "scope handle is not a snapshot"),
                 None => fail("snapshot_expired", snap_handle),
             };
         }
@@ -367,7 +406,10 @@ impl ConstellationReadServer {
                                 .is_some_and(|id| id == q || id.starts_with(q))
                     });
                     if specs.is_empty() {
-                        return fail("no_source", format!("qualifier @{q} matches nothing in scope"));
+                        return fail(
+                            "no_source",
+                            format!("qualifier @{q} matches nothing in scope"),
+                        );
                     }
                 }
                 match federation::federated_get(&specs, &bare).await {
@@ -396,7 +438,106 @@ impl ConstellationReadServer {
                     Err(e) => fail("io", e),
                 }
             }
-            Some(Handle::Snapshot(_)) => fail("wrong_handle_kind", "use snapshot_handle for a snapshot"),
+            Some(Handle::Snapshot(_)) => {
+                fail("wrong_handle_kind", "use snapshot_handle for a snapshot")
+            }
+            None => fail(
+                "unknown_handle",
+                p.scope_handle.unwrap_or_else(|| "(none given)".into()),
+            ),
+        }
+    }
+
+    #[tool(
+        description = "Build a budgeted ContextPack for a task over the scope's live                        sources or a snapshot's pinned revisions: lexically ranked                        evidence units with roles, named omissions and a spend receipt.",
+        annotations(title = "Constellation Pack", read_only_hint = true)
+    )]
+    async fn constellation_pack(
+        &self,
+        Parameters(p): Parameters<PackParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let budget = p.budget.unwrap_or(8000);
+        let handles = self.handles.lock().await;
+        if let Some(snap_handle) = &p.snapshot_handle {
+            return match handles.get(snap_handle) {
+                Some(Handle::Snapshot(snap)) => {
+                    match context_pack::pack_snapshot(snap, &p.task, budget) {
+                        Ok(pack) => ok_json(
+                            serde_json::to_value(&pack)
+                                .unwrap_or_else(|_| json!({"error":"serialize"})),
+                        ),
+                        Err(e) => fail("io", e),
+                    }
+                }
+                Some(Handle::Scope(_)) => {
+                    fail("wrong_handle_kind", "scope handle is not a snapshot")
+                }
+                None => fail("snapshot_expired", snap_handle),
+            };
+        }
+        match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
+            Some(Handle::Scope(scope)) => {
+                match context_pack::pack_live(&scope.specs, &p.task, budget).await {
+                    Ok(pack) => ok_json(
+                        serde_json::to_value(&pack)
+                            .unwrap_or_else(|_| json!({"error":"serialize"})),
+                    ),
+                    Err(e) => fail("io", e),
+                }
+            }
+            Some(Handle::Snapshot(_)) => {
+                fail("wrong_handle_kind", "use snapshot_handle for a snapshot")
+            }
+            None => fail(
+                "unknown_handle",
+                p.scope_handle.unwrap_or_else(|| "(none given)".into()),
+            ),
+        }
+    }
+
+    #[tool(
+        description = "Explainable impact: who depends on the artifact, by which                        relation path, and where the bounded walk stopped. `based_on`                        and friends propagate transitively; `references`/`informs`                        only mark the direct neighbor.",
+        annotations(title = "Constellation Impact", read_only_hint = true)
+    )]
+    async fn constellation_impact(
+        &self,
+        Parameters(p): Parameters<ImpactParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let bounds = ImpactBounds {
+            max_depth: p.depth.unwrap_or(4),
+            max_nodes: p.max_nodes.unwrap_or(256),
+        };
+        let handles = self.handles.lock().await;
+        if let Some(snap_handle) = &p.snapshot_handle {
+            return match handles.get(snap_handle) {
+                Some(Handle::Snapshot(snap)) => {
+                    match impact::impact_snapshot(snap, &p.id, bounds) {
+                        Ok(report) => ok_json(
+                            serde_json::to_value(&report)
+                                .unwrap_or_else(|_| json!({"error":"serialize"})),
+                        ),
+                        Err(e) => fail("io", e),
+                    }
+                }
+                Some(Handle::Scope(_)) => {
+                    fail("wrong_handle_kind", "scope handle is not a snapshot")
+                }
+                None => fail("snapshot_expired", snap_handle),
+            };
+        }
+        match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
+            Some(Handle::Scope(scope)) => {
+                match impact::impact_live(&scope.specs, &p.id, bounds).await {
+                    Ok(report) => ok_json(
+                        serde_json::to_value(&report)
+                            .unwrap_or_else(|_| json!({"error":"serialize"})),
+                    ),
+                    Err(e) => fail("io", e),
+                }
+            }
+            Some(Handle::Snapshot(_)) => {
+                fail("wrong_handle_kind", "use snapshot_handle for a snapshot")
+            }
             None => fail(
                 "unknown_handle",
                 p.scope_handle.unwrap_or_else(|| "(none given)".into()),
@@ -406,7 +547,11 @@ impl ConstellationReadServer {
 
     #[tool(
         description = "Close a scope or snapshot handle. After closing, reads through                        it answer `snapshot_expired`/`unknown_handle` — there is no way                        to re-read fresh bytes under a dead handle.",
-        annotations(title = "Constellation Close", read_only_hint = false, idempotent_hint = true)
+        annotations(
+            title = "Constellation Close",
+            read_only_hint = false,
+            idempotent_hint = true
+        )
     )]
     async fn constellation_close(
         &self,
@@ -415,9 +560,9 @@ impl ConstellationReadServer {
         let mut handles = self.handles.lock().await;
         match handles.remove(&p.handle) {
             Some(Handle::Scope(_)) => ok_json(json!({"closed": p.handle, "kind": "scope"})),
-            Some(Handle::Snapshot(_)) => {
-                ok_json(json!({"closed": p.handle, "kind": "snapshot", "note": "reads now answer snapshot_expired"}))
-            }
+            Some(Handle::Snapshot(_)) => ok_json(
+                json!({"closed": p.handle, "kind": "snapshot", "note": "reads now answer snapshot_expired"}),
+            ),
             None => fail("unknown_handle", &p.handle),
         }
     }
@@ -450,7 +595,9 @@ pub async fn run_read_stdio() -> anyhow::Result<()> {
 impl rmcp::ServerHandler for ConstellationReadServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         rmcp::model::ServerInfo::new(
-            rmcp::model::ServerCapabilities::builder().enable_tools().build(),
+            rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
         )
         .with_server_info(rmcp::model::Implementation::new(
             "forgeplan-constellation-read",

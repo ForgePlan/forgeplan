@@ -1243,6 +1243,92 @@ pub async fn list_pinned_documents(
     })
 }
 
+/// The pinned relation graph of one workspace: every node (id, title,
+/// kind) and every exact edge `(from → target, relation)` — the read
+/// shape stage-7 impact analysis walks. Read-only, pinned to the
+/// published manifest's table versions; never latest, never a writer.
+pub struct PinnedGraph {
+    pub generation_id: String,
+    /// (canonical_key, display_id, title, kind)
+    pub nodes: Vec<(String, Option<String>, String, String)>,
+    /// (from canonical_key, target, relation) — `target` is whatever the
+    /// source wrote, resolved by the caller against this source's keys.
+    pub edges: Vec<(String, String, String)>,
+}
+
+/// Read the pinned artifacts+relations tables as a graph.
+pub async fn list_pinned_graph(index_root: &Path) -> Result<PinnedGraph, ConstellationError> {
+    use arrow_array::{Array, StringArray};
+
+    let descriptor = super::storage::read_current(index_root)?.ok_or_else(|| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: "no published generation to read the graph from".to_string(),
+        }
+    })?;
+    let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let marker = marker_for(&manifest);
+    let artifacts = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "artifacts",
+        manifest.table_versions.artifacts,
+    )
+    .await?;
+    let relations = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "relations",
+        manifest.table_versions.relations,
+    )
+    .await?;
+    let mut nodes = Vec::new();
+    for batch in &artifacts
+        .select_columns(&["canonical_key", "id", "title", "kind"])
+        .await?
+    {
+        let value = |col: &str, row: usize| {
+            batch
+                .column_by_name(col)
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .filter(|c| !c.is_null(row))
+                .map(|c| c.value(row).to_string())
+        };
+        for row in 0..batch.num_rows() {
+            nodes.push((
+                value("canonical_key", row).unwrap_or_default(),
+                value("id", row),
+                value("title", row).unwrap_or_default(),
+                value("kind", row).unwrap_or_default(),
+            ));
+        }
+    }
+    let mut edges = Vec::new();
+    for batch in &relations
+        .select_columns(&["canonical_key", "target", "relation"])
+        .await?
+    {
+        let value = |col: &str, row: usize| {
+            batch
+                .column_by_name(col)
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .filter(|c| !c.is_null(row))
+                .map(|c| c.value(row).to_string())
+        };
+        for row in 0..batch.num_rows() {
+            edges.push((
+                value("canonical_key", row).unwrap_or_default(),
+                value("target", row).unwrap_or_default(),
+                value("relation", row).unwrap_or_default(),
+            ));
+        }
+    }
+    Ok(PinnedGraph {
+        generation_id: manifest.generation_id,
+        nodes,
+        edges,
+    })
+}
+
 /// Case-insensitive substring search over the artifacts table **at the
 /// version the published manifest pins** — never latest.
 ///

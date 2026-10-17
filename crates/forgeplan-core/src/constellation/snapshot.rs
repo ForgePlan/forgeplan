@@ -189,7 +189,7 @@ fn resolve_checkout(forgeplan_dir: &Path) -> Result<PathBuf, ConstellationError>
 
 /// Artifact files under `.forgeplan` at `oid`, as `git ls-tree` reports
 /// them (`adrs/X.md`, `specs/Y.md`, ... under the `.forgeplan/` prefix).
-fn list_files_at(repo: &Path, oid: &str) -> Result<Vec<String>, ConstellationError> {
+pub(crate) fn list_files_at(repo: &Path, oid: &str) -> Result<Vec<String>, ConstellationError> {
     let raw = git_bytes(
         repo,
         &[
@@ -222,7 +222,11 @@ fn list_files_at(repo: &Path, oid: &str) -> Result<Vec<String>, ConstellationErr
     Ok(files)
 }
 
-fn read_file_at(repo: &Path, oid: &str, rel: &str) -> Result<Vec<u8>, ConstellationError> {
+pub(crate) fn read_file_at(
+    repo: &Path,
+    oid: &str,
+    rel: &str,
+) -> Result<Vec<u8>, ConstellationError> {
     git_bytes(repo, &["show", &format!("{oid}:.forgeplan/{rel}")])
 }
 
