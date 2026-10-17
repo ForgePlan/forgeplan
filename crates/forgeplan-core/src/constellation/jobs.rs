@@ -693,9 +693,14 @@ impl Binding {
     ///
     /// Nine comparisons, `AND`-ed, covering every field of [`Binding`]. If
     /// any one differs — a new incarnation after a delete/recreate, a new
-    /// `row_revision` after an edit, a new `profile_id` after a model
-    /// change — the predicate matches nothing and the update affects **zero
-    /// rows**, so a stale completion can neither insert nor revive.
+    /// `row_revision` after an edit, a different stored `profile_id` — the
+    /// predicate matches nothing and the update affects **zero rows**, so a
+    /// stale completion can neither insert nor revive.
+    ///
+    /// `profile_id IS NULL` is admitted on purpose: a row published before
+    /// any model existed carries no binding at all, so no vector could ever
+    /// be clobbered by claiming it. A row bound to another profile still
+    /// refuses the write.
     ///
     /// # What replaces the old skip condition
     ///
@@ -726,7 +731,7 @@ impl Binding {
              AND row_revision = {revision} \
              AND source_digest = {source} \
              AND input_digest = {input} \
-             AND profile_id = {profile}",
+             AND (profile_id = {profile} OR profile_id IS NULL)",
             key = text(&self.canonical_key),
             epoch = self.index_epoch,
             checkout = text(&self.checkout_id),
@@ -810,11 +815,25 @@ pub fn eligibility_for(stored: &StoredBinding, captured: &Binding) -> Eligibilit
     ) else {
         return missing("digest");
     };
-    let (Some(profile_id), Some(semantic_state)) = (
+    let (profile_id, semantic_state) = (
         stored.profile_id.as_deref(),
         stored.semantic_state.as_deref(),
-    ) else {
-        return missing("profile or semantic state");
+    );
+    let (Some(profile_id), Some(semantic_state)) = (profile_id, semantic_state) else {
+        // The publisher's documented pre-model shape: `profile_id` NULL +
+        // `semantic_state = "unavailable"` is written for every row while no
+        // model exists (artifacts_batch comment, publisher.rs). There is no
+        // stored binding to disagree with, so the row needs a vector — it is
+        // work, not an unknown. Folding it into CannotJudge would park
+        // pre-model rows forever, which is exactly what happened in the live
+        // drain check. Every other missing combination is a torn write —
+        // a `ready` row without a profile, or a profile without a state —
+        // and stays CannotJudge.
+        return if stored.profile_id.is_none() && semantic_state == Some("unavailable") {
+            Eligibility::Eligible
+        } else {
+            missing("profile or semantic state")
+        };
     };
 
     // Every one of the nine, or the row's vector describes a different
@@ -1127,6 +1146,50 @@ mod profile_tests {
         let err =
             snapshot_checksums(Path::new("/definitely/not/here"), DEFAULT_MODEL_REPO).unwrap_err();
         assert_eq!(err.code(), super::super::DiagnosticCode::ModelUnavailable);
+    }
+
+    #[test]
+    fn a_row_published_before_the_model_is_eligible_not_stuck() {
+        // The publisher's pre-model shape: binding + digests set,
+        // profile_id NULL, semantic_state "unavailable". Such a row has no
+        // vector at all — it must enter the work list on the next drain,
+        // not park in CannotJudge forever.
+        let b = binding();
+        let stored = StoredBinding {
+            index_epoch: Some(b.index_epoch),
+            checkout_id: Some(b.checkout_id.clone()),
+            incarnation: Some(b.incarnation),
+            row_revision: Some(b.row_revision),
+            source_digest: Some(b.source_digest.clone()),
+            input_digest: Some(b.input_digest.clone()),
+            profile_id: None,
+            semantic_state: Some("unavailable".to_string()),
+        };
+        assert_eq!(eligibility_for(&stored, &b), Eligibility::Eligible);
+    }
+
+    #[test]
+    fn a_torn_profile_state_pair_stays_cannot_judge() {
+        let b = binding();
+        for semantic_state in [Some("ready"), None] {
+            let stored = StoredBinding {
+                index_epoch: Some(b.index_epoch),
+                checkout_id: Some(b.checkout_id.clone()),
+                incarnation: Some(b.incarnation),
+                row_revision: Some(b.row_revision),
+                source_digest: Some(b.source_digest.clone()),
+                input_digest: Some(b.input_digest.clone()),
+                profile_id: None,
+                semantic_state: semantic_state.map(String::from),
+            };
+            assert!(
+                matches!(
+                    eligibility_for(&stored, &b),
+                    Eligibility::CannotJudge { .. }
+                ),
+                "profile NULL + state {semantic_state:?} is a torn write, not work"
+            );
+        }
     }
 
     #[test]

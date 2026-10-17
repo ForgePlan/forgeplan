@@ -333,6 +333,23 @@ impl IndexPublisher {
         self.location.root()
     }
 
+    /// Republish `CURRENT.json` under this publisher's durability barrier.
+    ///
+    /// The descriptor is the one mutable pointer a completed write may move:
+    /// an embedding drain records the post-publish artifacts head here so the
+    /// next reconcile treats it as the baseline instead of rewinding the
+    /// vectors as divergence. The manifest itself stays immutable.
+    ///
+    /// Safe to call only while this publisher is held — the write assumes no
+    /// other writer can move the head between the caller's read and this
+    /// republish, which is exactly what the owner lock guarantees.
+    pub(crate) fn republish_current(
+        &self,
+        descriptor: &super::manifest::CurrentDescriptor,
+    ) -> Result<(), ConstellationError> {
+        storage::publish_current(self.index_root(), descriptor, self.platform.as_ref())
+    }
+
     /// Write the bootstrap marker announcing an in-progress build.
     ///
     /// Called **before** any new active table exists, so a crash during table
@@ -2103,6 +2120,7 @@ mod tests {
             evaluated_at: "2026-10-17T00:00:00.000Z".to_string(),
             manifest_path: format!("generations/{generation_id}.json"),
             manifest_sha256: "aa".to_string(),
+            embedding_artifacts_head: None,
         }
     }
 

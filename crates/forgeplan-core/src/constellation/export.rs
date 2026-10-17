@@ -166,7 +166,16 @@ async fn collect_live(spec: &SourceSpec) -> Result<(SourceRef, Vec<ExportRow>), 
                 path: spec.path.display().to_string(),
                 reason: format!("{e}"),
             })?;
-        let docs = dump_pinned(&index_root, &manifest)
+        // The pinned read honours the descriptor's embedding head: the
+        // manifest's version predates any drain that landed vectors, and
+        // exporting it would ship `unavailable` rows that are already ready.
+        let artifacts_version = descriptor
+            .effective_artifacts_version(&manifest)
+            .map_err(|e| SourceFailure {
+                path: spec.path.display().to_string(),
+                reason: format!("{e}"),
+            })?;
+        let docs = dump_pinned(&index_root, &manifest, artifacts_version)
             .await
             .map_err(|e| SourceFailure {
                 path: spec.path.display().to_string(),
@@ -206,6 +215,7 @@ async fn collect_live(spec: &SourceSpec) -> Result<(SourceRef, Vec<ExportRow>), 
 async fn dump_pinned(
     index_root: &Path,
     manifest: &super::manifest::GenerationManifest,
+    artifacts_version: u64,
 ) -> Result<Vec<ExportRow>, ConstellationError> {
     use arrow_array::{Array, StringArray};
 
@@ -222,7 +232,7 @@ async fn dump_pinned(
         index_root,
         &marker,
         "artifacts",
-        manifest.table_versions.artifacts,
+        artifacts_version,
     )
     .await?;
     let relations = super::lance_tables::open_table_at_version(

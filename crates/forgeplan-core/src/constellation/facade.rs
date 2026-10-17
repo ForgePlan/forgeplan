@@ -241,7 +241,7 @@ pub fn open_pinned_view(
 
     Ok(PinnedVectorView {
         descriptor: descriptor.clone(),
-        artifacts_version: manifest.table_versions.artifacts,
+        artifacts_version: descriptor.effective_artifacts_version(&manifest)?,
         relations_version: manifest.table_versions.relations,
         manifest,
     })
@@ -643,6 +643,15 @@ pub async fn maintain_index(
 
     // Recover the baseline. Matching heads restore nothing and commit
     // nothing — the rule that stops a pointless commit before every stage.
+    //
+    // The artifacts baseline is the descriptor's *effective* version: an
+    // embedding drain legitimately advances the head past the manifest's pin
+    // and records it there. Comparing against the manifest alone would call
+    // those writes "divergence" and restore over them, erasing committed
+    // vectors on every reconcile.
+    let mut baseline = (*published).clone();
+    baseline.table_versions.artifacts = descriptor.effective_artifacts_version(&published)?;
+
     let marker = marker_for(&published);
     let tables = super::lance_tables::open_active_tables(
         &index_root,
@@ -652,7 +661,7 @@ pub async fn maintain_index(
     .await?;
 
     match compare_heads(
-        Some(&published),
+        Some(&baseline),
         tables.artifacts_version().await?,
         tables.relations_version().await?,
     ) {
@@ -666,12 +675,12 @@ pub async fn maintain_index(
             // post-restore pair is what gets recorded.
             if artifacts_diverged {
                 tables
-                    .restore_artifacts_to(published.table_versions.artifacts)
+                    .restore_artifacts_to(baseline.table_versions.artifacts)
                     .await?;
             }
             if relations_diverged {
                 tables
-                    .restore_relations_to(published.table_versions.relations)
+                    .restore_relations_to(baseline.table_versions.relations)
                     .await?;
             }
         }
@@ -1128,6 +1137,20 @@ pub async fn drain_embedding_queue(
     // (5) Coverage as the index holds it, not as the queue hoped.
     let after = tables.artifacts_eligibility(&captured, profile_id).await?;
 
+    // (6) Record where embedding completion left the artifacts head. The
+    // manifest is immutable, so the completed head lives on the descriptor:
+    // without it the next reconcile would read the movement as divergence
+    // and restore over the vectors this drain just wrote. The publisher is
+    // still held, so nothing else can move the head before this republish.
+    if embedded > 0 {
+        let head = tables.artifacts_version().await?;
+        if descriptor.embedding_artifacts_head != Some(head) {
+            let mut next = descriptor.clone();
+            next.embedding_artifacts_head = Some(head);
+            publisher.republish_current(&next)?;
+        }
+    }
+
     drop(tables);
     Ok(EmbeddingQueueOutcome {
         generation_id: published.generation_id.clone(),
@@ -1205,6 +1228,7 @@ pub async fn list_pinned_documents(
         }
     })?;
     let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let artifacts_version = descriptor.effective_artifacts_version(&manifest)?;
     // Stage 8 — pin this generation for the read's duration: GC may not
     // delete a generation a live reader is about to open.
     let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
@@ -1213,7 +1237,7 @@ pub async fn list_pinned_documents(
         index_root,
         &marker,
         "artifacts",
-        manifest.table_versions.artifacts,
+        artifacts_version,
     )
     .await?;
     let batches = table.artifact_page(offset, limit + 1).await?;
@@ -1240,7 +1264,7 @@ pub async fn list_pinned_documents(
     documents.truncate(limit);
     Ok(IndexedDocumentPage {
         generation_id: manifest.generation_id,
-        pinned_artifacts_version: manifest.table_versions.artifacts,
+        pinned_artifacts_version: artifacts_version,
         documents,
         has_more,
     })
@@ -1269,6 +1293,7 @@ pub async fn list_pinned_graph(index_root: &Path) -> Result<PinnedGraph, Constel
         }
     })?;
     let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let artifacts_version = descriptor.effective_artifacts_version(&manifest)?;
     // Stage 8 — pin this generation for the read's duration: GC may not
     // delete a generation a live reader is about to open.
     let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
@@ -1277,7 +1302,7 @@ pub async fn list_pinned_graph(index_root: &Path) -> Result<PinnedGraph, Constel
         index_root,
         &marker,
         "artifacts",
-        manifest.table_versions.artifacts,
+        artifacts_version,
     )
     .await?;
     let relations = super::lance_tables::open_table_at_version(
@@ -1363,6 +1388,7 @@ pub async fn search_pinned_lexical(
         }
     })?;
     let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let artifacts_version = descriptor.effective_artifacts_version(&manifest)?;
     // Stage 8 — pin this generation for the read's duration: GC may not
     // delete a generation a live reader is about to open.
     let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
@@ -1379,7 +1405,7 @@ pub async fn search_pinned_lexical(
         index_root,
         &marker,
         "artifacts",
-        manifest.table_versions.artifacts,
+        artifacts_version,
     )
     .await?;
     let read_str = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<String> {
@@ -1422,7 +1448,7 @@ pub async fn search_pinned_lexical(
             {
                 return Ok(LexicalSearchOutcome {
                     generation_id: manifest.generation_id.clone(),
-                    pinned_artifacts_version: manifest.table_versions.artifacts,
+                    pinned_artifacts_version: artifacts_version,
                     rows_scanned: 0,
                     truncated: false,
                     hits: Vec::new(),
@@ -1473,7 +1499,7 @@ pub async fn search_pinned_lexical(
                         {
                             return Ok(LexicalSearchOutcome {
                                 generation_id: manifest.generation_id.clone(),
-                                pinned_artifacts_version: manifest.table_versions.artifacts,
+                                pinned_artifacts_version: artifacts_version,
                                 rows_scanned,
                                 truncated: hits.len() >= limit,
                                 hits,
@@ -1525,7 +1551,7 @@ pub async fn search_pinned_lexical(
 
     Ok(LexicalSearchOutcome {
         generation_id: manifest.generation_id.clone(),
-        pinned_artifacts_version: manifest.table_versions.artifacts,
+        pinned_artifacts_version: artifacts_version,
         rows_scanned,
         truncated: hits.len() >= limit,
         hits,
@@ -1586,6 +1612,7 @@ pub async fn search_pinned_semantic(
         }
     })?;
     let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let artifacts_version = descriptor.effective_artifacts_version(&manifest)?;
     // Stage 8 — pin this generation for the read's duration: GC may not
     // delete a generation a live reader is about to open.
     let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
@@ -1602,7 +1629,7 @@ pub async fn search_pinned_semantic(
         index_root,
         &marker,
         "artifacts",
-        manifest.table_versions.artifacts,
+        artifacts_version,
     )
     .await?;
 
@@ -1663,7 +1690,7 @@ pub async fn search_pinned_semantic(
 
     Ok(SemanticSearchOutcome {
         generation_id: manifest.generation_id.clone(),
-        pinned_artifacts_version: manifest.table_versions.artifacts,
+        pinned_artifacts_version: artifacts_version,
         eligible_rows,
         hits,
     })
@@ -1706,6 +1733,7 @@ pub async fn get_pinned_artifact(
         }
     })?;
     let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let artifacts_version = descriptor.effective_artifacts_version(&manifest)?;
     // Stage 8 — pin this generation for the read's duration: GC may not
     // delete a generation a live reader is about to open.
     let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
@@ -1722,7 +1750,7 @@ pub async fn get_pinned_artifact(
         index_root,
         &marker,
         "artifacts",
-        manifest.table_versions.artifacts,
+        artifacts_version,
     )
     .await?;
     let batches = table.query_batches().await?;
@@ -1766,7 +1794,7 @@ pub async fn get_pinned_artifact(
                     semantic_state: read_str(batch, "semantic_state", row),
                 },
                 manifest.generation_id.clone(),
-                manifest.table_versions.artifacts,
+                artifacts_version,
             )));
         }
     }
@@ -2418,6 +2446,64 @@ mod tests {
                 .unwrap()
                 .source_digest
         );
+    }
+
+    /// The drain writes vectors past the manifest's pin and records that head
+    /// on the descriptor. The next reconcile must treat it as the baseline —
+    /// before this contract existed, `compare_heads` read the movement as
+    /// divergence and restored over the vectors on every pass.
+    #[tokio::test]
+    async fn an_embedding_drain_survives_the_next_reconcile() {
+        resume_admission();
+        let tmp = linked_workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root.clone());
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+
+        let mut embed = |inputs: &[(String, String)]| {
+            Ok(inputs
+                .iter()
+                .map(|_| vec![0.25f32; crate::db::schema::EMBEDDING_DIM as usize])
+                .collect())
+        };
+        let first = drain_embedding_queue(&capability, "test-profile", 512, &mut embed, deadline())
+            .await
+            .unwrap();
+        assert!(
+            first.embedded >= 1,
+            "the drain must publish at least one vector: {:?}",
+            first.after
+        );
+
+        // A reconcile over unchanged sources commits nothing — and must not
+        // rewind the head the drain recorded.
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let page = list_pinned_documents(capability.index_root(), 0, 100)
+            .await
+            .unwrap();
+        assert!(
+            page.documents
+                .iter()
+                .all(|d| d.semantic_state.as_deref() == Some("ready")),
+            "a pinned read of the current generation must serve the completed state"
+        );
+
+        // And the queue is closed: the same row reports Current, not Eligible.
+        let second =
+            drain_embedding_queue(&capability, "test-profile", 512, &mut embed, deadline())
+                .await
+                .unwrap();
+        assert_eq!(
+            second.embedded, 0,
+            "a completed row must not be re-embedded: {:?}",
+            second.after
+        );
+        assert!(second.after.eligible_keys().is_empty());
     }
 
     #[tokio::test]

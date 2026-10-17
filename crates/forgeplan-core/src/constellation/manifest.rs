@@ -307,6 +307,18 @@ pub struct CurrentDescriptor {
     pub evaluated_at: String,
     pub manifest_path: String,
     pub manifest_sha256: String,
+    /// The artifacts head after embedding-completion writes landed on this
+    /// generation, or `None` when none have.
+    ///
+    /// The manifest is immutable and checksum-pinned, so an embedding drain
+    /// cannot move its `table_versions`; instead the drain republishes this
+    /// descriptor with the new head. The value must never be older than the
+    /// manifest's artifacts version — a descriptor that claims otherwise is
+    /// torn. Readers pin to this head so `semantic_state` and vectors they
+    /// serve are the completed ones, and a reconcile treats it as the
+    /// baseline rather than rewinding the writes as "divergence".
+    #[serde(default)]
+    pub embedding_artifacts_head: Option<u64>,
 }
 
 impl CurrentDescriptor {
@@ -336,6 +348,32 @@ impl CurrentDescriptor {
             evaluated_at: manifest.evaluated_at.clone(),
             manifest_path: manifest_path.into(),
             manifest_sha256: manifest_sha256.into(),
+            embedding_artifacts_head: None,
+        }
+    }
+
+    /// The artifacts version a pinned read or a reconcile baseline must use.
+    ///
+    /// Embedding completions advance the artifacts head without touching the
+    /// immutable manifest; `embedding_artifacts_head` names the latest
+    /// completed head. It must never precede the manifest's pin — a
+    /// descriptor that says otherwise is torn, and that is an error rather
+    /// than a fallback, because falling back would serve a row set the
+    /// descriptor no longer claims is current.
+    pub fn effective_artifacts_version(
+        &self,
+        manifest: &GenerationManifest,
+    ) -> Result<u64, ConstellationError> {
+        match self.embedding_artifacts_head {
+            Some(head) if head >= manifest.table_versions.artifacts => Ok(head),
+            Some(head) => Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!(
+                    "CURRENT names an embedding head v{head} older than the manifest's \
+                     artifacts v{}; the descriptor is torn",
+                    manifest.table_versions.artifacts
+                ),
+            }),
+            None => Ok(manifest.table_versions.artifacts),
         }
     }
 
