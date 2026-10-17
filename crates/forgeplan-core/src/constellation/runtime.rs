@@ -784,12 +784,15 @@ mod tests {
             input_text: "some text to embed".to_string(),
         });
 
-        // No sleep: the test blocks on the channels themselves. A result and a
-        // failure are both terminal for this job; the loop exists only so the
-        // assertion is not a race against thread start-up.
+        // Bounded block: a `semantic-search` build loads real weights, which
+        // can take tens of seconds on a cold disk — two instant try-polls
+        // would report a healthy worker as a silent drop. The deadline is a
+        // wall-clock bound, not a sleep: a dropped job still fails, just after
+        // the budget rather than after a fixed two polls.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
         let mut answered = false;
         let mut reported = false;
-        for _ in 0..2 {
+        while std::time::Instant::now() < deadline {
             match worker.try_result() {
                 Poll::Ready(r) => {
                     assert_eq!(
@@ -820,6 +823,7 @@ mod tests {
             if answered || reported {
                 break;
             }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
         assert!(
