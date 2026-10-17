@@ -38,12 +38,60 @@ Fix: forgeplan list",
         );
     }
 
-    // Verify target exists (warning only)
-    if store.get_artifact(target_id).await?.is_none() {
-        eprintln!(
-            "Warning: Target artifact '{}' not found in workspace (creating link anyway)",
-            target_id
-        );
+    // Verify target exists (warning only). A qualified `KEY@qualifier`
+    // target is foreign by definition — "not in this workspace" is the
+    // contract, not a warning — so instead we check the qualifier against
+    // the registered constellation sources and warn when it names none
+    // (a typo there reads as a deliberate forward reference otherwise).
+    // Warn-only either way: forward refs stay legal. Registry problems
+    // never block the write — a missing registry means "no constellation".
+    // The `is_ok` guard keeps a *malformed* qualified ref on the plain
+    // local-miss path: its validation error downstream is the real answer.
+    match forgeplan_core::constellation::federation::parse_qualified_ref(target_id) {
+        (_, Some(qualifier))
+            if forgeplan_core::db::store::validate_link_target(target_id).is_ok() =>
+        {
+            match crate::commands::constellation::load_registry().map(|(_, registry)| registry) {
+                Ok(registry) => {
+                    match forgeplan_core::constellation::registry::current_sources(&registry) {
+                        Some(specs) => {
+                            if forgeplan_core::constellation::federation::specs_matching(
+                                &specs, qualifier,
+                            )
+                            .is_empty()
+                            {
+                                eprintln!(
+                                    "Warning: qualifier @{qualifier} matches no registered source \
+                                     (creating link anyway — forward references are legal)\n\
+                                     Fix: forgeplan constellation sources"
+                                );
+                            }
+                        }
+                        None => {
+                            eprintln!(
+                                "Warning: no active constellation to check qualifier @{qualifier} \
+                                 against (creating link anyway)\n\
+                                 Fix: forgeplan constellation list"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: could not check qualifier @{qualifier} against the \
+                         constellation registry ({e}) — creating link anyway"
+                    );
+                }
+            }
+        }
+        _ => {
+            if store.get_artifact(target_id).await?.is_none() {
+                eprintln!(
+                    "Warning: Target artifact '{}' not found in workspace (creating link anyway)",
+                    target_id
+                );
+            }
+        }
     }
 
     // Issue #286: `--replace` selects the upsert helper, which collapses

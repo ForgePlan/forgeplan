@@ -46,6 +46,47 @@ pub fn validate_artifact_id(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Validate a *link target* — everything [`validate_artifact_id`] accepts,
+/// plus a qualified cross-source reference `KEY@qualifier` (Constellation
+/// stage 4: `ADR-001@src:b7d6…` or `ADR-001@<path-fragment>`).
+///
+/// A qualified target names an artifact that lives in a *different*
+/// workspace. The relation row stores the ref verbatim in this
+/// workspace's `links:` frontmatter and relations table — nothing here
+/// opens, resolves, or writes the foreign workspace.
+///
+/// The qualifier charset is `[A-Za-z0-9._:-]`, deliberately tighter than
+/// "anything after the `@`":
+///
+/// * `:` admits `src:` source ids, `.` `_` `-` admit path fragments like
+///   `ws-b` or `forge.plan`.
+/// * No whitespace, quotes, `'`/`"`, `/`, `\`, or a second `@` — the
+///   stored string is later interpolated into LanceDB delete-filter
+///   predicates (`target_id = '{target}'`) and rendered into YAML
+///   frontmatter, so the same no-operator-no-quote discipline as
+///   [`validate_artifact_id`] applies.
+///
+/// The *key* half stays under the strict artifact-id rule — qualified
+/// refs name a real artifact on the far side, not an arbitrary string.
+pub fn validate_link_target(id: &str) -> anyhow::Result<()> {
+    if validate_artifact_id(id).is_ok() {
+        return Ok(());
+    }
+    if let Some((key, qualifier)) = id.split_once('@')
+        && validate_artifact_id(key).is_ok()
+        && !qualifier.is_empty()
+        && qualifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "Link target is neither a valid artifact ID nor a qualified 'KEY@qualifier' \
+         reference (qualifier allowed: a-z, A-Z, 0-9, ., _, :, -): '{id}'"
+    )
+}
+
 /// Storage-layer filter for listing artifacts by kind/status.
 ///
 /// Semantically distinct from the composable query DSL in
@@ -1269,7 +1310,9 @@ impl LanceStore {
         relation: &str,
     ) -> anyhow::Result<()> {
         validate_artifact_id(source)?;
-        validate_artifact_id(target)?;
+        // The target may be a qualified cross-source ref (`KEY@qualifier`,
+        // stage 4) — stored verbatim, never resolved against this store.
+        validate_link_target(target)?;
         // Self-link guard (PROB-019)
         if source.eq_ignore_ascii_case(target) {
             anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
@@ -3551,6 +3594,100 @@ mod tests {
 
         let all = store.get_all_relations().await.unwrap();
         assert!(all.is_empty());
+    }
+
+    // ─── Qualified link targets (Constellation stage 4) ───────────────
+
+    #[test]
+    fn validate_link_target_accepts_plain_and_qualified_forms() {
+        // Plain artifact ids pass through the strict rule unchanged.
+        for ok in ["PRD-001", "adr-012", "mem-my-decision"] {
+            validate_link_target(ok).unwrap_or_else(|e| panic!("{ok} must pass: {e}"));
+        }
+        // Qualified forms: `src:` ids, path fragments, dotted/underscored
+        // qualifiers.
+        for ok in [
+            "ADR-001@src:b7d6f0e1a2c3d4e5",
+            "ADR-001@ws-b",
+            "PRD-001@team_a",
+            "NOTE-007@repo.name",
+            "mem-x@src:9",
+        ] {
+            validate_link_target(ok).unwrap_or_else(|e| panic!("{ok} must pass: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_link_target_rejects_malformed_and_injectable_forms() {
+        for bad in [
+            "a@",               // empty qualifier
+            "@b",               // empty key
+            "@",                // both empty
+            "a@b c",            // whitespace in qualifier
+            "a@b/c",            // path separator
+            "a@b\\c",           // backslash
+            "a@b'c",            // single quote — filter-predicate escape
+            "a@b\"c",           // double quote
+            "a@b@c",            // second `@` is not qualifier charset
+            "a@b;",             // statement separator
+            "1A@b",             // key must still be a valid artifact id
+            "../bad@ws-b",      // traversal in the key half
+            "ADR-001@@src:x",   // doubled separator
+            "ADR-001@ ",        // whitespace-only qualifier
+            "ADR-001@ws b/x:y", // mixed separators
+        ] {
+            assert!(
+                validate_link_target(bad).is_err(),
+                "{bad} must be rejected as a link target"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn add_relation_stores_a_qualified_target_verbatim() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // The foreign target does not exist in this store — that is the
+        // point of a qualified ref. The row stores the ref verbatim.
+        store
+            .add_relation("PRD-001", "ADR-001@src:b7d6f0e1a2c3d4e5", "informs")
+            .await
+            .unwrap();
+
+        let rels = store.get_relations("PRD-001").await.unwrap();
+        assert_eq!(
+            rels,
+            vec![(
+                "ADR-001@src:b7d6f0e1a2c3d4e5".to_string(),
+                "informs".to_string()
+            )],
+            "the qualified target must round-trip byte-for-byte"
+        );
+
+        // … and deletes by the same verbatim string (unlink path).
+        store
+            .delete_relation("PRD-001", "ADR-001@src:b7d6f0e1a2c3d4e5", "informs")
+            .await
+            .unwrap();
+        assert!(store.get_relations("PRD-001").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_relation_still_rejects_an_injectable_qualified_target() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // The qualifier charset excludes quotes and separators, so this
+        // never reaches the filter builder below.
+        let err = store
+            .add_relation("PRD-001", "ADR-001@x' OR '1'='1", "informs")
+            .await
+            .expect_err("an injectable qualified target must be rejected");
+        assert!(
+            format!("{err}").contains("qualified"),
+            "the error should name the rejected contract, got: {err}"
+        );
     }
 
     #[tokio::test]

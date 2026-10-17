@@ -1868,8 +1868,9 @@ pub async fn remove_tags_with_projection(
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if `source` or `target` fails
-///   `validate_artifact_id`.
+/// - [`MutationError::InvalidId`] if `source` fails `validate_artifact_id`
+///   or `target` fails `validate_link_target` (plain id or
+///   `KEY@qualifier`).
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   source-side pre-sync or `add_relation` fails. Target-side pre-sync
 ///   and post-render failures are logged via `tracing::warn!` and
@@ -1884,7 +1885,10 @@ pub async fn add_link_with_projection(
     let MutationContext { workspace, store } = *ctx;
     crate::db::store::validate_artifact_id(source)
         .map_err(|_| MutationError::InvalidId(source.to_string()))?;
-    crate::db::store::validate_artifact_id(target)
+    // Targets may be qualified cross-source refs (`KEY@qualifier`) — the
+    // edge is stored verbatim in the source file's `links:` block and the
+    // relations table; nothing foreign is opened or rendered.
+    crate::db::store::validate_link_target(target)
         .map_err(|_| MutationError::InvalidId(target.to_string()))?;
     sync_before_mutation(workspace, store, source).await?;
     if let Err(e) = sync_before_mutation(workspace, store, target).await {
@@ -1914,8 +1918,9 @@ pub async fn add_link_with_projection(
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if `source` or `target` fails
-///   `validate_artifact_id`.
+/// - [`MutationError::InvalidId`] if `source` fails `validate_artifact_id`
+///   or `target` fails `validate_link_target` (plain id or
+///   `KEY@qualifier`).
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   source-side pre-sync or `delete_relation` fails. Target-side
 ///   pre-sync and post-render failures are best-effort (warn-and-continue),
@@ -1929,7 +1934,8 @@ pub async fn delete_link_with_projection(
     let MutationContext { workspace, store } = *ctx;
     crate::db::store::validate_artifact_id(source)
         .map_err(|_| MutationError::InvalidId(source.to_string()))?;
-    crate::db::store::validate_artifact_id(target)
+    // `unlink` must accept what `link` can store — qualified targets too.
+    crate::db::store::validate_link_target(target)
         .map_err(|_| MutationError::InvalidId(target.to_string()))?;
     sync_before_mutation(workspace, store, source).await?;
     if let Err(e) = sync_before_mutation(workspace, store, target).await {
@@ -1992,8 +1998,9 @@ pub enum LinkUpsertOutcome {
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if `source` or `target` fails
-///   `validate_artifact_id`.
+/// - [`MutationError::InvalidId`] if `source` fails `validate_artifact_id`
+///   or `target` fails `validate_link_target` (plain id or
+///   `KEY@qualifier`).
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`]
 ///   if source pre-sync, relation read, delete, or add fails. Target
 ///   pre-sync and renders are best-effort, matching `add_link_with_projection`.
@@ -2006,7 +2013,7 @@ pub async fn replace_link_with_projection(
     let MutationContext { workspace, store } = *ctx;
     crate::db::store::validate_artifact_id(source)
         .map_err(|_| MutationError::InvalidId(source.to_string()))?;
-    crate::db::store::validate_artifact_id(target)
+    crate::db::store::validate_link_target(target)
         .map_err(|_| MutationError::InvalidId(target.to_string()))?;
     sync_before_mutation(workspace, store, source).await?;
     if let Err(e) = sync_before_mutation(workspace, store, target).await {
@@ -2305,8 +2312,9 @@ pub async fn sync_metadata_from_file(
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if `source` or `target` fails
-///   `validate_artifact_id`.
+/// - [`MutationError::InvalidId`] if `source` fails `validate_artifact_id`
+///   or `target` fails `validate_link_target` (plain id or
+///   `KEY@qualifier` — a `links:` block may name a foreign artifact).
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   `add_relation` fails.
 pub async fn sync_relation_from_file(
@@ -2319,7 +2327,9 @@ pub async fn sync_relation_from_file(
     let store = ctx.store;
     crate::db::store::validate_artifact_id(source)
         .map_err(|_| MutationError::InvalidId(source.to_string()))?;
-    crate::db::store::validate_artifact_id(target)
+    // A `links:` block may declare a qualified cross-source target —
+    // reindex / git-sync must restore it verbatim, not reject it.
+    crate::db::store::validate_link_target(target)
         .map_err(|_| MutationError::InvalidId(target.to_string()))?;
     store.add_relation(source, target, relation).await?;
     Ok(())
@@ -2350,8 +2360,11 @@ pub async fn delete_orphan_artifact(ctx: &MutationContext<'_>, id: &str) -> Muta
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if `source` or `target` fails
-///   `validate_artifact_id`.
+/// - [`MutationError::InvalidId`] if `source` fails `validate_artifact_id`
+///   or `target` fails `validate_link_target` (plain id or
+///   `KEY@qualifier`). Phase 3 calls this on a qualified edge only when
+///   its *source* is gone — the qualified target itself counts as
+///   existing-elsewhere there.
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   `delete_relation` fails.
 pub async fn delete_orphan_relation(
@@ -2363,7 +2376,10 @@ pub async fn delete_orphan_relation(
     let store = ctx.store;
     crate::db::store::validate_artifact_id(source)
         .map_err(|_| MutationError::InvalidId(source.to_string()))?;
-    crate::db::store::validate_artifact_id(target)
+    // Qualified targets must also be *deletable* — reindex Phase 3 only
+    // calls this for them when the source artifact is gone (see the
+    // qualified-target exemption there), and refusing would leak the edge.
+    crate::db::store::validate_link_target(target)
         .map_err(|_| MutationError::InvalidId(target.to_string()))?;
     store.delete_relation(source, target, relation).await?;
     Ok(())
@@ -2394,9 +2410,10 @@ pub async fn delete_orphan_relation(
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if any source or target id in the
-///   batch fails `validate_artifact_id`. Validation runs up front so a
-///   bad id rejects the batch before any write lands.
+/// - [`MutationError::InvalidId`] if any source id in the batch fails
+///   `validate_artifact_id` or any target fails `validate_link_target`
+///   (plain id or `KEY@qualifier`). Validation runs up front so a bad
+///   id rejects the batch before any write lands.
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   any pre-sync call fails (those are fatal because they snapshot
 ///   user edits — losing them would corrupt the workspace).
@@ -2420,7 +2437,7 @@ pub async fn add_links_batch_with_projection(
     for (source, target, _) in links {
         crate::db::store::validate_artifact_id(source)
             .map_err(|_| MutationError::InvalidId(source.clone()))?;
-        crate::db::store::validate_artifact_id(target)
+        crate::db::store::validate_link_target(target)
             .map_err(|_| MutationError::InvalidId(target.clone()))?;
     }
 
@@ -3723,6 +3740,217 @@ mod tests {
 
         let rels = store.get_relations("EVID-906").await.unwrap();
         assert!(rels.is_empty(), "edge must be gone");
+    }
+
+    // ─── Constellation stage 4 — qualified cross-source link targets ───
+
+    /// Read the single `.md` projection under `ws/<dir>/` starting with `id-`.
+    async fn projection_file_content(ws: &Path, dir: &str, id: &str) -> String {
+        let mut rd = tokio::fs::read_dir(ws.join(dir)).await.unwrap();
+        while let Some(entry) = rd.next_entry().await.unwrap() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(&format!("{id}-")) && name.ends_with(".md") {
+                return tokio::fs::read_to_string(entry.path()).await.unwrap();
+            }
+        }
+        panic!("no projection file for {id} under {dir}");
+    }
+
+    /// A qualified target lands in the *source* file's `links:` block
+    /// verbatim, resolves to no local row, and produces no foreign file.
+    #[tokio::test]
+    async fn add_link_with_projection_stores_a_qualified_target_in_the_source_only() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art("PRD-940", "prd"))
+            .await
+            .unwrap();
+
+        add_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-940",
+            "ADR-001@src:b7d6f0e1a2c3d4e5",
+            "based_on",
+        )
+        .await
+        .unwrap();
+
+        // The relation row stores the ref verbatim.
+        let rels = store.get_relations("PRD-940").await.unwrap();
+        assert_eq!(
+            rels,
+            vec![(
+                "ADR-001@src:b7d6f0e1a2c3d4e5".to_string(),
+                "based_on".to_string()
+            )]
+        );
+
+        // The source file's frontmatter carries it — ADR-003 truth lives
+        // in markdown, not in LanceDB.
+        let content = projection_file_content(&ws, "prds", "PRD-940").await;
+        assert!(
+            content.contains("target: ADR-001@src:b7d6f0e1a2c3d4e5"),
+            "source file must carry the qualified target verbatim:\n{content}"
+        );
+
+        // No artifact was created for the qualified ref — the write is
+        // source-only; `ADR-001` here would be a foreign artifact's ghost.
+        assert!(store.get_record("ADR-001").await.unwrap().is_none());
+        assert!(
+            store
+                .get_record("ADR-001@src:b7d6f0e1a2c3d4e5")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let mut found_link_file = false;
+        for dir_name in crate::workspace::ARTIFACT_DIRS {
+            let dir = ws.join(dir_name);
+            if !dir.exists() {
+                continue;
+            }
+            let mut rd = tokio::fs::read_dir(&dir).await.unwrap();
+            while let Some(entry) = rd.next_entry().await.unwrap() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                assert!(
+                    !name.contains('@'),
+                    "no artifact file may be rendered for a qualified target: {name}"
+                );
+                if name.starts_with("ADR-001") {
+                    found_link_file = true;
+                }
+            }
+        }
+        assert!(!found_link_file, "no local ADR-001 projection may appear");
+    }
+
+    /// `reindex`/`git_sync` restore edges from `links:` blocks — a
+    /// qualified target must survive that path verbatim too.
+    #[tokio::test]
+    async fn sync_relation_from_file_restores_a_qualified_target() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art("PRD-941", "prd"))
+            .await
+            .unwrap();
+
+        sync_relation_from_file(
+            &MutationContext::new(&ws, &store),
+            "PRD-941",
+            "ADR-001@ws-beta",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        let rels = store.get_relations("PRD-941").await.unwrap();
+        assert_eq!(
+            rels,
+            vec![("ADR-001@ws-beta".to_string(), "informs".to_string())]
+        );
+    }
+
+    /// `unlink` accepts what `link` stored — the delete path validates the
+    /// same qualified shape and removes by verbatim string equality.
+    #[tokio::test]
+    async fn delete_link_with_projection_removes_a_qualified_edge() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art("PRD-942", "prd"))
+            .await
+            .unwrap();
+        add_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-942",
+            "ADR-001@ws-beta",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        delete_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-942",
+            "ADR-001@ws-beta",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        assert!(store.get_relations("PRD-942").await.unwrap().is_empty());
+        let content = projection_file_content(&ws, "prds", "PRD-942").await;
+        assert!(
+            !content.contains("ADR-001@ws-beta"),
+            "the re-rendered source file must drop the qualified edge:\n{content}"
+        );
+    }
+
+    /// The qualifier charset is a filter-injection boundary: `delete_relation`
+    /// interpolates the stored string into `target_id = '…'`, so quotes and
+    /// separators stay rejected on the qualified form too.
+    #[tokio::test]
+    async fn add_link_with_projection_rejects_an_injectable_qualified_target() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        for bad in ["ADR-001@x' OR '1'='1", "ADR-001@a/b", "ADR-001@a b"] {
+            let err = add_link_with_projection(
+                &MutationContext::new(&ws, &store),
+                "PRD-001",
+                bad,
+                "informs",
+            )
+            .await
+            .expect_err("injectable qualified target must be rejected");
+            assert!(
+                matches!(err, MutationError::InvalidId(ref s) if s == bad),
+                "expected InvalidId({bad}), got {err:?}",
+            );
+        }
+    }
+
+    /// Orphan cleanup must be able to *remove* a qualified edge — Phase 3
+    /// only reaches one when its source artifact is gone.
+    #[tokio::test]
+    async fn delete_orphan_relation_drops_a_qualified_edge() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+
+        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art("PRD-943", "prd"))
+            .await
+            .unwrap();
+        add_link_with_projection(
+            &MutationContext::new(&ws, &store),
+            "PRD-943",
+            "ADR-001@src:b7d6f0e1a2c3d4e5",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        delete_orphan_relation(
+            &MutationContext::new(&ws, &store),
+            "PRD-943",
+            "ADR-001@src:b7d6f0e1a2c3d4e5",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        assert!(store.get_relations("PRD-943").await.unwrap().is_empty());
     }
 
     // ---------------------------------------------------------------------

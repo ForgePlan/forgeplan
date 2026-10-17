@@ -354,7 +354,15 @@ pub async fn run() -> anyhow::Result<()> {
             .collect();
         for (source, target, relation) in &all_relations {
             let source_exists = surviving_ids.contains(source);
-            let target_exists = surviving_ids.contains(target);
+            // Constellation stage 4: a `KEY@qualifier` target names an
+            // artifact in a *foreign* workspace — it never appears in the
+            // local surviving set and is not an orphan. The edge's truth
+            // is the source file's `links:` block, so the trim applies
+            // only when the source itself is gone.
+            let target_exists = surviving_ids.contains(target)
+                || forgeplan_core::constellation::federation::parse_qualified_ref(target)
+                    .1
+                    .is_some();
             if !source_exists || !target_exists {
                 if let Err(e) = projection::delete_orphan_relation(
                     &projection::MutationContext::new(&ws, &store),

@@ -400,20 +400,18 @@ impl ConstellationReadServer {
             };
         }
         // Qualified refs: `key@fragment` narrows the scope before reading.
-        let (bare, qualifier) = match p.id.split_once('@') {
-            Some((k, q)) if !k.is_empty() && !q.is_empty() => (k.to_string(), Some(q.to_string())),
-            _ => (p.id.clone(), None),
+        let (bare, qualifier) = {
+            let (k, q) = federation::parse_qualified_ref(&p.id);
+            (k.to_string(), q.map(str::to_string))
         };
         match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
             Some(Handle::Scope(scope)) => {
                 let mut specs = scope.specs.clone();
                 if let Some(q) = &qualifier {
-                    specs.retain(|s| {
-                        s.path.display().to_string().contains(q.as_str())
-                            || federation::spec_source_id(s)
-                                .as_deref()
-                                .is_some_and(|id| id == q || id.starts_with(q))
-                    });
+                    specs = federation::specs_matching(&specs, q)
+                        .into_iter()
+                        .cloned()
+                        .collect();
                     if specs.is_empty() {
                         return fail(
                             "no_source",

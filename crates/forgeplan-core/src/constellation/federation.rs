@@ -215,6 +215,60 @@ pub fn spec_source_id(spec: &SourceSpec) -> Option<String> {
     resolve_source(spec).ok().map(|c| source_id_for(&c))
 }
 
+// -- Qualified references (`KEY@qualifier`) ------------------------------------
+
+/// Split a qualified reference into its artifact key and its source
+/// qualifier: `ADR-001@src:b7d6…` → `("ADR-001", Some("src:b7d6…"))`.
+///
+/// The qualifier exists so a key claimed by two sources can be narrowed
+/// to one — `ADR-001` in two projects must never merge. The split is
+/// deliberately *syntactic only*: it accepts the first `@` as the
+/// separator and returns no qualifier when either side would be empty,
+/// so `a@`, `@b`, and a bare `ADR-001` all come back as
+/// `(input, None)`. Which characters a qualifier may contain when the
+/// ref is *written* is a separate, stricter question — see
+/// [`crate::db::store::validate_link_target`].
+///
+/// A second `@` lands inside the qualifier (`a@b@c` → `("a",
+/// Some("b@c"))`) — callers that store the ref validate the charset;
+/// callers that only *match* it against sources can live with a
+/// qualifier that will simply never match.
+pub fn parse_qualified_ref(input: &str) -> (&str, Option<&str>) {
+    match input.split_once('@') {
+        Some((key, qualifier)) if !key.is_empty() && !qualifier.is_empty() => {
+            (key, Some(qualifier))
+        }
+        _ => (input, None),
+    }
+}
+
+/// The sources a `@qualifier` narrows to.
+///
+/// Two readings, the same pair `registry::find_source` uses for rebind
+/// selectors and the read commands use for `KEY@q`:
+///
+/// * the qualifier is a **fragment of the source's spelled path** —
+///   `@ws-b` names the source whose path contains `ws-b`;
+/// * the qualifier **is or prefixes the source's live `src:` id** —
+///   `@src:b7d6` names the source whose id begins that way.
+///
+/// [`spec_source_id`] resolves the id live, so a source that cannot be
+/// read right now still answers to its path fragment but not to its
+/// id — the qualifier-miss diagnostic is the caller's job; this helper
+/// only answers "which of these match". Zero matches is a legitimate
+/// answer, not an error.
+pub fn specs_matching<'a>(specs: &'a [SourceSpec], qualifier: &str) -> Vec<&'a SourceSpec> {
+    specs
+        .iter()
+        .filter(|spec| {
+            spec.path.display().to_string().contains(qualifier)
+                || spec_source_id(spec)
+                    .as_deref()
+                    .is_some_and(|sid| sid == qualifier || sid.starts_with(qualifier))
+        })
+        .collect()
+}
+
 // -- Per-source read paths ----------------------------------------------------
 
 async fn read_pinned(
@@ -697,5 +751,71 @@ mod tests {
         assert_eq!(outcome.failures.len(), 1);
         assert!(outcome.failures[0].reason.contains("symlink"));
         assert!(outcome.hits.is_empty());
+    }
+
+    // -- Qualified refs (`KEY@qualifier`) --------------------------------------
+
+    #[test]
+    fn parse_qualified_ref_splits_on_the_first_at() {
+        assert_eq!(
+            parse_qualified_ref("ADR-001@src:b7d6f0e1a2c3d4e5"),
+            ("ADR-001", Some("src:b7d6f0e1a2c3d4e5"))
+        );
+        assert_eq!(
+            parse_qualified_ref("ADR-001@ws-b"),
+            ("ADR-001", Some("ws-b"))
+        );
+        // No `@` — the input is the whole key.
+        assert_eq!(parse_qualified_ref("ADR-001"), ("ADR-001", None));
+        // Empty halves are not a qualifier — the ref comes back whole.
+        assert_eq!(parse_qualified_ref("ADR-001@"), ("ADR-001@", None));
+        assert_eq!(parse_qualified_ref("@ws-b"), ("@ws-b", None));
+        // A second `@` is qualifier text, not a second separator.
+        assert_eq!(parse_qualified_ref("a@b@c"), ("a", Some("b@c")));
+    }
+
+    /// A forgeplan-shaped dir at an explicit path — `workspace_with` cannot
+    /// name its tempdir, and path-fragment matching needs a known fragment.
+    fn workspace_at(path: &Path) {
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(path.join(dir)).unwrap();
+        }
+    }
+
+    #[test]
+    fn specs_matching_narrows_by_id_prefix_and_path_fragment() {
+        let holder = TempDir::new().unwrap();
+        let ws_a = holder.path().join("ws-alpha");
+        let ws_b = holder.path().join("ws-beta");
+        workspace_at(&ws_a);
+        workspace_at(&ws_b);
+        let specs = vec![SourceSpec::new(&ws_a), SourceSpec::new(&ws_b)];
+
+        // Exact `src:` id — the full id names exactly one source.
+        let id_a = spec_source_id(&specs[0]).expect("ws-a resolves");
+        let id_b = spec_source_id(&specs[1]).expect("ws-beta resolves");
+        assert_ne!(id_a, id_b);
+        let by_id = specs_matching(&specs, &id_a);
+        assert_eq!(by_id.len(), 1);
+        assert_eq!(by_id[0].path, specs[0].path);
+
+        // A strict prefix of the id still narrows to one.
+        let prefix = &id_a[..id_a.len() - 4];
+        assert!(prefix.starts_with("src:"));
+        let by_prefix = specs_matching(&specs, prefix);
+        assert_eq!(by_prefix.len(), 1);
+        assert_eq!(by_prefix[0].path, specs[0].path);
+
+        // A path fragment names the source the string way.
+        let by_path = specs_matching(&specs, "ws-beta");
+        assert_eq!(by_path.len(), 1);
+        assert_eq!(by_path[0].path, specs[1].path);
+
+        // A fragment shared by both paths matches both — ambiguity is the
+        // caller's diagnostic, not this helper's.
+        assert_eq!(specs_matching(&specs, "ws-").len(), 2);
+
+        // Zero matches is an answer, not an error.
+        assert!(specs_matching(&specs, "no-such-source").is_empty());
     }
 }

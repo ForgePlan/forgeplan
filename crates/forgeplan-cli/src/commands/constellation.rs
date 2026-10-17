@@ -185,7 +185,11 @@ enum MarkerClaim {
     Foreign(String),
 }
 
-fn load_registry() -> Result<(PathBuf, registry::ConstellationRegistry)> {
+/// Load the per-user registry (`~/.forgeplan/constellations.yaml`).
+///
+/// `pub(crate)` so `link` can check a `KEY@qualifier` target against the
+/// registered sources — warn-only there, never a gate.
+pub(crate) fn load_registry() -> Result<(PathBuf, registry::ConstellationRegistry)> {
     let path = registry::default_registry_path().map_err(|e| anyhow::anyhow!("{e}"))?;
     let registry = registry::load(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok((path, registry))
@@ -473,13 +477,9 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             // `ADR-001@src:b7d6…`. The qualifier narrows the source set
             // before reading; an unmatched qualifier is an error that
             // names what was registered, never a silent wider search.
-            let (bare_id, qualifier) = match id.split_once('@') {
-                Some((k, q)) if !k.is_empty() && !q.is_empty() => {
-                    (k.to_string(), Some(q.to_string()))
-                }
-                _ => (id.clone(), None),
-            };
-            let id = bare_id;
+            let (bare_id, qualifier) = federation::parse_qualified_ref(id.as_str());
+            let qualifier = qualifier.map(str::to_string);
+            let id = bare_id.to_string();
             if let Some(snap_id) = &snapshot {
                 let home = dirs::home_dir()
                     .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
@@ -524,12 +524,10 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             let mut specs = registry::current_sources(&registry)
                 .ok_or_else(|| anyhow::anyhow!("no active constellation"))?;
             if let Some(qualifier) = &qualifier {
-                specs.retain(|spec| {
-                    spec.path.display().to_string().contains(qualifier.as_str())
-                        || federation::spec_source_id(spec)
-                            .as_deref()
-                            .is_some_and(|sid| sid == qualifier || sid.starts_with(qualifier))
-                });
+                specs = federation::specs_matching(&specs, qualifier)
+                    .into_iter()
+                    .cloned()
+                    .collect();
                 if specs.is_empty() {
                     let known: Vec<String> = registry::current_sources(&registry)
                         .unwrap_or_default()
