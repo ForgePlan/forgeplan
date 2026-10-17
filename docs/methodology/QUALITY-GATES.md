@@ -64,25 +64,84 @@ R_eff = min(evidence_scores). Make sure you have identified the REAL weakest lin
 
 ## 2. Adversarial Review Protocol
 
-A locally adapted protocol inspired by BMAD-METHOD, used at Deep and Critical levels. BMAD revision `d1163f85e1e45840061496531f4bc25bc7639d8c` asks for at least ten issues in its adversarial prompt. Native `/forge-cycle` retains its separate issue quota; neither prescription proves defects exist. This guide does not amend native agent policy.
+Review protocol applied at Deep and Critical levels. Governed by core policy [ADR-027 — Finite evidence-backed independent review without a defect quota](../../.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md); cutover plan and acceptance live in [RFC-014 — Core review policy, bounded documentation cutover](../../.forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md). This section is the **single normative core protocol**; short definitions and instructions elsewhere link here.
 
-### Core Rules
+> **Scope note (core policy, not propagated downstream).** This section governs the owning Forgeplan core / source docs. The shipped binary, installed plugin copies, public website surfaces and historical artifacts (session snapshots, `docs/vnext/**` audits, instantiated template bodies) keep their prior text until those surfaces are independently updated. This change does not modify the Rust validator, CLI/MCP runtime or the template embedded in a published binary, and is not an automated downstream propagation.
 
-1. **The reviewer MUST actively search for defects** and support each finding with a concrete basis.
+### Core rules
 
-2. **Zero confirmed defects is acceptable.** Record the review scope and unexamined risks; never invent findings to satisfy a quota. Optional adversarial validation may emit `adversarial-too-clean` at **COULD** severity, not a blocking MUST.
+1. **Zero real defects is neither auto-PASS nor auto-FAIL.** A zero count alone proves neither thoroughness nor shallowness. The reviewer **MUST** actively search for counterexamples and contradictions before accepting a zero outcome. A zero verdict is permitted only when every condition in §D1 holds on the current, complete candidate.
+2. **Mandatory active counterexample search.** The reviewer reads the artifact, adjacent docs, prior art and adverse scenarios specific to the target. Passively looking for confirmations is not a review.
+3. **Mandatory structured reporting.** Every finding carries severity (`Critical`, `HIGH`, `MEDIUM`, `LOW`, `Warning`, `Pass`), exact location (section / line / range), consequence, and current state (`open`, `fixed`, `authorized-justified-acceptance`, `blocked-external`).
+4. **Unresolved `HIGH` or `Critical` blocks the review** (`BLOCKER`). The artifact does not advance to the next gate while such findings remain `open`.
+5. **`Warning` / `MEDIUM` / `LOW` are not erased by the zero-defect clause.** They keep their fix-or-owner-authorized-justification path. The reviewer never accepts a risk on the owner's behalf.
+6. **The reviewer never invents or duplicates findings.** Re-spawning solely to manufacture a non-zero count is forbidden; repeating the review solely because the count is zero is forbidden.
+7. **Generator ≠ verifier.** Authored analyses, owner-marked approvals and successful structural validation are not independent verdicts.
 
-3. **Severity classification:**
+### D1. Bounded zero-defect PASS — seven conditions
+
+An independent reviewer **MAY** end the review at **PASS with zero real defects** only when every condition below holds on the current, complete candidate.
+
+1. **Independence.** Generator and verifier differ. The report names author, reviewer, roles, assigned model / effort and the limits of any independently confirmable identity. Authored analyses, owner-marked approvals and successful structural validation are not an independent verdict.
+2. **Current version.** Owning workspace, exact target object, scope, criteria and exclusions are named. For an artifact: canonical slug, full body SHA-256, status / depth and significant links are pinned. For a tree: baseline commit plus digest of the actual candidate contents, including dirty files. A bare `HEAD` without working-copy contents is insufficient. The reviewer personally re-verifies currency at the moment of verdict.
+3. **Coverage.** Each mandatory criterion maps to a check, a result and an evidence reference, or to a documented inapplicability. An unchecked mandatory criterion does not become N/A for PASS. The strongest counterargument, material boundaries and negative cases are recorded, not only the happy path.
+4. **Evidence sufficiency.** Origin, retained excerpt / result and digest (or stable link) are listed. For executable actions: real commands, environment, observed results / exit codes, and execution volume are recorded; non-zero execution is distinguished from "nothing ran". A foreign report is marked as foreign; a guess is marked as inference. Observed, inferred, skipped, and unavailable are not mixed. A hash confirms identity, not correctness, of the cited content.
+5. **Findings and limits.** All real findings remain in the report with severity, line / section reference, consequence and current state. Unresolved `Critical` / `HIGH` means **BLOCKER**. `Warning` / `MEDIUM` / `LOW` keep their fix-or-owner-authorized-justification path; the reviewer never accepts the risk on the owner's behalf. Significant unresolved doubts about coverage or evidence turn a zero count into BLOCKER or CONCERNS, not PASS.
+6. **Preserved gates.** All required reviewer counts and rounds, validation / ADI / Verification Gate / R_eff and profile-specific checks in their domains are obtained. Guardian, security, runtime, consent and activation requirements are satisfied where they apply to the claimed gate. The report does not pass a partial result off as the whole pipeline.
+7. **Finite report.** The reviewer explicitly names what passed, what was not checked, what external conditions remain, and why that is sufficient for exactly the claimed scope. A bare "all good" without items 1–6 is not a finished review.
+
+### D2. Re-review and finiteness
+
+A new independent review is required when the reviewed version, criteria or evidence changed in a relevant way, real findings were fixed, a meaningful check was skipped, or evidence is missing or insufficient. The reviewer re-checks the fix and possible new defects. Irrelevant editorial edits require a recorded reason for keeping the prior verdict applicable, not silent reuse.
+
+The mandatory **Critical ≥ 2 rounds** remain even when round 1 finds zero issues. The assigned reviewer count and specializations are preserved: in particular **2+ audit agents** and `security-expert` + `code-reviewer` / `reviewer` under the existing `CLAUDE.md` trigger (≥5 commits OR new public API). This protocol removes from that block only the quota phrase "Each MUST find ≥3 issues; Zero findings → re-spawn", not its trigger and not the roles. For Deep, no new reviewer count replaces the one already applicable. When real problems exist, the number of repeat rounds is determined by closure of the problem and the existing gates — not by an artificial limit. Re-reviewing solely to reach a non-zero count is forbidden.
+
+### D3. Strict scoped PASS
+
+A design-only PASS applies to completeness of the decision project when runtime is explicitly excluded from its criteria; it is **not** a runtime / implementation / publication / activation PASS. When runtime is in scope, skipping it forbids such PASS. A missing producer or accepted contract is not a manufactured defect and not a produced evidence; the external dependency may be left to the closing implementation gate, but the whole gate cannot be declared passed. This change applies to core policy and source docs only; shipped binary, installed copies, and historical artifacts retain prior text until they are independently updated.
+
+### D4. Owner-approved quota-only precedence and history boundary
+
+The owner has approved an amendment to the defect-count quota for this core section, and that decision is recorded now. This **draft** does not declare itself already in force and does not let the author close P1 by themselves. After actual bounded application and independent verification, with orchestrator lifecycle actions, this ADR and the current `docs/methodology/QUALITY-GATES.md` §2 / RU §2 take priority on the defect-quota question over older quota phrases, historical artifacts, session snapshots, `docs/vnext/**` audits and installed third-party copies. Until then, narrow owner amendment-review authority supports reviewing this amendment only while pending; there is no automatic source / activation / runtime authority. All other existing gates — validation / ADI / Verification Gate / R_eff / security / runtime / consent / activation, reviewer counts and roles, Critical rounds, BMAD 13-step, profile-specific requirements — keep their prior force. Stale quota phrases in installed / website / Marketplace / session snapshots are not rewritten in bulk.
+
+### Process
+
+```
+1. Author prepares the artifact (PRD, RFC, ADR, Spec).
+2. Reviewer re-pins canonical slug, full body SHA-256, status / depth,
+   significant outbound links and (for trees) working-copy digest.
+3. Reviewer actively searches for counterexamples and contradictions,
+   not confirmations.
+4. Reviewer compiles a list of findings: severity, location, consequence, state.
+5. Verdict per D1.7 and D2:
+   - all applicable criteria covered AND evidence sufficient AND required rounds done AND preserved gates satisfied -> PASS
+     (retained nonblocking Warning / MEDIUM / LOW findings fixed or covered by owner-authorized justification; optional nondefect observations do not block; zero real defects is permitted but neither necessary nor sufficient by count alone; the reviewer never accepts owner-authorized risk)
+   - any unresolved Critical / HIGH -> BLOCKER
+   - any missing mandatory coverage / evidence / preserved gate -> CONCERNS or BLOCKER by impact, never PASS
+   - otherwise -> CONCERNS
+6. Author handles each finding:
+   - Critical / HIGH -> fixes
+   - Warning / MEDIUM / LOW -> fixes or records owner-authorized justification
+   - Pass -> at discretion
+7. Independent re-review of fixes (mandatory for Critical, ≥ 2 rounds total).
+```
+
+### Severity classification
 
 | Severity | Description | Action |
 |----------|-------------|--------|
-| **Critical** | Blocks implementation, fundamental defect | Must fix before proceeding |
-| **Warning** | Potential issue, incompleteness, ambiguity | Fix or justify why it stays |
+| **Critical / HIGH** | Blocks implementation or fundamental defect | Must fix before proceeding; unresolved = BLOCKER |
+| **MEDIUM / Warning** | Material concern, incompleteness, ambiguity | Fix or record owner-authorized justification |
+| **LOW** | Local concern, clarity, style | Fix or justify |
 | **Pass** | Observation, improvement, stylistic | At the author's discretion |
 
-4. **Each finding must reference a specific section or line.** Abstract remarks ("should improve") are not accepted.
+### For Critical level — multiple rounds
 
-### Adversarial Review Process
+At the Critical level a minimum of 2 independent rounds of Adversarial Review are conducted. The second round focuses on:
+- Re-pinning current version and evidence after the first-round changes.
+- Verifying that first-round findings are actually fixed (not silently downgraded).
+- Searching for problems introduced by the fixes.
+- Cross-section consistency.
 
 ```
 1. Author prepares the artifact (PRD, RFC, ADR, Spec)
@@ -96,13 +155,13 @@ A locally adapted protocol inspired by BMAD-METHOD, used at Deep and Critical le
    - Pass -> at their discretion
 7. Re-review of fixes (for Critical items)
 ```
+8. Zero findings in round 1 does not skip round 2.
 
-### For Critical Level — Multiple Rounds
+### Related canonical references
 
-At the Critical level, a minimum of 2 rounds of Adversarial Review are conducted. The second round focuses on:
-- Verifying fixes from the first round
-- Finding problems introduced by the fixes
-- Cross-section consistency
+- Core policy: [ADR-027 — Finite evidence-backed independent review without a defect quota](../../.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md)
+- Source cutover plan and acceptance: [RFC-014 — Core review policy, bounded documentation cutover](../../.forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md)
+- This section is the single normative core protocol. Short definitions and instructions elsewhere link here.
 
 ## 3. BMAD 13-Step PRD Validation
 
