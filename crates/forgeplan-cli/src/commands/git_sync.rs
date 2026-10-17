@@ -223,11 +223,63 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 synced += 1;
             }
             _ => {
-                // R (rename), C (copy), etc. — skip silently.
-                // Renames produce two-path output that our parser doesn't handle.
-                // The renamed file will be picked up on next reindex.
+                // R (rename), C (copy), D (delete) and the rest are **not**
+                // applied here, because deciding what a rename means is the
+                // reconciler's job, not this loop's. What used to live here
+                // was `continue` with the comment "the renamed file will be
+                // picked up on next reindex" — which left a phantom node for
+                // the old path and lost the copy entirely until someone
+                // remembered to run `reindex`.
+                //
+                // One reconciliation runs after the loop and decides all of it
+                // from the captured source: renames are identity moves, copies
+                // are new artifacts, deletions retire rows, and outgoing links
+                // and metadata are **replaced exactly** rather than unioned.
+                // See `maintain_index` below.
                 continue;
             }
+        }
+    }
+
+    // One reconcile for the whole sync, not one per changed file. The capture
+    // reads the entire workspace, so batching is what keeps N files in one
+    // commit from becoming N publications.
+    //
+    // Signatures:
+    //   `MaintainCapability::for_strict_maintenance(impl Into<PathBuf>)`
+    //     — facade.rs:90
+    //   `maintain_index(&MaintainCapability, CaptureLimits, Instant)
+    //     -> Result<(PublishedReadView, ReconcileOutcome), ConstellationError>`
+    //     — facade.rs:577
+    //
+    // The capability takes the **canonical** workspace path: identity is
+    // scheme-independent, and a non-canonical path would be a different
+    // physical index and a different owner lock.
+    let canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
+    let capability =
+        forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
+            canonical,
+        );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    match forgeplan_core::constellation::facade::maintain_index(
+        &capability,
+        forgeplan_core::constellation::capture::CaptureLimits::default(),
+        deadline,
+    )
+    .await
+    {
+        Ok((view, outcome)) => {
+            println!(
+                "  reconciled into generation {} ({} commit(s))",
+                view.manifest.generation_id,
+                outcome.commits.len()
+            );
+        }
+        Err(e) => {
+            // Reported, not swallowed: the canonical sync succeeded and the
+            // index did not catch up, and the user must be able to tell that
+            // apart from a sync that did nothing because nothing changed.
+            eprintln!("  Warning: reconcile failed: {e}");
         }
     }
 

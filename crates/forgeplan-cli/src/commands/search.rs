@@ -486,41 +486,17 @@ async fn run_smart(
 
 /// Try to compute semantic scores for all artifacts.
 /// Returns (Some(map), true) if embeddings available, (None, false) otherwise.
+///
+/// The implementation now lives in `forgeplan_core::search::semantic`, where
+/// MCP can reach it too. It used to live here, which meant MCP search passed
+/// `None` and answered differently from the CLI for the same query. It also
+/// resolved its engine through `Embedder::new()` → `ensure_model(.., true)`,
+/// whose last argument is `show_progress`, not permission: a cold cache meant a
+/// multi-gigabyte download **on the query path**. The core version is
+/// cached-only and constructs nothing when the snapshot is absent.
 async fn get_semantic_scores(
     store: &forgeplan_core::db::store::LanceStore,
     query: &str,
 ) -> (Option<std::collections::HashMap<String, f64>>, bool) {
-    #[cfg(feature = "semantic-search")]
-    {
-        use forgeplan_core::embed::Embedder;
-
-        // Try to create embedder — if model not available, degrade gracefully
-        let mut embedder = match Embedder::new() {
-            Ok(e) => e,
-            Err(_) => return (None, false),
-        };
-
-        let query_vec = match embedder.embed(query) {
-            Ok(v) => v,
-            Err(_) => return (None, false),
-        };
-
-        let hits = match store.vector_search(&query_vec, 50).await {
-            Ok(h) if !h.is_empty() => h,
-            _ => return (None, false),
-        };
-
-        // Use real cosine similarity from LanceDB distance column
-        let mut map = std::collections::HashMap::new();
-        for hit in &hits {
-            map.insert(hit.record.id.clone(), hit.similarity());
-        }
-
-        (Some(map), true)
-    }
-    #[cfg(not(feature = "semantic-search"))]
-    {
-        let _ = (store, query);
-        (None, false)
-    }
+    forgeplan_core::search::semantic::semantic_scores(store, query).await
 }

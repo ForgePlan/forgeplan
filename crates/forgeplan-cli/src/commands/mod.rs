@@ -33,6 +33,7 @@ pub mod git_sync;
 pub mod graph;
 pub mod health;
 pub mod import_cmd;
+pub mod index;
 pub mod ingest;
 pub mod init;
 pub mod journal;

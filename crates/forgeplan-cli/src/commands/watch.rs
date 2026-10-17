@@ -8,7 +8,13 @@ use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use crate::commands::common;
 
 /// Watch .forgeplan/ markdown files and sync changes to LanceDB in real time.
-pub async fn run() -> anyhow::Result<()> {
+///
+/// `constellation` additionally runs a bounded [`maintain_index`] pass after
+/// every debounced batch: the legacy sync keeps existing commands reading,
+/// while the corrected 0A/0B index picks up the same change atomically —
+/// creates, updates, deletes and renames land in one published generation,
+/// which is exactly what the per-file legacy path cannot express.
+pub async fn run(constellation: bool) -> anyhow::Result<()> {
     let (ws, store) = common::open_store().await?;
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -31,8 +37,13 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     println!(
-        "Watching .forgeplan/ for changes ({} dirs)... (Ctrl+C to stop)",
-        watched
+        "Watching .forgeplan/ for changes ({} dirs){}... (Ctrl+C to stop)",
+        watched,
+        if constellation {
+            ", constellation index on"
+        } else {
+            ""
+        }
     );
 
     // PRD-071: long-running surface — emit Wait: line so agents know this
@@ -56,6 +67,7 @@ pub async fn run() -> anyhow::Result<()> {
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(Ok(events)) => {
                 // Deduplicate paths within a single debounce batch
+                let mut batch_had_change = false;
                 let mut seen = HashSet::new();
                 for event in &events {
                     if event.kind != DebouncedEventKind::Any {
@@ -68,6 +80,7 @@ pub async fn run() -> anyhow::Result<()> {
                     if !seen.insert(path.clone()) {
                         continue;
                     }
+                    batch_had_change = true;
 
                     // Determine if file was deleted or changed
                     if !path.exists() {
@@ -91,6 +104,37 @@ pub async fn run() -> anyhow::Result<()> {
                         }
                         Err(e) => {
                             eprintln!("ERROR syncing {}: {}", path.display(), e);
+                        }
+                    }
+                }
+
+                // One maintenance pass per debounced batch, never per file:
+                // the pass itself captures the whole workspace, so batching
+                // is what keeps N rapid saves from becoming N publishes.
+                if constellation && batch_had_change {
+                    let canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
+                    let capability =
+                        forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(canonical);
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+                    match forgeplan_core::constellation::facade::maintain_index(
+                        &capability,
+                        forgeplan_core::constellation::capture::CaptureLimits::default(),
+                        deadline,
+                    )
+                    .await
+                    {
+                        Ok((view, outcome)) => {
+                            println!(
+                                "INDEX {} — {} commit(s)",
+                                view.manifest.generation_id,
+                                outcome.commits.len()
+                            );
+                        }
+                        Err(e) => {
+                            // A failed pass leaves the published generation
+                            // untouched — the index degrades to stale, never
+                            // to torn. Report and keep watching.
+                            eprintln!("ERROR constellation maintenance: {e}");
                         }
                     }
                 }

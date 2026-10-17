@@ -826,6 +826,17 @@ enum Commands {
     ReconcileIds(commands::reconcile_ids::ReconcileIdsArgs),
     /// Rebuild LanceDB index from .md files (files-first sync)
     Reindex,
+    /// Run one Constellation index maintenance pass (capture → reconcile →
+    /// publish, verified), optionally draining the embedding queue
+    Index {
+        /// Also drain the embedding queue for this profile (requires the
+        /// semantic-search build feature)
+        #[arg(long)]
+        embed_profile: Option<String>,
+        /// Deadline for the whole pass, in seconds
+        #[arg(long, default_value = "300")]
+        deadline_secs: u64,
+    },
     /// Generate embeddings for all artifacts (semantic search)
     Embed,
     /// Show change log — audit trail of artifact mutations
@@ -871,7 +882,12 @@ enum Commands {
         json: bool,
     },
     /// Watch .forgeplan/ files and sync changes to LanceDB in real time
-    Watch,
+    Watch {
+        /// Also run a Constellation maintenance pass after each change batch:
+        /// the corrected 0A/0B index stays fresh alongside the legacy sync
+        #[arg(long)]
+        constellation: bool,
+    },
     /// Sync artifact changes from git operations (pull/merge) into LanceDB
     GitSync {
         /// Git ref to diff against (default: ORIG_HEAD from last pull/merge)
@@ -879,7 +895,13 @@ enum Commands {
         since: Option<String>,
     },
     /// Start MCP server (stdio transport) for AI agent integration
-    Serve,
+    Serve {
+        /// Run a Constellation maintenance pass + embedding-queue drain in the
+        /// background while serving (explicit opt-in; the index itself is
+        /// never required for reads)
+        #[arg(long)]
+        auto_index: bool,
+    },
     /// MCP integration helpers (install config for AI agent clients)
     Mcp {
         #[command(subcommand)]
@@ -1470,6 +1492,10 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Commands::Reindex => commands::reindex::run().await,
+        Commands::Index {
+            embed_profile,
+            deadline_secs,
+        } => commands::index::run(embed_profile, deadline_secs).await,
         Commands::Embed => commands::embed::run().await,
         Commands::Log {
             id,
@@ -1497,10 +1523,13 @@ async fn main() -> anyhow::Result<()> {
             limit,
             json,
         } => commands::recall::run(query.as_deref(), category.as_deref(), limit, json).await,
-        Commands::Watch => commands::watch::run().await,
+        Commands::Watch { constellation } => commands::watch::run(constellation).await,
         Commands::GitSync { since } => commands::git_sync::run(since.as_deref()).await,
-        Commands::Serve => {
+        Commands::Serve { auto_index } => {
             let cwd = std::env::current_dir()?;
+            if auto_index {
+                commands::index::spawn_background(cwd.clone());
+            }
             forgeplan_mcp::run_stdio(cwd).await
         }
         Commands::Mcp { action } => match action {

@@ -1,22 +1,39 @@
 /// Generate embeddings for all artifacts (title + body) for semantic search.
 #[cfg(feature = "semantic-search")]
 pub async fn run() -> anyhow::Result<()> {
-    use crate::commands::common;
     use crate::ui;
     use forgeplan_core::artifact::sanitize::sanitize_for_hint;
+    use forgeplan_core::constellation::ConstellationError;
+    use forgeplan_core::constellation::facade::{eligible_inputs, embed_with_publisher};
     use forgeplan_core::embed::Embedder;
     use forgeplan_core::hints::{self, Hint};
 
-    let store = common::store().await?;
-    let config = common::config().unwrap_or_default();
-    let chunk_size = config
-        .embedding
-        .as_ref()
-        .map(|e| e.chunk_size)
-        .unwrap_or(2000);
+    // The workspace path, resolved the way `common::open_store` resolves it
+    // (`common.rs:12-13`) but **without opening the store**. `open_store` would
+    // hand back the path only by opening a `LanceStore`, and a store open runs
+    // schema migrations — which is exactly what this command must not do: it
+    // writes through the publisher, under the publisher's owner.
+    let cwd = std::env::current_dir()?;
+    let ws = forgeplan_core::workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let ws = ws.canonicalize().unwrap_or_else(|_| ws.clone());
 
-    let records = store.list_records(None).await?;
-    if records.is_empty() {
+    // 1. The work list, and the text for each key, from the **capture** —
+    //    not from the store. `body_hash` is deliberately not consulted: it is a
+    //    change-detection stamp on a derived row, it cannot see a profile
+    //    change, and as an "already embedded" test it would let a row whose
+    //    vector belongs to a different space claim to be current.
+    //
+    //    A key that cannot be judged does not appear here; `embed_with_publisher`
+    //    reports those separately, with reasons.
+    let inputs = eligible_inputs(&ws).await.map_err(|e| match e {
+        ConstellationError::ModelUnavailable { detail } => {
+            anyhow::anyhow!("{detail}\nFix: forgeplan setup --warm-model")
+        }
+        other => anyhow::anyhow!("{}", other),
+    })?;
+
+    if inputs.is_empty() {
         ui::info("No artifacts to embed.");
         let hint_list = vec![
             Hint::info("Create your first artifact")
@@ -26,44 +43,6 @@ pub async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // PROB-093: only encode what actually moved. A record is current when it
-    // already carries a vector AND its content hash still matches. Before
-    // that fix, `embed` recomputed all 400+ records to index one new artifact
-    // — 13m18s on this workspace, which is why the step people were supposed
-    // to run manually did not get run.
-    //
-    // Deciding this BEFORE the model loads is the other half, and it was
-    // missing: the incremental skip removed the encoding work but left the
-    // load unconditional, so a fully-current workspace still paid 8.22s to
-    // report "0 embedded, 427 already current". The model was read off disk
-    // and never used. Work first, model only if there is work.
-    let mut work: Vec<(&forgeplan_core::db::store::ArtifactRecord, String)> = Vec::new();
-    let mut skipped = 0usize;
-    for record in &records {
-        let current_hash =
-            forgeplan_core::db::store::compute_content_hash(&record.title, &record.body);
-        if record.embedding.is_some() && record.body_hash.as_deref() == Some(current_hash.as_str())
-        {
-            skipped += 1;
-            continue;
-        }
-        work.push((record, current_hash));
-    }
-
-    if work.is_empty() {
-        println!("Done: 0 embedded, {skipped} already current, 0 failed.");
-        let hint_list = vec![
-            Hint::info("Run a semantic search")
-                .with_action("forgeplan search \"<query>\"".to_string()),
-        ];
-        print!("{}", hints::render_next_action_line(&hint_list));
-        return Ok(());
-    }
-
-    // Tell the user about a multi-gigabyte download BEFORE it starts, not
-    // after they notice the process sitting there. Silent when the model is
-    // already cached — and now silent as well when nothing needs encoding,
-    // which is the common case.
     if let Some(notice) = forgeplan_core::embed::first_run_notice() {
         ui::info(&notice);
     }
@@ -71,56 +50,72 @@ pub async fn run() -> anyhow::Result<()> {
     ui::info("Loading embedding model...");
     let mut embedder = Embedder::new()?;
 
-    println!(
-        "Embedding {} of {} artifact(s) (title + body, chunk_size={})...\n",
-        work.len(),
-        records.len(),
-        chunk_size
-    );
+    println!("Embedding {} artifact(s)...\n", inputs.len());
 
+    // 2. The caller **computes** — explicit `embed` is a permitted model
+    //    obtainer — and does not write. Every vector leaves through the
+    //    publisher, which applies the conditional `Binding` guard.
+    let mut vectors = std::collections::BTreeMap::new();
     let mut ok = 0usize;
     let mut err = 0usize;
-
-    for (record, current_hash) in &work {
-        let text = record.embedding_text(chunk_size);
-        match embedder.embed(&text) {
-            Ok(vec) => {
-                store.update_embedding(&record.id, &vec).await?;
-                store
-                    .update_body_hash(&record.id, current_hash)
-                    .await
-                    // The vector is written; a failed hash stamp only costs a
-                    // redundant re-encode next run, so it must not fail the
-                    // command and lose the work already done.
-                    .unwrap_or_else(|e| {
-                        eprintln!("  warn {} — hash not stamped: {}", record.id, e)
-                    });
-                // SEC-H1 (CWE-117 / CWE-150): titles are attacker-
-                // controllable via frontmatter; sanitize before TTY
-                // emission to neutralise ANSI/bidi/control bytes.
+    for (key, text) in &inputs {
+        match embedder.embed(text) {
+            Ok(vector) => {
+                // SEC-H1 (CWE-117 / CWE-150): ids come from frontmatter and are
+                // attacker-controllable; sanitise before any TTY emission.
                 println!(
-                    "  {} [{}] \"{}\"",
-                    record.id,
-                    record.kind,
-                    sanitize_for_hint(&record.title)
+                    "  {} \"{}\"",
+                    sanitize_for_hint(key),
+                    sanitize_for_hint(key)
                 );
+                vectors.insert(key.clone(), vector);
                 ok += 1;
             }
             Err(e) => {
-                eprintln!("  FAIL {} — {}", record.id, e);
+                eprintln!("  FAIL {} — {}", sanitize_for_hint(key), e);
                 err += 1;
             }
         }
     }
 
+    // 3. Publish, conditionally. A key absent from the capture is refused
+    //    inside `publish_embeddings`, and a stale one is reported as stale —
+    //    which is an answer, not a failure.
+    let outcome = embed_with_publisher(&ws, &vectors)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    for (key, reason) in &outcome.cannot_judge {
+        eprintln!("  cannot judge {} — {}", sanitize_for_hint(key), reason);
+    }
+    for key in &outcome.stale {
+        eprintln!(
+            "  stale {} — the row moved; nothing written",
+            sanitize_for_hint(key)
+        );
+    }
+
     println!(
-        "\nDone: {} embedded, {} already current, {} failed.",
-        ok, skipped, err
+        "\nDone: {} embedded, {} stale, {} could not be judged, {} failed.",
+        outcome.published.len(),
+        outcome.stale.len(),
+        outcome.cannot_judge.len(),
+        err
     );
-    let hint_list = if err > 0 {
+    if !outcome.is_complete() {
+        println!(
+            "Partial: {} row(s) could not be judged, so this run's coverage is incomplete.",
+            outcome.cannot_judge.len()
+        );
+    }
+    let _ = ok;
+    let hint_list = if err > 0 || !outcome.is_complete() {
         vec![
-            Hint::warning(format!("{} artifact(s) failed to embed", err))
-                .with_action("forgeplan health".to_string()),
+            Hint::warning(format!(
+                "{} failed and/or could not be judged",
+                err + outcome.cannot_judge.len()
+            ))
+            .with_action("forgeplan health".to_string()),
         ]
     } else {
         vec![
