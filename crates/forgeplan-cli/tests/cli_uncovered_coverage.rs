@@ -70,6 +70,7 @@ fn new_prd(tmp: &TempDir, title: &str) -> String {
 /// с инструкцией по rebuild. Это валидный coverage error-path: regression,
 /// убивающий graceful fallback (panic, silent exit), будет пойман.
 #[test]
+#[cfg(not(feature = "semantic-search"))]
 fn embed_without_feature_returns_error_with_fix() {
     let tmp = init_workspace();
 
@@ -95,6 +96,7 @@ fn embed_without_feature_returns_error_with_fix() {
 /// checkout-dependent command) rather than the exact wording, so rephrasing
 /// the message stays free while a regression to `cargo build` fails loudly.
 #[test]
+#[cfg(not(feature = "semantic-search"))]
 fn embed_fix_hint_is_runnable_without_a_checkout() {
     let tmp = init_workspace();
 

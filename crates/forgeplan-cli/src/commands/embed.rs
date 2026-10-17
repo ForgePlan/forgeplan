@@ -4,7 +4,10 @@ pub async fn run() -> anyhow::Result<()> {
     use crate::ui;
     use forgeplan_core::artifact::sanitize::sanitize_for_hint;
     use forgeplan_core::constellation::ConstellationError;
-    use forgeplan_core::constellation::facade::{eligible_inputs, embed_with_publisher};
+    use forgeplan_core::constellation::capture::CaptureLimits;
+    use forgeplan_core::constellation::facade::{
+        self, MaintainCapability, eligible_inputs, embed_with_publisher,
+    };
     use forgeplan_core::embed::Embedder;
     use forgeplan_core::hints::{self, Hint};
 
@@ -39,6 +42,59 @@ pub async fn run() -> anyhow::Result<()> {
             Hint::info("Create your first artifact")
                 .with_action("forgeplan new prd \"<title>\"".to_string()),
         ];
+        print!("{}", hints::render_next_action_line(&hint_list));
+        return Ok(());
+    }
+
+    // A workspace with no published generation cannot hold a vector — the
+    // table the binding predicate would match does not exist, and paying for
+    // the model before discovering that is the failure this step removes.
+    // Bootstrap the index the same way `forgeplan index` does; the rows it
+    // publishes are the rows the vectors below bind to.
+    let capability = MaintainCapability::for_strict_maintenance(ws.clone());
+    if forgeplan_core::constellation::storage::read_current(capability.index_root())?.is_none() {
+        let (view, _) = facade::maintain_index(
+            &capability,
+            CaptureLimits::default(),
+            std::time::Instant::now() + std::time::Duration::from_secs(120),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("index bootstrap failed: {e}"))?;
+        ui::info(&format!(
+            "Index bootstrap: generation {}",
+            view.manifest.generation_id
+        ));
+    }
+
+    // "Nothing to do" is a stored-binding answer, not a capture answer —
+    // `inputs` lists what exists. The precheck costs a scalar scan and no
+    // weights; when it abstains (no cached snapshot, a busy owner) the model
+    // path proceeds and the real publish rejudges the same eligibility.
+    if let Some(precheck) = facade::embedding_precheck(&ws).await?
+        && precheck.eligible == 0
+    {
+        println!(
+            "Done: 0 embedded, 0 stale, {} could not be judged, 0 failed.",
+            precheck.cannot_judge
+        );
+        println!("{} already current.", precheck.current);
+        if precheck.cannot_judge > 0 {
+            println!(
+                "Partial: {} row(s) could not be judged, so this run's coverage is incomplete.",
+                precheck.cannot_judge
+            );
+        }
+        let hint_list = if precheck.cannot_judge > 0 {
+            vec![
+                Hint::warning(format!("{} could not be judged", precheck.cannot_judge))
+                    .with_action("forgeplan health".to_string()),
+            ]
+        } else {
+            vec![
+                Hint::info("Run a semantic search")
+                    .with_action("forgeplan search \"<query>\"".to_string()),
+            ]
+        };
         print!("{}", hints::render_next_action_line(&hint_list));
         return Ok(());
     }

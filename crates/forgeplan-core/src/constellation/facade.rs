@@ -476,6 +476,107 @@ pub async fn embed_with_publisher(
     })
 }
 
+/// The "is there embed work" answer, before the model is paid for.
+///
+/// Counts come from the same `artifacts_eligibility` the publish path uses,
+/// so what this reports is what `embed_with_publisher` would find.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbedPrecheck {
+    /// Rows whose vector the current profile still owes.
+    pub eligible: usize,
+    /// Rows already bound to the current profile and `ready`.
+    pub current: usize,
+    /// Rows whose eligibility could not be decided.
+    pub cannot_judge: usize,
+}
+
+/// Decide whether an explicit `embed` has work **without** loading weights.
+///
+/// `eligible_inputs` lists what the capture contains — it cannot see the
+/// stored binding, so it cannot answer "nothing to do". This runs the first
+/// half of `embed_with_publisher` (profile → capture → tables → eligibility)
+/// and stops before any vector is computed or written.
+///
+/// `Ok(None)` is an honest abstention, not an error: no published
+/// generation, no cached snapshot to checksum, an owner held by another
+/// pass — in each case the caller proceeds to the model path, where the real
+/// publish recomputes the same eligibility. Profile resolution reads only
+/// files already in the cache; it never downloads and never loads weights.
+#[cfg(feature = "semantic-search")]
+pub async fn embedding_precheck(
+    workspace: &Path,
+) -> Result<Option<EmbedPrecheck>, ConstellationError> {
+    use super::jobs::{DEFAULT_MODEL_REPO, snapshot_checksums};
+    use super::lance_tables::open_active_tables;
+    use super::publisher::{IndexPublisher, capture_under_workspace_lock, identity_for};
+
+    let index_root = workspace.join("lance");
+
+    // No published generation — nothing stored to judge against. The caller
+    // bootstraps the index or proceeds to the model path.
+    if super::storage::read_current(&index_root)?.is_none() {
+        return Ok(None);
+    }
+
+    // The profile from the *cached* snapshot: checksums are file reads. A
+    // snapshot that is not cached abstains — the download-capable path is
+    // the caller's, not a precheck's.
+    let cache_dir = crate::embed::resolve_cache_dir();
+    let Ok(checksums) = snapshot_checksums(&cache_dir, DEFAULT_MODEL_REPO) else {
+        return Ok(None);
+    };
+    let Ok(profile) = super::jobs::ResolvedProfile::open(
+        &cache_dir,
+        DEFAULT_MODEL_REPO,
+        &checksums,
+        ENGINE_VERSION,
+    ) else {
+        return Ok(None);
+    };
+    let profile_id = profile.profile.profile_id();
+
+    // The owner briefly — the same acquire `embed_with_publisher` performs.
+    // A busy owner means another pass holds the index; abstain and let the
+    // real publish surface the contention properly.
+    let publisher = match IndexPublisher::acquire(&index_root, inner_store_for(&index_root)) {
+        Ok(publisher) => publisher,
+        Err(ConstellationError::IndexBusy { .. }) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+
+    let captured =
+        capture_under_workspace_lock(workspace, super::capture::CaptureLimits::default()).await?;
+    let identity = identity_for(&index_root);
+    let marker = super::manifest::ProtocolMarker {
+        protocol_version: super::FORMAT_VERSION,
+        state: super::manifest::BootstrapState::Active,
+        index_epoch: identity.index_epoch(),
+        checkout_id: identity.checkout_id().to_string(),
+        table_names: super::manifest::ProtocolMarker::active_table_names(),
+        storage_scheme: super::manifest::STORAGE_SCHEME_FILE_OBJECT_STORE.to_string(),
+        bootstrap_attempt: 1,
+    };
+    let tables =
+        open_active_tables(&index_root, &marker, Arc::clone(publisher.tracking_store())).await?;
+    let eligibility = tables.artifacts_eligibility(&captured, &profile_id).await?;
+    drop(tables);
+    drop(publisher);
+
+    Ok(Some(EmbedPrecheck {
+        eligible: eligibility.eligible_keys().len(),
+        current: eligibility.current_keys().len(),
+        cannot_judge: eligibility.cannot_judge().len(),
+    }))
+}
+
+/// Feature-off abstains the way `Ok(None)` does: nothing to report.
+#[cfg(not(feature = "semantic-search"))]
+pub async fn embedding_precheck(
+    _workspace: &Path,
+) -> Result<Option<EmbedPrecheck>, ConstellationError> {
+    Ok(None)
+}
+
 /// Feature-off is `unavailable`, not `failed`.
 ///
 /// This arm acquires **nothing** — no owner, no tables, no tracker — and does
