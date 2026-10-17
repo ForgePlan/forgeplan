@@ -15,7 +15,35 @@ use crate::commands::common;
 /// creates, updates, deletes and renames land in one published generation,
 /// which is exactly what the per-file legacy path cannot express.
 pub async fn run(constellation: bool) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    // The legacy store and the constellation index cannot coexist as live
+    // tables — bootstrap renames `artifacts.lance`/`relations.lance` aside so
+    // two protocols never write the same logical index. On a migrated
+    // workspace `LanceStore::open` fails with a bare ENOENT; detect that
+    // state explicitly so the failure names the cause and `--constellation`
+    // keeps watching through the corrected index alone.
+    let (ws, store) = match common::open_store().await {
+        Ok((ws, store)) => (ws, Some(store)),
+        Err(e) => {
+            let cwd = std::env::current_dir()?;
+            let Some(ws) = forgeplan_core::workspace::find_workspace(&cwd) else {
+                return Err(e);
+            };
+            let migrated = ws.join("lance").join("CURRENT.json").exists()
+                && !ws.join("lance").join("artifacts.lance").exists();
+            if !migrated {
+                return Err(e);
+            }
+            if !constellation {
+                anyhow::bail!(
+                    "this workspace's index moved to the constellation protocol — run `forgeplan watch --constellation`"
+                );
+            }
+            println!(
+                "Legacy index retired (constellation owns .forgeplan/lance) — constellation maintenance only."
+            );
+            (ws, None)
+        }
+    };
 
     let (tx, rx) = std::sync::mpsc::channel();
     let mut debouncer = new_debouncer(Duration::from_millis(500), tx)?;
@@ -56,6 +84,13 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
         let _ = shutdown_tx.send(());
     })?;
 
+    // Files whose names do not follow the `<id>-<slug>.md` convention can
+    // never be addressed by the legacy store — it derives the path from
+    // id+kind+title, so `ADR-002.md` is out-of-reach for it (the corrected
+    // index handles them fine). Retry would error on every debounce batch
+    // forever; report once and skip until the path is recreated.
+    let mut unsyncable: HashSet<std::path::PathBuf> = HashSet::new();
+
     loop {
         // Check for shutdown signal (non-blocking)
         if shutdown_rx.try_recv().is_ok() {
@@ -85,6 +120,7 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
                     // Determine if file was deleted or changed
                     if !path.exists() {
                         // File deleted — warn, don't remove from LanceDB
+                        unsyncable.remove(path);
                         if let Some(id) = extract_id_from_filename(path) {
                             eprintln!(
                                 "WARN: {}.md deleted — artifact still in LanceDB. Run `forgeplan delete {}` to remove.",
@@ -94,8 +130,18 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
                         continue;
                     }
 
-                    // File created or modified — sync to LanceDB
-                    match sync_single_file(&store, &ws, path).await {
+                    if unsyncable.contains(path) {
+                        continue;
+                    }
+
+                    // File created or modified — sync to LanceDB. On a
+                    // migrated workspace there is no legacy store to feed;
+                    // the constellation pass below owns the index alone.
+                    let Some(store) = store.as_ref() else {
+                        batch_had_change = true;
+                        continue;
+                    };
+                    match sync_single_file(store, &ws, path).await {
                         Ok(Some(id)) => {
                             println!("SYNC {} — body updated from file", id);
                         }
@@ -103,7 +149,18 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
                             // Body unchanged, no sync needed
                         }
                         Err(e) => {
-                            eprintln!("ERROR syncing {}: {}", path.display(), e);
+                            if let Some(forgeplan_core::projection::MutationError::FileNotFound {
+                                ..
+                            }) = e.downcast_ref::<forgeplan_core::projection::MutationError>()
+                            {
+                                unsyncable.insert(path.clone());
+                                eprintln!(
+                                    "WARN {} — filename does not follow '<id>-<slug>.md'; the legacy index cannot address it (the constellation index still covers it). Skipping.",
+                                    path.display()
+                                );
+                            } else {
+                                eprintln!("ERROR syncing {}: {}", path.display(), e);
+                            }
                         }
                     }
                 }
