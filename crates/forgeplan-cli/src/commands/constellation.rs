@@ -16,6 +16,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use forgeplan_core::constellation::context_pack::{self, ContextPack};
+use forgeplan_core::constellation::export as exp;
 use forgeplan_core::constellation::federation::{self, FederatedGet};
 use forgeplan_core::constellation::impact::{self, ImpactBounds, ImpactReport, ImpactSeverity};
 use forgeplan_core::constellation::registry;
@@ -116,6 +117,20 @@ pub enum ConstellationAction {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+    /// Stage 9 — portable export: every document and edge of the active
+    /// constellation (or a recorded snapshot) as JSONL or SCIP-shaped
+    /// records, with provenance and no absolute local paths.
+    Export {
+        /// Record format: `jsonl` (constellation-export-v1) or `scip`
+        #[arg(long, default_value = "jsonl")]
+        format: String,
+        /// Export at a recorded snapshot instead of the live sources
+        #[arg(long)]
+        snapshot: Option<String>,
+        /// Write to this file instead of stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -502,6 +517,58 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 print_impact_text(&report);
+            }
+            Ok(())
+        }
+        ConstellationAction::Export {
+            format,
+            snapshot,
+            out,
+        } => {
+            let (scope, parsed) = if let Some(id) = &snapshot {
+                let home = dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
+                let snap = snap::load_snapshot(&snap::snapshot_path(&home, id))
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let (scope, _jsonl, parsed) =
+                    exp::export_snapshot(&snap).map_err(|e| anyhow::anyhow!("{e}"))?;
+                (scope, parsed)
+            } else {
+                let (_path, registry) = load_registry()?;
+                let specs = registry::current_sources(&registry)
+                    .ok_or_else(|| anyhow::anyhow!("no active constellation"))?;
+                if specs.is_empty() {
+                    anyhow::bail!("the active constellation has no sources");
+                }
+                let name = registry.current.clone().unwrap_or_else(|| "active".into());
+                let (scope, _jsonl, parsed) = exp::export_live(&specs, &name)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                (scope, parsed)
+            };
+            let text = match format.as_str() {
+                "jsonl" => exp::render_jsonl(
+                    &scope,
+                    &parsed.sources,
+                    &parsed.documents,
+                    &parsed.edges,
+                    &parsed.failures,
+                ),
+                "scip" => {
+                    exp::render_scip(&scope, &parsed.sources, &parsed.documents, &parsed.edges)
+                }
+                other => anyhow::bail!("unknown export format '{other}' — use jsonl or scip"),
+            };
+            if let Some(path) = &out {
+                std::fs::write(path, &text)?;
+                println!(
+                    "exported {} documents, {} edges → {}",
+                    parsed.documents.len(),
+                    parsed.edges.len(),
+                    path.display()
+                );
+            } else {
+                print!("{text}");
             }
             Ok(())
         }

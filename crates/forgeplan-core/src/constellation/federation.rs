@@ -86,7 +86,7 @@ impl SourceChannel {
 }
 
 /// Per-source outcome when the source could not be read.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct SourceFailure {
     /// The path as the caller spelled it — there may be no canonical form.
     pub path: String,
