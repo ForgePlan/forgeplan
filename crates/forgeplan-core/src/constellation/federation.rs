@@ -206,6 +206,15 @@ fn source_id_for(canonical: &Path) -> String {
     )
 }
 
+/// The [`SourceRef::source_id`] a spec will report, if it resolves.
+///
+/// CLI uses this to match a user qualifier (`@src:ab12…` or a path
+/// fragment) against named sources *before* reading — resolution failures
+/// mean `None`, and the qualifier match then happens on what was spelled.
+pub fn spec_source_id(spec: &SourceSpec) -> Option<String> {
+    resolve_source(spec).ok().map(|c| source_id_for(&c))
+}
+
 // -- Per-source read paths ----------------------------------------------------
 
 async fn read_pinned(

@@ -272,6 +272,17 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
         }
         ConstellationAction::Get { id, snapshot, json } => {
             let (_path, registry) = load_registry()?;
+            // Stage 4 — qualified refs: `ADR-001@fp-ws-b` or
+            // `ADR-001@src:b7d6…`. The qualifier narrows the source set
+            // before reading; an unmatched qualifier is an error that
+            // names what was registered, never a silent wider search.
+            let (bare_id, qualifier) = match id.split_once('@') {
+                Some((k, q)) if !k.is_empty() && !q.is_empty() => {
+                    (k.to_string(), Some(q.to_string()))
+                }
+                _ => (id.clone(), None),
+            };
+            let id = bare_id;
             if let Some(snap_id) = &snapshot {
                 let home = dirs::home_dir()
                     .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
@@ -313,8 +324,35 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                     }
                 };
             }
-            let specs = registry::current_sources(&registry)
+            let mut specs = registry::current_sources(&registry)
                 .ok_or_else(|| anyhow::anyhow!("no active constellation"))?;
+            if let Some(qualifier) = &qualifier {
+                specs.retain(|spec| {
+                    spec.path.display().to_string().contains(qualifier.as_str())
+                        || federation::spec_source_id(spec)
+                            .as_deref()
+                            .is_some_and(|sid| sid == qualifier || sid.starts_with(qualifier))
+                });
+                if specs.is_empty() {
+                    let known: Vec<String> = registry::current_sources(&registry)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|s| {
+                            let id = federation::spec_source_id(s)
+                                .unwrap_or_else(|| "unreadable".into());
+                            format!("{} ({id})", s.path.display())
+                        })
+                        .collect();
+                    anyhow::bail!(
+                        "qualifier @{qualifier} matches no source. Registered:
+  {}",
+                        known.join(
+                            "
+  "
+                        )
+                    );
+                }
+            }
             let result = federation::federated_get(&specs, &id).await?;
             match result {
                 FederatedGet::Found(artifact) => {
