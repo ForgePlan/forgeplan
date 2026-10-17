@@ -68,6 +68,10 @@ pub enum SourceChannel {
     /// Parsed the canonical markdown on disk. Reflects files as captured
     /// now; never claims the durability guarantees of a published index.
     Markdown,
+    /// Read from pinned Git objects (`git show` at a recorded OID) —
+    /// stage-3 snapshot channel. As immutable as `pinned`, without needing
+    /// a published Constellation index at all.
+    PinnedGit,
 }
 
 impl SourceChannel {
@@ -76,6 +80,7 @@ impl SourceChannel {
         match self {
             Self::Pinned => "pinned",
             Self::Markdown => "markdown",
+            Self::PinnedGit => "git",
         }
     }
 }

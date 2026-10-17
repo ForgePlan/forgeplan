@@ -17,6 +17,7 @@ use clap::Subcommand;
 
 use forgeplan_core::constellation::federation::{self, FederatedGet};
 use forgeplan_core::constellation::registry;
+use forgeplan_core::constellation::snapshot as snap;
 
 #[derive(Subcommand)]
 pub enum ConstellationAction {
@@ -53,12 +54,19 @@ pub enum ConstellationAction {
     /// Health-check every registered source: reachable, looks like a
     /// workspace, has a published index.
     Doctor,
+    /// Pin every source of the active constellation at its current Git
+    /// HEAD and write the lockfile to `~/.forgeplan/snapshots/`. Sources
+    /// that are not git checkouts are reported, not pinned.
+    Snapshot,
     /// Search across the active constellation's sources.
     Search {
         query: String,
         /// Maximum hits (default: 10)
         #[arg(long, short = 'n', default_value = "10")]
         limit: usize,
+        /// Read at a recorded snapshot instead of the live sources
+        #[arg(long)]
+        snapshot: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -67,6 +75,9 @@ pub enum ConstellationAction {
     /// sources claim the same id the answer is `ambiguous` and names them.
     Get {
         id: String,
+        /// Read at a recorded snapshot instead of the live sources
+        #[arg(long)]
+        snapshot: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -196,19 +207,62 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             }
             Ok(())
         }
-        ConstellationAction::Search { query, limit, json } => {
+        ConstellationAction::Snapshot => {
             let (_path, registry) = load_registry()?;
-            let specs = registry::current_sources(&registry).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no active constellation — `forgeplan constellation create` then `add`"
-                )
-            })?;
+            let name = registry
+                .current
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("no active constellation to snapshot"))?;
+            let specs = registry::current_sources(&registry).unwrap_or_default();
             if specs.is_empty() {
-                anyhow::bail!(
-                    "the active constellation has no sources — `forgeplan constellation add <path>`"
+                anyhow::bail!("the active constellation has no sources");
+            }
+            let snapshot =
+                snap::capture_snapshot(&specs, Some(&name)).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
+            let path = snap::snapshot_path(&home, &snapshot.snapshot_id);
+            snap::write_snapshot(&path, &snapshot).map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!("Snapshot {} → {}", snapshot.snapshot_id, path.display());
+            for entry in &snapshot.sources {
+                println!(
+                    "  {} @ {} ({} files)",
+                    entry.checkout_root,
+                    &entry.git_oid[..12],
+                    entry.files
                 );
             }
-            let outcome = federation::federated_search(&specs, &query, limit).await?;
+            for skip in &snapshot.skipped {
+                eprintln!("  skipped {} — {}", skip.path, skip.reason);
+            }
+            Ok(())
+        }
+        ConstellationAction::Search {
+            query,
+            limit,
+            snapshot,
+            json,
+        } => {
+            let (_path, registry) = load_registry()?;
+            let outcome = if let Some(id) = &snapshot {
+                let home = dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
+                let snap = snap::load_snapshot(&snap::snapshot_path(&home, id))
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                snap::snapshot_search(&snap, &query, limit)?
+            } else {
+                let specs = registry::current_sources(&registry).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no active constellation — `forgeplan constellation create` then `add`"
+                    )
+                })?;
+                if specs.is_empty() {
+                    anyhow::bail!(
+                        "the active constellation has no sources — `forgeplan constellation add <path>`"
+                    );
+                }
+                federation::federated_search(&specs, &query, limit).await?
+            };
             if json {
                 print_search_json(&outcome)?;
             } else {
@@ -216,8 +270,49 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             }
             Ok(())
         }
-        ConstellationAction::Get { id, json } => {
+        ConstellationAction::Get { id, snapshot, json } => {
             let (_path, registry) = load_registry()?;
+            if let Some(snap_id) = &snapshot {
+                let home = dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
+                let snap = snap::load_snapshot(&snap::snapshot_path(&home, snap_id))
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let found = snap::snapshot_get(&snap, &id)?;
+                return match found.len() {
+                    0 => {
+                        println!("Not found at snapshot {snap_id}: {id}");
+                        Ok(())
+                    }
+                    1 => {
+                        let (source, rel, bytes) = &found[0];
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&serde_json::json!({
+                                    "result": "found",
+                                    "source": source,
+                                    "relative_path": rel,
+                                    "body": String::from_utf8_lossy(bytes),
+                                }))?
+                            );
+                        } else {
+                            println!("{id} at {} [{}]", rel, &source.version_key[..40]);
+                            print!("{}", String::from_utf8_lossy(bytes));
+                        }
+                        Ok(())
+                    }
+                    _ => {
+                        println!(
+                            "'{id}' is claimed by {} sources at this snapshot:",
+                            found.len()
+                        );
+                        for (source, rel, _) in &found {
+                            println!("  {} ({})", rel, source.source_id);
+                        }
+                        Ok(())
+                    }
+                };
+            }
             let specs = registry::current_sources(&registry)
                 .ok_or_else(|| anyhow::anyhow!("no active constellation"))?;
             let result = federation::federated_get(&specs, &id).await?;

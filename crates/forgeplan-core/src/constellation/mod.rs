@@ -56,6 +56,7 @@ pub mod publisher;
 pub mod reconciler;
 pub mod registry;
 pub mod runtime;
+pub mod snapshot;
 pub mod storage;
 pub mod view;
 
