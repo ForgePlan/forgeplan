@@ -135,6 +135,8 @@ pub enum DiagnosticCode {
     UnsupportedIndexFilesystem,
     /// Neither `slug` nor `id` was present; the key came from the filename.
     MissingIdentity,
+    /// A `required` federated source could not answer a strict query.
+    SourceUnavailable,
 }
 
 impl DiagnosticCode {
@@ -160,6 +162,7 @@ impl DiagnosticCode {
             Self::DurabilityUnavailable => "durability_unavailable",
             Self::UnsupportedIndexFilesystem => "unsupported_index_filesystem",
             Self::MissingIdentity => "missing_identity",
+            Self::SourceUnavailable => "source_unavailable",
         }
     }
 
@@ -295,6 +298,15 @@ pub enum ConstellationError {
     Io { detail: String },
     /// Counter or version arithmetic overflowed.
     ProtocolOverflow { field: &'static str, value: u64 },
+    /// A `required` federated source could not answer, so the strict query
+    /// was refused outright rather than returning a partial envelope that
+    /// would read as complete.
+    ///
+    /// This is the error arm of the required/optional source contract: a
+    /// required source that fails aborts the query; an optional one lands
+    /// in `failures` and flips `partial` instead. Snapshot reads never
+    /// produce it — a lockfile's source set is frozen at pin time.
+    SourceUnavailable { detail: String },
 }
 
 impl ConstellationError {
@@ -318,6 +330,7 @@ impl ConstellationError {
             Self::UnsupportedIndexFilesystem { .. } => DiagnosticCode::UnsupportedIndexFilesystem,
             Self::Io { .. } | Self::StorageIo { .. } => DiagnosticCode::StorageIo,
             Self::DurabilityUnavailable { .. } => DiagnosticCode::DurabilityUnavailable,
+            Self::SourceUnavailable { .. } => DiagnosticCode::SourceUnavailable,
         }
     }
 }
@@ -361,6 +374,7 @@ impl fmt::Display for ConstellationError {
             Self::ProtocolOverflow { field, value } => {
                 write!(f, "index_protocol_mismatch: {field} overflowed at {value}")
             }
+            Self::SourceUnavailable { detail } => write!(f, "source_unavailable: {detail}"),
         }
     }
 }

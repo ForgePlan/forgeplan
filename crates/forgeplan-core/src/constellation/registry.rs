@@ -25,6 +25,37 @@ pub const REGISTRY_FORMAT_VERSION: u32 = 1;
 /// The registry filename under `~/.forgeplan/`.
 pub const REGISTRY_FILENAME: &str = "constellations.yaml";
 
+/// What a source's unavailability means to a query — the spec's
+/// required/optional contract.
+///
+/// `Required` is the default: an operator who registers a source without
+/// marking it optional is saying the answer is not complete without it,
+/// so a strict query over a dead required source fails with
+/// [`ConstellationError::SourceUnavailable`] instead of returning a
+/// partial envelope that would read as complete. An `Optional` source
+/// degrades honestly: its failure lands in `failures` and flips
+/// `partial`, exactly as every source behaved before roles existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceRole {
+    /// A strict query fails outright when this source cannot answer.
+    #[default]
+    Required,
+    /// A failure here produces `partial: true` plus a `failures` entry —
+    /// the query still answers from the sources that did respond.
+    Optional,
+}
+
+impl SourceRole {
+    /// The wire/CLI label — matches the serde spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Optional => "optional",
+        }
+    }
+}
+
 /// One federated source as recorded: a canonical `.forgeplan` directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrySource {
@@ -33,6 +64,11 @@ pub struct RegistrySource {
     /// When the source was added (RFC 3339). Informational — identity is
     /// the path, not the timestamp.
     pub added_at: String,
+    /// Required or optional under the strict-query contract. Defaults to
+    /// `required` so a registry written before roles existed keeps its
+    /// meaning: every declared source was implicitly load-bearing.
+    #[serde(default)]
+    pub role: SourceRole,
 }
 
 /// One named constellation — a set of sources reads fan out over.
@@ -234,10 +270,16 @@ fn canonical_source_root(spelled_path: &Path) -> Result<String, ConstellationErr
 /// at `add`, not quietly at every later read. Adding the same canonical
 /// path twice is an error; aliases of one workspace would double-count
 /// every hit.
+///
+/// `role` is the source's standing under the strict-query contract —
+/// [`SourceRole::Required`] makes its unavailability a query error,
+/// [`SourceRole::Optional`] makes it a `failures` entry on a partial
+/// answer.
 pub fn add_source(
     registry: &mut ConstellationRegistry,
     constellation: &str,
     spelled_path: &Path,
+    role: SourceRole,
 ) -> Result<String, ConstellationError> {
     let def = registry
         .constellations
@@ -254,6 +296,7 @@ pub fn add_source(
     def.sources.push(RegistrySource {
         path: canonical_string.clone(),
         added_at: now_rfc3339(),
+        role,
     });
     Ok(canonical_string)
 }
@@ -431,10 +474,21 @@ pub fn current_sources(
     registry: &ConstellationRegistry,
 ) -> Option<Vec<super::federation::SourceSpec>> {
     let name = registry.current.as_deref()?;
+    named_sources(registry, name)
+}
+
+/// One named constellation's sources as reader input — the same
+/// [`SourceSpec`]s [`current_sources`] builds, for a constellation that
+/// is not necessarily the active one (the MCP read profile opens scopes
+/// by name). `None` when the name is not registered.
+pub fn named_sources(
+    registry: &ConstellationRegistry,
+    name: &str,
+) -> Option<Vec<super::federation::SourceSpec>> {
     registry.constellations.get(name).map(|def| {
         def.sources
             .iter()
-            .map(|s| super::federation::SourceSpec::new(PathBuf::from(&s.path)))
+            .map(|s| super::federation::SourceSpec::new(PathBuf::from(&s.path)).with_role(s.role))
             .collect()
     })
 }
@@ -445,6 +499,10 @@ pub fn current_sources(
 #[derive(Debug)]
 pub struct SourceHealth {
     pub path: String,
+    /// The registered role — a broken `required` source is a query
+    /// failure waiting to happen, a broken `optional` one is a partial
+    /// answer. `doctor` prints it either way.
+    pub role: SourceRole,
     /// `true` when the path resolves to a readable `.forgeplan` workspace.
     pub readable: bool,
     /// `true` when a published Constellation index exists under `lance/`.
@@ -462,12 +520,14 @@ pub fn doctor(registry: &ConstellationRegistry) -> Vec<(String, SourceHealth)> {
             let health = match std::fs::symlink_metadata(path) {
                 Err(e) => SourceHealth {
                     path: source.path.clone(),
+                    role: source.role,
                     readable: false,
                     indexed: false,
                     detail: Some(format!("cannot stat: {e}")),
                 },
                 Ok(meta) if meta.file_type().is_symlink() => SourceHealth {
                     path: source.path.clone(),
+                    role: source.role,
                     readable: false,
                     indexed: false,
                     detail: Some("the stored path is now a symlink".into()),
@@ -485,6 +545,7 @@ pub fn doctor(registry: &ConstellationRegistry) -> Vec<(String, SourceHealth)> {
                         .is_file();
                     SourceHealth {
                         path: source.path.clone(),
+                        role: source.role,
                         readable: has_dirs,
                         indexed,
                         detail: if has_dirs {
@@ -563,7 +624,8 @@ mod tests {
             ..Default::default()
         };
         create(&mut registry, "alpha").unwrap();
-        let canonical = add_source(&mut registry, "alpha", tmp.path()).unwrap();
+        let canonical =
+            add_source(&mut registry, "alpha", tmp.path(), SourceRole::Required).unwrap();
         assert_eq!(registry.constellations["alpha"].sources.len(), 1);
         assert!(Path::new(&canonical).is_absolute());
 
@@ -574,7 +636,7 @@ mod tests {
         assert_eq!(specs[0].path, PathBuf::from(&canonical));
 
         // Re-adding the same canonical path is refused.
-        assert!(add_source(&mut registry, "alpha", tmp.path()).is_err());
+        assert!(add_source(&mut registry, "alpha", tmp.path(), SourceRole::Required).is_err());
         // A second constellation does not steal `current`.
         create(&mut registry, "beta").unwrap();
         assert_eq!(registry.current.as_deref(), Some("alpha"));
@@ -594,7 +656,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut registry = ConstellationRegistry::default();
         create(&mut registry, "c").unwrap();
-        assert!(add_source(&mut registry, "c", tmp.path()).is_err());
+        assert!(add_source(&mut registry, "c", tmp.path(), SourceRole::Required).is_err());
     }
 
     #[test]
@@ -603,7 +665,8 @@ mod tests {
         let new = workspace();
         let mut registry = ConstellationRegistry::default();
         create(&mut registry, "c").unwrap();
-        let old_canonical = add_source(&mut registry, "c", old.path()).unwrap();
+        let old_canonical =
+            add_source(&mut registry, "c", old.path(), SourceRole::Required).unwrap();
 
         let outcome = rebind_source(&mut registry, "c", &old_canonical, new.path()).unwrap();
         assert_eq!(outcome.old_path, old_canonical);
@@ -632,7 +695,7 @@ mod tests {
         }
         let mut registry = ConstellationRegistry::default();
         create(&mut registry, "c").unwrap();
-        let old_canonical = add_source(&mut registry, "c", &before).unwrap();
+        let old_canonical = add_source(&mut registry, "c", &before, SourceRole::Required).unwrap();
 
         // The checkout moves; the stored path is dead from here on.
         let after = holder.path().join("after");
@@ -655,7 +718,7 @@ mod tests {
         let ws = workspace();
         let mut registry = ConstellationRegistry::default();
         create(&mut registry, "c").unwrap();
-        let canonical = add_source(&mut registry, "c", ws.path()).unwrap();
+        let canonical = add_source(&mut registry, "c", ws.path(), SourceRole::Required).unwrap();
 
         let err = rebind_source(&mut registry, "c", "no-such-fragment", ws.path()).unwrap_err();
         let text = format!("{err}");
@@ -671,8 +734,8 @@ mod tests {
         let b = workspace();
         let mut registry = ConstellationRegistry::default();
         create(&mut registry, "c").unwrap();
-        let a_canonical = add_source(&mut registry, "c", a.path()).unwrap();
-        add_source(&mut registry, "c", b.path()).unwrap();
+        let a_canonical = add_source(&mut registry, "c", a.path(), SourceRole::Required).unwrap();
+        add_source(&mut registry, "c", b.path(), SourceRole::Required).unwrap();
 
         let err = rebind_source(&mut registry, "c", &a_canonical, b.path()).unwrap_err();
         assert!(format!("{err}").contains("already a source"));
@@ -684,7 +747,7 @@ mod tests {
         let plain = TempDir::new().unwrap();
         let mut registry = ConstellationRegistry::default();
         create(&mut registry, "c").unwrap();
-        let canonical = add_source(&mut registry, "c", ws.path()).unwrap();
+        let canonical = add_source(&mut registry, "c", ws.path(), SourceRole::Required).unwrap();
 
         assert!(rebind_source(&mut registry, "c", &canonical, plain.path()).is_err());
         assert_eq!(registry.constellations["c"].sources[0].path, canonical);
@@ -698,7 +761,7 @@ mod tests {
         let ws = workspace();
         let mut registry = ConstellationRegistry::default();
         create(&mut registry, "c").unwrap();
-        let canonical = add_source(&mut registry, "c", ws.path()).unwrap();
+        let canonical = add_source(&mut registry, "c", ws.path(), SourceRole::Required).unwrap();
 
         let outcome = rebind_source(&mut registry, "c", &canonical, ws.path()).unwrap();
         assert_eq!(outcome.old_path, outcome.new_path);
@@ -715,7 +778,7 @@ mod tests {
             for artifact in ARTIFACT_DIRS {
                 std::fs::create_dir_all(dir.join(artifact)).unwrap();
             }
-            add_source(&mut registry, "c", &dir).unwrap();
+            add_source(&mut registry, "c", &dir, SourceRole::Required).unwrap();
         }
         // Both stored paths contain the holder's canonical path — the
         // fragment resolves nothing on its own. (Stored paths are
@@ -741,7 +804,7 @@ mod tests {
         std::os::unix::fs::symlink(target.path(), &link).unwrap();
         let mut registry = ConstellationRegistry::default();
         create(&mut registry, "c").unwrap();
-        let canonical = add_source(&mut registry, "c", ws.path()).unwrap();
+        let canonical = add_source(&mut registry, "c", ws.path(), SourceRole::Required).unwrap();
 
         let err = rebind_source(&mut registry, "c", &canonical, &link).unwrap_err();
         assert!(format!("{err}").contains("symlink"));
@@ -756,7 +819,7 @@ mod tests {
         std::os::unix::fs::symlink(real.path(), &link).unwrap();
         let mut registry = ConstellationRegistry::default();
         create(&mut registry, "c").unwrap();
-        let err = add_source(&mut registry, "c", &link).unwrap_err();
+        let err = add_source(&mut registry, "c", &link, SourceRole::Required).unwrap_err();
         assert!(format!("{err}").contains("symlink"));
     }
 
@@ -768,8 +831,8 @@ mod tests {
         let plain = workspace();
         let mut registry = ConstellationRegistry::default();
         create(&mut registry, "c").unwrap();
-        add_source(&mut registry, "c", indexed.path()).unwrap();
-        add_source(&mut registry, "c", plain.path()).unwrap();
+        add_source(&mut registry, "c", indexed.path(), SourceRole::Required).unwrap();
+        add_source(&mut registry, "c", plain.path(), SourceRole::Required).unwrap();
         registry
             .constellations
             .get_mut("c")
@@ -778,6 +841,7 @@ mod tests {
             .push(RegistrySource {
                 path: "/definitely/missing".into(),
                 added_at: now_rfc3339(),
+                role: SourceRole::Required,
             });
 
         let rows = doctor(&registry);
@@ -785,5 +849,89 @@ mod tests {
         assert!(rows[0].1.readable && rows[0].1.indexed);
         assert!(rows[1].1.readable && !rows[1].1.indexed);
         assert!(!rows[2].1.readable);
+    }
+
+    // -- Source roles ---------------------------------------------------------
+
+    #[test]
+    fn a_source_written_before_roles_loads_as_required() {
+        // Back-compat: a registry from before the `role` field has no key
+        // at all — serde's default fills it with `required`, which is the
+        // meaning those registries carried implicitly.
+        let tmp = TempDir::new().unwrap();
+        let path = registry_path(tmp.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "version: 1\ncurrent: c\nconstellations:\n  c:\n    created_at: \"2026-01-01T00:00:00Z\"\n    sources:\n      - path: /some/.forgeplan\n        added_at: \"2026-01-01T00:00:00Z\"\n",
+        )
+        .unwrap();
+        let registry = load(&path).unwrap();
+        assert_eq!(
+            registry.constellations["c"].sources[0].role,
+            SourceRole::Required
+        );
+    }
+
+    #[test]
+    fn a_source_role_roundtrips_through_the_file() {
+        let tmp = TempDir::new().unwrap();
+        let ws = workspace();
+        let path = registry_path(tmp.path());
+        let mut registry = ConstellationRegistry::default();
+        create(&mut registry, "c").unwrap();
+        add_source(&mut registry, "c", ws.path(), SourceRole::Optional).unwrap();
+        save(&path, &registry).unwrap();
+
+        let loaded = load(&path).unwrap();
+        assert_eq!(
+            loaded.constellations["c"].sources[0].role,
+            SourceRole::Optional
+        );
+        // The wire spelling is the snake_case contract string.
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("role: optional"), "{body}");
+
+        // And the reader-facing specs carry it too.
+        let specs = current_sources(&loaded).unwrap();
+        assert_eq!(specs[0].role, SourceRole::Optional);
+    }
+
+    #[test]
+    fn add_marks_the_role_and_named_sources_carry_it() {
+        let required_ws = workspace();
+        let optional_ws = workspace();
+        let mut registry = ConstellationRegistry::default();
+        create(&mut registry, "c").unwrap();
+        // Second constellation — proves `named_sources` reaches a
+        // non-current def (what the MCP read profile opens by name).
+        create(&mut registry, "other").unwrap();
+        add_source(&mut registry, "c", required_ws.path(), SourceRole::Required).unwrap();
+        add_source(
+            &mut registry,
+            "other",
+            optional_ws.path(),
+            SourceRole::Optional,
+        )
+        .unwrap();
+
+        let current = current_sources(&registry).unwrap();
+        assert_eq!(current[0].role, SourceRole::Required);
+        let other = named_sources(&registry, "other").unwrap();
+        assert_eq!(other[0].role, SourceRole::Optional);
+        assert!(named_sources(&registry, "missing").is_none());
+
+        // Doctor surfaces the role so a broken required source reads as
+        // the outage it is, not a bearable degradation.
+        let rows = doctor(&registry);
+        assert_eq!(rows[0].1.role, SourceRole::Required);
+        assert_eq!(rows[1].1.role, SourceRole::Optional);
+    }
+
+    #[test]
+    fn source_role_labels_match_the_serde_spelling() {
+        assert_eq!(SourceRole::Required.as_str(), "required");
+        assert_eq!(SourceRole::Optional.as_str(), "optional");
+        assert_eq!(SourceRole::default(), SourceRole::Required);
     }
 }

@@ -17,8 +17,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use forgeplan_core::constellation::ConstellationError;
 use forgeplan_core::constellation::context_pack;
-use forgeplan_core::constellation::federation::{self, FederatedGet};
+use forgeplan_core::constellation::federation::{self, FederatedGet, QueryMode};
 use forgeplan_core::constellation::graph::{self, GraphBounds};
 use forgeplan_core::constellation::impact::{self, ImpactBounds};
 use forgeplan_core::constellation::registry;
@@ -77,6 +78,10 @@ pub struct SearchParams {
     pub query: String,
     /// Maximum hits (default 10).
     pub limit: Option<usize>,
+    /// Strict reads (default) fail with `source_unavailable` when a
+    /// required source cannot answer; `false` accepts a partial answer.
+    /// Ignored for snapshot reads — the lockfile's source set is frozen.
+    pub strict: Option<bool>,
     pub scope_handle: Option<String>,
     pub snapshot_handle: Option<String>,
 }
@@ -87,6 +92,9 @@ pub struct PackParams {
     pub task: String,
     /// Token budget (estimated tokens, chars/4; default 8000).
     pub budget: Option<usize>,
+    /// Strict reads (default) fail with `source_unavailable` when a
+    /// required source cannot answer; `false` accepts a partial answer.
+    pub strict: Option<bool>,
     pub scope_handle: Option<String>,
     pub snapshot_handle: Option<String>,
 }
@@ -99,6 +107,9 @@ pub struct ImpactParams {
     pub depth: Option<usize>,
     /// Maximum impacted nodes (default 256).
     pub max_nodes: Option<usize>,
+    /// Strict reads (default) fail with `source_unavailable` when a
+    /// required source cannot answer; `false` accepts a partial answer.
+    pub strict: Option<bool>,
     pub scope_handle: Option<String>,
     pub snapshot_handle: Option<String>,
 }
@@ -107,6 +118,9 @@ pub struct ImpactParams {
 pub struct GraphParams {
     /// Maximum nodes and edges each (default 500).
     pub limit: Option<usize>,
+    /// Strict reads (default) fail with `source_unavailable` when a
+    /// required source cannot answer; `false` accepts a partial answer.
+    pub strict: Option<bool>,
     pub scope_handle: Option<String>,
     pub snapshot_handle: Option<String>,
 }
@@ -116,6 +130,9 @@ pub struct GetParams {
     /// Canonical key or display id; a `key@source-fragment` qualifier
     /// narrows the scope before reading.
     pub id: String,
+    /// Strict reads (default) fail with `source_unavailable` when a
+    /// required source cannot answer; `false` accepts a partial answer.
+    pub strict: Option<bool>,
     pub scope_handle: Option<String>,
     pub snapshot_handle: Option<String>,
 }
@@ -131,6 +148,25 @@ fn fail(reason: &str, detail: impl std::fmt::Display) -> Result<CallToolResult, 
         serde_json::to_string_pretty(&json!({"error": reason, "detail": detail.to_string()}))
             .unwrap(),
     )]))
+}
+
+/// The `strict` param translated: absent or `true` is a strict read, an
+/// explicit `false` accepts a partial answer over dead sources.
+fn mode_of(strict: Option<bool>) -> QueryMode {
+    match strict {
+        Some(false) => QueryMode::AllowPartial,
+        _ => QueryMode::Strict,
+    }
+}
+
+/// A failed live read: `source_unavailable` gets its own envelope reason
+/// so a caller can tell "a required source is down" apart from ordinary
+/// I/O trouble — the distinction the strict/partial contract exists for.
+fn fail_read(e: ConstellationError) -> Result<CallToolResult, McpError> {
+    match &e {
+        ConstellationError::SourceUnavailable { .. } => fail("source_unavailable", &e),
+        _ => fail("io", &e),
+    }
 }
 
 impl Default for ConstellationReadServer {
@@ -183,12 +219,11 @@ impl ConstellationReadServer {
             Some(n) => n,
             None => return fail("no_scope", "no constellation selected and none is active"),
         };
-        let specs = match registry.constellations.get(&name) {
-            Some(def) => def
-                .sources
-                .iter()
-                .map(|s| federation::SourceSpec::new(std::path::PathBuf::from(&s.path)))
-                .collect::<Vec<_>>(),
+        // `named_sources` carries the registered required/optional role
+        // into the specs — the scope must know it because a dead required
+        // source fails a strict read while an optional one degrades.
+        let specs = match registry::named_sources(&registry, &name) {
+            Some(specs) => specs,
             None => return fail("no_scope", format!("no constellation named {name:?}")),
         };
         let handle = self.issue("scope");
@@ -198,6 +233,7 @@ impl ConstellationReadServer {
                 json!({
                     "path": s.path.display().to_string(),
                     "source_id": federation::spec_source_id(s),
+                    "role": s.role.as_str(),
                 })
             })
             .collect();
@@ -233,6 +269,7 @@ impl ConstellationReadServer {
                         json!({
                             "path": s.path.display().to_string(),
                             "source_id": federation::spec_source_id(s),
+                            "role": s.role.as_str(),
                         })
                     })
                     .collect();
@@ -335,7 +372,9 @@ impl ConstellationReadServer {
         }
         match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
             Some(Handle::Scope(scope)) => {
-                match federation::federated_search(&scope.specs, &p.query, limit).await {
+                match federation::federated_search(&scope.specs, &p.query, limit, mode_of(p.strict))
+                    .await
+                {
                     Ok(outcome) => ok_json(json!({
                         "scope_handle": p.scope_handle,
                         "hits": hit_json(&outcome.hits),
@@ -344,7 +383,7 @@ impl ConstellationReadServer {
                         "partial": outcome.partial,
                         "truncated": outcome.truncated,
                     })),
-                    Err(e) => fail("io", e),
+                    Err(e) => fail_read(e),
                 }
             }
             Some(Handle::Snapshot(_)) => {
@@ -419,7 +458,7 @@ impl ConstellationReadServer {
                         );
                     }
                 }
-                match federation::federated_get(&specs, &bare).await {
+                match federation::federated_get(&specs, &bare, mode_of(p.strict)).await {
                     Ok(FederatedGet::Found(a)) => ok_json(json!({
                         "result": "found",
                         "id": bare,
@@ -442,7 +481,7 @@ impl ConstellationReadServer {
                         "id": bare,
                         "failures": failures,
                     })),
-                    Err(e) => fail("io", e),
+                    Err(e) => fail_read(e),
                 }
             }
             Some(Handle::Snapshot(_)) => {
@@ -484,12 +523,14 @@ impl ConstellationReadServer {
         }
         match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
             Some(Handle::Scope(scope)) => {
-                match context_pack::pack_live(&scope.specs, &p.task, budget).await {
+                match context_pack::pack_live(&scope.specs, &p.task, budget, mode_of(p.strict))
+                    .await
+                {
                     Ok(pack) => ok_json(
                         serde_json::to_value(&pack)
                             .unwrap_or_else(|_| json!({"error":"serialize"})),
                     ),
-                    Err(e) => fail("io", e),
+                    Err(e) => fail_read(e),
                 }
             }
             Some(Handle::Snapshot(_)) => {
@@ -534,12 +575,12 @@ impl ConstellationReadServer {
         }
         match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
             Some(Handle::Scope(scope)) => {
-                match impact::impact_live(&scope.specs, &p.id, bounds).await {
+                match impact::impact_live(&scope.specs, &p.id, bounds, mode_of(p.strict)).await {
                     Ok(report) => ok_json(
                         serde_json::to_value(&report)
                             .unwrap_or_else(|_| json!({"error":"serialize"})),
                     ),
-                    Err(e) => fail("io", e),
+                    Err(e) => fail_read(e),
                 }
             }
             Some(Handle::Snapshot(_)) => {
@@ -580,12 +621,15 @@ impl ConstellationReadServer {
             };
         }
         match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
-            Some(Handle::Scope(scope)) => match graph::graph_live(&scope.specs, bounds).await {
-                Ok(outcome) => ok_json(
-                    serde_json::to_value(&outcome).unwrap_or_else(|_| json!({"error":"serialize"})),
-                ),
-                Err(e) => fail("io", e),
-            },
+            Some(Handle::Scope(scope)) => {
+                match graph::graph_live(&scope.specs, bounds, mode_of(p.strict)).await {
+                    Ok(outcome) => ok_json(
+                        serde_json::to_value(&outcome)
+                            .unwrap_or_else(|_| json!({"error":"serialize"})),
+                    ),
+                    Err(e) => fail_read(e),
+                }
+            }
             Some(Handle::Snapshot(_)) => {
                 fail("wrong_handle_kind", "use snapshot_handle for a snapshot")
             }

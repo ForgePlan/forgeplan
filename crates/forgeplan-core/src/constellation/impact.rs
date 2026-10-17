@@ -35,7 +35,10 @@ use serde::Serialize;
 
 use super::ConstellationError;
 use super::capture::{CaptureLimits, CaptureRequest, capture_source, parse_artifact_file};
-use super::federation::{SourceChannel, SourceFailure, SourceRef, SourceSpec, source_id_for};
+use super::federation::{
+    QueryMode, SourceChannel, SourceFailure, SourceRef, SourceSpec, failure_is_fatal,
+    source_id_for, source_unavailable,
+};
 use super::snapshot::{ConstellationSnapshot, SnapshotSourceEntry};
 
 /// Hard bounds for one impact walk.
@@ -501,10 +504,16 @@ fn walk(graph: &SourceGraph, changed: &str, bounds: ImpactBounds, report: &mut I
 }
 
 /// Impact over live scope sources.
+///
+/// `mode` is the same required/optional contract [`super::federation`]
+/// applies: under [`QueryMode::Strict`] a failed required source aborts
+/// the walk with `source_unavailable` — a report built without it would
+/// read as complete; an optional failure lands in `failures`.
 pub async fn impact_live(
     specs: &[SourceSpec],
     changed: &str,
     bounds: ImpactBounds,
+    mode: QueryMode,
 ) -> Result<ImpactReport, ConstellationError> {
     let mut report = ImpactReport {
         changed: changed.to_string(),
@@ -525,7 +534,12 @@ pub async fn impact_live(
                 report.sources.push(graph.source.clone());
                 walk(&graph, changed, bounds, &mut report);
             }
-            Err(f) => report.failures.push(f),
+            Err(f) => {
+                if failure_is_fatal(spec, mode) {
+                    return Err(source_unavailable(&f));
+                }
+                report.failures.push(f);
+            }
         }
     }
     Ok(report)
@@ -633,9 +647,14 @@ mod tests {
     async fn structural_chain_propagates_informational_does_not() {
         let ws = ws();
         let specs = vec![SourceSpec::new(ws.path().join(".forgeplan"))];
-        let report = impact_live(&specs, "SEED-001", ImpactBounds::default())
-            .await
-            .unwrap();
+        let report = impact_live(
+            &specs,
+            "SEED-001",
+            ImpactBounds::default(),
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
         assert!(report.failures.is_empty(), "{:?}", report.failures);
 
         let by_key = |k: &str| {
@@ -676,9 +695,14 @@ mod tests {
     async fn absent_seed_is_named_not_empty() {
         let ws = ws();
         let specs = vec![SourceSpec::new(ws.path().join(".forgeplan"))];
-        let report = impact_live(&specs, "NOPE-000", ImpactBounds::default())
-            .await
-            .unwrap();
+        let report = impact_live(
+            &specs,
+            "NOPE-000",
+            ImpactBounds::default(),
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
         assert!(report.impacted.is_empty());
         assert_eq!(report.absent_in.len(), 1);
     }
@@ -712,11 +736,64 @@ mod tests {
                 max_depth: 2,
                 max_nodes: 256,
             },
+            QueryMode::Strict,
         )
         .await
         .unwrap();
         let max = report.impacted.iter().map(|n| n.depth).max().unwrap_or(0);
         assert_eq!(max, 2);
         assert!(report.stops.iter().any(|s| s.reason == "depth_limit"));
+    }
+
+    #[tokio::test]
+    async fn a_dead_required_source_fails_impact_before_any_report() {
+        // Same contract as federated_search: a required source's outage
+        // aborts the strict read — a report without it would name too few
+        // dependents and read as complete.
+        let ws = ws();
+        let specs = vec![
+            SourceSpec::new(ws.path().join(".forgeplan")),
+            SourceSpec::new("/definitely/not/a/workspace"),
+        ];
+        let err = impact_live(
+            &specs,
+            "SEED-001",
+            ImpactBounds::default(),
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ConstellationError::SourceUnavailable { .. }));
+
+        // Optional — or `AllowPartial` — keeps the honest-envelope path.
+        let specs = vec![
+            SourceSpec::new(ws.path().join(".forgeplan")),
+            SourceSpec::new_optional("/definitely/not/a/workspace"),
+        ];
+        let report = impact_live(
+            &specs,
+            "SEED-001",
+            ImpactBounds::default(),
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.failures.len(), 1);
+        assert!(!report.impacted.is_empty());
+
+        let specs = vec![
+            SourceSpec::new(ws.path().join(".forgeplan")),
+            SourceSpec::new("/definitely/not/a/workspace"),
+        ];
+        let report = impact_live(
+            &specs,
+            "SEED-001",
+            ImpactBounds::default(),
+            QueryMode::AllowPartial,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.failures.len(), 1);
+        assert!(!report.impacted.is_empty());
     }
 }

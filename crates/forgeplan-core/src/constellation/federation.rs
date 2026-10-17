@@ -22,21 +22,86 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::capture::{CaptureLimits, CaptureRequest, capture_source};
+use super::registry::SourceRole;
 use super::{ConstellationError, sha256_hex};
 
 /// A `.forgeplan` directory named by the caller — the unit of federation.
 ///
 /// The path must exist, canonicalize without crossing a symlink, and look
-/// like a Forgeplan workspace (at least one artifact directory). A path
-/// that fails any of those is a per-source diagnostic, not a fatal error.
+/// like a Forgeplan workspace (at least one artifact directory). Whether a
+/// path that fails any of those is a per-source diagnostic or a fatal
+/// error is the `role`/`mode` contract below: `Required` aborts a strict
+/// query, `Optional` lands in `failures`.
 #[derive(Debug, Clone)]
 pub struct SourceSpec {
     pub path: PathBuf,
+    /// Required or optional under the strict-query contract — carried
+    /// here, not only in the registry, because callers that skip the
+    /// registry (ad-hoc path lists, tests) must still pick a side.
+    /// `SourceSpec::new` keeps `Required`: an unnamed caller saying
+    /// "read this" is saying it matters.
+    pub role: SourceRole,
 }
 
 impl SourceSpec {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            role: SourceRole::Required,
+        }
+    }
+
+    /// An optional source — its failure is a `failures` entry on a
+    /// partial answer, never a query error.
+    pub fn new_optional(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            role: SourceRole::Optional,
+        }
+    }
+
+    /// Builder form for the registry-driven paths, which read the role
+    /// out of `RegistrySource` rather than choosing one.
+    pub fn with_role(mut self, role: SourceRole) -> Self {
+        self.role = role;
+        self
+    }
+}
+
+/// How a read treats a source that cannot answer.
+///
+/// `Strict` is the default on every surface: a `required` source that
+/// fails aborts the query with [`ConstellationError::SourceUnavailable`]
+/// — no envelope, so nothing reads like a complete answer. `AllowPartial`
+/// is the caller's explicit "take what answers" (`--allow-partial`,
+/// `strict: false` over MCP): it demotes every source to optional for
+/// that call, so failures land in `failures` and flip `partial`.
+///
+/// Snapshot reads never consult it — a lockfile's source set is frozen
+/// at pin time and `skipped` entries are already the honest report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueryMode {
+    /// Required sources must answer or the query fails.
+    #[default]
+    Strict,
+    /// Every source is treated as optional for this call.
+    AllowPartial,
+}
+
+/// Whether `failure` aborts the read outright under `mode` — the single
+/// place the "required source unavailable ⇒ strict error" rule lives, so
+/// every `*_live` surface enforces it identically.
+pub(crate) fn failure_is_fatal(spec: &SourceSpec, mode: QueryMode) -> bool {
+    mode == QueryMode::Strict && spec.role == SourceRole::Required
+}
+
+/// The strict-mode error a required source's failure maps to.
+pub(crate) fn source_unavailable(failure: &SourceFailure) -> ConstellationError {
+    ConstellationError::SourceUnavailable {
+        detail: format!(
+            "required source {} is unavailable: {}",
+            failure.path, failure.reason
+        ),
     }
 }
 
@@ -363,10 +428,17 @@ fn has_published_index(canonical: &Path) -> bool {
 /// Sources are queried in order, hits are interleaved as returned, and
 /// `partial` tells the caller some sources did not answer — the spec's
 /// rule that an unreadable source must not read as an empty corpus.
+///
+/// `mode` draws the line between "partial" and "refused": under
+/// [`QueryMode::Strict`] a failed `required` source aborts the whole
+/// search with [`ConstellationError::SourceUnavailable`]; under
+/// [`QueryMode::AllowPartial`] — or for an `optional` source in any mode —
+/// the failure is a named `failures` entry and the answer is `partial`.
 pub async fn federated_search(
     specs: &[SourceSpec],
     query: &str,
     limit: usize,
+    mode: QueryMode,
 ) -> Result<FederatedSearchOutcome, ConstellationError> {
     if limit == 0 {
         return Err(ConstellationError::Io {
@@ -380,6 +452,9 @@ pub async fn federated_search(
         let canonical = match resolve_source(spec) {
             Ok(c) => c,
             Err(f) => {
+                if failure_is_fatal(spec, mode) {
+                    return Err(source_unavailable(&f));
+                }
                 failures.push(f);
                 continue;
             }
@@ -400,10 +475,16 @@ pub async fn federated_search(
                     break;
                 }
             }
-            Err(e) => failures.push(SourceFailure {
-                path: spec.path.display().to_string(),
-                reason: format!("{e}"),
-            }),
+            Err(e) => {
+                let failure = SourceFailure {
+                    path: spec.path.display().to_string(),
+                    reason: format!("{e}"),
+                };
+                if failure_is_fatal(spec, mode) {
+                    return Err(source_unavailable(&failure));
+                }
+                failures.push(failure);
+            }
         }
     }
     let truncated = hits.len() > limit;
@@ -424,9 +505,16 @@ pub async fn federated_search(
 /// answer appear on `NotFound::failures` — on `Found` and `Ambiguous` the
 /// caller pairs this read with [`federated_search`]'s envelope, which is
 /// where per-source failures live.
+///
+/// Under [`QueryMode::Strict`] a failed `required` source aborts the get
+/// from inside the scan — before `Found`/`Ambiguous` is even considered —
+/// so a dead required source is reported even when another source holds
+/// the key. Hiding that outage behind a successful answer is exactly the
+/// "reads like a complete answer" case the contract forbids.
 pub async fn federated_get(
     specs: &[SourceSpec],
     key_or_id: &str,
+    mode: QueryMode,
 ) -> Result<FederatedGet, ConstellationError> {
     let mut found: Vec<(SourceRef, super::facade::PinnedArtifact)> = Vec::new();
     let mut failures = Vec::new();
@@ -434,6 +522,9 @@ pub async fn federated_get(
         let canonical = match resolve_source(spec) {
             Ok(c) => c,
             Err(f) => {
+                if failure_is_fatal(spec, mode) {
+                    return Err(source_unavailable(&f));
+                }
                 failures.push(f);
                 continue;
             }
@@ -452,10 +543,16 @@ pub async fn federated_get(
                     ));
                 }
                 Ok(None) => {}
-                Err(e) => failures.push(SourceFailure {
-                    path: spec.path.display().to_string(),
-                    reason: format!("{e}"),
-                }),
+                Err(e) => {
+                    let failure = SourceFailure {
+                        path: spec.path.display().to_string(),
+                        reason: format!("{e}"),
+                    };
+                    if failure_is_fatal(spec, mode) {
+                        return Err(source_unavailable(&failure));
+                    }
+                    failures.push(failure);
+                }
             }
         } else {
             match capture_source(&CaptureRequest::new(&canonical), CaptureLimits::default()).await {
@@ -491,10 +588,16 @@ pub async fn federated_get(
                         ));
                     }
                 }
-                Err(e) => failures.push(SourceFailure {
-                    path: spec.path.display().to_string(),
-                    reason: format!("{e}"),
-                }),
+                Err(e) => {
+                    let failure = SourceFailure {
+                        path: spec.path.display().to_string(),
+                        reason: format!("{e}"),
+                    };
+                    if failure_is_fatal(spec, mode) {
+                        return Err(source_unavailable(&failure));
+                    }
+                    failures.push(failure);
+                }
             }
         }
     }
@@ -590,6 +693,7 @@ mod tests {
             ],
             "sharedterm",
             10,
+            QueryMode::Strict,
         )
         .await
         .unwrap();
@@ -637,13 +741,16 @@ mod tests {
             &artifact("SPEC-001", "spec", "Spec", "needle"),
         )]);
 
+        // The dead source is optional — a required one would abort the
+        // strict read, which is the *other* arm of the contract.
         let outcome = federated_search(
             &[
                 SourceSpec::new(good.path()),
-                SourceSpec::new("/definitely/not/a/workspace"),
+                SourceSpec::new_optional("/definitely/not/a/workspace"),
             ],
             "needle",
             10,
+            QueryMode::Strict,
         )
         .await
         .unwrap();
@@ -672,6 +779,7 @@ mod tests {
         let result = federated_get(
             &[SourceSpec::new(a.path()), SourceSpec::new(b.path())],
             "ADR-001",
+            QueryMode::Strict,
         )
         .await
         .unwrap();
@@ -693,9 +801,13 @@ mod tests {
             &artifact("NOTE-001", "note", "Field note", "the exact bytes"),
         )]);
 
-        let result = federated_get(&[SourceSpec::new(tmp.path())], "NOTE-001")
-            .await
-            .unwrap();
+        let result = federated_get(
+            &[SourceSpec::new(tmp.path())],
+            "NOTE-001",
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
 
         match result {
             FederatedGet::Found(artifact) => {
@@ -716,7 +828,7 @@ mod tests {
         )]);
         publish(&tmp).await;
 
-        let result = federated_get(&[SourceSpec::new(tmp.path())], "ADR-020")
+        let result = federated_get(&[SourceSpec::new(tmp.path())], "ADR-020", QueryMode::Strict)
             .await
             .unwrap();
 
@@ -743,9 +855,16 @@ mod tests {
         let link = holder.path().join("alias-link");
         std::os::unix::fs::symlink(real.path(), &link).unwrap();
 
-        let outcome = federated_search(&[SourceSpec::new(&link)], "body", 10)
-            .await
-            .unwrap();
+        // Optional role — a refused symlink boundary is a named failure,
+        // not a fatal one, when the caller said the source may be absent.
+        let outcome = federated_search(
+            &[SourceSpec::new_optional(&link)],
+            "body",
+            10,
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
 
         assert!(outcome.partial);
         assert_eq!(outcome.failures.len(), 1);
@@ -817,5 +936,166 @@ mod tests {
 
         // Zero matches is an answer, not an error.
         assert!(specs_matching(&specs, "no-such-source").is_empty());
+    }
+
+    // -- Required/optional source roles ----------------------------------------
+
+    #[test]
+    fn source_spec_builders_pick_a_role() {
+        let required = SourceSpec::new("/anywhere");
+        assert_eq!(required.role, SourceRole::Required);
+        let optional = SourceSpec::new_optional("/anywhere");
+        assert_eq!(optional.role, SourceRole::Optional);
+        // `with_role` is how the registry applies a stored role.
+        let demoted = required.with_role(SourceRole::Optional);
+        assert_eq!(demoted.role, SourceRole::Optional);
+        assert_eq!(QueryMode::default(), QueryMode::Strict);
+    }
+
+    #[tokio::test]
+    async fn a_dead_required_source_fails_a_strict_search() {
+        // The spec's contract: a required source that cannot answer must
+        // abort the query — a partial envelope would read as complete.
+        let good = workspace_with(&[(
+            "specs",
+            "SPEC-001-a.md",
+            &artifact("SPEC-001", "spec", "Spec", "needle"),
+        )]);
+
+        let err = federated_search(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new("/definitely/not/a/workspace"),
+            ],
+            "needle",
+            10,
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err_code(&err), "source_unavailable");
+        match &err {
+            ConstellationError::SourceUnavailable { detail } => {
+                assert!(detail.contains("/definitely/not/a/workspace"), "{detail}");
+            }
+            other => panic!("expected SourceUnavailable, got {other:?}"),
+        }
+    }
+
+    fn err_code(e: &ConstellationError) -> &'static str {
+        e.code().as_str()
+    }
+
+    #[tokio::test]
+    async fn a_dead_optional_source_is_partial_not_fatal() {
+        let good = workspace_with(&[(
+            "specs",
+            "SPEC-001-a.md",
+            &artifact("SPEC-001", "spec", "Spec", "needle"),
+        )]);
+
+        let outcome = federated_search(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new_optional("/definitely/not/a/workspace"),
+            ],
+            "needle",
+            10,
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.partial);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.hits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn allow_partial_demotes_a_dead_required_source() {
+        // `--allow-partial` / `strict: false`: the caller explicitly
+        // accepts a partial answer, so even a required source's outage is
+        // reported in `failures` rather than aborting the read.
+        let good = workspace_with(&[(
+            "specs",
+            "SPEC-001-a.md",
+            &artifact("SPEC-001", "spec", "Spec", "needle"),
+        )]);
+
+        let outcome = federated_search(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new("/definitely/not/a/workspace"),
+            ],
+            "needle",
+            10,
+            QueryMode::AllowPartial,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.partial);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.hits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_reports_a_dead_required_source_even_when_another_answers() {
+        // The order matters: the dead required source sits *after* the
+        // one that holds the key, and the failure must still abort — the
+        // alternative is a `Found` that quietly conceals an outage.
+        let good = workspace_with(&[(
+            "notes",
+            "NOTE-001-field.md",
+            &artifact("NOTE-001", "note", "Field note", "the exact bytes"),
+        )]);
+
+        let err = federated_get(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new("/definitely/not/a/workspace"),
+            ],
+            "NOTE-001",
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap_err();
+
+        match err {
+            ConstellationError::SourceUnavailable { detail } => {
+                assert!(detail.contains("/definitely/not/a/workspace"), "{detail}");
+            }
+            other => panic!("expected SourceUnavailable, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_with_a_dead_optional_source_still_finds_the_key() {
+        let good = workspace_with(&[(
+            "notes",
+            "NOTE-001-field.md",
+            &artifact("NOTE-001", "note", "Field note", "the exact bytes"),
+        )]);
+
+        let result = federated_get(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new_optional("/definitely/not/a/workspace"),
+            ],
+            "NOTE-001",
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+
+        // On `Found` the envelope carries no failures — the optional
+        // outage was recorded for the search envelope, not this one.
+        match result {
+            FederatedGet::Found(artifact) => {
+                assert_eq!(artifact.canonical_key, "NOTE-001");
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
     }
 }

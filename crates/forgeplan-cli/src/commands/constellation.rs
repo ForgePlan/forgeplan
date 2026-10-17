@@ -18,10 +18,10 @@ use clap::Subcommand;
 use forgeplan_core::constellation::context_pack::{self, ContextPack};
 use forgeplan_core::constellation::export as exp;
 use forgeplan_core::constellation::facade;
-use forgeplan_core::constellation::federation::{self, FederatedGet};
+use forgeplan_core::constellation::federation::{self, FederatedGet, QueryMode};
 use forgeplan_core::constellation::graph::{self, GraphBounds, GraphOutcome};
 use forgeplan_core::constellation::impact::{self, ImpactBounds, ImpactReport, ImpactSeverity};
-use forgeplan_core::constellation::registry;
+use forgeplan_core::constellation::registry::{self, SourceRole};
 use forgeplan_core::constellation::snapshot as snap;
 use forgeplan_core::constellation::storage;
 
@@ -38,6 +38,10 @@ pub enum ConstellationAction {
         /// Constellation to add to (default: the active one)
         #[arg(long)]
         to: Option<String>,
+        /// Mark the source optional: a strict query tolerates its outage
+        /// as a named `failures` entry instead of refusing to answer
+        #[arg(long)]
+        optional: bool,
     },
     /// Remove a source from a constellation.
     Remove {
@@ -94,6 +98,10 @@ pub enum ConstellationAction {
         /// Read at a recorded snapshot instead of the live sources
         #[arg(long)]
         snapshot: Option<String>,
+        /// Tolerate dead sources: even a required source's outage becomes
+        /// a `failures` entry on a partial answer instead of an error
+        #[arg(long)]
+        allow_partial: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -105,6 +113,10 @@ pub enum ConstellationAction {
         /// Read at a recorded snapshot instead of the live sources
         #[arg(long)]
         snapshot: Option<String>,
+        /// Tolerate dead sources: even a required source's outage becomes
+        /// a `failures` entry on a partial answer instead of an error
+        #[arg(long)]
+        allow_partial: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -120,6 +132,10 @@ pub enum ConstellationAction {
         /// Pack at a recorded snapshot instead of the live sources
         #[arg(long)]
         snapshot: Option<String>,
+        /// Tolerate dead sources: even a required source's outage becomes
+        /// a `failures` entry on a partial answer instead of an error
+        #[arg(long)]
+        allow_partial: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -134,6 +150,10 @@ pub enum ConstellationAction {
         /// Read at a recorded snapshot instead of the live sources
         #[arg(long)]
         snapshot: Option<String>,
+        /// Tolerate dead sources: even a required source's outage becomes
+        /// a `failures` entry on a partial answer instead of an error
+        #[arg(long)]
+        allow_partial: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -152,6 +172,10 @@ pub enum ConstellationAction {
         /// Walk at a recorded snapshot instead of the live sources
         #[arg(long)]
         snapshot: Option<String>,
+        /// Tolerate dead sources: even a required source's outage becomes
+        /// a `failures` entry on a partial answer instead of an error
+        #[arg(long)]
+        allow_partial: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -166,6 +190,10 @@ pub enum ConstellationAction {
         /// Export at a recorded snapshot instead of the live sources
         #[arg(long)]
         snapshot: Option<String>,
+        /// Tolerate dead sources: even a required source's outage becomes
+        /// a `failures` record in the stream instead of an error
+        #[arg(long)]
+        allow_partial: bool,
         /// Write to this file instead of stdout
         #[arg(long)]
         out: Option<PathBuf>,
@@ -199,6 +227,18 @@ fn save_registry(path: &std::path::Path, registry: &registry::ConstellationRegis
     registry::save(path, registry).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// `--allow-partial` → the query mode the read runs under. Strict is the
+/// default: a required source that cannot answer fails the command with
+/// `source_unavailable` instead of producing a partial answer that would
+/// read as complete.
+fn query_mode(allow_partial: bool) -> QueryMode {
+    if allow_partial {
+        QueryMode::AllowPartial
+    } else {
+        QueryMode::Strict
+    }
+}
+
 /// The constellation `--to`/`--from`/`--of` names, or the active one.
 fn resolve_name(
     registry: &registry::ConstellationRegistry,
@@ -223,13 +263,18 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             println!("Created constellation '{name}' (active)");
             Ok(())
         }
-        ConstellationAction::Add { path, to } => {
+        ConstellationAction::Add { path, to, optional } => {
             let (reg_path, mut registry) = load_registry()?;
             let name = resolve_name(&registry, to.as_deref())?;
-            let canonical = registry::add_source(&mut registry, &name, &path)
+            let role = if optional {
+                SourceRole::Optional
+            } else {
+                SourceRole::Required
+            };
+            let canonical = registry::add_source(&mut registry, &name, &path, role)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             save_registry(&reg_path, &registry)?;
-            println!("Added {canonical} to '{name}'");
+            println!("Added {canonical} to '{name}' (role: {})", role.as_str());
             Ok(())
         }
         ConstellationAction::Remove { path, from } => {
@@ -373,7 +418,7 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                 return Ok(());
             }
             for source in &def.sources {
-                println!("{}", source.path);
+                println!("{:<8} {}", source.role.as_str(), source.path);
             }
             Ok(())
         }
@@ -399,7 +444,11 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                     .as_deref()
                     .map(|d| format!(" — {d}"))
                     .unwrap_or_default();
-                println!("{state:<8} [{constellation}] {}{detail}", health.path);
+                println!(
+                    "{state:<8} {:<8} [{constellation}] {}{detail}",
+                    health.role.as_str(),
+                    health.path
+                );
             }
             if problems > 0 {
                 println!("{problems} source(s) need attention.");
@@ -442,9 +491,11 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             query,
             limit,
             snapshot,
+            allow_partial,
             json,
         } => {
             let (_path, registry) = load_registry()?;
+            let mode = query_mode(allow_partial);
             let outcome = if let Some(id) = &snapshot {
                 let home = dirs::home_dir()
                     .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
@@ -462,7 +513,7 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                         "the active constellation has no sources — `forgeplan constellation add <path>`"
                     );
                 }
-                federation::federated_search(&specs, &query, limit).await?
+                federation::federated_search(&specs, &query, limit, mode).await?
             };
             if json {
                 print_search_json(&outcome)?;
@@ -471,8 +522,14 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             }
             Ok(())
         }
-        ConstellationAction::Get { id, snapshot, json } => {
+        ConstellationAction::Get {
+            id,
+            snapshot,
+            allow_partial,
+            json,
+        } => {
             let (_path, registry) = load_registry()?;
+            let mode = query_mode(allow_partial);
             // Stage 4 — qualified refs: `ADR-001@fp-ws-b` or
             // `ADR-001@src:b7d6…`. The qualifier narrows the source set
             // before reading; an unmatched qualifier is an error that
@@ -548,7 +605,7 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                     );
                 }
             }
-            let result = federation::federated_get(&specs, &id).await?;
+            let result = federation::federated_get(&specs, &id, mode).await?;
             match result {
                 FederatedGet::Found(artifact) => {
                     if json {
@@ -603,9 +660,11 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             task,
             budget,
             snapshot,
+            allow_partial,
             json,
         } => {
             let (_path, registry) = load_registry()?;
+            let mode = query_mode(allow_partial);
             let pack = if let Some(id) = &snapshot {
                 let home = dirs::home_dir()
                     .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
@@ -619,7 +678,7 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                 if specs.is_empty() {
                     anyhow::bail!("the active constellation has no sources");
                 }
-                context_pack::pack_live(&specs, &task, budget)
+                context_pack::pack_live(&specs, &task, budget, mode)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?
             };
@@ -633,9 +692,11 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
         ConstellationAction::Graph {
             limit,
             snapshot,
+            allow_partial,
             json,
         } => {
             let (_path, registry) = load_registry()?;
+            let mode = query_mode(allow_partial);
             let bounds = GraphBounds { limit };
             let outcome = if let Some(snap_id) = &snapshot {
                 let home = dirs::home_dir()
@@ -649,7 +710,7 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                 if specs.is_empty() {
                     anyhow::bail!("the active constellation has no sources");
                 }
-                graph::graph_live(&specs, bounds)
+                graph::graph_live(&specs, bounds, mode)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?
             };
@@ -665,9 +726,11 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             depth,
             max_nodes,
             snapshot,
+            allow_partial,
             json,
         } => {
             let (_path, registry) = load_registry()?;
+            let mode = query_mode(allow_partial);
             let bounds = ImpactBounds {
                 max_depth: depth,
                 max_nodes,
@@ -684,7 +747,7 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                 if specs.is_empty() {
                     anyhow::bail!("the active constellation has no sources");
                 }
-                impact::impact_live(&specs, &id, bounds)
+                impact::impact_live(&specs, &id, bounds, mode)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?
             };
@@ -698,6 +761,7 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
         ConstellationAction::Export {
             format,
             snapshot,
+            allow_partial,
             out,
         } => {
             let (scope, parsed) = if let Some(id) = &snapshot {
@@ -716,9 +780,10 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                     anyhow::bail!("the active constellation has no sources");
                 }
                 let name = registry.current.clone().unwrap_or_else(|| "active".into());
-                let (scope, _jsonl, parsed) = exp::export_live(&specs, &name)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let (scope, _jsonl, parsed) =
+                    exp::export_live(&specs, &name, query_mode(allow_partial))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
                 (scope, parsed)
             };
             let text = match format.as_str() {

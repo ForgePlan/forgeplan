@@ -25,7 +25,9 @@
 use serde::Serialize;
 
 use super::ConstellationError;
-use super::federation::{SourceFailure, SourceRef, SourceSpec};
+use super::federation::{
+    QueryMode, SourceFailure, SourceRef, SourceSpec, failure_is_fatal, source_unavailable,
+};
 use super::impact::{self, SourceGraph};
 use super::snapshot::ConstellationSnapshot;
 
@@ -159,9 +161,16 @@ fn absorb(graph: SourceGraph, bounds: GraphBounds, out: &mut GraphOutcome) {
 /// links otherwise — the same per-source rule `impact` and `federation`
 /// apply. A source that cannot answer is a named failure, never an
 /// empty piece of the graph.
+///
+/// `mode` applies the required/optional contract: a `required` source
+/// that fails aborts the strict read with `source_unavailable` instead
+/// of producing a graph that looks complete; `optional` — or
+/// [`QueryMode::AllowPartial`] — reports the failure in `failures` and
+/// flips `partial`.
 pub async fn graph_live(
     specs: &[SourceSpec],
     bounds: GraphBounds,
+    mode: QueryMode,
 ) -> Result<GraphOutcome, ConstellationError> {
     if bounds.limit == 0 {
         return Err(ConstellationError::Io {
@@ -180,7 +189,12 @@ pub async fn graph_live(
     for spec in specs {
         match impact::source_graph_live(spec).await {
             Ok(graph) => absorb(graph, bounds, &mut out),
-            Err(f) => out.failures.push(f),
+            Err(f) => {
+                if failure_is_fatal(spec, mode) {
+                    return Err(source_unavailable(&f));
+                }
+                out.failures.push(f);
+            }
         }
     }
     out.partial = !out.failures.is_empty();
@@ -309,7 +323,9 @@ mod tests {
             SourceSpec::new(pinned_ws.path().to_path_buf()),
             SourceSpec::new(markdown_ws.path().to_path_buf()),
         ];
-        let out = graph_live(&specs, GraphBounds::default()).await.unwrap();
+        let out = graph_live(&specs, GraphBounds::default(), QueryMode::Strict)
+            .await
+            .unwrap();
         assert!(out.failures.is_empty(), "{:?}", out.failures);
         assert!(!out.partial && !out.truncated);
         assert_eq!(out.sources.len(), 2);
@@ -382,7 +398,9 @@ mod tests {
             ("adrs", "C.md", &doc("ADR-003", "adr", &[])),
         ]);
         let specs = vec![SourceSpec::new(ws.path().to_path_buf())];
-        let out = graph_live(&specs, GraphBounds { limit: 2 }).await.unwrap();
+        let out = graph_live(&specs, GraphBounds { limit: 2 }, QueryMode::Strict)
+            .await
+            .unwrap();
         assert_eq!(out.nodes.len(), 2);
         assert!(out.truncated);
         assert_eq!(out.limit, 2);
@@ -394,15 +412,56 @@ mod tests {
     async fn unreadable_source_is_partial_not_empty() {
         let ws = workspace_with(&[("adrs", "A.md", &doc("ADR-001", "adr", &[]))]);
         let missing = ws.path().join("does-not-exist");
+        // Optional — a required dead source is the strict-error arm,
+        // covered by `dead_required_source_is_an_error_not_a_smaller_graph`.
         let specs = vec![
             SourceSpec::new(ws.path().to_path_buf()),
-            SourceSpec::new(missing.clone()),
+            SourceSpec::new_optional(missing.clone()),
         ];
-        let out = graph_live(&specs, GraphBounds::default()).await.unwrap();
+        let out = graph_live(&specs, GraphBounds::default(), QueryMode::Strict)
+            .await
+            .unwrap();
         assert!(out.partial);
         assert_eq!(out.failures.len(), 1);
         assert_eq!(out.failures[0].path, missing.display().to_string());
         assert_eq!(out.nodes.len(), 1, "the readable source still answers");
+    }
+
+    /// The role contract on the graph surface: a *required* dead source
+    /// aborts the strict read; `optional` or `AllowPartial` keeps the
+    /// named-failure envelope.
+    #[tokio::test]
+    async fn dead_required_source_is_an_error_not_a_smaller_graph() {
+        let ws = workspace_with(&[("adrs", "A.md", &doc("ADR-001", "adr", &[]))]);
+        let specs = vec![
+            SourceSpec::new(ws.path().to_path_buf()),
+            SourceSpec::new(ws.path().join("does-not-exist")),
+        ];
+        let err = graph_live(&specs, GraphBounds::default(), QueryMode::Strict)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ConstellationError::SourceUnavailable { .. }));
+
+        // Required + AllowPartial: the caller opted into a partial view.
+        let out = graph_live(&specs, GraphBounds::default(), QueryMode::AllowPartial)
+            .await
+            .unwrap();
+        assert!(out.partial);
+        assert_eq!(out.failures.len(), 1);
+        assert_eq!(out.nodes.len(), 1);
+
+        // Optional + Strict: same envelope — the role, not the path
+        // spelling, is what decides.
+        let specs = vec![
+            SourceSpec::new(ws.path().to_path_buf()),
+            SourceSpec::new_optional(ws.path().join("does-not-exist")),
+        ];
+        let out = graph_live(&specs, GraphBounds::default(), QueryMode::Strict)
+            .await
+            .unwrap();
+        assert!(out.partial);
+        assert_eq!(out.failures.len(), 1);
+        assert_eq!(out.nodes.len(), 1);
     }
 
     fn git_in(dir: &std::path::Path, args: &[&str]) {

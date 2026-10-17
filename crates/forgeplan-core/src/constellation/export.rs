@@ -26,7 +26,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::capture::{CaptureLimits, CaptureRequest, capture_source, parse_artifact_file};
-use super::federation::{SourceChannel, SourceFailure, SourceRef, SourceSpec, source_id_for};
+use super::federation::{
+    QueryMode, SourceChannel, SourceFailure, SourceRef, SourceSpec, failure_is_fatal,
+    source_id_for, source_unavailable,
+};
 use super::manifest::ProtocolMarker;
 use super::snapshot::ConstellationSnapshot;
 use super::{ConstellationError, sha256_hex};
@@ -597,16 +600,28 @@ pub fn parse_export(text: &str) -> Result<ParsedExport, ConstellationError> {
 }
 
 /// Export the live scope — every source on its honest channel.
+///
+/// `mode` applies the required/optional contract: a `required` source
+/// that cannot answer aborts the strict export with `source_unavailable`
+/// — a stream missing a required corpus would ship as if complete. An
+/// `optional` source, or any source under [`QueryMode::AllowPartial`],
+/// lands in `failures` and is recorded in the stream's failure line.
 pub async fn export_live(
     specs: &[SourceSpec],
     scope_name: &str,
+    mode: QueryMode,
 ) -> Result<(String, String, ParsedExport), ConstellationError> {
     let mut collected: Vec<(SourceRef, Vec<ExportRow>, Option<SnapshotOids>)> = Vec::new();
     let mut failures = Vec::new();
     for spec in specs {
         match collect_live(spec).await {
             Ok((source, docs)) => collected.push((source, docs, None)),
-            Err(f) => failures.push(f),
+            Err(f) => {
+                if failure_is_fatal(spec, mode) {
+                    return Err(source_unavailable(&f));
+                }
+                failures.push(f);
+            }
         }
     }
     let (sources, documents, edges) = to_records(&collected, failures.clone());
@@ -696,7 +711,9 @@ mod tests {
     async fn export_round_trips_provenance_and_hides_absolute_paths() {
         let ws = ws();
         let specs = vec![SourceSpec::new(ws.path().join(".forgeplan"))];
-        let (scope, jsonl, _) = export_live(&specs, "demo").await.unwrap();
+        let (scope, jsonl, _) = export_live(&specs, "demo", QueryMode::Strict)
+            .await
+            .unwrap();
 
         // Round trip: parse back, compare contract fields.
         let parsed = parse_export(&jsonl).unwrap();
@@ -732,7 +749,9 @@ mod tests {
     async fn scip_records_carry_symbols_and_provenance() {
         let ws = ws();
         let specs = vec![SourceSpec::new(ws.path().join(".forgeplan"))];
-        let (_, _, parsed) = export_live(&specs, "demo").await.unwrap();
+        let (_, _, parsed) = export_live(&specs, "demo", QueryMode::Strict)
+            .await
+            .unwrap();
         let scip = render_scip(
             "live:demo",
             &parsed.sources,
@@ -757,5 +776,39 @@ mod tests {
             err,
             ConstellationError::IndexProtocolMismatch { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn a_dead_required_source_refuses_the_export_stream() {
+        // Exporting without a required source would ship a stream that
+        // reads complete; strict mode refuses instead. An optional source
+        // — or an AllowPartial call — lands in the failures line, which
+        // `parse_export` reads back.
+        let ws = ws();
+        let specs = vec![
+            SourceSpec::new(ws.path().join(".forgeplan")),
+            SourceSpec::new("/definitely/not/a/workspace"),
+        ];
+        let err = export_live(&specs, "demo", QueryMode::Strict)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ConstellationError::SourceUnavailable { .. }));
+
+        let (_, jsonl, parsed) = export_live(&specs, "demo", QueryMode::AllowPartial)
+            .await
+            .unwrap();
+        assert_eq!(parsed.failures.len(), 1);
+        assert_eq!(parsed.documents.len(), 2);
+        assert!(jsonl.contains("\"failures\""), "{jsonl}");
+
+        let specs = vec![
+            SourceSpec::new(ws.path().join(".forgeplan")),
+            SourceSpec::new_optional("/definitely/not/a/workspace"),
+        ];
+        let (_, _, parsed) = export_live(&specs, "demo", QueryMode::Strict)
+            .await
+            .unwrap();
+        assert_eq!(parsed.failures.len(), 1);
+        assert_eq!(parsed.documents.len(), 2);
     }
 }

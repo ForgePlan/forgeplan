@@ -24,7 +24,9 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use super::capture::parse_artifact_file;
-use super::federation::{SourceChannel, SourceRef, SourceSpec};
+use super::federation::{
+    QueryMode, SourceChannel, SourceRef, SourceSpec, failure_is_fatal, source_unavailable,
+};
 use super::jobs::DEFAULT_BODY_PREFIX_CHARS;
 use super::snapshot::ConstellationSnapshot;
 use super::{ConstellationError, sha256_hex};
@@ -375,17 +377,29 @@ fn build_pack(
 }
 
 /// Pack a task's context from live scope sources.
+///
+/// `mode` applies the required/optional contract: a `required` source
+/// that cannot answer aborts the strict pack with `source_unavailable` —
+/// a pack assembled without it would silently under-rank what the task
+/// needed. An `optional` source, or any source under
+/// [`QueryMode::AllowPartial`], lands in `failures` instead.
 pub async fn pack_live(
     specs: &[SourceSpec],
     task: &str,
     budget_tokens: usize,
+    mode: QueryMode,
 ) -> Result<ContextPack, ConstellationError> {
     let mut sources = Vec::new();
     let mut failures = Vec::new();
     for spec in specs {
         match collect_live(spec).await {
             Ok(pair) => sources.push(pair),
-            Err(f) => failures.push(f),
+            Err(f) => {
+                if failure_is_fatal(spec, mode) {
+                    return Err(source_unavailable(&f));
+                }
+                failures.push(f);
+            }
         }
     }
     Ok(build_pack(task, budget_tokens, sources, failures))
@@ -462,7 +476,7 @@ Fonts, colors and spacing. No backend concerns here.
         let ws = ws_root();
         let specs = vec![SourceSpec::new(ws.path().join(".forgeplan"))];
 
-        let pack = pack_live(&specs, "auth token storage", 10_000)
+        let pack = pack_live(&specs, "auth token storage", 10_000, QueryMode::Strict)
             .await
             .unwrap();
         assert!(pack.failures.is_empty(), "{:?}", pack.failures);
@@ -488,7 +502,9 @@ Fonts, colors and spacing. No backend concerns here.
     async fn budget_excludes_units_and_reports_over_budget() {
         let ws = ws_root();
         let specs = vec![SourceSpec::new(ws.path().join(".forgeplan"))];
-        let pack = pack_live(&specs, "auth", 20).await.unwrap();
+        let pack = pack_live(&specs, "auth", 20, QueryMode::Strict)
+            .await
+            .unwrap();
         assert_eq!(pack.units.len(), 0);
         assert!(
             pack.omitted
@@ -502,10 +518,46 @@ Fonts, colors and spacing. No backend concerns here.
     async fn same_task_packs_identically_twice() {
         let ws = ws_root();
         let specs = vec![SourceSpec::new(ws.path().join(".forgeplan"))];
-        let p1 = pack_live(&specs, "auth", 10_000).await.unwrap();
-        let p2 = pack_live(&specs, "auth", 10_000).await.unwrap();
+        let p1 = pack_live(&specs, "auth", 10_000, QueryMode::Strict)
+            .await
+            .unwrap();
+        let p2 = pack_live(&specs, "auth", 10_000, QueryMode::Strict)
+            .await
+            .unwrap();
         let j1 = serde_json::to_string(&p1.units).unwrap();
         let j2 = serde_json::to_string(&p2.units).unwrap();
         assert_eq!(j1, j2);
+    }
+
+    #[tokio::test]
+    async fn a_dead_required_source_fails_the_pack_strictly() {
+        // A required source's outage must not produce a pack that reads
+        // as complete — the strict read errors; optional sources (or an
+        // explicit AllowPartial call) keep the failures envelope.
+        let ws = ws_root();
+        let specs = vec![
+            SourceSpec::new(ws.path().join(".forgeplan")),
+            SourceSpec::new("/definitely/not/a/workspace"),
+        ];
+        let err = pack_live(&specs, "auth", 10_000, QueryMode::Strict)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ConstellationError::SourceUnavailable { .. }));
+
+        let pack = pack_live(&specs, "auth", 10_000, QueryMode::AllowPartial)
+            .await
+            .unwrap();
+        assert_eq!(pack.failures.len(), 1);
+        assert_eq!(pack.units.len(), 1);
+
+        let specs = vec![
+            SourceSpec::new(ws.path().join(".forgeplan")),
+            SourceSpec::new_optional("/definitely/not/a/workspace"),
+        ];
+        let pack = pack_live(&specs, "auth", 10_000, QueryMode::Strict)
+            .await
+            .unwrap();
+        assert_eq!(pack.failures.len(), 1);
+        assert_eq!(pack.units.len(), 1);
     }
 }
