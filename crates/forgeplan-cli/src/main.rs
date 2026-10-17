@@ -907,6 +907,11 @@ enum Commands {
         /// never required for reads)
         #[arg(long)]
         auto_index: bool,
+        /// Server profile: `full` (default — all tools) or
+        /// `constellation-read` (stage-5 read profile — only scope/snapshot
+        /// handle reads; no write tools, no raw paths accepted)
+        #[arg(long, default_value = "full")]
+        profile: String,
     },
     /// MCP integration helpers (install config for AI agent clients)
     Mcp {
@@ -1548,13 +1553,17 @@ async fn main() -> anyhow::Result<()> {
         Commands::Watch { constellation } => commands::watch::run(constellation).await,
         Commands::Constellation { action } => commands::constellation::run(action).await,
         Commands::GitSync { since } => commands::git_sync::run(since.as_deref()).await,
-        Commands::Serve { auto_index } => {
-            let cwd = std::env::current_dir()?;
-            if auto_index {
-                commands::index::spawn_background(cwd.clone());
+        Commands::Serve { auto_index, profile } => match profile.as_str() {
+            "constellation-read" => forgeplan_mcp::constellation_read::run_read_stdio().await,
+            "full" => {
+                let cwd = std::env::current_dir()?;
+                if auto_index {
+                    commands::index::spawn_background(cwd.clone());
+                }
+                forgeplan_mcp::run_stdio(cwd).await
             }
-            forgeplan_mcp::run_stdio(cwd).await
-        }
+            other => anyhow::bail!("unknown serve profile {other:?} — `full` or `constellation-read`"),
+        },
         Commands::Mcp { action } => match action {
             McpAction::Serve => {
                 let cwd = std::env::current_dir()?;
