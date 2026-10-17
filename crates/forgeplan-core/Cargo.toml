@@ -69,6 +69,11 @@ sha2 = "0.11"
 # with the crate's features off. The `file-object-store` registration in
 # `src/object_store/providers.rs:300-303` is likewise unconditional.
 lance-io = { version = "=4.0.0", default-features = false }
+# tgrep-core is Microsoft's trigram index library (MIT). Pinned to a tag —
+# never a floating branch — because the index format is on-disk state: a
+# drifting format would read a foreign index as ours. The vendored `ignore`
+# path dep resolves inside the git checkout; `rusqlite` pins itself.
+tgrep-core = { git = "https://github.com/microsoft/tgrep", tag = "v1.2.2" }
 object_store = "=0.12.5"
 tracing = "0.1"
 rand = "0.9"

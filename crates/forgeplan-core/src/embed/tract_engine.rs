@@ -257,9 +257,8 @@ const REQUIRED_FILES: &[&str] = &[
 ///
 /// Takes over what fastembed did for us. Downloads land in the shared cache
 /// from [`super::resolve_cache_dir`], so the machine keeps one copy rather
-/// than one per project (PROB-089) and an existing fastembed-era cache is
-/// reused as-is — the on-disk layout is HuggingFace's either way, so a user
-/// who already has the model does not download it again.
+/// than one per project (PROB-089). An older cache remains untouched: callers
+/// may opt in to that path with `FORGEPLAN_MODEL_CACHE` or migrate it manually.
 #[cfg(feature = "hf-hub")]
 pub fn ensure_model(cache_dir: &Path, repo: &str, show_progress: bool) -> Result<PathBuf> {
     if let Some(existing) = find_snapshot(cache_dir, repo) {

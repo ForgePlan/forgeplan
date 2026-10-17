@@ -836,6 +836,12 @@ enum Commands {
         /// Deadline for the whole pass, in seconds
         #[arg(long, default_value = "300")]
         deadline_secs: u64,
+        /// List a read-only page of documents in the published generation
+        #[arg(long, conflicts_with = "embed_profile")]
+        list: bool,
+        /// First document to show with --list
+        #[arg(long, default_value = "0", requires = "list")]
+        offset: usize,
     },
     /// Generate embeddings for all artifacts (semantic search)
     Embed,
@@ -1495,7 +1501,15 @@ async fn main() -> anyhow::Result<()> {
         Commands::Index {
             embed_profile,
             deadline_secs,
-        } => commands::index::run(embed_profile, deadline_secs).await,
+            list,
+            offset,
+        } => {
+            if list {
+                commands::index::list(offset).await
+            } else {
+                commands::index::run(embed_profile, deadline_secs).await
+            }
+        }
         Commands::Embed => commands::embed::run().await,
         Commands::Log {
             id,

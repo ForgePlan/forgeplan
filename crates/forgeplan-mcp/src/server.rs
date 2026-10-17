@@ -10429,6 +10429,7 @@ impl ForgeplanServer {
                     return hinted_result(
                         &serde_json::json!({
                             "mode": "lexical",
+                            "via_trigram": outcome.via_trigram,
                             "semantic_available": true,
                             "semantic_error": e.to_string(),
                             "generation_id": outcome.generation_id,
@@ -10472,6 +10473,7 @@ impl ForgeplanServer {
         hinted_result(
             &serde_json::json!({
                 "mode": "lexical",
+                "via_trigram": outcome.via_trigram,
                 "semantic_available": false,
                 "generation_id": outcome.generation_id,
                 "pinned_artifacts_version": outcome.pinned_artifacts_version,

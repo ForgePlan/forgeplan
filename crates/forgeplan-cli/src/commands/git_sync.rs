@@ -51,7 +51,8 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
             "  No .forgeplan/ files changed since {}.",
             since_ref.chars().take(10).collect::<String>()
         );
-        // PRD-071 contract: nothing to sync — terminal state.
+        // The diff can be empty while a previous run left pending vectors.
+        reconcile_and_drain(&ws).await?;
         println!("\nDone.");
         return Ok(());
     }
@@ -255,7 +256,24 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
     // The capability takes the **canonical** workspace path: identity is
     // scheme-independent, and a non-canonical path would be a different
     // physical index and a different owner lock.
-    let canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
+    reconcile_and_drain(&ws).await?;
+
+    println!(
+        "\nGit sync complete: {} synced, {} deleted, {} errors (commit {})",
+        synced, deleted, errors, commit_hash
+    );
+
+    // PRD-071 contract: after a sync, run health to surface anything new.
+    let hints_vec = vec![
+        Hint::suggestion("Audit synced artifacts").with_action("forgeplan health".to_string()),
+    ];
+    print!("{}", hints::render_next_action_line(&hints_vec));
+
+    Ok(())
+}
+
+async fn reconcile_and_drain(ws: &std::path::Path) -> anyhow::Result<()> {
+    let canonical = ws.canonicalize().unwrap_or_else(|_| ws.to_path_buf());
     let capability =
         forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
             canonical,
@@ -274,26 +292,17 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 view.manifest.generation_id,
                 outcome.commits.len()
             );
+            crate::commands::index::drain_queue_if_cached(
+                &capability,
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+                "git-sync",
+            )
+            .await;
         }
         Err(e) => {
-            // Reported, not swallowed: the canonical sync succeeded and the
-            // index did not catch up, and the user must be able to tell that
-            // apart from a sync that did nothing because nothing changed.
-            eprintln!("  Warning: reconcile failed: {e}");
+            anyhow::bail!("canonical Git sync completed, but Constellation reconcile failed: {e}");
         }
     }
-
-    println!(
-        "\nGit sync complete: {} synced, {} deleted, {} errors (commit {})",
-        synced, deleted, errors, commit_hash
-    );
-
-    // PRD-071 contract: after a sync, run health to surface anything new.
-    let hints_vec = vec![
-        Hint::suggestion("Audit synced artifacts").with_action("forgeplan health".to_string()),
-    ];
-    print!("{}", hints::render_next_action_line(&hints_vec));
-
     Ok(())
 }
 

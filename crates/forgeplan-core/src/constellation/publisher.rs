@@ -1032,7 +1032,11 @@ pub fn stage_sequence(
             full_source_batch: commit.full_source_batch,
         });
     }
-    if merge_rows == 0 && commit.deletes > 0 && !delete_keys.is_empty() {
+    // Unchanged survivors make merge_rows nonzero in a deletion-only pass.
+    if (commit.creates == 0 && commit.updates == 0 || !commit.full_source_batch)
+        && commit.deletes > 0
+        && !delete_keys.is_empty()
+    {
         ops.push(CommitOp::DeleteByPredicate { keys: delete_keys });
     }
     // Relations come after the artifact ops: an edge must never be written

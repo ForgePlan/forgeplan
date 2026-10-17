@@ -963,6 +963,169 @@ impl OpenedTable {
             })
     }
 
+    /// Bounded scalar page for the per-document index inventory. Never loads
+    /// bodies or embeddings into memory just to display index coverage.
+    pub async fn artifact_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<arrow_array::RecordBatch>, ConstellationError> {
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase, Select};
+
+        let stream = self
+            .table
+            .query()
+            .select(Select::columns(&[
+                "canonical_key",
+                "id",
+                "relative_path",
+                "semantic_state",
+                "source_digest",
+            ]))
+            .offset(offset)
+            .limit(limit)
+            .execute()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("executing pinned inventory query failed: {e}"),
+            })?;
+        stream
+            .try_collect()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("reading pinned inventory query failed: {e}"),
+            })
+    }
+
+    /// Stream only scalar fields needed to supplement the source-byte index:
+    /// a canonical key may be derived from the filename rather than the
+    /// markdown body. Returning `None` on overflow makes the caller use the
+    /// complete pinned scan instead of silently omitting a matching row.
+    pub async fn lexical_metadata_paths(
+        &self,
+        needle: &str,
+        max_paths: usize,
+    ) -> Result<Option<Vec<String>>, ConstellationError> {
+        use arrow_array::{Array, StringArray};
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase, Select};
+
+        let mut stream = self
+            .table
+            .query()
+            .select(Select::columns(&[
+                "canonical_key",
+                "title",
+                "relative_path",
+            ]))
+            .execute()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("executing pinned lexical metadata query failed: {e}"),
+            })?;
+        let mut paths = Vec::new();
+        while let Some(batch) = stream
+            .try_next()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("reading pinned lexical metadata failed: {e}"),
+            })?
+        {
+            let read = |column: &str, row: usize| {
+                batch
+                    .column_by_name(column)
+                    .and_then(|value| value.as_any().downcast_ref::<StringArray>())
+                    .filter(|value| !value.is_null(row))
+                    .map(|value| value.value(row))
+            };
+            for row in 0..batch.num_rows() {
+                if (read("canonical_key", row)
+                    .is_some_and(|value| value.to_lowercase().contains(needle))
+                    || read("title", row)
+                        .is_some_and(|value| value.to_lowercase().contains(needle)))
+                    && let Some(path) = read("relative_path", row)
+                {
+                    paths.push(path.to_owned());
+                    if paths.len() >= max_paths {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        Ok(Some(paths))
+    }
+
+    /// Stream the lexical fallback without embedding vectors or accumulating
+    /// the entire corpus in memory. Stop when the caller has enough hits.
+    pub async fn scan_lexical_batches(
+        &self,
+        mut consume: impl FnMut(&arrow_array::RecordBatch) -> bool,
+    ) -> Result<(), ConstellationError> {
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase, Select};
+
+        let mut stream = self
+            .table
+            .query()
+            .select(Select::columns(&[
+                "canonical_key",
+                "title",
+                "body",
+                "id",
+                "kind",
+                "status",
+                "semantic_state",
+            ]))
+            .execute()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("executing pinned lexical scan failed: {e}"),
+            })?;
+        while let Some(batch) = stream
+            .try_next()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("reading pinned lexical scan failed: {e}"),
+            })?
+        {
+            if !consume(&batch) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Scalar scan restricted by `predicate` — the point-read half of the
+    /// pinned surface: fetch exactly the rows a trigram shortlist names,
+    /// instead of collecting the whole table.
+    ///
+    /// The predicate arrives already-escaped (`escape_predicate_literal`);
+    /// this method never builds SQL from raw caller strings.
+    pub async fn query_batches_where(
+        &self,
+        predicate: &str,
+    ) -> Result<Vec<arrow_array::RecordBatch>, ConstellationError> {
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase};
+
+        let stream = self
+            .table
+            .query()
+            .only_if(predicate)
+            .execute()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("executing the filtered pinned query failed: {e}"),
+            })?;
+        stream
+            .try_collect()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("reading the filtered pinned stream failed: {e}"),
+            })
+    }
+
     /// Cosine ANN over the `embedding` column at the pinned version, restricted
     /// by `predicate` before ranking (`only_if` is a prefilter).
     ///

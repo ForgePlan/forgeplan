@@ -111,10 +111,12 @@ weights. `forgeplan setup` downloads them with a progress bar and, on a
 free from cargo-dist. Both steps are idempotent; `--skip-model` and
 `--skip-alias` opt out of either.
 
-Weights are cached in the platform cache directory
-(`~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on
-Linux) — shared across all your projects, not one copy per repository. Override
-with `FORGEPLAN_MODEL_CACHE`; `HF_HOME`, if set, takes precedence over both.
+Weights are cached in `~/.forgeplan/models` on macOS, Linux, and Windows
+(`%USERPROFILE%\.forgeplan\models`) — shared across all projects and binary
+versions. Override with `FORGEPLAN_MODEL_CACHE` if you use another volume.
+Existing models in an older platform cache are not moved automatically: move
+them to the new directory, or temporarily point `FORGEPLAN_MODEL_CACHE` at
+the old location. `HF_HOME` does not override the tract engine's cache.
 
 `forgeplan init` offers the same download interactively. It never downloads
 under `-y`, so agents and CI runners cannot pull gigabytes by accident; pass

@@ -1238,6 +1238,10 @@ const GITIGNORE_DRIFT_PATTERNS: &[(&str, &str)] = &[
         "LanceDB index — derived state, rebuild via `forgeplan scan-import`",
     ),
     (
+        ".forgeplan/tgrep/",
+        "trigram lexical side-index — derived state, rebuilt by index maintenance",
+    ),
+    (
         ".forgeplan/.fastembed_cache/",
         "BGE-M3 embedding model cache — 2.1 GB measured, per-machine",
     ),

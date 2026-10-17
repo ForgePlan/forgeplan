@@ -21,6 +21,7 @@
 //! | [`storage`] | Active table URIs on the mandatory `file-object-store` route, and the mapping back to their physical root |
 //! | [`lance_tables`] | Arrow schemas for the two active tables, wrapped table creation through `NativeTable::create_empty`, conditional restore, and pinned reads |
 //! | [`facade`] | The narrow surface CLI and MCP call; resolver policy and the maintain capability token |
+//! | [`federation`] | Stage 1 — reads over explicitly named `.forgeplan` sources; path-only resolution, markdown fallback channel, per-source versioned envelope |
 //! | [`DurabilityTrackingStore`] | The `ObjectStore` + `WrappingObjectStore` that records Lance's writes, plus the shared [`StageTracker`] and its [`WriteSet`] |
 //! | `owner` (private) | Physical owner: index identity, the stable sibling owner lock, and the RAII guard |
 //!
@@ -45,8 +46,10 @@ use sha2::{Digest, Sha256};
 
 pub mod capture;
 pub mod facade;
+pub mod federation;
 pub mod jobs;
 pub mod lance_tables;
+pub mod lexical_index;
 pub mod manifest;
 pub mod publisher;
 pub mod reconciler;

@@ -22,6 +22,34 @@ use forgeplan_core::workspace;
 
 use crate::ui;
 
+/// Display one page from the published projection without running maintenance.
+pub async fn list(offset: usize) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let canonical = ws.canonicalize()?;
+    let capability = MaintainCapability::for_strict_maintenance(canonical);
+    let page = facade::list_pinned_documents(capability.index_root(), offset, 100).await?;
+    println!(
+        "Published generation {} (artifacts@v{})",
+        page.generation_id, page.pinned_artifacts_version
+    );
+    for document in &page.documents {
+        println!(
+            "{:<24} {:<12} {}",
+            document.canonical_key,
+            document.semantic_state.as_deref().unwrap_or("unknown"),
+            document.relative_path
+        );
+    }
+    if page.has_more {
+        println!("Next: forgeplan index --list --offset {}", offset + 100);
+    } else {
+        println!("Done.");
+    }
+    Ok(())
+}
+
 /// One maintenance pass plus an optional queue drain.
 pub async fn run(embed_profile: Option<String>, deadline_secs: u64) -> Result<()> {
     let cwd = std::env::current_dir()?;
@@ -191,6 +219,26 @@ pub(crate) async fn drain_queue_if_configured(
     deadline: std::time::Instant,
     label: &str,
 ) {
+    drain_queue_with_config(capability, deadline, label, false).await;
+}
+
+/// Hook path: never download a model while Git is waiting for the hook.
+#[cfg(feature = "semantic-search")]
+pub(crate) async fn drain_queue_if_cached(
+    capability: &MaintainCapability,
+    deadline: std::time::Instant,
+    label: &str,
+) {
+    drain_queue_with_config(capability, deadline, label, true).await;
+}
+
+#[cfg(feature = "semantic-search")]
+async fn drain_queue_with_config(
+    capability: &MaintainCapability,
+    deadline: std::time::Instant,
+    label: &str,
+    cached_only: bool,
+) {
     use forgeplan_core::embed::Embedder;
 
     let config = crate::commands::common::config().unwrap_or_default();
@@ -223,7 +271,12 @@ pub(crate) async fn drain_queue_if_configured(
             return;
         }
     };
-    let Ok(mut embedder) = Embedder::with_model(&model) else {
+    let opened = if cached_only {
+        Embedder::with_cached_model(&model)
+    } else {
+        Embedder::with_model(&model)
+    };
+    let Ok(mut embedder) = opened else {
         eprintln!("{label}: embedding model `{model}` unavailable — queue skipped");
         return;
     };
@@ -256,6 +309,14 @@ pub(crate) async fn drain_queue_if_configured(
 /// No-op without the `semantic-search` feature — same call sites compile.
 #[cfg(not(feature = "semantic-search"))]
 pub(crate) async fn drain_queue_if_configured(
+    _capability: &MaintainCapability,
+    _deadline: std::time::Instant,
+    _label: &str,
+) {
+}
+
+#[cfg(not(feature = "semantic-search"))]
+pub(crate) async fn drain_queue_if_cached(
     _capability: &MaintainCapability,
     _deadline: std::time::Instant,
     _label: &str,

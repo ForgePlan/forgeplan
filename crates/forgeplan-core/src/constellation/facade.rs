@@ -524,6 +524,12 @@ pub struct ReconcileOutcome {
     /// Head versions **after** any conditional restore. The pre-restore pair
     /// is never what gets published.
     pub head_versions: super::manifest::TableVersions,
+    /// What the trigram side-index did this pass: `Bound` means it was rebuilt
+    /// from the published generation's exact bytes, `Drifted` means a source
+    /// moved mid-build and reads must fall back, `Missing`/`Stale` before a
+    /// heal attempt stay `None`-adjacent — the field is `None` only when the
+    /// pass never reached the point of tagging.
+    pub lexical_index: Option<super::lexical_index::LexicalRebind>,
 }
 
 /// A published generation, as the caller receives it.
@@ -531,6 +537,30 @@ pub struct ReconcileOutcome {
 pub struct PublishedReadView {
     pub descriptor: CurrentDescriptor,
     pub manifest: Arc<GenerationManifest>,
+}
+
+/// Bind the trigram side-index to `manifest`'s generation.
+///
+/// Skips the rebuild entirely when the existing tag already names this
+/// generation and digest — the common case for no-op passes. A rebuild
+/// failure degrades to `None` in the outcome rather than failing the pass:
+/// the pinned scan answers the same queries, slower.
+fn rebind_lexical_index(
+    workspace: &Path,
+    manifest: &GenerationManifest,
+    entries: &[super::capture::SourceEntry],
+) -> Option<super::lexical_index::LexicalRebind> {
+    use super::lexical_index::{LexicalBinding, binding_for, rebuild_for_generation};
+    if binding_for(workspace, manifest) == LexicalBinding::Bound {
+        return None;
+    }
+    rebuild_for_generation(
+        workspace,
+        &manifest.generation_id,
+        &manifest.source_set_digest,
+        entries,
+    )
+    .ok()
 }
 
 /// Run one steady-state maintenance pass.
@@ -817,6 +847,7 @@ pub async fn maintain_index(
     // identical manifest under a new id on every pass would churn the
     // generations directory for no benefit.
     if sequence.is_empty() {
+        let lexical_index = rebind_lexical_index(&workspace, &published, &captured.entries);
         return Ok((
             PublishedReadView {
                 descriptor,
@@ -829,6 +860,7 @@ pub async fn maintain_index(
                 commits,
                 verification: None,
                 head_versions,
+                lexical_index,
             },
         ));
     }
@@ -874,6 +906,11 @@ pub async fn maintain_index(
         })?;
     let new_manifest = Arc::new(super::storage::read_manifest(&index_root, &new_descriptor)?);
 
+    // Rebuild + re-verify the trigram index against the bytes this
+    // generation pinned — post-publish, so a crash mid-build can at worst
+    // leave an untagged index, which every read treats as absent.
+    let lexical_index = rebind_lexical_index(&workspace, &new_manifest, &captured.entries);
+
     Ok((
         PublishedReadView {
             descriptor: new_descriptor,
@@ -886,6 +923,7 @@ pub async fn maintain_index(
             commits,
             verification,
             head_versions,
+            lexical_index,
         },
     ))
 }
@@ -1122,7 +1160,87 @@ pub struct LexicalSearchOutcome {
     pub pinned_artifacts_version: u64,
     pub rows_scanned: usize,
     pub truncated: bool,
+    /// `true` when hits came through the bound trigram index; `false` when
+    /// the pinned table was scanned row by row. Both answer at the same
+    /// generation — the flag only reports which path produced them.
+    pub via_trigram: bool,
     pub hits: Vec<LexicalHit>,
+}
+
+/// One document in the published artifacts table (not a live filesystem scan).
+#[derive(Debug, serde::Serialize)]
+pub struct IndexedDocument {
+    pub canonical_key: String,
+    pub display_id: Option<String>,
+    pub relative_path: String,
+    pub source_digest: String,
+    pub semantic_state: Option<String>,
+}
+
+/// One bounded inventory page and the generation it was read from.
+#[derive(Debug)]
+pub struct IndexedDocumentPage {
+    pub generation_id: String,
+    pub pinned_artifacts_version: u64,
+    pub documents: Vec<IndexedDocument>,
+    pub has_more: bool,
+}
+
+/// List documents at CURRENT's pinned table version without opening a writer.
+pub async fn list_pinned_documents(
+    index_root: &Path,
+    offset: usize,
+    limit: usize,
+) -> Result<IndexedDocumentPage, ConstellationError> {
+    use arrow_array::{Array, StringArray};
+
+    if !(1..=100).contains(&limit) {
+        return Err(ConstellationError::Io {
+            detail: "inventory limit must be between 1 and 100".to_string(),
+        });
+    }
+    let descriptor = super::storage::read_current(index_root)?.ok_or_else(|| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: "no published generation to list".to_string(),
+        }
+    })?;
+    let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let marker = marker_for(&manifest);
+    let table = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "artifacts",
+        manifest.table_versions.artifacts,
+    )
+    .await?;
+    let batches = table.artifact_page(offset, limit + 1).await?;
+    let mut documents = Vec::new();
+    for batch in &batches {
+        let value = |col: &str, row: usize| {
+            batch
+                .column_by_name(col)
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .filter(|c| !c.is_null(row))
+                .map(|c| c.value(row).to_string())
+        };
+        for row in 0..batch.num_rows() {
+            documents.push(IndexedDocument {
+                canonical_key: value("canonical_key", row).unwrap_or_default(),
+                display_id: value("id", row),
+                relative_path: value("relative_path", row).unwrap_or_default(),
+                source_digest: value("source_digest", row).unwrap_or_default(),
+                semantic_state: value("semantic_state", row),
+            });
+        }
+    }
+    let has_more = documents.len() > limit;
+    documents.truncate(limit);
+    Ok(IndexedDocumentPage {
+        generation_id: manifest.generation_id,
+        pinned_artifacts_version: manifest.table_versions.artifacts,
+        documents,
+        has_more,
+    })
 }
 
 /// Case-insensitive substring search over the artifacts table **at the
@@ -1169,8 +1287,6 @@ pub async fn search_pinned_lexical(
         manifest.table_versions.artifacts,
     )
     .await?;
-    let batches = table.query_batches().await?;
-
     let read_str = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<String> {
         use arrow_array::Array;
         let column = batch.column_by_name(col)?;
@@ -1187,34 +1303,130 @@ pub async fn search_pinned_lexical(
             .map(|a| a.value(row).to_string())
     };
 
-    let needle = query.to_lowercase();
-    let mut hits: Vec<LexicalHit> = Vec::new();
-    let mut rows_scanned = 0usize;
-    'outer: for batch in &batches {
-        for row in 0..batch.num_rows() {
-            rows_scanned += 1;
-            let key = read_str(batch, "canonical_key", row).unwrap_or_default();
-            let title = read_str(batch, "title", row).unwrap_or_default();
-            let body = read_str(batch, "body", row).unwrap_or_default();
-            if !key.to_lowercase().contains(&needle)
-                && !title.to_lowercase().contains(&needle)
-                && !body.to_lowercase().contains(&needle)
+    // Source-byte trigrams cannot see keys derived from filenames. Supplement
+    // them with a streamed metadata scan of the same pinned table; on any
+    // incomplete or oversized shortlist, the full pinned scan remains safe.
+    const SHORTLIST_CAP: usize = 128;
+    if let Some(forgeplan_dir) = index_root.parent()
+        && super::lexical_index::binding_for(forgeplan_dir, &manifest)
+            == super::lexical_index::LexicalBinding::Bound
+        && query.is_ascii()
+        && let Ok(Some(source_paths)) =
+            super::lexical_index::query_paths(forgeplan_dir, query, SHORTLIST_CAP)
+        && source_paths.len() < SHORTLIST_CAP
+        && let Ok(Some(metadata_paths)) = table
+            .lexical_metadata_paths(&query.to_lowercase(), SHORTLIST_CAP)
+            .await
+    {
+        let paths: std::collections::BTreeSet<_> =
+            source_paths.into_iter().chain(metadata_paths).collect();
+        if paths.len() < SHORTLIST_CAP {
+            if paths.is_empty()
+                && super::lexical_index::binding_for(forgeplan_dir, &manifest)
+                    == super::lexical_index::LexicalBinding::Bound
             {
-                continue;
+                return Ok(LexicalSearchOutcome {
+                    generation_id: manifest.generation_id.clone(),
+                    pinned_artifacts_version: manifest.table_versions.artifacts,
+                    rows_scanned: 0,
+                    truncated: false,
+                    hits: Vec::new(),
+                    via_trigram: true,
+                });
             }
-            hits.push(LexicalHit {
-                canonical_key: key,
-                display_id: read_str(batch, "id", row),
-                title,
-                kind: read_str(batch, "kind", row),
-                status: read_str(batch, "status", row),
-                semantic_state: read_str(batch, "semantic_state", row),
-            });
-            if hits.len() >= limit {
-                break 'outer;
+            if !paths.is_empty() {
+                let predicate = format!(
+                    "relative_path IN ({})",
+                    paths
+                        .iter()
+                        .map(|p| super::publisher::escape_predicate_literal(p))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                match table.query_batches_where(&predicate).await {
+                    Ok(batches) => {
+                        let needle = query.to_lowercase();
+                        let mut hits: Vec<LexicalHit> = Vec::new();
+                        let mut rows_scanned = 0;
+                        'candidates: for batch in &batches {
+                            for row in 0..batch.num_rows() {
+                                rows_scanned += 1;
+                                let key = read_str(batch, "canonical_key", row).unwrap_or_default();
+                                let title = read_str(batch, "title", row).unwrap_or_default();
+                                let body = read_str(batch, "body", row).unwrap_or_default();
+                                if !key.to_lowercase().contains(&needle)
+                                    && !title.to_lowercase().contains(&needle)
+                                    && !body.to_lowercase().contains(&needle)
+                                {
+                                    continue;
+                                }
+                                hits.push(LexicalHit {
+                                    canonical_key: key,
+                                    display_id: read_str(batch, "id", row),
+                                    title,
+                                    kind: read_str(batch, "kind", row),
+                                    status: read_str(batch, "status", row),
+                                    semantic_state: read_str(batch, "semantic_state", row),
+                                });
+                                if hits.len() >= limit {
+                                    break 'candidates;
+                                }
+                            }
+                        }
+                        if super::lexical_index::binding_for(forgeplan_dir, &manifest)
+                            == super::lexical_index::LexicalBinding::Bound
+                        {
+                            return Ok(LexicalSearchOutcome {
+                                generation_id: manifest.generation_id.clone(),
+                                pinned_artifacts_version: manifest.table_versions.artifacts,
+                                rows_scanned,
+                                truncated: hits.len() >= limit,
+                                hits,
+                                via_trigram: true,
+                            });
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        "trigram shortlist join failed; falling back to the pinned scan: {e}"
+                    ),
+                }
             }
         }
     }
+
+    // Stream the pinned fallback one batch at a time; a failed side-index
+    // must not force every body and embedding into memory for one query.
+    let needle = query.to_lowercase();
+    let mut hits: Vec<LexicalHit> = Vec::new();
+    let mut rows_scanned = 0usize;
+    table
+        .scan_lexical_batches(|batch| {
+            for row in 0..batch.num_rows() {
+                rows_scanned += 1;
+                let key = read_str(batch, "canonical_key", row).unwrap_or_default();
+                let title = read_str(batch, "title", row).unwrap_or_default();
+                let body = read_str(batch, "body", row).unwrap_or_default();
+                if !key.to_lowercase().contains(&needle)
+                    && !title.to_lowercase().contains(&needle)
+                    && !body.to_lowercase().contains(&needle)
+                {
+                    continue;
+                }
+                hits.push(LexicalHit {
+                    canonical_key: key,
+                    display_id: read_str(batch, "id", row),
+                    title,
+                    kind: read_str(batch, "kind", row),
+                    status: read_str(batch, "status", row),
+                    semantic_state: read_str(batch, "semantic_state", row),
+                });
+                if hits.len() >= limit {
+                    return false;
+                }
+            }
+            true
+        })
+        .await?;
 
     Ok(LexicalSearchOutcome {
         generation_id: manifest.generation_id.clone(),
@@ -1222,6 +1434,7 @@ pub async fn search_pinned_lexical(
         rows_scanned,
         truncated: hits.len() >= limit,
         hits,
+        via_trigram: false,
     })
 }
 
@@ -2021,5 +2234,181 @@ mod tests {
             "an unchanged source must not produce commits: {:?}",
             second.commits
         );
+
+        // The trigram side-index must be bound to this generation, and the
+        // lexical search must answer through it — `via_trigram: false` would
+        // mean the fast path silently fell back to the row scan.
+        assert!(
+            matches!(
+                outcome.lexical_index,
+                Some(crate::constellation::lexical_index::LexicalRebind::Bound { .. })
+            ),
+            "the lexical index should be bound after publish: {:?}",
+            outcome.lexical_index
+        );
+        let found = search_pinned_lexical(capability.index_root(), "storage", 10)
+            .await
+            .unwrap();
+        assert!(
+            found.via_trigram,
+            "the bound trigram index must serve the query"
+        );
+        assert_eq!(found.hits.len(), 1);
+        assert_eq!(found.hits[0].canonical_key, "ADR-002");
+    }
+
+    #[tokio::test]
+    async fn inventory_stays_pinned_and_tracks_updates_and_deletes() {
+        resume_admission();
+        let tmp = linked_workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root.clone());
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let first = list_pinned_documents(capability.index_root(), 0, 100)
+            .await
+            .unwrap();
+        assert_eq!(first.documents.len(), 2);
+        assert!(
+            first
+                .documents
+                .iter()
+                .all(|row| !row.source_digest.is_empty())
+        );
+        let adr = root.join("adrs/ADR-002-storage.md");
+        std::fs::write(
+            &adr,
+            "---\nid: ADR-002\nkind: adr\nstatus: active\ntitle: New storage\n---\n\nNew body.\n",
+        )
+        .unwrap();
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let updated = list_pinned_documents(capability.index_root(), 0, 100)
+            .await
+            .unwrap();
+        assert_ne!(first.generation_id, updated.generation_id);
+        let digest = |page: &IndexedDocumentPage| {
+            page.documents
+                .iter()
+                .find(|row| row.canonical_key == "ADR-002")
+                .unwrap()
+                .source_digest
+                .clone()
+        };
+        assert_ne!(digest(&first), digest(&updated));
+        std::fs::remove_file(&adr).unwrap();
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let after_delete = list_pinned_documents(capability.index_root(), 0, 100)
+            .await
+            .unwrap();
+        assert_eq!(after_delete.documents.len(), 1);
+        assert_eq!(after_delete.documents[0].canonical_key, "PRD-001");
+        assert_eq!(
+            after_delete.documents[0].source_digest,
+            first
+                .documents
+                .iter()
+                .find(|row| row.canonical_key == "PRD-001")
+                .unwrap()
+                .source_digest
+        );
+    }
+
+    #[tokio::test]
+    async fn incremental_publication_matches_a_fresh_build_after_mixed_changes() {
+        resume_admission();
+        let incremental = linked_workspace();
+        let fresh = linked_workspace();
+        let apply_final_state = |root: &Path| {
+            std::fs::remove_file(root.join("adrs/ADR-002-storage.md")).unwrap();
+            std::fs::rename(
+                root.join("prds/PRD-001-auth.md"),
+                root.join("prds/PRD-001-renamed.md"),
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("prds/PRD-001-renamed.md"),
+                "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth revised\n---\n\nChanged.\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("specs/SPEC-002-new.md"),
+                "---\nid: SPEC-002\nkind: spec\nstatus: draft\ntitle: New\n---\n\nNew document.\n",
+            )
+            .unwrap();
+        };
+        let incremental_cap =
+            MaintainCapability::for_strict_maintenance(incremental.path().canonicalize().unwrap());
+        let fresh_cap =
+            MaintainCapability::for_strict_maintenance(fresh.path().canonicalize().unwrap());
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+        maintain_index(&incremental_cap, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        apply_final_state(incremental.path());
+        apply_final_state(fresh.path());
+        let (updated, _) = maintain_index(&incremental_cap, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let (rebuilt, _) = maintain_index(&fresh_cap, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let page = |rows: Vec<IndexedDocument>| {
+            rows.into_iter()
+                .map(|row| (row.canonical_key, row.relative_path, row.source_digest))
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let delta_rows = list_pinned_documents(incremental_cap.index_root(), 0, 100)
+            .await
+            .unwrap()
+            .documents;
+        let fresh_rows = list_pinned_documents(fresh_cap.index_root(), 0, 100)
+            .await
+            .unwrap()
+            .documents;
+        assert_eq!(page(delta_rows), page(fresh_rows));
+        assert_eq!(updated.manifest.coverage, rebuilt.manifest.coverage);
+    }
+
+    #[tokio::test]
+    async fn lexical_shortlist_includes_derived_keys_and_falls_back_when_stale() {
+        resume_admission();
+        let tmp = linked_workspace();
+        std::fs::write(
+            tmp.path().join("specs/SPEC-003-filenameonly.md"),
+            "---\nkind: spec\nstatus: draft\ntitle: Unrelated\n---\n\nNothing about its name.\n",
+        )
+        .unwrap();
+        let capability =
+            MaintainCapability::for_strict_maintenance(tmp.path().canonicalize().unwrap());
+        maintain_index(
+            &capability,
+            CaptureLimits::default(),
+            std::time::Instant::now() + std::time::Duration::from_secs(120),
+        )
+        .await
+        .unwrap();
+        let result = search_pinned_lexical(capability.index_root(), "filenameonly", 10)
+            .await
+            .unwrap();
+        assert!(result.via_trigram);
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].canonical_key, "SPEC-003-filenameonly");
+
+        std::fs::write(
+            tmp.path().join("tgrep/generation.json"),
+            r#"{"generation_id":"stale","source_set_digest":"stale","built_at":"now"}"#,
+        )
+        .unwrap();
+        let fallback = search_pinned_lexical(capability.index_root(), "filenameonly", 10)
+            .await
+            .unwrap();
+        assert!(!fallback.via_trigram);
+        assert_eq!(fallback.hits[0].canonical_key, "SPEC-003-filenameonly");
     }
 }
