@@ -1,0 +1,32 @@
+# Cargo configuration for the ForgePlan workspace.
+#
+# Deliberately contains aliases only — no build settings.
+#
+# In particular, `rustc-wrapper = "sccache"` is NOT set here. The CI workflow
+# (.github/workflows/ci.yml) enables sccache through RUSTC_WRAPPER at runtime,
+# and only after probing that the GHA cache backend is actually reachable, so
+# that a third-party outage degrades the run instead of breaking it (see the
+# "Probe sccache backend" step). Declaring the wrapper in this file would make
+# sccache mandatory and defeat that fallback.
+#
+# Locally, sccache is also left off on purpose: it requires rustc incremental
+# compilation to be disabled, which would slow down the edit-compile loop that
+# incremental builds make fast. Enable it per-invocation when a cold build is
+# expected (branch switch, post-`cargo clean`):
+#
+#     RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo build
+
+[alias]
+# Type-check the whole workspace without codegen — the fastest feedback loop.
+c = "check --workspace --all-targets"
+
+# Run tests via nextest, matching what CI does.
+t = "nextest run --workspace"
+tt = "nextest run --workspace --all-targets"
+
+# Lint with the same scope CI uses.
+l = "clippy --workspace --all-targets"
+
+# Show where build time actually goes — writes an HTML report to
+# target/cargo-timings/. Use this before optimizing anything else.
+timings = "build --workspace --timings"

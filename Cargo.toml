@@ -50,6 +50,20 @@ globset = "0.4"
 # `collect2: fatal error: ld terminated with signal 7 [Bus error]`.
 debug = "line-tables-only"
 
+# Build *dependencies* with light optimization while keeping workspace crates
+# at opt-level = 0.
+#
+# Dependencies are compiled once and then cached; workspace crates are
+# recompiled on every edit. Optimizing only the former speeds up test
+# execution (notably the lancedb/arrow/tokio tree) without slowing down the
+# edit-compile loop.
+#
+# opt-level = 1 rather than 3 on purpose: it captures most of the runtime win
+# while keeping object-file size — and therefore linker memory pressure —
+# close to unoptimized. This matters because of the `ld` OOM documented above.
+[profile.dev.package."*"]
+opt-level = 1
+
 [profile.release]
 strip = true          # strip debug symbols (-16%)
 lto = "thin"          # link-time optimization (smaller + faster)
