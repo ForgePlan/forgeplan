@@ -944,6 +944,14 @@ enum Commands {
         #[command(subcommand)]
         action: PluginsAction,
     },
+    /// Constellation registry — named sets of `.forgeplan` sources that
+    /// `search`/`get` fan out over. The registry lives in
+    /// `~/.forgeplan/constellations.yaml`: per-user, shared by every
+    /// ForgePlan instance on the machine.
+    Constellation {
+        #[command(subcommand)]
+        action: commands::constellation::ConstellationAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1538,6 +1546,7 @@ async fn main() -> anyhow::Result<()> {
             json,
         } => commands::recall::run(query.as_deref(), category.as_deref(), limit, json).await,
         Commands::Watch { constellation } => commands::watch::run(constellation).await,
+        Commands::Constellation { action } => commands::constellation::run(action).await,
         Commands::GitSync { since } => commands::git_sync::run(since.as_deref()).await,
         Commands::Serve { auto_index } => {
             let cwd = std::env::current_dir()?;

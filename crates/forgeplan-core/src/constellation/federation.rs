@@ -70,6 +70,16 @@ pub enum SourceChannel {
     Markdown,
 }
 
+impl SourceChannel {
+    /// The short label CLI/MCP output prints per hit.
+    pub fn channel_str(&self) -> &'static str {
+        match self {
+            Self::Pinned => "pinned",
+            Self::Markdown => "markdown",
+        }
+    }
+}
+
 /// Per-source outcome when the source could not be read.
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceFailure {
@@ -260,11 +270,20 @@ async fn read_markdown(
     Ok((source, hits))
 }
 
-/// Whether a source has a readable pinned generation. Absence of the index
-/// root means "markdown channel"; a present-but-unreadable index is an
-/// error the caller sees, not a silent fallback.
-fn has_index(canonical: &Path) -> bool {
-    canonical.join("lance").is_dir()
+/// Whether a source has a *published* generation to pin to. Three states:
+///
+/// * no `lance/` at all → markdown channel, clearly;
+/// * `lance/` exists but no `CURRENT.json` → the index directory was
+///   created (e.g. by `init`) but never published; the markdown channel is
+///   still the honest answer, not an error — nothing was ever born there;
+/// * `CURRENT.json` present → the pinned channel; a failure to *read* it
+///   is a genuine index fault and surfaces as a source failure, not a
+///   silent downgrade to markdown.
+fn has_published_index(canonical: &Path) -> bool {
+    canonical
+        .join("lance")
+        .join(super::storage::CURRENT_FILE_NAME)
+        .is_file()
 }
 
 // -- The facade ---------------------------------------------------------------
@@ -300,7 +319,7 @@ pub async fn federated_search(
         // A present-but-broken index is a failure the caller sees, not a
         // silent downgrade to the markdown channel: reporting markdown
         // hits under a "pinned" banner would hide that the index rotted.
-        let result = if has_index(&canonical) {
+        let result = if has_published_index(&canonical) {
             read_pinned(&canonical, query, limit).await
         } else {
             read_markdown(&canonical, query, limit).await
@@ -351,7 +370,7 @@ pub async fn federated_get(
                 continue;
             }
         };
-        if has_index(&canonical) {
+        if has_published_index(&canonical) {
             match super::facade::get_pinned_artifact(&canonical.join("lance"), key_or_id).await {
                 Ok(Some((artifact, generation_id, _))) => {
                     found.push((

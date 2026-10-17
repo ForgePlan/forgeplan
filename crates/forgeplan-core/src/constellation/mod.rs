@@ -22,6 +22,7 @@
 //! | [`lance_tables`] | Arrow schemas for the two active tables, wrapped table creation through `NativeTable::create_empty`, conditional restore, and pinned reads |
 //! | [`facade`] | The narrow surface CLI and MCP call; resolver policy and the maintain capability token |
 //! | [`federation`] | Stage 1 — reads over explicitly named `.forgeplan` sources; path-only resolution, markdown fallback channel, per-source versioned envelope |
+//! | [`registry`] | Stage 2 — the `~/.forgeplan/constellations.yaml` store: named source sets, the active selection, atomic writes, `doctor` |
 //! | [`DurabilityTrackingStore`] | The `ObjectStore` + `WrappingObjectStore` that records Lance's writes, plus the shared [`StageTracker`] and its [`WriteSet`] |
 //! | `owner` (private) | Physical owner: index identity, the stable sibling owner lock, and the RAII guard |
 //!
@@ -53,6 +54,7 @@ pub mod lexical_index;
 pub mod manifest;
 pub mod publisher;
 pub mod reconciler;
+pub mod registry;
 pub mod runtime;
 pub mod storage;
 pub mod view;

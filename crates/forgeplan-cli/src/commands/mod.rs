@@ -11,6 +11,7 @@ pub mod capture;
 pub mod claim;
 pub mod claims;
 pub mod common;
+pub mod constellation;
 pub mod context;
 pub mod coverage;
 pub mod decay;
