@@ -229,6 +229,75 @@ pub async fn reconcile_after_file_mutation(ws: &Path) {
     }
 }
 
+/// Run the canonical `maintain_index` pass this workspace's `lance/` root
+/// belongs to, then give the embedding queue a best-effort cached-model
+/// drain. Shared by every surface that needs "the derived index is
+/// constellation work now": `git-sync` after applying its diff, `reindex`
+/// on a workspace where CURRENT.json already names the owner.
+///
+/// Two transitions are made loud rather than silent, because each is a
+/// one-way door an operator should never have to discover after the fact:
+/// a first migration (legacy tables present, no CURRENT.json) renames the
+/// retired tables to `*.legacy-backup.lance` and is announced; a legacy
+/// table still sitting *beside* CURRENT.json afterwards means the layout
+/// is split — reads would misdetect the owner — and is warned about.
+pub async fn reconcile_and_drain(ws: &Path, label: &str) -> anyhow::Result<()> {
+    use forgeplan_core::constellation::manifest::LEGACY_TABLES;
+    use forgeplan_core::constellation::storage::CURRENT_FILE_NAME;
+
+    let canonical = ws.canonicalize().unwrap_or_else(|_| ws.to_path_buf());
+    let index_root = canonical.join("lance");
+    let migrating = !index_root.join(CURRENT_FILE_NAME).exists()
+        && LEGACY_TABLES
+            .iter()
+            .any(|t| index_root.join(format!("{t}.lance")).exists());
+    let capability =
+        forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
+            canonical,
+        );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    match forgeplan_core::constellation::facade::maintain_index(
+        &capability,
+        forgeplan_core::constellation::capture::CaptureLimits::default(),
+        deadline,
+    )
+    .await
+    {
+        Ok((view, outcome)) => {
+            if migrating {
+                println!(
+                    "  index migrated to constellation protocol: legacy tables backed up to *.legacy-backup.lance"
+                );
+            }
+            println!(
+                "  reconciled into generation {} ({} commit(s))",
+                view.manifest.generation_id,
+                outcome.commits.len()
+            );
+            for legacy in LEGACY_TABLES {
+                let table = index_root.join(format!("{legacy}.lance"));
+                if table.exists() {
+                    eprintln!(
+                        "  warning: retired legacy table {} still present beside {CURRENT_FILE_NAME} — \
+                         reads may misdetect the index owner until it is removed",
+                        table.display()
+                    );
+                }
+            }
+            crate::commands::index::drain_queue_if_cached(
+                &capability,
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+                label,
+            )
+            .await;
+        }
+        Err(e) => {
+            anyhow::bail!("{label}: Constellation reconcile failed: {e}");
+        }
+    }
+    Ok(())
+}
+
 /// Load session state from workspace.
 pub fn load_session() -> SessionState {
     let cwd = std::env::current_dir().unwrap_or_default();

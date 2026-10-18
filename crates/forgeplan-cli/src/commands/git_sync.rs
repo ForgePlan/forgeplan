@@ -52,7 +52,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
             since_ref.chars().take(10).collect::<String>()
         );
         // The diff can be empty while a previous run left pending vectors.
-        reconcile_and_drain(&ws).await?;
+        common::reconcile_and_drain(&ws, "git-sync").await?;
         println!("\nDone.");
         return Ok(());
     }
@@ -68,7 +68,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
         for file in &changed {
             println!("    {} {}", file.status, file.path);
         }
-        reconcile_and_drain(&ws).await?;
+        common::reconcile_and_drain(&ws, "git-sync").await?;
         println!("\nDone.");
         return Ok(());
     };
@@ -272,7 +272,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
     // The capability takes the **canonical** workspace path: identity is
     // scheme-independent, and a non-canonical path would be a different
     // physical index and a different owner lock.
-    reconcile_and_drain(&ws).await?;
+    common::reconcile_and_drain(&ws, "git-sync").await?;
 
     println!(
         "\nGit sync complete: {} synced, {} deleted, {} errors (commit {})",
@@ -285,40 +285,6 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
     ];
     print!("{}", hints::render_next_action_line(&hints_vec));
 
-    Ok(())
-}
-
-async fn reconcile_and_drain(ws: &std::path::Path) -> anyhow::Result<()> {
-    let canonical = ws.canonicalize().unwrap_or_else(|_| ws.to_path_buf());
-    let capability =
-        forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
-            canonical,
-        );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    match forgeplan_core::constellation::facade::maintain_index(
-        &capability,
-        forgeplan_core::constellation::capture::CaptureLimits::default(),
-        deadline,
-    )
-    .await
-    {
-        Ok((view, outcome)) => {
-            println!(
-                "  reconciled into generation {} ({} commit(s))",
-                view.manifest.generation_id,
-                outcome.commits.len()
-            );
-            crate::commands::index::drain_queue_if_cached(
-                &capability,
-                std::time::Instant::now() + std::time::Duration::from_secs(60),
-                "git-sync",
-            )
-            .await;
-        }
-        Err(e) => {
-            anyhow::bail!("canonical Git sync completed, but Constellation reconcile failed: {e}");
-        }
-    }
     Ok(())
 }
 

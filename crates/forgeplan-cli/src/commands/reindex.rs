@@ -35,6 +35,45 @@ pub async fn run() -> anyhow::Result<()> {
     let ws = forgeplan_core::workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
     let _config = forgeplan_core::workspace::load_config(&ws)?;
+
+    // The constellation protocol claims `lance/` as soon as ANY of its
+    // markers exist — not only once CURRENT.json lands. A bootstrap
+    // interrupted mid-flight leaves `constellation/PROTOCOL.json` (written
+    // before the new tables) or the legacy tables already renamed aside as
+    // `*.legacy-backup.lance`, with CURRENT.json never published. Routing
+    // on CURRENT.json alone would let `LanceStore::init` recreate
+    // `artifacts.lance` there — after which `backup_legacy_tables` can
+    // never finish the rename (the backup destination already exists) and
+    // the resurrected table shadows the real index forever. On any of
+    // these layouts "reindex from markdown" is the reconcile pass
+    // `forgeplan index` owns — route there. The check is still not
+    // `index_migrated`: a workspace where a pre-fix reindex already
+    // resurrected artifacts.lance must still route, never pile more
+    // writes into the shadowed table.
+    let lance = ws.join("lance");
+    let constellation_owned = lance
+        .join(forgeplan_core::constellation::storage::CURRENT_FILE_NAME)
+        .exists()
+        || lance
+            .join(forgeplan_core::constellation::storage::PROTOCOL_RELATIVE_PATH)
+            .exists()
+        || std::fs::read_dir(&lance).is_ok_and(|mut entries| {
+            entries.any(|e| {
+                e.is_ok_and(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .ends_with(".legacy-backup.lance")
+                })
+            })
+        });
+    if constellation_owned {
+        println!(
+            "Index is constellation-managed — `forgeplan index` owns this layout; \
+             running the reconcile pass:"
+        );
+        return common::reconcile_and_drain(&ws, "reindex").await;
+    }
+
     let store = forgeplan_core::db::store::LanceStore::init(&ws).await?;
 
     println!("Reindexing from .forgeplan/ markdown files...\n");

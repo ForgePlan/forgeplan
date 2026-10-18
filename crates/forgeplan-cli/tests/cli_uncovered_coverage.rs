@@ -239,6 +239,61 @@ fn git_sync_since_head_no_changes() {
         .stdout(predicate::str::contains("No .forgeplan/ files changed"));
 }
 
+/// C12a regression — the first time reconcile runs on a legacy workspace,
+/// the migration must be announced: the operator watches legacy tables
+/// get renamed aside and CURRENT.json appear, so the sync output names
+/// the transition instead of leaving it to be discovered after the fact.
+#[test]
+fn git_sync_announces_the_index_migration() {
+    let tmp = init_workspace();
+    // A legacy workspace: `init -y` created `artifacts.lance`, and no
+    // reconcile has run yet, so no CURRENT.json.
+    let lance = tmp.path().join(".forgeplan").join("lance");
+    assert!(lance.join("artifacts.lance").exists());
+    assert!(!lance.join("CURRENT.json").exists());
+
+    Command::new("git")
+        .arg("init")
+        .arg("-q")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    Command::new("git")
+        .args([
+            "-c",
+            "user.email=t@t.com",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    forgeplan()
+        .args(["git-sync", "--since", "HEAD"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "migrated to constellation protocol",
+        ))
+        .stdout(predicate::str::contains("legacy-backup"));
+
+    // The migration the notice names actually happened.
+    assert!(lance.join("CURRENT.json").exists());
+    assert!(lance.join("artifacts.legacy-backup.lance").exists());
+    assert!(!lance.join("artifacts.lance").exists());
+}
+
 // ---------------------------------------------------------------------------
 // log_cmd
 // ---------------------------------------------------------------------------

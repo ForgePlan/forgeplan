@@ -108,10 +108,17 @@ pub fn load_snapshot(path: &Path) -> Result<ConstellationSnapshot, Constellation
 
 // -- Git object reads -----------------------------------------------------------
 
+/// Every git invocation this module makes. `GIT_NO_LAZY_FETCH` is the pin
+/// contract on a partial clone: a missing object is a read that fails, not
+/// a read that silently reaches the promisor remote for it.
+fn git_command(repo: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.env("GIT_NO_LAZY_FETCH", "1").arg("-C").arg(repo);
+    cmd
+}
+
 fn git(repo: &Path, args: &[&str]) -> Result<String, ConstellationError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let output = git_command(repo)
         .args(args)
         .output()
         .map_err(|e| ConstellationError::Io {
@@ -133,9 +140,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, ConstellationError> {
 }
 
 fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>, ConstellationError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let output = git_command(repo)
         .args(args)
         .output()
         .map_err(|e| ConstellationError::Io {
@@ -144,7 +149,7 @@ fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>, ConstellationError> 
     if !output.status.success() {
         return Err(ConstellationError::Io {
             detail: format!(
-                "git {} failed in {}: {}",
+                "pinned object unavailable locally: git {} failed in {}: {}",
                 args.join(" "),
                 repo.display(),
                 String::from_utf8_lossy(&output.stderr).trim()
@@ -429,13 +434,54 @@ fn search_one_source(
     Ok(hits)
 }
 
+/// The `KEY@qualifier` narrowing rule for a pinned entry — the same two
+/// readings `federation::specs_matching` applies to live sources: a
+/// fragment of the entry's stored path, or an exact/prefix match of its
+/// `src:` id (which here hashes `checkout_root@git_oid`, so a qualifier
+/// minted against a live `src:` id never collides with a pinned one).
+fn entry_matches_qualifier(entry: &SnapshotSourceEntry, qualifier: &str) -> bool {
+    let source_id = source_ref_for(entry).source_id;
+    entry.source_path.contains(qualifier)
+        || source_id == qualifier
+        || source_id.starts_with(qualifier)
+}
+
 /// Fetch one artifact at the pinned revision — `(relative_path, bytes)`.
+///
+/// `qualifier` is the `@…` half the caller split off `key_or_id`; `None`
+/// reads every pinned entry. A qualifier that names no pinned entry is an
+/// error — never a silent widening back to the whole source set.
 pub fn snapshot_get(
     snapshot: &ConstellationSnapshot,
     key_or_id: &str,
+    qualifier: Option<&str>,
 ) -> Result<Vec<(SourceRef, String, Vec<u8>)>, ConstellationError> {
+    if let Some(q) = qualifier
+        && !snapshot
+            .sources
+            .iter()
+            .any(|e| entry_matches_qualifier(e, q))
+    {
+        let pinned: Vec<String> = snapshot
+            .sources
+            .iter()
+            .map(|e| format!("{} ({})", e.source_path, source_ref_for(e).source_id))
+            .collect();
+        return Err(ConstellationError::Io {
+            detail: format!(
+                "qualifier @{q} matches no source pinned in snapshot {}. Pinned:\n  {}",
+                snapshot.snapshot_id,
+                pinned.join("\n  ")
+            ),
+        });
+    }
     let mut found = Vec::new();
     for entry in &snapshot.sources {
+        if let Some(q) = qualifier
+            && !entry_matches_qualifier(entry, q)
+        {
+            continue;
+        }
         let repo = PathBuf::from(&entry.checkout_root);
         let names = match list_files_at(&repo, &entry.git_oid) {
             Ok(n) => n,
@@ -545,7 +591,7 @@ mod tests {
                 .contains(&snapshot.sources[0].git_oid)
         );
 
-        let found = snapshot_get(&snapshot, "ADR-001").unwrap();
+        let found = snapshot_get(&snapshot, "ADR-001", None).unwrap();
         assert_eq!(found.len(), 1);
         assert!(String::from_utf8_lossy(&found[0].2).contains("alpha bytes"));
     }
@@ -568,6 +614,95 @@ mod tests {
         let b = capture_snapshot(&[super::super::federation::SourceSpec::new(&fp)], None).unwrap();
         assert_eq!(a.sources[0].bytes_digest, b.sources[0].bytes_digest);
         assert_eq!(a.sources[0].git_oid, b.sources[0].git_oid);
+    }
+
+    /// Files under `.git/objects` — loose objects and packs alike.
+    fn object_file_count(repo: &Path) -> usize {
+        fn walk(dir: &Path, n: &mut usize) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, n);
+                } else {
+                    *n += 1;
+                }
+            }
+        }
+        let mut n = 0;
+        walk(&repo.join(".git/objects"), &mut n);
+        n
+    }
+
+    /// The seam `git_command` is the one place the no-lazy-fetch env is
+    /// set — pin it directly so a refactor that re-inlines `Command::new`
+    /// is caught without needing a promisor remote.
+    #[test]
+    fn git_commands_are_forbidden_from_lazy_fetching() {
+        let cmd = git_command(Path::new("/tmp/anywhere"));
+        let has_no_lazy_fetch = cmd
+            .get_envs()
+            .any(|(k, v)| k == "GIT_NO_LAZY_FETCH" && v == Some(std::ffi::OsStr::new("1")));
+        assert!(
+            has_no_lazy_fetch,
+            "git_command must set GIT_NO_LAZY_FETCH=1"
+        );
+    }
+
+    /// A pinned read against a partial clone must error, not fetch: the
+    /// clone serves commits and trees locally, but every blob lives behind
+    /// the promisor remote. Reading a pinned blob without
+    /// `GIT_NO_LAZY_FETCH` silently turns a local read into a network one.
+    #[test]
+    fn a_pinned_read_never_lazy_fetches() {
+        // The source carries the promisor knobs a `file://` filter clone
+        // needs before it will serve filtered packs or on-demand objects.
+        let src = repo_with(&[("adrs/ADR-009-a.md", &artifact("ADR-009", "pinned bytes"))]);
+        git_in(src.path(), &["config", "uploadpack.allowFilter", "true"]);
+        git_in(
+            src.path(),
+            &["config", "uploadpack.allowAnySHA1InWant", "true"],
+        );
+        let fp = src.path().join(".forgeplan");
+        let mut snapshot =
+            capture_snapshot(&[super::super::federation::SourceSpec::new(&fp)], None).unwrap();
+        assert_eq!(snapshot.sources.len(), 1);
+
+        // `--no-checkout` keeps the clone blob-less: worktree materialisation
+        // is the one step that would fetch upfront.
+        let holder = TempDir::new().unwrap();
+        let partial = holder.path().join("partial");
+        let url = format!("file://{}", src.path().display());
+        let out = Command::new("git")
+            .args([
+                "clone",
+                "--no-local",
+                "--filter=blob:none",
+                "--no-checkout",
+                &url,
+            ])
+            .arg(&partial)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "partial clone: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let objects_before = object_file_count(&partial);
+
+        // Same pinned revision, read through the clone that lacks the blobs.
+        snapshot.sources[0].checkout_root = partial.display().to_string();
+        let err = snapshot_get(&snapshot, "ADR-009", None).unwrap_err();
+        let detail = err.to_string();
+        assert!(
+            detail.contains("pinned object unavailable locally"),
+            "expected the named unavailable-revision error, got: {detail}"
+        );
+        assert_eq!(
+            object_file_count(&partial),
+            objects_before,
+            "a pinned read fetched objects from the promisor remote"
+        );
     }
 
     #[test]

@@ -407,7 +407,10 @@ impl ConstellationReadServer {
         let handles = self.handles.lock().await;
         if let Some(snap_handle) = &p.snapshot_handle {
             return match handles.get(snap_handle) {
-                Some(Handle::Snapshot(snap)) => match snapshot::snapshot_get(snap, &p.id) {
+                Some(Handle::Snapshot(snap)) => match {
+                    let (bare, qualifier) = federation::parse_qualified_ref(&p.id);
+                    snapshot::snapshot_get(snap, bare, qualifier)
+                } {
                     Ok(found) => match found.len() {
                         0 => ok_json(json!({"result": "not_found", "id": p.id})),
                         1 => {
@@ -430,7 +433,19 @@ impl ConstellationReadServer {
                             )
                         }
                     },
-                    Err(e) => fail("io", e),
+                    Err(e) => {
+                        // The qualifier-miss the live arm reports as
+                        // `no_source` arrives here as a plain Io detail —
+                        // re-map so both arms answer the same envelope.
+                        match &e {
+                            ConstellationError::Io { detail }
+                                if detail.contains("matches no source") =>
+                            {
+                                fail("no_source", detail)
+                            }
+                            _ => fail("io", e),
+                        }
+                    }
                 },
                 Some(Handle::Scope(_)) => {
                     fail("wrong_handle_kind", "scope handle is not a snapshot")

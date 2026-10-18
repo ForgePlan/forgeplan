@@ -542,7 +542,7 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
                 let snap = snap::load_snapshot(&snap::snapshot_path(&home, snap_id))
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
-                let found = snap::snapshot_get(&snap, &id)?;
+                let found = snap::snapshot_get(&snap, &id, qualifier.as_deref())?;
                 return match found.len() {
                     0 => {
                         if json {
