@@ -10387,13 +10387,15 @@ impl ForgeplanServer {
                             "profile_id": profile_id,
                             "generation_id": o.generation_id,
                             "pinned_artifacts_version": o.pinned_artifacts_version,
+                            "pinned_sections_version": o.pinned_sections_version,
+                            "semantic_scope": o.semantic_scope,
                             "eligible_rows": o.eligible_rows,
                             "hits": o.hits,
                         }),
                         if o.eligible_rows == 0 {
                             "No rows hold a ready vector under this profile — run `forgeplan index --embed-profile` to drain the queue."
                         } else {
-                            "Read one artifact fully: `forgeplan_constellation_get key=\"<canonical_key-or-id>\"`."
+                            "Read one artifact fully: `forgeplan_constellation_get key=\"<canonical_key-or-id>\"`. A hit whose canonical_key contains `#s` is a section row — get its `parent_key`."
                         },
                     );
                 }

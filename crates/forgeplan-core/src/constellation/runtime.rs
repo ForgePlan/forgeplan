@@ -649,7 +649,25 @@ pub fn recover_pending(
     let mut gaps = Vec::new();
 
     for (key, job) in &manifest.pending_jobs {
-        let Some(artifact) = capture.artifact(key) else {
+        // A pending job may name an artifact key or a section key
+        // (`"{parent}#s{ordinal}"`). Resolve the captured input text and the
+        // binding's parent entry accordingly — a section borrows its parent's
+        // durable binding, so the entry lookup is always on the parent key.
+        let (input_text, parent_key) = if let Some(artifact) = capture.artifact(key) {
+            // `ParsedArtifact::embedding_input` (`capture.rs:179`) — the
+            // accessor the facade and every other reader already use. Not
+            // `embedding_input_text` called with the same fields: two call
+            // sites that look identical are two places for the text to
+            // drift, and a vector computed over a different string than the
+            // one it will be bound to is a stale vector the binding cannot
+            // detect.
+            (artifact.embedding_input(body_prefix_chars), key.as_str())
+        } else if let Some(section) = capture.section(key) {
+            (
+                capture.section_input(section, body_prefix_chars),
+                section.parent_key.as_str(),
+            )
+        } else {
             gaps.push((
                 key.clone(),
                 RecoveryGap::NoCaptureEntry {
@@ -664,7 +682,11 @@ pub fn recover_pending(
         // under. It is never read from the manifest: a binding from a previous
         // generation would decide eligibility against itself and always say
         // `Current`.
-        let Some(entry) = capture.entries.iter().find(|e| &e.canonical_key == key) else {
+        let Some(entry) = capture
+            .entries
+            .iter()
+            .find(|e| e.canonical_key == parent_key)
+        else {
             gaps.push((
                 key.clone(),
                 RecoveryGap::NoCaptureEntry {
@@ -674,17 +696,38 @@ pub fn recover_pending(
             continue;
         };
 
-        let Ok(captured_binding) = super::publisher::binding_for(entry, &job.profile_id) else {
-            gaps.push((
-                key.clone(),
-                RecoveryGap::Unjudgeable {
-                    reason: format!(
-                        "the captured row for `{key}` carries no input digest, so no binding can \
-                         be built and eligibility cannot be judged"
-                    ),
-                },
-            ));
-            continue;
+        let captured_binding = if let Some(section) = capture.section(key) {
+            match super::publisher::binding_for_section(section, entry, &job.profile_id) {
+                Ok(binding) => binding,
+                Err(_) => {
+                    gaps.push((
+                        key.clone(),
+                        RecoveryGap::Unjudgeable {
+                            reason: format!(
+                                "the captured section `{key}` produced no binding, so \
+                                 eligibility cannot be judged"
+                            ),
+                        },
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            match super::publisher::binding_for(entry, &job.profile_id) {
+                Ok(binding) => binding,
+                Err(_) => {
+                    gaps.push((
+                        key.clone(),
+                        RecoveryGap::Unjudgeable {
+                            reason: format!(
+                                "the captured row for `{key}` carries no input digest, so no \
+                                 binding can be built and eligibility cannot be judged"
+                            ),
+                        },
+                    ));
+                    continue;
+                }
+            }
         };
 
         // The stored side is the job's own recorded binding — that is the
@@ -704,14 +747,10 @@ pub fn recover_pending(
             super::jobs::Eligibility::Eligible => {
                 admitted.push(InferenceJob {
                     canonical_key: key.clone(),
-                    // `ParsedArtifact::embedding_input` (`capture.rs:179`) —
-                    // the accessor the facade and every other reader already
-                    // use. Not `embedding_input_text` called with the same
-                    // fields: two call sites that look identical are two
-                    // places for the text to drift, and a vector computed over
-                    // a different string than the one it will be bound to is a
-                    // stale vector the binding cannot detect.
-                    input_text: artifact.embedding_input(body_prefix_chars),
+                    // Built above, once, beside the binding that will check
+                    // it — artifact input or section input, never a text the
+                    // digest did not cover.
+                    input_text,
                 });
             }
             super::jobs::Eligibility::Current => {
@@ -903,6 +942,133 @@ mod tests {
             finished.load(std::sync::atomic::Ordering::SeqCst),
             "shutdown returned while the engine call had still not finished — \
              it detached rather than joined"
+        );
+    }
+
+    /// A pending job may name a **section** key (`"{parent}#s{ordinal}"`).
+    /// It must recover against the section's own input digest and input text
+    /// while borrowing its parent's durable binding — a vector published
+    /// under the parent's digest would be bound to bytes it was never
+    /// computed from.
+    #[test]
+    fn a_pending_section_job_recovers_with_its_own_input_and_binding() {
+        use super::super::capture::{
+            CapturedSection, CapturedSourceView, SourceEntry, UnusableSource,
+        };
+        use super::super::jobs::{DEFAULT_BODY_PREFIX_CHARS, EmbeddingJob};
+        use super::super::manifest::{GenerationManifest, TableVersions};
+
+        let section = CapturedSection {
+            canonical_key: "PRD-001#s1".to_string(),
+            parent_key: "PRD-001".to_string(),
+            ordinal: 1,
+            heading: Some("Problem".to_string()),
+            level: Some(2),
+            content: std::sync::Arc::from("section body"),
+            input_digest: "section-input-digest".to_string(),
+            parent_input_digest: "parent-input-digest".to_string(),
+        };
+        let entry = SourceEntry {
+            canonical_key: "PRD-001".to_string(),
+            relative_path: "prds/PRD-001.md".to_string(),
+            checkout_id: "local-x".to_string(),
+            index_epoch: 1,
+            incarnation: 1,
+            row_revision: 3,
+            source_digest: "sd".to_string(),
+            input_digest: Some("parent-input-digest".to_string()),
+            profile_id: None,
+            // `ready` — the job-recovery path judges the recorded binding
+            // against this state, and `unavailable` would make a matching
+            // binding read as `Eligible` instead of `Current`.
+            semantic_state: super::super::jobs::SemanticState::Ready,
+            diagnostic_codes: Vec::new(),
+            observed_at: "2026-10-17T00:00:00.000Z".to_string(),
+        };
+        let capture = CapturedSourceView {
+            workspace: std::path::PathBuf::from("/tmp/ws/.forgeplan"),
+            checkout_id: "local-x".to_string(),
+            index_epoch: 1,
+            snapshot_id: "snap".to_string(),
+            evaluated_at: "2026-10-17T00:00:00.000Z".to_string(),
+            source_set_digest: "ss".to_string(),
+            config_digest: "cd".to_string(),
+            artifacts: Vec::new(),
+            sections: vec![section.clone()],
+            entries: vec![entry],
+            unusable: Vec::<UnusableSource>::new(),
+            enumerated_paths: vec!["prds/PRD-001.md".to_string()],
+            coverage: super::super::capture::Coverage {
+                expected: 1,
+                read: 1,
+                invalid: 0,
+                unavailable: 0,
+                excluded: 0,
+            },
+            diagnostics: Vec::new(),
+            confirmed: true,
+            filesystem_support: super::super::capture::FilesystemSupport::Supported,
+            attempts: 1,
+        };
+
+        let mut manifest =
+            GenerationManifest::from_capture(&capture, "gen-1", TableVersions::new(1, 1));
+        // The job records the binding the previous process was working
+        // against: everything matches the fresh capture *except* the
+        // recorded `input_digest`, which is what makes it work rather than
+        // done.
+        manifest.pending_jobs.insert(
+            "PRD-001#s1".to_string(),
+            EmbeddingJob {
+                index_epoch: 1,
+                checkout_id: "local-x".to_string(),
+                canonical_key: "PRD-001#s1".to_string(),
+                incarnation: 1,
+                row_revision: 3,
+                source_digest: "sd".to_string(),
+                input_digest: "older-section-input".to_string(),
+                profile_id: "pid".to_string(),
+                captured_input_ref: "prds/PRD-001.md".to_string(),
+                attempt: 0,
+                retry_after: None,
+            },
+        );
+
+        let (admitted, gaps) = recover_pending(&manifest, &capture, DEFAULT_BODY_PREFIX_CHARS);
+        assert!(gaps.is_empty(), "a resolvable section job is not a gap");
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(admitted[0].canonical_key, "PRD-001#s1");
+        assert_eq!(
+            admitted[0].input_text,
+            capture.section_input(&section, DEFAULT_BODY_PREFIX_CHARS),
+            "the recovered input is the section input, not the artifact prefix"
+        );
+
+        // Same binding recorded as completed → `Current`, not re-admitted.
+        manifest.pending_jobs.insert(
+            "PRD-001#s1".to_string(),
+            EmbeddingJob {
+                input_digest: "section-input-digest".to_string(),
+                ..manifest.pending_jobs["PRD-001#s1"].clone()
+            },
+        );
+        let (admitted, gaps) = recover_pending(&manifest, &capture, DEFAULT_BODY_PREFIX_CHARS);
+        assert!(admitted.is_empty(), "a current section job is not work");
+        assert!(gaps.is_empty());
+
+        // A section job whose parent entry vanished is a named gap, never
+        // silently dropped.
+        manifest.pending_jobs.insert(
+            "GHOST#s0".to_string(),
+            EmbeddingJob {
+                canonical_key: "GHOST#s0".to_string(),
+                ..manifest.pending_jobs["PRD-001#s1"].clone()
+            },
+        );
+        let (_admitted, gaps) = recover_pending(&manifest, &capture, DEFAULT_BODY_PREFIX_CHARS);
+        assert!(
+            gaps.iter().any(|(key, _)| key == "GHOST#s0"),
+            "an unresolvable section job must be reported"
         );
     }
 }

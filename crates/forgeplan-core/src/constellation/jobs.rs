@@ -148,6 +148,54 @@ pub fn embedding_input_digest(title: &str, body: &str, body_prefix_chars: usize)
     sha256_hex(embedding_input_text(title, body, body_prefix_chars).as_bytes())
 }
 
+/// Deterministic identity of one section row.
+///
+/// `<parent canonical key>#s<ordinal>` — the ordinal is the section's
+/// position in [`crate::artifact::sections::list_sections`] output, so the
+/// same captured body always produces the same key. Key uniqueness inside a
+/// parent is positional on purpose: two sections that happen to share a
+/// heading are still different rows, and a body edit that reorders sections
+/// changes which content a key binds, which is exactly what `input_digest`
+/// then detects.
+pub fn section_key(parent_key: &str, ordinal: u32) -> String {
+    format!("{parent_key}#s{ordinal}")
+}
+
+/// The exact text handed to the tokenizer for one section.
+///
+/// Same shape as the artifact input — `title + heading + content prefix` —
+/// so a section vector lives in the same embedding space as its parent's
+/// vector and the two ANN result sets can be merged on one score scale.
+/// `heading` is `None` only for the body-with-no-headings fallback section
+/// (ordinal 0), which embeds as `title + " " + content prefix`.
+pub fn section_input_text(
+    title: &str,
+    heading: Option<&str>,
+    content: &str,
+    body_prefix_chars: usize,
+) -> String {
+    let prefix: String = content.chars().take(body_prefix_chars).collect();
+    match heading {
+        Some(heading) if !heading.is_empty() => format!("{title} {heading} {prefix}"),
+        _ => format!("{title} {prefix}"),
+    }
+}
+
+/// SHA-256 of the exact bytes handed to the tokenizer for one section.
+///
+/// Separate from the parent's `input_digest` on purpose: the artifact row's
+/// digest describes the title+body-prefix input, the section row's digest
+/// describes the title+heading+section input. Folding them would let a
+/// section vector publish under a binding its bytes never satisfied.
+pub fn section_input_digest(
+    title: &str,
+    heading: Option<&str>,
+    content: &str,
+    body_prefix_chars: usize,
+) -> String {
+    sha256_hex(section_input_text(title, heading, content, body_prefix_chars).as_bytes())
+}
+
 /// One unit of embedding work, bound to the exact state it was computed for.
 ///
 /// Every field is mandatory. A job missing `incarnation` could apply to a
@@ -354,6 +402,15 @@ pub const DEFAULT_DIMENSIONS: u32 = 1024;
 /// value travels with every result so a caller cannot mistake it for full
 /// coverage.
 pub const SEMANTIC_SCOPE: &str = "prefix";
+
+/// Scope reported when the pinned generation also carries a sections table.
+///
+/// The artifact vector still covers only its prefix — that half does not
+/// change — but the generation additionally embeds every section, so a hit
+/// may come from content beyond the prefix. `"prefix+sections"` rather than
+/// `"document"`: coverage is still chunked, not whole-body, and the name
+/// says exactly which two input shapes produced the candidate set.
+pub const SEMANTIC_SCOPE_WITH_SECTIONS: &str = "prefix+sections";
 
 /// What the semantic channel did, and what it could not do.
 ///
@@ -867,6 +924,19 @@ pub struct EligibilityReport {
 impl EligibilityReport {
     pub fn record(&mut self, canonical_key: impl Into<String>, eligibility: Eligibility) {
         self.rows.insert(canonical_key.into(), eligibility);
+    }
+
+    /// Fold another report's rows into this one.
+    ///
+    /// The artifact and section scans are separate tables judged under one
+    /// key namespace — artifact keys are bare, section keys are
+    /// `"{parent}#s{ordinal}"` — so the merge is disjoint by construction,
+    /// not by convention: a collision would mean a section row was minted
+    /// under a bare artifact key, which `section_key` cannot produce.
+    pub fn merge_from(&mut self, other: &Self) {
+        for (key, eligibility) in &other.rows {
+            self.rows.insert(key.clone(), eligibility.clone());
+        }
     }
 
     /// Keys whose vector is current. Safe to skip.

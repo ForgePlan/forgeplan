@@ -242,7 +242,20 @@ impl<T> ReadResult<T> {
             evaluated_at: view.evaluated_at().to_string(),
             coverage,
             freshness: FreshnessReport { lexical, semantic },
-            semantic_scope: "prefix".to_string(),
+            // The scope marker names the widest honest claim: `prefix`
+            // alone when the view predates or lacks the sections table,
+            // `prefix+sections` once the generation pins a sections version.
+            semantic_scope: match view {
+                ReadView::Persisted { manifest, .. }
+                    if manifest.table_versions.sections.is_some() =>
+                {
+                    super::jobs::SEMANTIC_SCOPE_WITH_SECTIONS.to_string()
+                }
+                ReadView::Ephemeral { captured } if !captured.sections.is_empty() => {
+                    super::jobs::SEMANTIC_SCOPE_WITH_SECTIONS.to_string()
+                }
+                _ => super::jobs::SEMANTIC_SCOPE.to_string(),
+            },
             pending_count,
             failed_count,
             truncation: None,
@@ -300,6 +313,7 @@ mod tests {
             source_set_digest: "srcset".to_string(),
             config_digest: "cfg".to_string(),
             artifacts: Vec::new(),
+            sections: Vec::new(),
             coverage: Coverage {
                 expected: entries.len() + invalid,
                 read: entries.len(),

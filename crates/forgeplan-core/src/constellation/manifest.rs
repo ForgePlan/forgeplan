@@ -28,15 +28,24 @@ use super::SourceDiagnostic;
 use super::jobs::EmbeddingJob;
 use super::{ConstellationError, DigestBuilder, FORMAT_VERSION};
 
-/// Exact published versions of the coherent artifact/relations pair.
+/// Exact published versions of the coherent artifact/relations pair, plus
+/// the optional sections version.
 ///
-/// Both are `u64` and are recorded from the commit that produced them. A
-/// reader checks out these numbers, never "latest": latest is whatever the
-/// staging writer has not yet published.
+/// `artifacts` and `relations` are `u64` recorded from the commit that
+/// produced them. A reader checks out these numbers, never "latest": latest
+/// is whatever the staging writer has not yet published.
+///
+/// `sections` is `Option` on purpose: generations published before the
+/// `constellation_sections_v1` table existed carry no field at all and
+/// deserialize as `None`. `None` means "this generation has no section
+/// projection" — readers serve artifact-level semantics only — never
+/// "version 0", and never an error.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableVersions {
     pub artifacts: u64,
     pub relations: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sections: Option<u64>,
 }
 
 impl TableVersions {
@@ -44,14 +53,26 @@ impl TableVersions {
         Self {
             artifacts,
             relations,
+            sections: None,
         }
     }
 
-    /// Whether both halves of the pair are present.
+    /// A versions triple that also pins the sections table.
+    pub fn with_sections(artifacts: u64, relations: u64, sections: u64) -> Self {
+        Self {
+            artifacts,
+            relations,
+            sections: Some(sections),
+        }
+    }
+
+    /// Whether the artifact/relations halves of the set are present.
     ///
-    /// A first publication legitimately has version `1` on both tables; a
-    /// pair with `0` on either side was never committed and must not be
-    /// checked out.
+    /// A first publication legitimately has version `1` on all three tables;
+    /// a set with `0` on either required side was never committed and must
+    /// not be checked out. `sections` stays out of this predicate so a
+    /// pre-sections generation remains publishable to readers that
+    /// understand the field.
     pub fn is_publishable(&self) -> bool {
         self.artifacts > 0 && self.relations > 0
     }
@@ -163,6 +184,17 @@ pub const TABLE_ARTIFACTS_V1: &str = "constellation_artifacts_v1";
 /// Active relations table name, the twin of [`TABLE_ARTIFACTS_V1`].
 pub const TABLE_RELATIONS_V1: &str = "constellation_relations_v1";
 
+/// Active sections table name — one row per deterministic captured section.
+///
+/// Separate from the artifacts table on purpose: artifact cardinality stays
+/// exactly one row per canonical key, while one artifact contributes as many
+/// section rows as its body has sections. Rows are bound to their parent's
+/// full identity (epoch, checkout, incarnation, row revision, source digest)
+/// plus the section's own `input_digest`, so a stale embedding completion
+/// matches nothing and a deleted parent's rows are removed by the same
+/// commit that removes the parent.
+pub const TABLE_SECTIONS_V1: &str = "constellation_sections_v1";
+
 /// Legacy table names kept as **inert backup** after bootstrap.
 ///
 /// They are never opened for writing again. Their vectors are not migrated:
@@ -234,11 +266,18 @@ impl ProtocolMarker {
         }
     }
 
-    /// The two active table names, in a stable order.
+    /// The three active table names, in a stable order.
+    ///
+    /// Order is protocol data, not presentation: readers, GC and bootstrap
+    /// all iterate this list, so it is `artifacts, relations, sections`
+    /// everywhere. A marker written before the sections table existed names
+    /// only the first two — [`super::storage::resolve_table_uri`] still maps
+    /// the sections role onto its canonical name for upgrade-time creation.
     pub fn active_table_names() -> Vec<String> {
         vec![
             TABLE_ARTIFACTS_V1.to_string(),
             TABLE_RELATIONS_V1.to_string(),
+            TABLE_SECTIONS_V1.to_string(),
         ]
     }
 
@@ -319,6 +358,17 @@ pub struct CurrentDescriptor {
     /// baseline rather than rewinding the writes as "divergence".
     #[serde(default)]
     pub embedding_artifacts_head: Option<u64>,
+    /// The sections head after embedding-completion writes landed on this
+    /// generation, or `None` when none have — including when the manifest
+    /// itself predates the sections table.
+    ///
+    /// Same mechanism as [`Self::embedding_artifacts_head`]: the manifest is
+    /// immutable and checksum-pinned, so a drain republishes this descriptor
+    /// with the new head. A drain on a pre-sections generation still creates
+    /// and fills the table under the owner lock; this field is what lets a
+    /// reader pin that head without a manifest rewrite.
+    #[serde(default)]
+    pub embedding_sections_head: Option<u64>,
 }
 
 impl CurrentDescriptor {
@@ -349,6 +399,7 @@ impl CurrentDescriptor {
             manifest_path: manifest_path.into(),
             manifest_sha256: manifest_sha256.into(),
             embedding_artifacts_head: None,
+            embedding_sections_head: None,
         }
     }
 
@@ -374,6 +425,38 @@ impl CurrentDescriptor {
                 ),
             }),
             None => Ok(manifest.table_versions.artifacts),
+        }
+    }
+
+    /// The sections version a pinned read or a reconcile baseline must use.
+    ///
+    /// Three cases, in priority order:
+    ///
+    /// * The manifest pins `sections = v` and the descriptor records a
+    ///   completed drain head — the head wins, and a head *older* than the
+    ///   manifest's pin is a torn descriptor (same rule as artifacts).
+    /// * The manifest pins `sections = v` and no drain head exists — `v`.
+    /// * The manifest has no `sections` (pre-sections generation) — the
+    ///   drain head is the only source; `None` means no sections table was
+    ///   ever pinned or filled for this generation, so readers serve the
+    ///   artifact-level path exactly as before.
+    pub fn effective_sections_version(
+        &self,
+        manifest: &GenerationManifest,
+    ) -> Result<Option<u64>, ConstellationError> {
+        match (
+            manifest.table_versions.sections,
+            self.embedding_sections_head,
+        ) {
+            (Some(pinned), Some(head)) if head >= pinned => Ok(Some(head)),
+            (Some(pinned), Some(head)) => Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!(
+                    "CURRENT names an embedding head v{head} older than the manifest's \
+                     sections v{pinned}; the descriptor is torn"
+                ),
+            }),
+            (Some(pinned), None) => Ok(Some(pinned)),
+            (None, head) => Ok(head),
         }
     }
 
@@ -441,6 +524,7 @@ mod tests {
                 row_revision: 1,
                 diagnostics: Vec::new(),
             })],
+            sections: vec![],
             entries: vec![SourceEntry {
                 canonical_key: "PRD-001".to_string(),
                 relative_path: "prds/PRD-001-auth.md".to_string(),
@@ -565,5 +649,81 @@ mod tests {
             "abc123",
         );
         assert_eq!(descriptor.profile_id.as_deref(), Some("profile-xyz"));
+    }
+
+    #[test]
+    fn a_manifest_written_before_sections_deserializes_with_no_pin() {
+        // The `table_versions` blob a pre-sections build wrote — the field is
+        // simply absent. It must come back as `None`, never `Some(0)`, and the
+        // generation must stay publishable to readers that know the field.
+        let legacy = r#"{"artifacts": 7, "relations": 5}"#;
+        let versions: TableVersions = serde_json::from_str(legacy).unwrap();
+        assert_eq!(versions.sections, None);
+        assert!(versions.is_publishable());
+
+        // And the forward direction: `None` is not written back out, so a
+        // new build never *adds* the field to an old manifest's meaning.
+        let json = serde_json::to_string(&versions).unwrap();
+        assert!(!json.contains("sections"), "None is absent, not null");
+
+        // `Some(0)` is neither "absent" nor publishable-on-its-own — the pin
+        // was never committed; `compare_heads` names it torn state.
+        let torn: TableVersions =
+            serde_json::from_str(r#"{"artifacts": 7, "relations": 5, "sections": 0}"#).unwrap();
+        assert_eq!(torn.sections, Some(0));
+    }
+
+    #[test]
+    fn the_effective_sections_version_resolves_pin_head_and_torn() {
+        let manifest =
+            GenerationManifest::from_capture(&captured(), "gen-1", TableVersions::new(3, 2));
+        let descriptor = CurrentDescriptor::for_manifest(
+            &manifest,
+            1,
+            CurrentDescriptor::manifest_relative_path("gen-1"),
+            "abc123",
+        );
+
+        // A pre-sections manifest with no drain head: `None`, and reads keep
+        // serving the artifact-level path.
+        assert_eq!(
+            descriptor.effective_sections_version(&manifest).unwrap(),
+            None
+        );
+
+        // A drain that landed on a pre-sections generation records its head
+        // on the descriptor — `None` in the manifest is the only case where
+        // the descriptor's head alone names the version.
+        let mut with_head = descriptor.clone();
+        with_head.embedding_sections_head = Some(9);
+        assert_eq!(
+            with_head.effective_sections_version(&manifest).unwrap(),
+            Some(9)
+        );
+
+        // Once the manifest pins a version, a drain head at or past the pin
+        // wins; one *before* the pin is a torn descriptor, not a fallback.
+        let mut pinned_manifest = manifest.clone();
+        pinned_manifest.table_versions = TableVersions::with_sections(3, 2, 4);
+        assert_eq!(
+            with_head
+                .effective_sections_version(&pinned_manifest)
+                .unwrap(),
+            Some(9)
+        );
+        let mut stale_head = descriptor.clone();
+        stale_head.embedding_sections_head = Some(2);
+        assert!(
+            stale_head
+                .effective_sections_version(&pinned_manifest)
+                .is_err(),
+            "a head older than the pin is torn state, never silently served"
+        );
+        assert_eq!(
+            descriptor
+                .effective_sections_version(&pinned_manifest)
+                .unwrap(),
+            Some(4)
+        );
     }
 }

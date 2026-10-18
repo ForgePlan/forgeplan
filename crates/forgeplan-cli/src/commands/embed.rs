@@ -1,4 +1,5 @@
-/// Generate embeddings for all artifacts (title + body) for semantic search.
+/// Generate embeddings for all indexable rows — artifacts (title + body
+/// prefix) and their sections (title + heading + content prefix).
 #[cfg(feature = "semantic-search")]
 pub async fn run() -> anyhow::Result<()> {
     use crate::ui;
@@ -37,7 +38,7 @@ pub async fn run() -> anyhow::Result<()> {
     })?;
 
     if inputs.is_empty() {
-        ui::info("No artifacts to embed.");
+        ui::info("No artifacts or sections to embed.");
         let hint_list = vec![
             Hint::info("Create your first artifact")
                 .with_action("forgeplan new prd \"<title>\"".to_string()),
@@ -106,7 +107,10 @@ pub async fn run() -> anyhow::Result<()> {
     ui::info("Loading embedding model...");
     let mut embedder = Embedder::new()?;
 
-    println!("Embedding {} artifact(s)...\n", inputs.len());
+    println!(
+        "Embedding {} row(s) — artifacts and their sections...\n",
+        inputs.len()
+    );
 
     // 2. The caller **computes** — explicit `embed` is a permitted model
     //    obtainer — and does not write. Every vector leaves through the

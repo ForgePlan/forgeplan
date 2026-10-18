@@ -1,4 +1,12 @@
-//! The two active Lance tables: schemas, wrapped creation, restore, pinned reads.
+//! The three active Lance tables: schemas, wrapped creation, restore, pinned reads.
+//!
+//! `constellation_artifacts_v1` keeps exactly one row per canonical key,
+//! `constellation_relations_v1` one row per outgoing edge, and
+//! `constellation_sections_v1` one row per deterministic captured section.
+//! The sections table exists so semantic coverage is not capped at the
+//! 2000-character body prefix the artifact row embeds — a section's vector
+//! is its own binding, and merging its ANN results with the artifact rows'
+//! is what lets content past the prefix be found.
 //!
 //! These are **derived** tables. They exist so a reader can answer from one
 //! immutable generation; they never become a second source of truth, and
@@ -132,6 +140,75 @@ pub fn artifacts_v1_schema() -> SchemaRef {
     ]))
 }
 
+/// Column names the binding contract requires on the sections table.
+///
+/// A section row carries its parent's binding columns verbatim — epoch,
+/// checkout, incarnation, row revision, source digest — so a stale
+/// completion predicates on exactly what the artifact row would, plus the
+/// section's own `input_digest` over `title + heading + content prefix`.
+pub const SECTION_COLUMNS: &[&str] = &[
+    // Section identity.
+    "canonical_key",
+    "parent_key",
+    "parent_display_id",
+    "ordinal",
+    "heading",
+    "level",
+    // Rendered attribution and the captured content itself.
+    "title",
+    "content",
+    // The vector and the binding it was published under.
+    "embedding",
+    "source_digest",
+    "input_digest",
+    "profile_id",
+    "incarnation",
+    "row_revision",
+    "index_epoch",
+    "checkout_id",
+    "semantic_state",
+    "retry_after",
+];
+
+/// Arrow schema for `constellation_sections_v1`.
+///
+/// One row per captured section — `"{parent}#s{ordinal}"`, never one per
+/// artifact. `content` is the exact section bytes (LargeUtf8 like the
+/// artifact `body`); `heading`/`level` are `NULL` only on the ordinal-0
+/// whole-body fallback and the preamble section, which have no markdown
+/// heading. The parent's `title` and `source_digest` are denormalised in so
+/// a merged ANN hit renders without a second lookup and a section row can be
+/// judged by the same binding fields as its parent.
+pub fn sections_v1_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("canonical_key", DataType::Utf8, false),
+        Field::new("parent_key", DataType::Utf8, false),
+        Field::new("parent_display_id", DataType::Utf8, true),
+        Field::new("ordinal", DataType::UInt64, false),
+        Field::new("heading", DataType::Utf8, true),
+        Field::new("level", DataType::UInt64, true),
+        Field::new("title", DataType::Utf8, false),
+        Field::new("content", DataType::LargeUtf8, false),
+        Field::new(
+            "embedding",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                EMBEDDING_DIM,
+            ),
+            true,
+        ),
+        Field::new("source_digest", DataType::Utf8, false),
+        Field::new("input_digest", DataType::Utf8, false),
+        Field::new("profile_id", DataType::Utf8, true),
+        Field::new("incarnation", DataType::UInt64, false),
+        Field::new("row_revision", DataType::UInt64, false),
+        Field::new("index_epoch", DataType::UInt64, false),
+        Field::new("checkout_id", DataType::Utf8, false),
+        Field::new("semantic_state", DataType::Utf8, false),
+        Field::new("retry_after", DataType::Utf8, true),
+    ]))
+}
+
 /// Arrow schema for `constellation_relations_v1`.
 ///
 /// `target` holds the **exact** bytes the canonical file declared. No
@@ -153,6 +230,7 @@ pub fn schema_for_role(role: &str) -> Result<SchemaRef, ConstellationError> {
     match role {
         "artifacts" => Ok(artifacts_v1_schema()),
         "relations" => Ok(relations_v1_schema()),
+        "sections" => Ok(sections_v1_schema()),
         other => Err(ConstellationError::IndexProtocolMismatch {
             detail: format!("unknown active table role `{other}`"),
         }),
@@ -247,6 +325,7 @@ pub struct IndexTables {
     connection: lancedb::Connection,
     artifacts: lancedb::Table,
     relations: lancedb::Table,
+    sections: lancedb::Table,
 }
 
 impl std::fmt::Debug for IndexTables {
@@ -263,6 +342,10 @@ impl IndexTables {
 
     fn relations_table(&self) -> &lancedb::Table {
         &self.relations
+    }
+
+    fn sections_table(&self) -> &lancedb::Table {
+        &self.sections
     }
 
     /// The artifacts table's physical head version.
@@ -285,13 +368,29 @@ impl IndexTables {
             })
     }
 
-    /// Both head versions, as one pair for `compare_heads`.
+    /// The sections table's physical head version.
+    pub async fn sections_version(&self) -> Result<u64, ConstellationError> {
+        self.sections
+            .version()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("cannot read the sections version: {e}"),
+            })
+    }
+
+    /// All three head versions, for `compare_heads` and for the manifest pin.
+    ///
+    /// This build always owns a sections table — created alongside the other
+    /// two at bootstrap, or created on first open over a pre-sections root —
+    /// so the head is always `Some`. The `Option` in [`TableVersions`] exists
+    /// for manifests *written before* the table existed, not for this one.
     pub async fn head_versions(
         &self,
     ) -> Result<super::manifest::TableVersions, ConstellationError> {
-        Ok(super::manifest::TableVersions::new(
+        Ok(super::manifest::TableVersions::with_sections(
             self.artifacts_version().await?,
             self.relations_version().await?,
+            self.sections_version().await?,
         ))
     }
 
@@ -303,6 +402,7 @@ impl IndexTables {
     ) -> Result<super::publisher::MergeOutcome, ConstellationError> {
         super::publisher::execute_merge(
             self.artifacts_table(),
+            "artifacts",
             batch,
             full_source_batch,
             &super::publisher::MERGE_KEY,
@@ -327,7 +427,13 @@ impl IndexTables {
         keys: &[String],
         assignments: &[super::publisher::ColumnAssignment],
     ) -> Result<super::publisher::UpdateOutcome, ConstellationError> {
-        super::publisher::execute_column_update(self.artifacts_table(), keys, assignments).await
+        super::publisher::execute_column_update(
+            self.artifacts_table(),
+            "artifacts",
+            keys,
+            assignments,
+        )
+        .await
     }
 
     /// `merge_insert` against the relations table.
@@ -341,6 +447,7 @@ impl IndexTables {
     ) -> Result<super::publisher::MergeOutcome, ConstellationError> {
         super::publisher::execute_merge(
             self.relations_table(),
+            "relations",
             batch,
             full_source_batch,
             &super::publisher::RELATIONS_MERGE_KEY,
@@ -358,6 +465,44 @@ impl IndexTables {
             keys: keys.to_vec(),
         };
         super::publisher::execute_delete(self.relations_table(), &op).await
+    }
+
+    /// `merge_insert` against the sections table.
+    ///
+    /// Keyed on the section's own `canonical_key` (`"{parent}#s{ordinal}"`).
+    /// The batch is the **whole captured section set** — under
+    /// `full_source_batch` the source-delete clause removes sections of
+    /// deleted parents and sections an edit displaced, atomically inside the
+    /// upsert commit.
+    pub async fn merge_into_sections(
+        &self,
+        batch: Arc<arrow_array::RecordBatch>,
+        full_source_batch: bool,
+    ) -> Result<super::publisher::MergeOutcome, ConstellationError> {
+        super::publisher::execute_merge(
+            self.sections_table(),
+            "sections",
+            batch,
+            full_source_batch,
+            &super::publisher::MERGE_KEY,
+        )
+        .await
+    }
+
+    /// A bounded delete against the sections table, by **parent** key.
+    ///
+    /// The only shape the publish path needs: "every section of these gone
+    /// artifacts". Section rows are always replaced by the merge, never
+    /// deleted individually — the parent-key predicate is the whole delete
+    /// surface.
+    pub async fn delete_from_sections(
+        &self,
+        parent_keys: &[String],
+    ) -> Result<super::publisher::DeleteOutcome, ConstellationError> {
+        let op = super::publisher::CommitOp::SectionsDelete {
+            parent_keys: parent_keys.to_vec(),
+        };
+        super::publisher::execute_delete(self.sections_table(), &op).await
     }
 
     /// Read every artifacts row and decide its eligibility.
@@ -457,6 +602,87 @@ impl IndexTables {
                     key,
                     super::jobs::eligibility_for(&stored, &captured_binding),
                 );
+            }
+        }
+        Ok(report)
+    }
+
+    /// Read every sections row and decide its eligibility, keyed by section
+    /// `canonical_key` (`"{parent}#s{ordinal}"`).
+    ///
+    /// Same rules as [`Self::artifacts_eligibility`]: a full scalar scan, no
+    /// prefilter, and a row the capture does not describe is `CannotJudge`
+    /// rather than missing. The captured side is rebuilt per section — the
+    /// parent's durable fields (`incarnation`, `row_revision`,
+    /// `source_digest`, epoch, checkout) plus the section's own
+    /// `input_digest` — so a section whose parent moved is judged stale, not
+    /// silently current.
+    pub async fn sections_eligibility(
+        &self,
+        captured: &super::capture::CapturedSourceView,
+        profile_id: &str,
+    ) -> Result<super::jobs::EligibilityReport, ConstellationError> {
+        use futures::TryStreamExt;
+        use lancedb::query::ExecutableQuery;
+
+        let stream =
+            self.sections_table()
+                .query()
+                .execute()
+                .await
+                .map_err(|e| ConstellationError::Io {
+                    detail: format!("executing the sections eligibility query failed: {e}"),
+                })?;
+
+        let batches: Vec<arrow_array::RecordBatch> =
+            stream
+                .try_collect()
+                .await
+                .map_err(|e| ConstellationError::Io {
+                    detail: format!("collecting the sections eligibility scan failed: {e}"),
+                })?;
+
+        let mut report = super::jobs::EligibilityReport::default();
+        for batch in &batches {
+            let row_count = batch.num_rows();
+            for row in 0..row_count {
+                let Some(key) = batch
+                    .column_by_name("canonical_key")
+                    .and_then(|c| Self::read_str_from(c, row))
+                else {
+                    continue;
+                };
+                let stored = Self::read_binding(batch, row);
+                // The captured section names its parent; the parent's
+                // `SourceEntry` supplies the durable half of the binding.
+                let captured_binding = captured
+                    .section(&key)
+                    .and_then(|section| {
+                        captured
+                            .entries
+                            .iter()
+                            .find(|entry| entry.canonical_key == section.parent_key)
+                            .map(|entry| (section, entry))
+                    })
+                    .and_then(|(section, entry)| {
+                        super::publisher::binding_for_section(section, entry, profile_id).ok()
+                    });
+                match captured_binding {
+                    Some(binding) => {
+                        report.record(key, super::jobs::eligibility_for(&stored, &binding));
+                    }
+                    None => {
+                        report.record(
+                            key,
+                            super::jobs::Eligibility::CannotJudge {
+                                reason:
+                                    "the section row is not present in the capture, or its parent \
+                                     is not"
+                                        .to_string(),
+                            },
+                        );
+                    }
+                }
             }
         }
         Ok(report)
@@ -692,6 +918,125 @@ impl IndexTables {
     ) -> Result<u64, ConstellationError> {
         restore_to_published(self.relations_table(), "relations", published_version).await
     }
+
+    /// Rewind the sections writer to the published baseline.
+    ///
+    /// Called only when the published manifest actually pins a sections
+    /// version — a pre-sections generation carries `None` and the head is
+    /// free, never rewound against a pin that does not exist.
+    pub async fn restore_sections_to(
+        &self,
+        published_version: u64,
+    ) -> Result<u64, ConstellationError> {
+        restore_to_published(self.sections_table(), "sections", published_version).await
+    }
+
+    /// Publish a vector onto an **existing** section row, conditionally.
+    ///
+    /// The same guarded-write contract as
+    /// [`Self::publish_embedding_into_artifacts`]: [`Binding::predicate`]
+    /// predicates on the row's own stored binding — where `canonical_key` is
+    /// the *section* key and `incarnation`/`row_revision`/`source_digest` are
+    /// the parent's — so a completion computed against a superseded parent
+    /// body or a displaced section matches nothing and updates zero rows.
+    /// `stale` is a result, not a failure.
+    ///
+    /// # Errors
+    ///
+    /// [`ConstellationError::ModelUnavailable`] on a wrong-dimension or
+    /// non-finite vector; [`ConstellationError::Io`] on a failed update.
+    pub async fn publish_embedding_into_sections(
+        &self,
+        binding: &super::jobs::Binding,
+        vector: &[f32],
+    ) -> Result<super::jobs::EmbeddingPublish, ConstellationError> {
+        let literal = embedding_literal(vector, EMBEDDING_DIM as usize)?;
+        let guard = binding.predicate();
+
+        let updated = self
+            .update_sections_columns_where(
+                &guard,
+                &[
+                    ("embedding", literal),
+                    ("semantic_state", "'ready'".to_string()),
+                    (
+                        "profile_id",
+                        super::publisher::escape_predicate_literal(&binding.profile_id),
+                    ),
+                    (
+                        "input_digest",
+                        super::publisher::escape_predicate_literal(&binding.input_digest),
+                    ),
+                ],
+            )
+            .await?;
+
+        Ok(super::jobs::EmbeddingPublish {
+            binding: binding.clone(),
+            rows_updated: updated.rows_updated,
+            version: updated.version,
+            stale: updated.rows_updated == 0,
+        })
+    }
+
+    /// A bounded column update on the sections table under a
+    /// caller-independent guard — private for the same reason as
+    /// [`Self::update_artifacts_columns_where`]: an arbitrary `only_if` on a
+    /// sealed handle is the unguarded write this layer exists to remove.
+    async fn update_sections_columns_where(
+        &self,
+        predicate: &str,
+        columns: &[(&str, String)],
+    ) -> Result<super::publisher::UpdateOutcome, ConstellationError> {
+        if columns.is_empty() {
+            return Err(ConstellationError::Io {
+                detail: "a column update with no columns is rejected by Lance; \
+                          refusing it here names the cause"
+                    .to_string(),
+            });
+        }
+        let mut builder = self
+            .sections_table()
+            .update()
+            .only_if(predicate.to_string());
+        for (name, expression) in columns {
+            builder = builder.column((*name).to_string(), expression.clone());
+        }
+        let result = builder
+            .execute()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("conditional column update on the sections table failed: {e}"),
+            })?;
+
+        let (version, version_source) = if result.version != 0 {
+            (result.version, super::publisher::VersionSource::Reported)
+        } else {
+            let read =
+                self.sections_table()
+                    .version()
+                    .await
+                    .map_err(|e| ConstellationError::Io {
+                        detail: format!(
+                            "cannot read the sections version after a column update: {e}"
+                        ),
+                    })?;
+            if read == 0 {
+                return Err(ConstellationError::Io {
+                    detail: "the sections table reported version 0 after a column update"
+                        .to_string(),
+                });
+            }
+            (read, super::publisher::VersionSource::ReadFromTable)
+        };
+
+        Ok(super::publisher::UpdateOutcome {
+            version,
+            version_source,
+            rows_updated: result.rows_updated,
+            predicate: predicate.to_string(),
+        })
+    }
 }
 
 /// Open a connection on the wrapped `file-object-store` route.
@@ -740,7 +1085,7 @@ pub async fn create_active_tables(
     // `Arc::clone` is `impl<T: ?Sized> Clone for Arc<T>` and does not unsize
     // on the way out.
     let wrapper: Arc<dyn lance_io::object_store::WrappingObjectStore> = wrapper;
-    let mut created: Vec<lancedb::Table> = Vec::with_capacity(2);
+    let mut created: Vec<lancedb::Table> = Vec::with_capacity(super::storage::ACTIVE_TABLES.len());
     // `ACTIVE_TABLES` is `[(&str, &str)]` — `(role, table_name)` — so the role
     // is the tuple's first element, not the tuple itself.
     for (role, _) in storage::ACTIVE_TABLES {
@@ -783,12 +1128,22 @@ pub async fn create_active_tables(
         ));
     }
 
-    let relations = created.remove(1);
-    let artifacts = created.remove(0);
+    // `created` is in `ACTIVE_TABLES` order: artifacts, relations, sections.
+    let mut iter = created.into_iter();
+    let artifacts = iter.next().ok_or_else(|| ConstellationError::Io {
+        detail: "table creation produced no artifacts table".to_string(),
+    })?;
+    let relations = iter.next().ok_or_else(|| ConstellationError::Io {
+        detail: "table creation produced no relations table".to_string(),
+    })?;
+    let sections = iter.next().ok_or_else(|| ConstellationError::Io {
+        detail: "table creation produced no sections table".to_string(),
+    })?;
     Ok(IndexTables {
         connection,
         artifacts,
         relations,
+        sections,
     })
 }
 
@@ -837,44 +1192,106 @@ pub async fn open_active_tables(
     // out, so coercing through a generic clone is a type error; shadowing the
     // binding is where the coercion actually happens.
     let wrapper: Arc<dyn lance_io::object_store::WrappingObjectStore> = wrapper;
-    let mut opened = Vec::with_capacity(2);
+    let mut opened = Vec::with_capacity(super::storage::ACTIVE_TABLES.len());
     // `ACTIVE_TABLES` is `[(&str, &str)]` — `(role, table_name)` — so the role
     // is the tuple's first element, not the tuple itself.
-    for (role, _) in storage::ACTIVE_TABLES {
-        let uri = storage::table_uri_for_role(marker, role, index_root)?;
+    for (role, table_name) in storage::ACTIVE_TABLES {
+        // `resolve_table_uri`, not `table_uri_for_role`: a marker written
+        // before `constellation_sections_v1` existed declares only two names,
+        // and the sections role still resolves to its canonical URI — that is
+        // the whole upgrade path. Artifacts/relations keep strict lookup.
+        let uri = storage::resolve_table_uri(index_root, marker, role, table_name)?;
         storage::assert_not_wrapped_route(&uri)?;
         // A writer opens on the same wrapped route as its creator, with the
         // same wrapper the publisher holds, so the closure it writes into is
         // the publisher's.
-        opened.push((
+        let native = match lancedb::table::NativeTable::open_with_params(
+            &uri,
             role,
-            lancedb::table::NativeTable::open_with_params(
-                &uri,
-                role,
-                Vec::new(),
-                Some(Arc::clone(&wrapper)),
-                None,
-                None,
-                None,
-                false,
-                None,
-            )
-            .await
-            .map_err(|e| ConstellationError::IndexGenerationUnavailable {
-                detail: format!("cannot open the {role} table at {uri}: {e}"),
-            })?,
-        ));
+            Vec::new(),
+            Some(Arc::clone(&wrapper)),
+            None,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        {
+            Ok(native) => native,
+            // The sections upgrade path: an index published before the third
+            // table existed has no `constellation_sections_v1.lance` dataset,
+            // and its manifest legitimately pins `sections: None`. Creating
+            // the missing dataset here — under the same owner the caller
+            // already holds and through the same tracking wrapper — is the
+            // upgrade, not a silent repair: a manifest that pins a sections
+            // version still fails its pinned open at `open_table_at_version`.
+            Err(lancedb::Error::TableNotFound { .. }) if role == "sections" => {
+                lancedb::table::NativeTable::create_empty(
+                    &uri,
+                    role,
+                    Vec::new(),
+                    sections_v1_schema(),
+                    Some(Arc::clone(&wrapper)),
+                    None,
+                    None,
+                    None,
+                    false,
+                )
+                .await
+                .map_err(|e| ConstellationError::Io {
+                    detail: format!("cannot create the {role} table at {uri}: {e}"),
+                })?
+            }
+            Err(e) => {
+                return Err(ConstellationError::IndexGenerationUnavailable {
+                    detail: format!("cannot open the {role} table at {uri}: {e}"),
+                });
+            }
+        };
+        opened.push((role, native));
     }
 
     let connection = open_wrapped_connection(index_root).await?;
     let database = Arc::clone(connection.database());
-    let artifacts = lancedb::table::Table::new(Arc::new(opened.remove(0).1), Arc::clone(&database));
-    let relations = lancedb::table::Table::new(Arc::new(opened.remove(0).1), database);
+    // `opened` is in `ACTIVE_TABLES` order: artifacts, relations, sections.
+    let mut iter = opened.into_iter();
+    let artifacts = lancedb::table::Table::new(
+        Arc::new(
+            iter.next()
+                .ok_or_else(|| ConstellationError::Io {
+                    detail: "no artifacts table was opened".to_string(),
+                })?
+                .1,
+        ),
+        Arc::clone(&database),
+    );
+    let relations = lancedb::table::Table::new(
+        Arc::new(
+            iter.next()
+                .ok_or_else(|| ConstellationError::Io {
+                    detail: "no relations table was opened".to_string(),
+                })?
+                .1,
+        ),
+        Arc::clone(&database),
+    );
+    let sections = lancedb::table::Table::new(
+        Arc::new(
+            iter.next()
+                .ok_or_else(|| ConstellationError::Io {
+                    detail: "no sections table was opened".to_string(),
+                })?
+                .1,
+        ),
+        database,
+    );
 
     Ok(IndexTables {
         connection,
         artifacts,
         relations,
+        sections,
     })
 }
 
@@ -1398,17 +1815,71 @@ mod tests {
     }
 
     #[test]
-    fn schema_for_role_resolves_both_active_tables_and_refuses_anything_else() {
+    fn schema_for_role_resolves_all_active_tables_and_refuses_anything_else() {
         let artifacts_role = schema_for_role("artifacts").unwrap();
         let artifacts_schema = artifacts_v1_schema();
         assert_eq!(field_names(&artifacts_role), field_names(&artifacts_schema));
         let relations_role = schema_for_role("relations").unwrap();
         let relations_schema = relations_v1_schema();
         assert_eq!(field_names(&relations_role), field_names(&relations_schema));
+        let sections_role = schema_for_role("sections").unwrap();
+        let sections_schema = sections_v1_schema();
+        assert_eq!(field_names(&sections_role), field_names(&sections_schema));
         let err = schema_for_role("legacy").unwrap_err();
         assert_eq!(
             err.code(),
             super::super::DiagnosticCode::IndexProtocolMismatch
+        );
+    }
+
+    #[test]
+    fn the_sections_schema_carries_the_section_contract_and_the_binding() {
+        let schema = sections_v1_schema();
+        let names = field_names(&schema);
+        // The section's own identity plus everything a hit needs to name its
+        // parent — a section row must be self-describing because a semantic
+        // read can return it without touching the artifacts table.
+        for required in [
+            "canonical_key",
+            "parent_key",
+            "parent_display_id",
+            "ordinal",
+            "heading",
+            "level",
+            "title",
+            "content",
+            "embedding",
+            "source_digest",
+            "input_digest",
+            "profile_id",
+            "incarnation",
+            "row_revision",
+            "index_epoch",
+            "checkout_id",
+            "semantic_state",
+            "retry_after",
+        ] {
+            assert!(
+                names.contains(&required),
+                "the section contract requires `{required}`; schema has {names:?}"
+            );
+        }
+        let key = schema.field_with_name("canonical_key").unwrap();
+        assert_eq!(key.data_type(), &DataType::Utf8);
+        assert!(!key.is_nullable(), "the merge key cannot be nullable");
+        // Ordinal and level are the positional identity; nullable `level`
+        // because the whole-body fallback section carries no heading level.
+        assert!(
+            !schema.field_with_name("ordinal").unwrap().is_nullable(),
+            "ordinal is the positional identity and cannot be null"
+        );
+        assert!(
+            schema.field_with_name("level").unwrap().is_nullable(),
+            "the fallback section carries no heading level"
+        );
+        assert!(
+            schema.field_with_name("heading").unwrap().is_nullable(),
+            "the fallback and preamble sections carry no heading"
         );
     }
 

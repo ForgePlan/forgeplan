@@ -57,6 +57,10 @@ pub struct GenerationEntry {
     /// Table versions this generation pins, when known.
     pub artifacts_version: Option<u64>,
     pub relations_version: Option<u64>,
+    /// The sections version, when the manifest pins one. `None` is both "an
+    /// old generation" and "an unparseable manifest" — either way it does not
+    /// enter the GC floor, which errs toward keeping versions.
+    pub sections_version: Option<u64>,
     pub evaluated_at: Option<String>,
     pub is_current: bool,
     /// Lease ids pinning this generation right now.
@@ -152,6 +156,7 @@ pub fn generation_index(index_root: &Path) -> Result<GenerationIndex, Constellat
                 manifest_bytes: bytes.len() as u64,
                 artifacts_version: manifest.as_ref().map(|m| m.table_versions.artifacts),
                 relations_version: manifest.as_ref().map(|m| m.table_versions.relations),
+                sections_version: manifest.as_ref().and_then(|m| m.table_versions.sections),
                 evaluated_at: manifest.as_ref().map(|m| m.evaluated_at.clone()),
                 leased_by,
             });
@@ -300,6 +305,16 @@ pub async fn gc_generations(
                 .entry("relations")
                 .and_modify(|v| *v = (*v).min(r))
                 .or_insert(r);
+            // A generation that predates the sections table pins nothing for
+            // it — `None` contributes no floor, exactly as an unparseable
+            // manifest contributes none: unknown state is protected, never
+            // freed.
+            if let Some(s) = entry.sections_version {
+                floor
+                    .entry("sections")
+                    .and_modify(|v| *v = (*v).min(s))
+                    .or_insert(s);
+            }
         }
     }
     let mut pruned = Vec::new();
@@ -317,8 +332,10 @@ pub async fn gc_generations(
     })
 }
 
-/// Open both active tables at head, list versions, and prune strictly
+/// Open the active tables at head, list versions, and prune strictly
 /// older than each table's floor — never younger than the recency window.
+/// The `sections` role resolves through the same marker; an index that
+/// predates the table simply reports "cannot open" and skips it.
 async fn prune_tables(
     index_root: &Path,
     floor: &std::collections::BTreeMap<&'static str, u64>,

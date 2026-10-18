@@ -49,7 +49,7 @@ use std::sync::Arc;
 use super::durability::{DurabilityTrackingStore, PlatformDurability, StageTracker};
 use super::manifest::{
     BootstrapState, CurrentDescriptor, GenerationManifest, ProtocolMarker,
-    STORAGE_SCHEME_FILE_OBJECT_STORE, TABLE_ARTIFACTS_V1, TABLE_RELATIONS_V1,
+    STORAGE_SCHEME_FILE_OBJECT_STORE, TABLE_ARTIFACTS_V1, TABLE_RELATIONS_V1, TABLE_SECTIONS_V1,
 };
 use super::{ConstellationError, sha256_hex};
 
@@ -62,13 +62,16 @@ pub const CURRENT_FILE_NAME: &str = "CURRENT.json";
 /// Subdirectory holding immutable generation manifests.
 pub const GENERATIONS_DIR: &str = "generations";
 
-/// The two active tables, as `(role, name)`.
+/// The three active tables, as `(role, name)`.
 ///
 /// Order is fixed so a manifest's `table_names` and a caller's expectation
-/// cannot disagree about which is which.
-pub const ACTIVE_TABLES: [(&str, &str); 2] = [
+/// cannot disagree about which is which: `artifacts`, `relations`, then
+/// `sections` — the first two keep their positions for roots written before
+/// the sections table existed.
+pub const ACTIVE_TABLES: [(&str, &str); 3] = [
     ("artifacts", TABLE_ARTIFACTS_V1),
     ("relations", TABLE_RELATIONS_V1),
+    ("sections", TABLE_SECTIONS_V1),
 ];
 
 /// Suffix of the `.lance` dataset directory Lance creates for a table.
@@ -108,6 +111,50 @@ pub fn table_uri_for_role(
     }
 
     Ok(build_table_uri(index_root, name))
+}
+
+/// Resolve the URI for one active role, tolerating markers written before
+/// the role's table existed.
+///
+/// [`table_uri_for_role`] stays strict — a marker that does not declare the
+/// name is a protocol mismatch. This helper adds exactly one exception, for
+/// upgrade-time table creation under the owner lock: when `(role,
+/// table_name)` is one of [`ACTIVE_TABLES`] — i.e. the caller is asking for
+/// our own canonical name — and the validating marker simply predates that
+/// table (a two-name `PROTOCOL.json` from before `constellation_sections_v1`
+/// existed), the canonical name under this index root is the URI.
+///
+/// A marker that fails `validate`, an unknown role, and a `table_name` that
+/// is not the role's canonical name all still fail as protocol mismatches —
+/// this widens nothing a foreign or future marker could slip through.
+///
+/// `pub(crate)` — called by `lance_tables::ensure_active_table_shapes`.
+pub(crate) fn resolve_table_uri(
+    index_root: &Path,
+    marker: &ProtocolMarker,
+    role: &str,
+    table_name: &str,
+) -> Result<String, ConstellationError> {
+    if let Ok(uri) = table_uri_for_role(marker, role, index_root) {
+        return Ok(uri);
+    }
+
+    // Upgrade path: marker must be valid *and* this must be our own role
+    // naming its canonical table — never a workaround for a foreign marker.
+    marker.validate()?;
+    let canonical = ACTIVE_TABLES
+        .iter()
+        .find(|(candidate, _)| *candidate == role)
+        .map(|(_, name)| *name);
+    match canonical {
+        Some(canonical) if canonical == table_name => Ok(build_table_uri(index_root, table_name)),
+        _ => Err(ConstellationError::IndexProtocolMismatch {
+            detail: format!(
+                "`{role}`/`{table_name}` is not an active table of this protocol and the marker \
+                 does not declare it"
+            ),
+        }),
+    }
 }
 
 /// Build the URI for one declared table name under `index_root`.
@@ -697,7 +744,7 @@ mod tests {
     fn active_uris_carry_the_wrapped_scheme() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join(".forgeplan").join("lance");
-        for role in ["artifacts", "relations"] {
+        for role in ["artifacts", "relations", "sections"] {
             let uri = table_uri_for_role(&marker(), role, &root).unwrap();
             assert!(uri.starts_with("file-object-store:///"), "{uri}");
             assert!(
@@ -708,14 +755,43 @@ mod tests {
     }
 
     #[test]
-    fn the_two_roles_get_different_datasets() {
+    fn the_three_roles_get_different_datasets() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         let a = table_uri_for_role(&marker(), "artifacts", root).unwrap();
         let r = table_uri_for_role(&marker(), "relations", root).unwrap();
+        let s = table_uri_for_role(&marker(), "sections", root).unwrap();
         assert_ne!(a, r);
+        assert_ne!(a, s);
+        assert_ne!(r, s);
         assert!(a.contains(TABLE_ARTIFACTS_V1));
         assert!(r.contains(TABLE_RELATIONS_V1));
+        assert!(s.contains(TABLE_SECTIONS_V1));
+    }
+
+    #[test]
+    fn a_two_name_marker_resolves_sections_only_through_the_upgrade_path() {
+        let tmp = TempDir::new().unwrap();
+        let mut m = marker();
+        m.table_names = vec![
+            TABLE_ARTIFACTS_V1.to_string(),
+            TABLE_RELATIONS_V1.to_string(),
+        ];
+        // The strict path still refuses what the marker does not declare.
+        assert!(table_uri_for_role(&m, "sections", tmp.path()).is_err());
+        // The upgrade path maps the canonical name — and only that name.
+        let uri = resolve_table_uri(tmp.path(), &m, "sections", TABLE_SECTIONS_V1).unwrap();
+        assert!(uri.contains(TABLE_SECTIONS_V1));
+        assert!(
+            resolve_table_uri(tmp.path(), &m, "sections", "something_else").is_err(),
+            "the fallback names the canonical table, never a caller's guess"
+        );
+        assert!(resolve_table_uri(tmp.path(), &m, "bogus", TABLE_SECTIONS_V1).is_err());
+        // A declared name resolves through the same helper unchanged.
+        assert_eq!(
+            resolve_table_uri(tmp.path(), &m, "artifacts", TABLE_ARTIFACTS_V1).unwrap(),
+            table_uri_for_role(&m, "artifacts", tmp.path()).unwrap()
+        );
     }
 
     #[test]

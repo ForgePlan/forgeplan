@@ -74,7 +74,7 @@ pub fn generations() -> Result<()> {
             flags.push("manifest-unreadable".to_string());
         }
         println!(
-            "  {:<40} {:>8}B  v{}/{}  {}",
+            "  {:<40} {:>8}B  v{}/{}/{}  {}",
             g.generation_id,
             g.manifest_bytes,
             g.artifacts_version
@@ -83,6 +83,9 @@ pub fn generations() -> Result<()> {
             g.relations_version
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "?".into()),
+            g.sections_version
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into()),
             flags.join(" ")
         );
     }
@@ -160,19 +163,31 @@ pub async fn run(embed_profile: Option<String>, deadline_secs: u64) -> Result<()
         );
     }
     println!(
-        "  tables:      artifacts@v{} relations@v{}",
-        outcome.table_versions.artifacts, outcome.table_versions.relations
+        "  tables:      artifacts@v{} relations@v{} sections@v{}",
+        outcome.table_versions.artifacts,
+        outcome.table_versions.relations,
+        outcome
+            .table_versions
+            .sections
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".into())
     );
     match &outcome.verification {
         Some(report) => {
             println!(
-                "  verified:    {}/{} keys, {}/{} edges (pinned v{}, relations v{})",
+                "  verified:    {}/{} keys, {}/{} edges, {}/{} sections (pinned v{}, relations v{}, sections v{})",
                 report.verified_keys,
                 report.expected_keys,
                 report.verified_edges,
                 report.expected_edges,
+                report.verified_sections,
+                report.expected_sections,
                 report.reader_version,
-                report.relations_version
+                report.relations_version,
+                report
+                    .sections_version
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".into())
             );
         }
         None => println!("  verified:    nothing staged (no-op pass)"),

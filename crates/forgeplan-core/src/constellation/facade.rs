@@ -207,6 +207,11 @@ pub struct PinnedVectorView {
     pub manifest: Arc<GenerationManifest>,
     pub artifacts_version: u64,
     pub relations_version: u64,
+    /// The exact sections version this generation pins — `None` for a
+    /// generation written before `constellation_sections_v1` existed. `None`
+    /// means "section search is not part of this generation", never "open
+    /// the latest": there is no fallback to head anywhere in this protocol.
+    pub sections_version: Option<u64>,
 }
 
 /// Open the generation a descriptor names, at its **exact** versions.
@@ -243,6 +248,7 @@ pub fn open_pinned_view(
         descriptor: descriptor.clone(),
         artifacts_version: descriptor.effective_artifacts_version(&manifest)?,
         relations_version: manifest.table_versions.relations,
+        sections_version: descriptor.effective_sections_version(&manifest)?,
         manifest,
     })
 }
@@ -352,7 +358,7 @@ pub async fn eligible_inputs(
         .and_then(|config| config.embedding.map(|embedding| embedding.chunk_size))
         .unwrap_or(super::jobs::DEFAULT_BODY_PREFIX_CHARS);
 
-    Ok(captured
+    let mut inputs: Vec<(String, String)> = captured
         .artifacts
         .iter()
         // A row with no input digest cannot be bound, so it cannot be
@@ -365,7 +371,18 @@ pub async fn eligible_inputs(
                 super::jobs::embedding_input_text(&artifact.title, &artifact.body, prefix_chars),
             )
         })
-        .collect())
+        .collect();
+    // Section inputs join under their own keys (`"{parent}#s{ordinal}"`).
+    // Every captured section carries a digest by construction, so there is
+    // no bindability gate — and the input text is the capture's own
+    // `section_input`, the same string the tokenizer receives.
+    for section in &captured.sections {
+        inputs.push((
+            section.canonical_key.clone(),
+            captured.section_input(section, prefix_chars),
+        ));
+    }
+    Ok(inputs)
 }
 
 /// Publish explicitly-computed vectors against the captured source.
@@ -438,8 +455,11 @@ pub async fn embed_with_publisher(
     let tables =
         open_active_tables(&index_root, &marker, Arc::clone(publisher.tracking_store())).await?;
 
-    // 5. What needs doing, judged against the captured binding.
-    let eligibility = tables.artifacts_eligibility(&captured, &profile_id).await?;
+    // 5. What needs doing, judged against the captured binding — artifacts
+    //    and sections under one report (section keys are `"{parent}#sN"`,
+    //    disjoint from artifact keys by construction).
+    let mut eligibility = tables.artifacts_eligibility(&captured, &profile_id).await?;
+    eligibility.merge_from(&tables.sections_eligibility(&captured, &profile_id).await?);
     let eligible_keys: Vec<String> = eligibility
         .eligible_keys()
         .into_iter()
@@ -558,7 +578,8 @@ pub async fn embedding_precheck(
     };
     let tables =
         open_active_tables(&index_root, &marker, Arc::clone(publisher.tracking_store())).await?;
-    let eligibility = tables.artifacts_eligibility(&captured, &profile_id).await?;
+    let mut eligibility = tables.artifacts_eligibility(&captured, &profile_id).await?;
+    eligibility.merge_from(&tables.sections_eligibility(&captured, &profile_id).await?);
     drop(tables);
     drop(publisher);
 
@@ -752,6 +773,12 @@ pub async fn maintain_index(
     // vectors on every reconcile.
     let mut baseline = (*published).clone();
     baseline.table_versions.artifacts = descriptor.effective_artifacts_version(&published)?;
+    // Same rule for sections: a completed drain advances the head and the
+    // descriptor records it. Comparing against the manifest's pin alone
+    // would call those writes divergence and restore over committed section
+    // vectors — the exact thing `effective_sections_version` exists to
+    // prevent.
+    baseline.table_versions.sections = descriptor.effective_sections_version(&published)?;
 
     let marker = marker_for(&published);
     let tables = super::lance_tables::open_active_tables(
@@ -765,15 +792,19 @@ pub async fn maintain_index(
         Some(&baseline),
         tables.artifacts_version().await?,
         tables.relations_version().await?,
+        tables.sections_version().await?,
     ) {
         HeadComparison::Matches => {}
         HeadComparison::Diverged {
             artifacts_diverged,
             relations_diverged,
+            sections_diverged,
         } => {
             // Only the affected table is rewound. Each restore creates a NEW
             // physical head, so versions are re-read afterwards and that
-            // post-restore pair is what gets recorded.
+            // post-restore set is what gets recorded. A pre-sections
+            // generation pins `sections: None`, so `sections_diverged` can
+            // never be true under one — the head is free, not divergent.
             if artifacts_diverged {
                 tables
                     .restore_artifacts_to(baseline.table_versions.artifacts)
@@ -783,6 +814,15 @@ pub async fn maintain_index(
                 tables
                     .restore_relations_to(baseline.table_versions.relations)
                     .await?;
+            }
+            if sections_diverged {
+                let pinned = baseline.table_versions.sections.ok_or_else(|| {
+                    ConstellationError::IndexGenerationUnavailable {
+                        detail: "sections head diverged but the published manifest pins none"
+                            .to_string(),
+                    }
+                })?;
+                tables.restore_sections_to(pinned).await?;
             }
         }
         HeadComparison::MissingPublishedVersion { role } => {
@@ -836,11 +876,27 @@ pub async fn maintain_index(
         delete_keys: relations_delete_keys,
         merge_rows: edge_batch.num_rows(),
     };
+    let section_batch = super::publisher::sections_batch(&captured)?;
+    let sections_plan = super::publisher::SectionsPlan {
+        // Sections of a deleted parent die by parent key — the tombstones
+        // are the same confirmed absences the artifact delete used.
+        parent_delete_keys: reconcile
+            .tombstones
+            .iter()
+            .map(|t| t.canonical_key.clone())
+            .collect(),
+        merge_rows: section_batch.num_rows(),
+        // A published generation that predates the sections table has no pin;
+        // its first post-upgrade pass must populate the table even when the
+        // artifact side is a no-op.
+        bootstrap: baseline.table_versions.sections.is_none(),
+    };
     let sequence = stage_sequence(
         &commits_plan,
         captured.artifacts.len(),
         delete_keys,
         &relations_plan,
+        &sections_plan,
     );
 
     let mut commits: Vec<CommitSummary> = Vec::new();
@@ -912,6 +968,31 @@ pub async fn maintain_index(
                             + outcome.num_deleted_rows,
                     });
                 }
+                super::publisher::CommitOp::SectionsDelete { parent_keys } => {
+                    let outcome = tables.delete_from_sections(parent_keys).await?;
+                    commits.push(CommitSummary {
+                        kind: "sections_delete",
+                        version: outcome.version,
+                        rows_affected: outcome.rows_deleted,
+                    });
+                }
+                super::publisher::CommitOp::SectionsMerge {
+                    full_source_batch, ..
+                } => {
+                    let outcome = tables
+                        .merge_into_sections(
+                            std::sync::Arc::clone(&section_batch),
+                            *full_source_batch,
+                        )
+                        .await?;
+                    commits.push(CommitSummary {
+                        kind: "sections_merge",
+                        version: outcome.version,
+                        rows_affected: outcome.num_inserted_rows
+                            + outcome.num_updated_rows
+                            + outcome.num_deleted_rows,
+                    });
+                }
             }
             drop(guard);
         }
@@ -935,6 +1016,28 @@ pub async fn maintain_index(
             .iter()
             .map(|artifact| artifact.outgoing.len())
             .sum();
+        // The sections check is pinned to the committed head and proves every
+        // captured section row carries its parent's source digest. It always
+        // runs when a stage ran: this build owns a sections table, so the new
+        // manifest will pin `Some(_)` and the rows must actually exist.
+        let expected_sections_map: std::collections::BTreeMap<String, String> = captured
+            .sections
+            .iter()
+            .filter_map(|section| {
+                captured
+                    .entries
+                    .iter()
+                    .find(|entry| entry.canonical_key == section.parent_key)
+                    .map(|entry| (section.canonical_key.clone(), entry.source_digest.clone()))
+            })
+            .collect();
+        let sections_expectation =
+            committed_versions
+                .sections
+                .map(|version| super::publisher::SectionsExpectation {
+                    version,
+                    digests: expected_sections_map,
+                });
         verification = Some(
             super::publisher::verify_staged(
                 &index_root,
@@ -943,6 +1046,7 @@ pub async fn maintain_index(
                 &expected,
                 committed_versions.relations,
                 expected_edges,
+                sections_expectation.as_ref(),
             )
             .await
             .map_err(|e| ConstellationError::Io {
@@ -1252,8 +1356,13 @@ pub async fn drain_embedding_queue(
     )
     .await?;
 
-    // (2) What the index asks for, before we spend a model call.
-    let before = tables.artifacts_eligibility(&captured, profile_id).await?;
+    // (2) What the index asks for, before we spend a model call — artifact
+    // rows and section rows judged under one report. The key namespace is
+    // disjoint by construction (section keys carry `#s<ordinal>`), so a
+    // merged report can never confuse the two.
+    let mut before = tables.artifacts_eligibility(&captured, profile_id).await?;
+    let sections_before = tables.sections_eligibility(&captured, profile_id).await?;
+    before.merge_from(&sections_before);
 
     let work_keys: Vec<String> = before
         .eligible_keys()
@@ -1266,26 +1375,32 @@ pub async fn drain_embedding_queue(
     if !work_keys.is_empty() {
         // (3) Inference before any publish lock. Inputs are built from the
         // same captured bytes the binding digests came from, so the vector
-        // and its binding can never drift apart.
+        // and its binding can never drift apart. An artifact key gets
+        // `title + body prefix`; a section key gets `title + heading +
+        // content prefix` — the two inputs are distinct strings over
+        // distinct digests, never interchangeable.
         let mut inputs: Vec<(String, String)> = Vec::with_capacity(work_keys.len());
         for key in &work_keys {
-            let Some(artifact) = captured
-                .artifacts
-                .iter()
-                .find(|artifact| &artifact.canonical_key == key)
-            else {
-                // Eligible but not captured: leave it for the next drain and
-                // let the `after` report say so.
+            if let Some(artifact) = captured.artifact(key) {
+                inputs.push((
+                    key.clone(),
+                    super::jobs::embedding_input_text(
+                        &artifact.title,
+                        &artifact.body,
+                        body_prefix_chars,
+                    ),
+                ));
                 continue;
-            };
-            inputs.push((
-                key.clone(),
-                super::jobs::embedding_input_text(
-                    &artifact.title,
-                    &artifact.body,
-                    body_prefix_chars,
-                ),
-            ));
+            }
+            if let Some(section) = captured.section(key) {
+                inputs.push((
+                    key.clone(),
+                    captured.section_input(section, body_prefix_chars),
+                ));
+                continue;
+            }
+            // Eligible but not captured: leave it for the next drain and let
+            // the `after` report say so.
         }
 
         const EMBED_BATCH: usize = 32;
@@ -1316,6 +1431,10 @@ pub async fn drain_embedding_queue(
     // refuses a key absent from the capture and the row-side predicate does
     // the staleness work, so a vector is never installed onto a moved row.
     let mut embedded = 0usize;
+    // Whether this drain issued any section publish — even a stale one can
+    // commit a version bump, so the head must be recorded on attempt, not
+    // on landed rows.
+    let mut sections_touched = false;
     let mut stale_completions = 0usize;
     for (key, vector) in vectors {
         if std::time::Instant::now() >= deadline {
@@ -1330,6 +1449,7 @@ pub async fn drain_embedding_queue(
             .map_err(|e| ConstellationError::Io {
                 detail: format!("cannot take the workspace lock for a vector publish: {e}"),
             })?;
+        sections_touched |= captured.section(&key).is_some();
         let mut single = std::collections::BTreeMap::new();
         single.insert(key, vector);
         for outcome in
@@ -1344,14 +1464,23 @@ pub async fn drain_embedding_queue(
         drop(guard);
     }
 
-    // (5) Coverage as the index holds it, not as the queue hoped.
-    let after = tables.artifacts_eligibility(&captured, profile_id).await?;
+    // (5) Coverage as the index holds it, not as the queue hoped — artifact
+    // and section rows again under one report.
+    let mut after = tables.artifacts_eligibility(&captured, profile_id).await?;
+    let sections_after = tables.sections_eligibility(&captured, profile_id).await?;
+    after.merge_from(&sections_after);
 
-    // (6) Record where embedding completion left the artifacts head. The
-    // manifest is immutable, so the completed head lives on the descriptor:
-    // without it the next reconcile would read the movement as divergence
+    // (6) Record where embedding completion left the heads it wrote. The
+    // manifest is immutable, so completed heads live on the descriptor:
+    // without them the next reconcile would read the movement as divergence
     // and restore over the vectors this drain just wrote. The publisher is
-    // still held, so nothing else can move the head before this republish.
+    // still held, so nothing else can move the heads before this republish.
+    //
+    // `embedding_sections_head` mirrors `embedding_artifacts_head` exactly:
+    // it is set when a section publish actually landed. The manifest may
+    // still pin `sections: None` — a pre-sections generation — and
+    // `effective_sections_version` resolves that: the descriptor head is the
+    // only source until a reconcile pins the table properly.
     //
     // `profile_id` follows the same rule: when this drain put or confirmed
     // vectors under `profile_id`, that is the space pinned semantic reads
@@ -1362,6 +1491,14 @@ pub async fn drain_embedding_queue(
     let mut next = descriptor.clone();
     if embedded > 0 {
         next.embedding_artifacts_head = Some(head);
+    }
+    if sections_touched {
+        // The drain wrote section rows, so the sections head moved. Record
+        // it on the descriptor even when the manifest still pins
+        // `sections: None` (a pre-sections generation) — that pin is resolved
+        // by `effective_sections_version`, which treats the descriptor head
+        // as the only source until a reconcile pins the table.
+        next.embedding_sections_head = Some(tables.sections_version().await?);
     }
     if claims_space {
         next.profile_id = Some(profile_id.to_string());
@@ -1778,10 +1915,19 @@ pub async fn search_pinned_lexical(
     })
 }
 
-/// One semantic hit at the pinned generation.
+/// One semantic hit at the pinned generation — artifact row or section row.
 #[derive(Debug, serde::Serialize)]
 pub struct SemanticHit {
+    /// The matched row's own key: the artifact `canonical_key`, or the
+    /// section key `"{parent}#s{ordinal}"` when a section row won.
     pub canonical_key: String,
+    /// For a section hit, the artifact it belongs to. `None` on an
+    /// artifact-level hit — the key already is the artifact's.
+    pub parent_key: Option<String>,
+    /// Section ordinal within the parent, `None` on an artifact-level hit.
+    pub section_ordinal: Option<u64>,
+    /// The section's heading text, `None` for the whole-body fallback row.
+    pub section_heading: Option<String>,
     pub display_id: Option<String>,
     pub title: String,
     /// Cosine similarity derived from lance's `_distance`: `1.0 - distance`.
@@ -1794,9 +1940,16 @@ pub struct SemanticHit {
 pub struct SemanticSearchOutcome {
     pub generation_id: String,
     pub pinned_artifacts_version: u64,
+    /// The pinned sections version the search also queried, or `None` when
+    /// this generation predates `constellation_sections_v1` — the hits then
+    /// came from artifact rows alone and `semantic_scope` says so.
+    pub pinned_sections_version: Option<u64>,
+    /// Which embedding space the hits span: `prefix` or `prefix+sections`.
+    pub semantic_scope: &'static str,
     /// How many stored vectors were eligible to rank — ready under *this*
-    /// profile. Distinct from `hits.len()`: a corpus can hold zero ready
-    /// rows under the profile and still contain plenty under another.
+    /// profile, across both tables. Distinct from `hits.len()`: a corpus can
+    /// hold zero ready rows under the profile and still contain plenty under
+    /// another.
     pub eligible_rows: usize,
     pub hits: Vec<SemanticHit>,
 }
@@ -1852,6 +2005,18 @@ pub async fn search_pinned_semantic(
     )
     .await?;
 
+    // The sections half pins to the descriptor's effective version — the
+    // manifest's pin or the drain head — and is absent entirely for a
+    // pre-sections generation. `None` never means "open latest".
+    let sections_version = descriptor.effective_sections_version(&manifest)?;
+    let sections_table = match sections_version {
+        Some(version) => Some(
+            super::lance_tables::open_table_at_version(index_root, &marker, "sections", version)
+                .await?,
+        ),
+        None => None,
+    };
+
     // `escape_predicate_literal` already returns a delimited literal —
     // wrapping it in quotes again would produce `''x''`, which parses as an
     // empty string beside a bare identifier and matches nothing.
@@ -1862,6 +2027,14 @@ pub async fn search_pinned_semantic(
     let batches = table
         .nearest_embeddings(query_vector, &predicate, limit)
         .await?;
+    let section_batches = match &sections_table {
+        Some(sections) => {
+            sections
+                .nearest_embeddings(query_vector, &predicate, limit)
+                .await?
+        }
+        None => Vec::new(),
+    };
 
     let read_str = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<String> {
         use arrow_array::Array;
@@ -1894,6 +2067,17 @@ pub async fn search_pinned_semantic(
                     .map(|a| a.value(row))
             })
     };
+    let read_u64 = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<u64> {
+        use arrow_array::Array;
+        let column = batch.column_by_name(col)?;
+        if row >= column.len() || column.is_null(row) {
+            return None;
+        }
+        column
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .map(|a| a.value(row))
+    };
 
     let mut hits = Vec::new();
     let mut eligible_rows = 0usize;
@@ -1902,17 +2086,50 @@ pub async fn search_pinned_semantic(
         for row in 0..batch.num_rows() {
             hits.push(SemanticHit {
                 canonical_key: read_str(batch, "canonical_key", row).unwrap_or_default(),
+                parent_key: None,
+                section_ordinal: None,
+                section_heading: None,
                 display_id: read_str(batch, "id", row),
                 title: read_str(batch, "title", row).unwrap_or_default(),
                 similarity: read_dist(batch, row).map_or(0.0, |d| 1.0 - d),
             });
         }
     }
+    for batch in &section_batches {
+        eligible_rows += batch.num_rows();
+        for row in 0..batch.num_rows() {
+            hits.push(SemanticHit {
+                canonical_key: read_str(batch, "canonical_key", row).unwrap_or_default(),
+                parent_key: read_str(batch, "parent_key", row),
+                section_ordinal: read_u64(batch, "ordinal", row),
+                section_heading: read_str(batch, "heading", row),
+                display_id: read_str(batch, "parent_display_id", row),
+                title: read_str(batch, "title", row).unwrap_or_default(),
+                similarity: read_dist(batch, row).map_or(0.0, |d| 1.0 - d),
+            });
+        }
+    }
+    // Merge deterministically: similarity descending, then canonical_key
+    // ascending — a bare artifact key sorts before its own `X#sN` sections,
+    // so a tie prefers the whole-artifact row over any of its sections. The
+    // order is stable across runs because both inputs come from fixed pinned
+    // versions and the tie-break is total.
+    hits.sort_by(|a, b| {
+        b.similarity
+            .total_cmp(&a.similarity)
+            .then_with(|| a.canonical_key.cmp(&b.canonical_key))
+    });
     hits.truncate(limit);
 
     Ok(SemanticSearchOutcome {
         generation_id: manifest.generation_id.clone(),
         pinned_artifacts_version: artifacts_version,
+        pinned_sections_version: sections_version,
+        semantic_scope: if sections_version.is_some() {
+            super::jobs::SEMANTIC_SCOPE_WITH_SECTIONS
+        } else {
+            super::jobs::SEMANTIC_SCOPE
+        },
         eligible_rows,
         hits,
     })

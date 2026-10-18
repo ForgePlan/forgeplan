@@ -259,6 +259,7 @@ mod tests {
             source_set_digest: "srcset".to_string(),
             config_digest: "cfg".to_string(),
             artifacts: Vec::new(),
+            sections: Vec::new(),
             coverage: Coverage {
                 expected: enumerated_paths.len(),
                 read: entries.len(),

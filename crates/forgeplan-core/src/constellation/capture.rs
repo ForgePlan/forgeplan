@@ -47,6 +47,7 @@ use crate::workspace::ARTIFACT_DIRS;
 use super::durability::platform_barrier;
 use super::jobs::{
     DEFAULT_BODY_PREFIX_CHARS, SemanticState, embedding_input_digest, embedding_input_text,
+    section_input_digest, section_input_text, section_key,
 };
 use super::manifest::{GenerationManifest, TableVersions};
 use super::owner::{IndexIdentity, IndexLocation};
@@ -180,6 +181,148 @@ impl ParsedArtifact {
     }
 }
 
+/// One deterministic section row derived from a captured artifact.
+///
+/// Sections exist so semantic coverage is not capped at the body prefix:
+/// the artifact row keeps its `title + body-prefix` vector (one row per
+/// canonical key — unchanged), and each markdown section additionally gets
+/// its own row in `constellation_sections_v1`, keyed by
+/// `"{parent_key}#s{ordinal}"`.
+///
+/// A section row borrows its parent's whole binding — `source_digest`,
+/// `incarnation`, `row_revision`, checkout and epoch are read from the
+/// parent's [`SourceEntry`] at publish time — and adds only what is its own:
+/// the section key, ordinal, heading, level, and the digest of the exact
+/// text the tokenizer sees (`title + heading + content prefix`). An empty
+/// heading means the whole-body fallback section (`ordinal == 0`), which is
+/// how a markdown file with no headings still gets exactly one section row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedSection {
+    /// `{parent_key}#s{ordinal}` — positional and deterministic.
+    pub canonical_key: String,
+    /// Canonical key of the artifact this section was parsed from.
+    pub parent_key: String,
+    /// Position in `list_sections` order. Reordering sections changes which
+    /// content a key binds; `input_digest` detects the change.
+    pub ordinal: u32,
+    /// Heading text, or `None` for the no-headings whole-body fallback.
+    pub heading: Option<String>,
+    /// Markdown heading level (1–6), `None` for the fallback section.
+    pub level: Option<u8>,
+    /// Exact section bytes as captured — nested subsections included.
+    /// `Arc`-shared into the artifact body like every other captured text.
+    pub content: Arc<str>,
+    /// SHA-256 of `section_input_text(parent title, heading, content)`.
+    /// The section's own input digest — never the parent's.
+    pub input_digest: String,
+    /// Parent artifact's input digest, carried so the section row records
+    /// which artifact-level input its parent was bound to at capture time.
+    pub parent_input_digest: String,
+}
+
+/// Derive the deterministic section set for one captured artifact.
+///
+/// Derived from the **captured bytes** — `list_sections` parses
+/// `artifact.body`, never the filesystem. Three cases:
+///
+/// * **No headings at all** — one whole-body section at ordinal 0 with no
+///   heading. Every captured artifact always produces at least one section
+///   row, so an empty `sections` vec can only mean an empty `artifacts` vec.
+/// * **Preamble** — `list_sections` drops text before the first heading, so
+///   a body that starts with prose gets one extra synthetic section for it
+///   at ordinal 0 (heading `None`), with the heading sections shifted to
+///   ordinals 1... Without this a long preamble would be the same
+///   not-searchable tail the sections table exists to remove.
+/// * **Headed sections** — one row each, in `list_sections` order.
+///
+/// Ordinal keys are positional on purpose: two sections that share a heading
+/// are still distinct rows, and reordering sections changes which content a
+/// key binds — `input_digest` detects that the way it does for any edit.
+pub fn sections_for(artifact: &ParsedArtifact, body_prefix_chars: usize) -> Vec<CapturedSection> {
+    let parsed = crate::artifact::sections::list_sections(&artifact.body);
+    if parsed.is_empty() {
+        return vec![CapturedSection {
+            canonical_key: section_key(&artifact.canonical_key, 0),
+            parent_key: artifact.canonical_key.clone(),
+            ordinal: 0,
+            heading: None,
+            level: None,
+            content: Arc::from(artifact.body.as_ref()),
+            input_digest: section_input_digest(
+                &artifact.title,
+                None,
+                &artifact.body,
+                body_prefix_chars,
+            ),
+            parent_input_digest: artifact.input_digest.clone(),
+        }];
+    }
+
+    // A preamble section is emitted only for real prose before the first
+    // heading — whitespace or an empty run gets no row.
+    let preamble = preamble_text(&artifact.body);
+    let shift = u32::from(preamble.is_some());
+    let mut sections = Vec::with_capacity(parsed.len() + shift as usize);
+    if let Some(preamble) = preamble {
+        let content: Arc<str> = Arc::from(preamble);
+        sections.push(CapturedSection {
+            canonical_key: section_key(&artifact.canonical_key, 0),
+            parent_key: artifact.canonical_key.clone(),
+            ordinal: 0,
+            heading: None,
+            level: None,
+            input_digest: section_input_digest(&artifact.title, None, &content, body_prefix_chars),
+            parent_input_digest: artifact.input_digest.clone(),
+            content,
+        });
+    }
+    for (ordinal, section) in parsed.iter().enumerate() {
+        let ordinal = ordinal as u32 + shift;
+        let heading = if section.heading.is_empty() {
+            None
+        } else {
+            Some(section.heading.clone())
+        };
+        let content: Arc<str> = Arc::from(section.content.as_str());
+        sections.push(CapturedSection {
+            canonical_key: section_key(&artifact.canonical_key, ordinal),
+            parent_key: artifact.canonical_key.clone(),
+            ordinal,
+            heading: heading.clone(),
+            level: Some(section.level),
+            input_digest: section_input_digest(
+                &artifact.title,
+                heading.as_deref(),
+                &content,
+                body_prefix_chars,
+            ),
+            parent_input_digest: artifact.input_digest.clone(),
+            content,
+        });
+    }
+    sections
+}
+
+/// The raw body bytes before the first markdown heading, if non-whitespace.
+///
+/// Byte offsets come from the same `pulldown-cmark` event stream
+/// `list_sections` uses, so "before the first heading" means exactly what
+/// the section parser calls a heading — fenced code blocks still do not
+/// count. Returns `None` when there is no heading or the run is blank.
+fn preamble_text(body: &str) -> Option<&str> {
+    use pulldown_cmark::{Event, Options, Parser, Tag};
+
+    for (event, range) in Parser::new_ext(body, Options::all()).into_offset_iter() {
+        if let Event::Start(Tag::Heading { .. }) = event {
+            return body
+                .get(..range.start)
+                .map(str::trim)
+                .filter(|text| !text.is_empty());
+        }
+    }
+    None
+}
+
 /// Per-artifact durable source record carried by a [`GenerationManifest`].
 ///
 /// One entry per current artifact. The manifest never carries a second copy
@@ -252,6 +395,11 @@ pub struct CapturedSourceView {
     /// Parsed artifacts, sorted by canonical key, sharing their bytes by
     /// `Arc`.
     pub artifacts: Vec<Arc<ParsedArtifact>>,
+    /// Deterministic section rows derived from `artifacts` — parent key
+    /// sorted, then ordinal. One row per section per captured artifact,
+    /// always at least one per artifact; this is the sections table's
+    /// projection of the same confirmed bytes.
+    pub sections: Vec<CapturedSection>,
     /// Durable source records, sorted by relative path.
     pub entries: Vec<SourceEntry>,
     /// Enumerated paths that produced no current row.
@@ -278,6 +426,37 @@ impl CapturedSourceView {
             .iter()
             .find(|a| a.canonical_key == canonical_key)
             .map(|artifact| artifact.as_ref())
+    }
+
+    /// Look up one captured section by its deterministic key
+    /// (`"{parent}#s{ordinal}"`).
+    pub fn section(&self, canonical_key: &str) -> Option<&CapturedSection> {
+        self.sections
+            .iter()
+            .find(|s| s.canonical_key == canonical_key)
+    }
+
+    /// The captured sections of one artifact, in ordinal order.
+    pub fn sections_of(&self, parent_key: &str) -> impl Iterator<Item = &CapturedSection> {
+        self.sections
+            .iter()
+            .filter(move |s| s.parent_key == parent_key)
+    }
+
+    /// The captured input text a tokenizer would receive for one section —
+    /// `title + heading + content prefix`, the same string its
+    /// `input_digest` was hashed over.
+    pub fn section_input(&self, section: &CapturedSection, body_prefix_chars: usize) -> String {
+        let title = self
+            .artifact(&section.parent_key)
+            .map(|a| a.title.as_str())
+            .unwrap_or_default();
+        section_input_text(
+            title,
+            section.heading.as_deref(),
+            &section.content,
+            body_prefix_chars,
+        )
     }
 
     /// Whether an enumerated path failed to become a current row.
@@ -552,6 +731,10 @@ struct Pass {
     files: Vec<PassFile>,
     unusable: Vec<UnusableSource>,
     config_digest: String,
+    /// The `embedding.chunk_size` the config resolved to. Sections hash
+    /// their input under exactly this bound, so it travels with the pass
+    /// rather than being re-derived where it was never read.
+    body_prefix_chars: usize,
 }
 
 impl Pass {
@@ -819,6 +1002,7 @@ async fn run_pass(workspace: &Path, parse: bool) -> Result<Pass, ConstellationEr
         files,
         unusable,
         config_digest,
+        body_prefix_chars,
     })
 }
 
@@ -962,6 +1146,13 @@ fn build_view(
     }
 
     artifacts.sort_by(|a, b| a.canonical_key.cmp(&b.canonical_key));
+    // Sections derive from the confirmed immutable set, never from a second
+    // read. Parent-key order is the artifacts order (already sorted); the
+    // ordinal keeps each parent's rows in document order.
+    let mut sections = Vec::new();
+    for artifact in &artifacts {
+        sections.extend(sections_for(artifact, pass.body_prefix_chars));
+    }
     entries.sort_by(|a, b| a.relative_path.as_bytes().cmp(b.relative_path.as_bytes()));
     unusable.sort_by(|a, b| a.relative_path.as_bytes().cmp(b.relative_path.as_bytes()));
     diagnostics.extend(
@@ -1020,6 +1211,7 @@ fn build_view(
         source_set_digest,
         config_digest: pass.config_digest,
         artifacts,
+        sections,
         entries,
         unusable,
         enumerated_paths,
@@ -1279,5 +1471,178 @@ mod tests {
         let after = capture(tmp.path()).await;
         assert_ne!(before.config_digest, after.config_digest);
         assert_ne!(before.source_set_digest, after.source_set_digest);
+    }
+
+    #[tokio::test]
+    async fn a_body_without_headings_gets_exactly_one_whole_body_section() {
+        let tmp = workspace();
+        write_artifact(tmp.path(), "prds", "PRD-001-auth.md", PRD);
+        let view = capture(tmp.path()).await;
+
+        let sections: Vec<_> = view.sections_of("PRD-001").collect();
+        assert_eq!(sections.len(), 1, "every artifact owns at least one row");
+        let section = sections[0];
+        assert_eq!(section.canonical_key, "PRD-001#s0");
+        assert_eq!(section.parent_key, "PRD-001");
+        assert_eq!(section.ordinal, 0);
+        assert_eq!(section.heading, None);
+        assert_eq!(section.level, None);
+        assert_eq!(&*section.content, "Body A.\n");
+        // The digest covers exactly the string the tokenizer receives. For
+        // the fallback section that string is byte-identical to the
+        // artifact's own input — `title + body prefix` — so the digests
+        // legitimately agree; what keeps the rows distinct is the key
+        // (`PRD-001` vs `PRD-001#s0`), which the binding predicate carries.
+        assert_eq!(
+            section.input_digest,
+            section_input_digest("Auth", None, &section.content, DEFAULT_BODY_PREFIX_CHARS)
+        );
+        assert_eq!(
+            section.input_digest, section.parent_input_digest,
+            "a heading-less body embeds the same string twice — same digest, \
+             different row keys"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_preamble_and_headings_map_to_positional_sections() {
+        let tmp = workspace();
+        let content = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\n---\n\nIntro prose before any heading.\n\n## Problem\nLogin is slow.\n\n### Detail\nSubheading content stays inside Problem.\n\n## Goals\nMake it fast.\n";
+        write_artifact(tmp.path(), "prds", "PRD-001-auth.md", content);
+        let view = capture(tmp.path()).await;
+
+        let sections: Vec<_> = view.sections_of("PRD-001").collect();
+        let keys: Vec<&str> = sections.iter().map(|s| s.canonical_key.as_str()).collect();
+        assert_eq!(keys, ["PRD-001#s0", "PRD-001#s1", "PRD-001#s2"]);
+
+        let preamble = sections[0];
+        assert_eq!(preamble.heading, None);
+        assert_eq!(preamble.level, None);
+        assert!(preamble.content.starts_with("Intro prose"));
+
+        let problem = sections[1];
+        assert_eq!(problem.heading.as_deref(), Some("Problem"));
+        assert_eq!(problem.level, Some(2));
+        // A nested heading is part of the parent's content, not its own row.
+        assert!(problem.content.contains("### Detail"));
+        assert!(problem.content.contains("Subheading content"));
+
+        let goals = sections[2];
+        assert_eq!(goals.heading.as_deref(), Some("Goals"));
+        assert!(goals.content.contains("Make it fast."));
+
+        // Every section hash covers its own distinct input — `title +
+        // heading + content` — and headed sections hash a string the
+        // artifact input never produced.
+        let mut digests = std::collections::BTreeSet::new();
+        for section in &sections {
+            assert_eq!(
+                section.input_digest,
+                section_input_digest(
+                    "Auth",
+                    section.heading.as_deref(),
+                    &section.content,
+                    DEFAULT_BODY_PREFIX_CHARS
+                )
+            );
+            assert!(
+                digests.insert(section.input_digest.clone()),
+                "sections of one artifact must not share an input digest"
+            );
+        }
+        assert!(
+            sections
+                .iter()
+                .skip(1)
+                .all(|s| s.input_digest != s.parent_input_digest),
+            "a headed section's input is a different string than the artifact input"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_heading_only_body_gets_no_preamble_row() {
+        let tmp = workspace();
+        let content = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\n---\n\n## Problem\nLogin is slow.\n";
+        write_artifact(tmp.path(), "prds", "PRD-001-auth.md", content);
+        let view = capture(tmp.path()).await;
+
+        let sections: Vec<_> = view.sections_of("PRD-001").collect();
+        assert_eq!(
+            sections.len(),
+            1,
+            "whitespace before the first heading is not a section"
+        );
+        assert_eq!(sections[0].canonical_key, "PRD-001#s0");
+        assert_eq!(sections[0].heading.as_deref(), Some("Problem"));
+    }
+
+    #[tokio::test]
+    async fn section_sets_are_identical_across_two_captures() {
+        let tmp = workspace();
+        let content = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\n---\n\nIntro.\n\n## Problem\nSlow.\n\n## Goals\nFast.\n";
+        write_artifact(tmp.path(), "prds", "PRD-001-auth.md", content);
+
+        let first = capture(tmp.path()).await;
+        let second = capture(tmp.path()).await;
+        assert_eq!(
+            first.sections, second.sections,
+            "derivation is a pure function of the bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn content_past_the_body_prefix_is_reachable_through_a_section() {
+        let tmp = workspace();
+        // The tail marker sits past the artifact row's prefix: an artifact
+        // vector alone could never match it. A section vector can, because
+        // its input is the section's own prefix, not the body's.
+        let tail = "THE_UNIQUE_TAIL_TOKEN xyzzy";
+        let body = format!(
+            "Intro.\n\n## Overview\n{}\n\n## Appendix\n{}\n",
+            "a".repeat(DEFAULT_BODY_PREFIX_CHARS + 500),
+            tail
+        );
+        let content = format!(
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\n---\n\n{body}"
+        );
+        write_artifact(tmp.path(), "prds", "PRD-001-auth.md", &content);
+        let view = capture(tmp.path()).await;
+
+        let artifact = view.artifact("PRD-001").unwrap();
+        assert!(
+            !artifact
+                .embedding_input(DEFAULT_BODY_PREFIX_CHARS)
+                .contains(tail),
+            "the artifact input must actually clip the tail for this test to prove anything"
+        );
+        // s0 = "Intro." preamble, s1 = Overview, s2 = Appendix.
+        let appendix = view
+            .section("PRD-001#s2")
+            .expect("the Appendix section exists");
+        assert_eq!(appendix.heading.as_deref(), Some("Appendix"));
+        assert!(
+            view.section_input(appendix, DEFAULT_BODY_PREFIX_CHARS)
+                .contains(tail),
+            "the section input carries what the artifact input clipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_artifact_contributes_no_section_rows() {
+        let tmp = workspace();
+        write_artifact(tmp.path(), "prds", "PRD-001-auth.md", PRD);
+        write_artifact(
+            tmp.path(),
+            "prds",
+            "PRD-002-broken.md",
+            "---\nid: [unclosed\n\n## Hidden\nNever parsed.\n",
+        );
+        let view = capture(tmp.path()).await;
+
+        assert!(!view.is_complete());
+        assert!(
+            view.sections.iter().all(|s| s.parent_key == "PRD-001"),
+            "an artifact that was never parsed cannot mint section rows"
+        );
     }
 }

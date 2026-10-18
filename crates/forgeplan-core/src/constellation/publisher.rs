@@ -47,10 +47,13 @@ use crate::constellation::manifest::{
 /// Budget for acquiring the physical owner before reporting `index_busy`.
 const OWNER_BUDGET_MS: u64 = super::owner::OWNER_ACQUIRE_BUDGET_MS;
 
-/// Role names of the two active tables, in the order `storage::ACTIVE_TABLES`
+/// Role names of the three active tables, in the order `storage::ACTIVE_TABLES`
 /// declares them.
 pub const ROLE_ARTIFACTS: &str = "artifacts";
 pub const ROLE_RELATIONS: &str = "relations";
+/// The per-section embedding table. Its cardinality is the corpus's section
+/// count, not the artifact count — one row per `"{parent}#s{ordinal}"`.
+pub const ROLE_SECTIONS: &str = "sections";
 
 /// What a restart found, and what has to happen next.
 ///
@@ -123,32 +126,41 @@ pub fn plan_bootstrap(
     }
 }
 
-/// Result of comparing the physical heads against the published pair.
+/// Result of comparing the physical heads against the published set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeadComparison {
-    /// Both physical heads are exactly the published versions. Nothing is
+    /// Every physical head is exactly the published version. Nothing is
     /// restored and nothing is committed — this is the rule that stops a
     /// pointless commit before every stage.
     Matches,
-    /// One or both heads moved past the published pair, so the affected table
-    /// must be rewound before any delta write.
+    /// One or more heads moved past the published versions, so the affected
+    /// table must be rewound before any delta write.
     Diverged {
         artifacts_diverged: bool,
         relations_diverged: bool,
+        /// `true` only when the published manifest actually pins a sections
+        /// version and the physical head differs. A pre-sections generation
+        /// pins `None` and can never diverge — the table's head is free
+        /// regardless of where it stands.
+        sections_diverged: bool,
     },
     /// A published version is gone. Explicitly unavailable; never a jump to
     /// latest.
     MissingPublishedVersion { role: &'static str },
 }
 
-/// Compare physical head versions with the published pair.
+/// Compare physical head versions with the published set.
 ///
 /// `published` of `None` means nothing has been published, which matches by
-/// definition: there is no baseline to diverge from.
+/// definition: there is no baseline to diverge from. `sections_head` is the
+/// physical sections head; it participates **only** when the published
+/// manifest pins a sections version — a generation written before
+/// `constellation_sections_v1` existed has no pin to diverge from.
 pub fn compare_heads(
     published: Option<&GenerationManifest>,
     artifacts_head: u64,
     relations_head: u64,
+    sections_head: u64,
 ) -> HeadComparison {
     let Some(published) = published else {
         return HeadComparison::Matches;
@@ -156,14 +168,24 @@ pub fn compare_heads(
     if !published.table_versions.is_publishable() {
         return HeadComparison::MissingPublishedVersion { role: "pair" };
     }
+    if published.table_versions.sections == Some(0) {
+        // `Some(0)` is not a real version — the empty creation commit is v1.
+        // It is torn state, not "no sections": `None` carries that meaning.
+        return HeadComparison::MissingPublishedVersion { role: "sections" };
+    }
     let artifacts_diverged = artifacts_head != published.table_versions.artifacts;
     let relations_diverged = relations_head != published.table_versions.relations;
-    if !artifacts_diverged && !relations_diverged {
+    let sections_diverged = published
+        .table_versions
+        .sections
+        .is_some_and(|pinned| sections_head != pinned);
+    if !artifacts_diverged && !relations_diverged && !sections_diverged {
         HeadComparison::Matches
     } else {
         HeadComparison::Diverged {
             artifacts_diverged,
             relations_diverged,
+            sections_diverged,
         }
     }
 }
@@ -716,6 +738,14 @@ pub async fn bootstrap_or_recover(
         if relations.num_rows() > 0 {
             tables.merge_into_relations(relations, true).await?;
         }
+        // Sections get the same source-delete clause: a captured artifact
+        // always yields at least one section, so a non-empty capture has a
+        // non-empty batch, and the clause reclaims rows a torn earlier
+        // attempt left behind exactly as it does for artifacts.
+        let sections = sections_batch(&captured)?;
+        if sections.num_rows() > 0 {
+            tables.merge_into_sections(sections, true).await?;
+        }
     }
 
     // Versions are read AFTER the writes, so the manifest names the versions
@@ -845,6 +875,40 @@ pub fn binding_for(
     })
 }
 
+/// The binding a vector must be published against, for one captured
+/// **section**.
+///
+/// A section borrows its parent's durable identity — epoch, checkout,
+/// incarnation, row revision, source digest — because the section row is
+/// rewritten wholesale whenever the parent's bytes move; the section's own
+/// fields are only its `canonical_key` (`"{parent}#s{ordinal}"`) and its
+/// `input_digest`. Publishing a section vector against the *artifact's*
+/// input digest would bind the vector to a different string than the one it
+/// was computed from, which is exactly the stale-vector hole the digest
+/// separation exists to close.
+///
+/// # Errors
+///
+/// Never fails on digest absence — a [`CapturedSection`] always carries its
+/// `input_digest`. `Ok` is unconditional so this mirrors [`binding_for`]'s
+/// shape without borrowing its error case.
+pub fn binding_for_section(
+    section: &super::capture::CapturedSection,
+    parent: &SourceEntry,
+    profile_id: &str,
+) -> Result<jobs::Binding, ConstellationError> {
+    Ok(jobs::Binding {
+        index_epoch: parent.index_epoch,
+        checkout_id: parent.checkout_id.clone(),
+        canonical_key: section.canonical_key.clone(),
+        incarnation: parent.incarnation,
+        row_revision: parent.row_revision,
+        source_digest: parent.source_digest.clone(),
+        input_digest: section.input_digest.clone(),
+        profile_id: profile_id.to_string(),
+    })
+}
+
 /// Publish a batch of vectors the caller computed, against the capture.
 ///
 /// The caller does the **encoding** — explicit `embed` is one of the three
@@ -857,10 +921,13 @@ pub fn binding_for(
 ///
 /// # Keys that are not in the capture
 ///
-/// A vector whose key has no [`SourceEntry`] is **refused**, not written.
-/// `vectors` is keyed by canonical key precisely so this can be checked;
+/// A vector whose key has no [`SourceEntry`] and no [`CapturedSection`] is
+/// **refused**, not written. `vectors` is keyed by canonical key — the
+/// artifact key or the section key — precisely so this can be checked;
 /// without the capture a key would be unbindable and publishing it would be
-/// the bypass in another name.
+/// the bypass in another name. Artifact keys win lookup order: a section
+/// key (`"X#s0"`) can never collide with a real artifact entry because
+/// capture only mints it for a section that exists.
 pub async fn publish_embeddings(
     tables: &super::lance_tables::IndexTables,
     captured: &CapturedSourceView,
@@ -869,22 +936,45 @@ pub async fn publish_embeddings(
 ) -> Result<Vec<jobs::EmbeddingPublish>, ConstellationError> {
     let mut published = Vec::with_capacity(vectors.len());
     for (canonical_key, vector) in vectors {
-        let entry = captured
+        if let Some(entry) = captured
             .entries
             .iter()
             .find(|entry| &entry.canonical_key == canonical_key)
-            .ok_or_else(|| ConstellationError::Io {
-                detail: format!(
-                    "refusing to publish `{canonical_key}`: it is not in the capture, so it has \
-                     no binding"
-                ),
-            })?;
-        let binding = binding_for(entry, profile_id)?;
-        published.push(
-            tables
-                .publish_embedding_into_artifacts(&binding, vector)
-                .await?,
-        );
+        {
+            let binding = binding_for(entry, profile_id)?;
+            published.push(
+                tables
+                    .publish_embedding_into_artifacts(&binding, vector)
+                    .await?,
+            );
+            continue;
+        }
+        if let Some(section) = captured.section(canonical_key) {
+            let parent = captured
+                .entries
+                .iter()
+                .find(|entry| entry.canonical_key == section.parent_key)
+                .ok_or_else(|| ConstellationError::Io {
+                    detail: format!(
+                        "refusing to publish `{canonical_key}`: its parent `{}` is not in the \
+                         capture, so it has no binding",
+                        section.parent_key
+                    ),
+                })?;
+            let binding = binding_for_section(section, parent, profile_id)?;
+            published.push(
+                tables
+                    .publish_embedding_into_sections(&binding, vector)
+                    .await?,
+            );
+            continue;
+        }
+        return Err(ConstellationError::Io {
+            detail: format!(
+                "refusing to publish `{canonical_key}`: it is not in the capture, so it has \
+                 no binding"
+            ),
+        });
     }
     Ok(published)
 }
@@ -893,10 +983,14 @@ pub async fn publish_embeddings(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitTable {
     Artifacts,
-    /// The edge half of the same atomic pair. A stage that writes artifacts
+    /// The edge half of the same atomic set. A stage that writes artifacts
     /// and forgets relations publishes a projection with no links, so the
     /// enum names both.
     Relations,
+    /// The per-section embedding table — the third leg of the same atomic
+    /// set. Its rows are the section-level vectors; a stage that publishes
+    /// artifacts without them leaves the long tail unsearchable.
+    Sections,
 }
 
 /// One bounded delete commit — the only op this phase can execute.
@@ -949,6 +1043,24 @@ pub enum CommitOp {
         /// Number of edge rows the batch carries.
         rows: usize,
     },
+    /// `merge_insert` the **whole captured section set** against
+    /// [`MERGE_KEY`] on the sections table — the merge key is the section's
+    /// own `canonical_key` (`"{parent}#s{ordinal}"`), so a heading rename is
+    /// an insert under the new key plus a source-delete of the old one, all
+    /// inside the same commit.
+    SectionsMerge {
+        /// Number of section rows the batch carries.
+        rows: usize,
+        /// Same gate as [`Self::MergeUpsert`]: `CommitPlan::full_source_batch`,
+        /// attachable only when the capture is complete.
+        full_source_batch: bool,
+    },
+    /// Delete every section row whose `parent_key` is in `parent_keys` —
+    /// the only shape the section delete takes. A section is never deleted
+    /// individually: a displaced ordinal or renamed heading is removed by the
+    /// next `SectionsMerge`'s source-delete clause, under the parent staying
+    /// alive.
+    SectionsDelete { parent_keys: Vec<String> },
 }
 
 impl CommitOp {
@@ -958,6 +1070,7 @@ impl CommitOp {
             | Self::ColumnUpdate { .. }
             | Self::DeleteByPredicate { .. } => CommitTable::Artifacts,
             Self::RelationsDelete { .. } | Self::RelationsMerge { .. } => CommitTable::Relations,
+            Self::SectionsMerge { .. } | Self::SectionsDelete { .. } => CommitTable::Sections,
         }
     }
 
@@ -972,6 +1085,8 @@ impl CommitOp {
             Self::ColumnUpdate { keys, assignments } => !keys.is_empty() && !assignments.is_empty(),
             Self::DeleteByPredicate { keys } | Self::RelationsDelete { keys } => !keys.is_empty(),
             Self::RelationsMerge { rows } => *rows > 0,
+            Self::SectionsMerge { rows, .. } => *rows > 0,
+            Self::SectionsDelete { parent_keys } => !parent_keys.is_empty(),
         }
     }
 }
@@ -1014,6 +1129,28 @@ pub struct RelationsPlan {
     pub merge_rows: usize,
 }
 
+/// What a stage must do to the sections table.
+///
+/// Simpler than [`RelationsPlan`] for the same reason a section's identity
+/// is its own `canonical_key`: the merge batch is always the **whole**
+/// captured section set, so `when_not_matched_by_source_delete` inside the
+/// upsert removes displaced ordinals and renamed headings itself. The only
+/// separate delete is by `parent_key` — every section of an artifact that
+/// vanished outright.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SectionsPlan {
+    /// Parents whose every section must be deleted (artifact confirmed gone).
+    pub parent_delete_keys: Vec<String>,
+    /// Number of section rows the whole-corpus batch carries. `0` means no
+    /// merge is emitted — an empty corpus's sections are still deleted by
+    /// `parent_delete_keys` when the capture is complete.
+    pub merge_rows: usize,
+    /// `true` when the published generation pins no sections version — a
+    /// pre-sections index — so the merge must run even on a pass whose
+    /// artifact side is a no-op. This is the upgrade path, not a keepalive.
+    pub bootstrap: bool,
+}
+
 /// Turn a commit plan into the sequence of commits that can actually run.
 ///
 /// `merge_rows` is the size of the artifact batch the caller built,
@@ -1039,6 +1176,7 @@ pub fn stage_sequence(
     merge_rows: usize,
     delete_keys: Vec<String>,
     relations: &RelationsPlan,
+    sections: &SectionsPlan,
 ) -> CommitSequence {
     let mut ops = Vec::new();
     if merge_rows > 0 && (commit.creates > 0 || commit.updates > 0) {
@@ -1067,6 +1205,29 @@ pub fn stage_sequence(
     if relations.merge_rows > 0 {
         ops.push(CommitOp::RelationsMerge {
             rows: relations.merge_rows,
+        });
+    }
+    // Sections last, delete before merge, same law as relations.
+    // `parent_delete_keys` are the same tombstones the artifact delete saw —
+    // they only exist when the capture proved absence, so this `IN` list is
+    // always confirmed, never a guess. Under a full source batch the merge's
+    // own source-delete would also remove them — the op is redundant there
+    // but harmless — while the **delete-all** case (empty section batch, no
+    // merge emitted) has no other way to retire the rows.
+    if !sections.parent_delete_keys.is_empty() {
+        ops.push(CommitOp::SectionsDelete {
+            parent_keys: sections.parent_delete_keys.clone(),
+        });
+    }
+    // The merge is gated the same way as `MergeUpsert` plus one extra case:
+    // `bootstrap` means the published generation pins no sections version —
+    // a pre-sections index was just upgraded — so the table must be
+    // populated even on a pass whose artifact side is a no-op. Without it a
+    // reopened index would sit empty until the next content change.
+    if sections.merge_rows > 0 && (!commit.is_empty() || sections.bootstrap) {
+        ops.push(CommitOp::SectionsMerge {
+            rows: sections.merge_rows,
+            full_source_batch: commit.full_source_batch,
         });
     }
     CommitSequence { ops }
@@ -1336,6 +1497,152 @@ pub fn relations_batch(
         })
 }
 
+/// Build the sections `RecordBatch` for a capture.
+///
+/// One row per captured section — the batch is always the **whole** section
+/// set of the capture, because the merge's `when_not_matched_by_source_delete`
+/// clause is what retires displaced ordinals and renamed headings atomically.
+/// A section row borrows its parent's durable binding columns (`source_digest`,
+/// `incarnation`, `row_revision`, epoch, checkout) and carries its own
+/// `canonical_key`, `parent_key`, `ordinal`, `heading`, and `input_digest`.
+/// `embedding`/`profile_id`/`semantic_state` follow the same null rules as
+/// [`artifacts_batch`]: absent is null, and an unembedded section starts
+/// `unavailable`.
+///
+/// Columns are derived from [`super::lance_tables::sections_v1_schema`] — the
+/// same discipline as the other two builders — so a schema drift fails loudly
+/// here rather than silently at the merge.
+///
+/// # Errors
+///
+/// [`ConstellationError::IndexProtocolMismatch`] when the schema declares a
+/// column this builder does not produce.
+pub fn sections_batch(
+    captured: &super::capture::CapturedSourceView,
+) -> Result<Arc<arrow_array::RecordBatch>, ConstellationError> {
+    let schema = super::lance_tables::sections_v1_schema();
+    let row_count = captured.sections.len();
+
+    let mut canonical_key = arrow_array::builder::StringBuilder::new();
+    let mut parent_key = arrow_array::builder::StringBuilder::new();
+    let mut parent_display_id = arrow_array::builder::StringBuilder::new();
+    let mut ordinal = arrow_array::builder::UInt64Builder::new();
+    let mut heading = arrow_array::builder::StringBuilder::new();
+    let mut level = arrow_array::builder::UInt64Builder::new();
+    let mut title = arrow_array::builder::StringBuilder::new();
+    let mut content = arrow_array::builder::LargeStringBuilder::new();
+    let mut source_digest = arrow_array::builder::StringBuilder::new();
+    let mut input_digest = arrow_array::builder::StringBuilder::new();
+    let mut profile_id = arrow_array::builder::StringBuilder::new();
+    let mut incarnation = arrow_array::builder::UInt64Builder::new();
+    let mut row_revision = arrow_array::builder::UInt64Builder::new();
+    let mut index_epoch = arrow_array::builder::UInt64Builder::new();
+    let mut checkout_id = arrow_array::builder::StringBuilder::new();
+    let mut semantic_state = arrow_array::builder::StringBuilder::new();
+    let mut retry_after = arrow_array::builder::StringBuilder::new();
+
+    for section in &captured.sections {
+        // The display half comes from the parsed parent (title, kind,
+        // display_id); the binding half from its SourceEntry. Both are in the
+        // same view by construction — `sections_for` only mints sections from
+        // artifacts the capture parsed — but the lookups are checked rather
+        // than assumed: a hand-built view is possible in a test, and a
+        // section with no parent is an integrity error, not a skipped row.
+        let artifact = captured.artifact(&section.parent_key).ok_or_else(|| {
+            ConstellationError::IndexProtocolMismatch {
+                detail: format!(
+                    "section `{}` names parent `{}`, which has no parsed artifact",
+                    section.canonical_key, section.parent_key
+                ),
+            }
+        })?;
+        let entry = captured
+            .entries
+            .iter()
+            .find(|entry| entry.canonical_key == section.parent_key)
+            .ok_or_else(|| ConstellationError::IndexProtocolMismatch {
+                detail: format!(
+                    "section `{}` names parent `{}`, which has no source entry",
+                    section.canonical_key, section.parent_key
+                ),
+            })?;
+
+        canonical_key.append_value(section.canonical_key.as_str());
+        parent_key.append_value(section.parent_key.as_str());
+        parent_display_id.append_value(artifact.display_id.as_str());
+        ordinal.append_value(u64::from(section.ordinal));
+        heading.append_option(section.heading.as_deref());
+        level.append_option(section.level.map(u64::from));
+        title.append_value(artifact.title.as_str());
+        content.append_value(section.content.as_ref());
+        // The durable half is the parent's — the row is rewritten wholesale
+        // whenever the parent's bytes move.
+        source_digest.append_value(entry.source_digest.as_str());
+        input_digest.append_value(section.input_digest.as_str());
+        profile_id.append_option(entry.profile_id.as_deref());
+        incarnation.append_value(entry.incarnation);
+        row_revision.append_value(entry.row_revision);
+        index_epoch.append_value(entry.index_epoch);
+        checkout_id.append_value(entry.checkout_id.as_str());
+        // The section's own embedding has not been computed at capture time,
+        // so `unavailable` — not the parent's state, which may be `ready` on
+        // the prefix and would falsely claim section coverage.
+        semantic_state.append_value("unavailable");
+        retry_after.append_null();
+    }
+
+    let embedding_field = schema
+        .field_with_name("embedding")
+        .map_err(|e| unknown_column("embedding", e))?
+        .clone();
+    let embedding_item_field = match embedding_field.data_type() {
+        arrow_schema::DataType::FixedSizeList(child, _) => child.clone(),
+        other => {
+            return Err(unknown_column(
+                "embedding",
+                format!("expected FixedSizeList item type, found {other}"),
+            ));
+        }
+    };
+    let embedding: arrow_array::ArrayRef = Arc::new(arrow_array::FixedSizeListArray::new_null(
+        embedding_item_field,
+        super::lance_tables::EMBEDDING_DIM,
+        row_count,
+    ));
+
+    let mut columns: Vec<arrow_array::ArrayRef> = Vec::with_capacity(schema.fields().len());
+    for field in schema.fields() {
+        let column: arrow_array::ArrayRef = match field.name().as_str() {
+            "canonical_key" => Arc::new(canonical_key.finish()),
+            "parent_key" => Arc::new(parent_key.finish()),
+            "parent_display_id" => Arc::new(parent_display_id.finish()),
+            "ordinal" => Arc::new(ordinal.finish()),
+            "heading" => Arc::new(heading.finish()),
+            "level" => Arc::new(level.finish()),
+            "title" => Arc::new(title.finish()),
+            "content" => Arc::new(content.finish()),
+            "embedding" => embedding.clone(),
+            "source_digest" => Arc::new(source_digest.finish()),
+            "input_digest" => Arc::new(input_digest.finish()),
+            "profile_id" => Arc::new(profile_id.finish()),
+            "incarnation" => Arc::new(incarnation.finish()),
+            "row_revision" => Arc::new(row_revision.finish()),
+            "index_epoch" => Arc::new(index_epoch.finish()),
+            "checkout_id" => Arc::new(checkout_id.finish()),
+            "semantic_state" => Arc::new(semantic_state.finish()),
+            "retry_after" => Arc::new(retry_after.finish()),
+            other => return Err(unknown_column(other, String::new())),
+        };
+        columns.push(column);
+    }
+
+    arrow_array::RecordBatch::try_new(schema, columns)
+        .map(Arc::new)
+        .map_err(|e| ConstellationError::IndexProtocolMismatch {
+            detail: format!("the sections batch does not match sections_v1_schema: {e}"),
+        })
+}
+
 /// Comma-separated diagnostic codes, so a reader can see them without parsing.
 fn join_diagnostic_codes(diagnostics: &[super::SourceDiagnostic]) -> String {
     diagnostics
@@ -1409,6 +1716,7 @@ pub struct UpdateOutcome {
 /// table it writes to belongs to a sealed owning type.
 pub(crate) async fn execute_column_update(
     table: &lancedb::Table,
+    role: &str,
     canonical_keys: &[String],
     assignments: &[ColumnAssignment],
 ) -> Result<UpdateOutcome, ConstellationError> {
@@ -1438,18 +1746,18 @@ pub(crate) async fn execute_column_update(
         .execute()
         .await
         .map_err(|e| ConstellationError::Io {
-            detail: format!("column update on the artifacts table failed: {e}"),
+            detail: format!("column update on the {role} table failed: {e}"),
         })?;
 
     let (version, version_source) = if result.version != 0 {
         (result.version, VersionSource::Reported)
     } else {
         let read = table.version().await.map_err(|e| ConstellationError::Io {
-            detail: format!("cannot read the artifacts version after a column update: {e}"),
+            detail: format!("cannot read the {role} version after a column update: {e}"),
         })?;
         if read == 0 {
             return Err(ConstellationError::Io {
-                detail: "the artifacts table reported version 0 after a column update".to_string(),
+                detail: "the {role} table reported version 0 after a column update".to_string(),
             });
         }
         (read, VersionSource::ReadFromTable)
@@ -1485,10 +1793,17 @@ pub enum VerificationError {
     VersionMismatch { expected: u64, found: u64 },
     /// The relations reader is not on the version the commits reported.
     RelationsVersionMismatch { expected: u64, found: u64 },
+    /// The sections reader is not on the version the commits reported.
+    SectionsVersionMismatch { expected: u64, found: u64 },
     /// The relations table does not carry the edge count the capture implies.
     /// Per-edge digests are not re-checked — the artifact digest comparison
     /// is the integrity check; this proves the edge set is the right size.
     EdgeCountDisagreement { expected: usize, found: usize },
+    /// The sections table does not carry the section set the capture
+    /// implies — checked by count, with per-row key/digest agreement proven
+    /// by the same RowMissing/DigestDisagreement/UnexpectedRow variants the
+    /// artifacts half uses.
+    SectionCountDisagreement { expected: usize, found: usize },
     /// The reader's schema is not `artifacts_v1_schema()`.
     SchemaMismatch { detail: String },
     /// The query itself failed. Named, with the underlying message.
@@ -1526,9 +1841,19 @@ impl std::fmt::Display for VerificationError {
                 "relations_version_mismatch: the relations reader is on version {found}, \
                  the commits reported {expected}"
             ),
+            Self::SectionsVersionMismatch { expected, found } => write!(
+                f,
+                "sections_version_mismatch: the sections reader is on version {found}, \
+                 the commits reported {expected}"
+            ),
             Self::EdgeCountDisagreement { expected, found } => write!(
                 f,
                 "edge_count_disagreement: the relations table holds {found} edges, \
+                 the capture implies {expected}"
+            ),
+            Self::SectionCountDisagreement { expected, found } => write!(
+                f,
+                "section_count_disagreement: the sections table holds {found} rows, \
                  the capture implies {expected}"
             ),
             Self::SchemaMismatch { detail } => write!(f, "schema_mismatch: {detail}"),
@@ -1557,6 +1882,25 @@ pub struct VerificationReport {
     pub expected_edges: usize,
     /// The edge count actually present at the pinned relations version.
     pub verified_edges: usize,
+    /// The sections version the pinned reader opened — `None` when the
+    /// generation predates `constellation_sections_v1` and no check ran.
+    pub sections_version: Option<u64>,
+    /// The section count the capture implies. `0` under `None` — the
+    /// count is meaningless when no sections check ran.
+    pub expected_sections: usize,
+    /// The section rows actually present at the pinned sections version.
+    pub verified_sections: usize,
+}
+
+/// What the sections half of [`verify_staged`] must find.
+///
+/// `version` is the committed sections head; `digests` maps each section
+/// `canonical_key` to the **parent** `source_digest` it must carry — the same
+/// per-row integrity check the artifacts half performs, just keyed on the
+/// section key.
+pub struct SectionsExpectation {
+    pub version: u64,
+    pub digests: std::collections::BTreeMap<String, String>,
 }
 
 /// Verify a committed artifacts pair through an independently opened reader.
@@ -1589,6 +1933,7 @@ pub async fn verify_staged(
     expected: &std::collections::BTreeMap<String, String>,
     expected_relations_version: u64,
     expected_edges: usize,
+    expected_sections: Option<&SectionsExpectation>,
 ) -> Result<VerificationReport, VerifyFailure> {
     use std::collections::BTreeSet;
 
@@ -1767,6 +2112,105 @@ pub async fn verify_staged(
         ));
     }
 
+    // The sections half — skipped entirely when the generation predates the
+    // table (`None`). When present it is checked the same way artifacts are:
+    // pinned reader, version equality, then per-row key + parent-digest
+    // agreement. A row the capture did not mint fails as `UnexpectedRow`
+    // exactly as an orphan artifact row would.
+    let mut sections_version = None;
+    let mut expected_section_count = 0usize;
+    let mut verified_section_count = 0usize;
+    if let Some(expectation) = expected_sections {
+        let sections_reader = super::lance_tables::open_table_at_version(
+            index_root,
+            marker,
+            "sections",
+            expectation.version,
+        )
+        .await
+        .map_err(|e| VerifyFailure::Unavailable(e.to_string()))?;
+
+        let found_version = sections_reader.version().await.map_err(|e| {
+            VerifyFailure::Invariant(VerificationError::Query {
+                detail: format!("cannot read the sections reader version: {e}"),
+            })
+        })?;
+        if found_version != expectation.version {
+            return Err(VerifyFailure::Invariant(
+                VerificationError::SectionsVersionMismatch {
+                    expected: expectation.version,
+                    found: found_version,
+                },
+            ));
+        }
+        sections_version = Some(found_version);
+        expected_section_count = expectation.digests.len();
+
+        let mut seen_sections: BTreeSet<&str> = BTreeSet::new();
+        let section_batches = sections_reader.query_batches().await.map_err(|e| {
+            VerifyFailure::Invariant(VerificationError::Query {
+                detail: format!("reading the pinned sections reader failed: {e}"),
+            })
+        })?;
+        for batch in &section_batches {
+            let keys = batch
+                .column_by_name("canonical_key")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| {
+                    VerifyFailure::Invariant(VerificationError::SchemaMismatch {
+                        detail: "the sections reader has no string `canonical_key` column"
+                            .to_string(),
+                    })
+                })?;
+            let digests = batch
+                .column_by_name("source_digest")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| {
+                    VerifyFailure::Invariant(VerificationError::SchemaMismatch {
+                        detail: "the sections reader has no string `source_digest` column"
+                            .to_string(),
+                    })
+                })?;
+            for row in 0..batch.num_rows() {
+                let key = keys.value(row).to_string();
+                let Some(wanted) = expectation.digests.get(&key) else {
+                    return Err(VerifyFailure::Invariant(VerificationError::UnexpectedRow {
+                        canonical_key: key,
+                    }));
+                };
+                let found_digest = digests.value(row).to_string();
+                if found_digest != *wanted {
+                    return Err(VerifyFailure::Invariant(
+                        VerificationError::DigestDisagreement {
+                            canonical_key: key,
+                            expected: wanted.clone(),
+                            found: found_digest,
+                        },
+                    ));
+                }
+                verified_section_count += 1;
+                if let Some((borrowed, _)) = expectation.digests.get_key_value(&key) {
+                    seen_sections.insert(borrowed.as_str());
+                }
+            }
+        }
+        if verified_section_count != expected_section_count {
+            return Err(VerifyFailure::Invariant(
+                VerificationError::SectionCountDisagreement {
+                    expected: expected_section_count,
+                    found: verified_section_count,
+                },
+            ));
+        }
+        for key in expectation.digests.keys() {
+            if !seen_sections.contains(key.as_str()) {
+                return Err(VerifyFailure::Invariant(VerificationError::RowMissing {
+                    canonical_key: key.clone(),
+                }));
+            }
+        }
+    }
+
     Ok(VerificationReport {
         reader_version,
         expected_keys: expected.len(),
@@ -1775,6 +2219,9 @@ pub async fn verify_staged(
         relations_version,
         expected_edges,
         verified_edges,
+        sections_version,
+        expected_sections: expected_section_count,
+        verified_sections: verified_section_count,
     })
 }
 
@@ -1880,6 +2327,7 @@ impl VersionSource {
 /// produced. The handle that performed it is not theirs to hold.
 pub(crate) async fn execute_merge(
     table: &lancedb::Table,
+    role: &str,
     batch: Arc<arrow_array::RecordBatch>,
     full_source_batch: bool,
     merge_key: &[&str],
@@ -1916,18 +2364,18 @@ pub(crate) async fn execute_merge(
         .execute(reader)
         .await
         .map_err(|e| ConstellationError::Io {
-            detail: format!("merge_insert on the artifacts table failed: {e}"),
+            detail: format!("merge_insert on the {role} table failed: {e}"),
         })?;
 
     let (version, version_source) = if result.version != 0 {
         (result.version, VersionSource::Reported)
     } else {
         let read = table.version().await.map_err(|e| ConstellationError::Io {
-            detail: format!("cannot read the artifacts version after a merge: {e}"),
+            detail: format!("cannot read the {role} version after a merge: {e}"),
         })?;
         if read == 0 {
             return Err(ConstellationError::Io {
-                detail: "the artifacts table reported version 0 after a merge".to_string(),
+                detail: "the {role} table reported version 0 after a merge".to_string(),
             });
         }
         (read, VersionSource::ReadFromTable)
@@ -1942,7 +2390,11 @@ pub(crate) async fn execute_merge(
     })
 }
 
-/// Execute one bounded delete against the artifacts table.
+/// Execute one bounded delete against whichever table the op targets.
+///
+/// `DeleteByPredicate` and `RelationsDelete` enumerate `canonical_key`s;
+/// `SectionsDelete` enumerates `parent_key`s — the columns differ, the
+/// boundedness does not.
 ///
 /// This is the sharpest of the three ops, and deliberately the first to be
 /// executed: `DeleteResult` carries **no** version field
@@ -1950,9 +2402,10 @@ pub(crate) async fn execute_merge(
 /// be real rather than pass-through. The version is read from the table after
 /// the commit, under the single owner, and never taken from the result.
 ///
-/// The predicate comes from [`delete_predicate_for`] — an enumerated
-/// `IN (…)` over escaped literals, never a wildcard, and an empty key set is
-/// refused rather than producing a predicate that matches every row.
+/// The predicate comes from [`delete_predicate_for`] or
+/// [`parent_key_predicate_for`] — an enumerated `IN (…)` over escaped
+/// literals, never a wildcard, and an empty key set is refused rather than
+/// producing a predicate that matches every row.
 ///
 /// The caller holds the `WorkspaceLock` for the duration of this call and
 /// releases it afterwards, in owner → workspace order. Nothing else runs
@@ -1981,46 +2434,60 @@ pub(crate) async fn execute_delete(
     // condition, and it must be **named**: a `todo!()` here would panic
     // inside the writer's commit path, and a silent fall-through would let
     // the stage report success over a delete that never ran.
-    let CommitOp::DeleteByPredicate { keys } = op else {
-        return Err(ConstellationError::IndexProtocolMismatch {
-            detail: format!(
-                "execute_delete was handed a {op:?} operation; it executes only \
-                 DeleteByPredicate"
-            ),
-        });
+    let (predicate, keys) = match op {
+        CommitOp::DeleteByPredicate { keys } | CommitOp::RelationsDelete { keys } => {
+            if keys.is_empty() {
+                return Err(ConstellationError::StorageIo {
+                    detail: "refusing to execute a delete with no keys: the predicate would \
+                             match every row"
+                        .to_string(),
+                });
+            }
+            (delete_predicate_for(keys)?, keys.clone())
+        }
+        CommitOp::SectionsDelete { parent_keys } => {
+            if parent_keys.is_empty() {
+                return Err(ConstellationError::StorageIo {
+                    detail: "refusing to execute a sections delete with no parent keys: the \
+                             predicate would match every row"
+                        .to_string(),
+                });
+            }
+            (parent_key_predicate_for(parent_keys)?, parent_keys.clone())
+        }
+        other => {
+            return Err(ConstellationError::IndexProtocolMismatch {
+                detail: format!(
+                    "execute_delete was handed a {other:?} operation; it executes only \
+                     DeleteByPredicate, RelationsDelete and SectionsDelete"
+                ),
+            });
+        }
     };
-    if keys.is_empty() {
-        return Err(ConstellationError::StorageIo {
-            detail: "refusing to execute a delete with no keys: the predicate would match every \
-                      row"
-            .to_string(),
-        });
-    }
-    let predicate = delete_predicate_for(keys)?;
 
     let result = table
         .delete(&predicate)
         .await
         .map_err(|e| ConstellationError::Io {
-            detail: format!("bounded delete on the artifacts table failed: {e}"),
+            detail: format!("bounded delete with predicate `{predicate}` failed: {e}"),
         })?;
 
     // `DeleteResult` has no version field, so this is the only source. It is
     // read after the commit, under the owner, and a `0` here would mean the
     // table never committed — which is not a version this protocol can record.
     let version = table.version().await.map_err(|e| ConstellationError::Io {
-        detail: format!("cannot read the artifacts version after a delete: {e}"),
+        detail: format!("cannot read the table version after a delete: {e}"),
     })?;
     if version == 0 {
         return Err(ConstellationError::Io {
-            detail: "the artifacts table reported version 0 after a delete".to_string(),
+            detail: "the table reported version 0 after a delete".to_string(),
         });
     }
 
     Ok(DeleteOutcome {
         version,
         rows_deleted: result.num_deleted_rows,
-        keys: keys.clone(),
+        keys,
         predicate,
     })
 }
@@ -2069,11 +2536,31 @@ pub fn delete_predicate_for(canonical_keys: &[String]) -> Result<String, Constel
             detail: "an empty delete predicate would match every row".to_string(),
         });
     }
-    let literals: Vec<String> = canonical_keys
-        .iter()
+    Ok(format!(
+        "canonical_key IN ({})",
+        in_literals(canonical_keys)
+    ))
+}
+
+/// A bounded delete predicate over `parent_key` — the sections table's
+/// delete column. Sections are removed only by parent ("every section of
+/// these gone artifacts"), never individually, so the predicate is keyed on
+/// the column that names the parent rather than the row.
+pub fn parent_key_predicate_for(parent_keys: &[String]) -> Result<String, ConstellationError> {
+    if parent_keys.is_empty() {
+        return Err(ConstellationError::StorageIo {
+            detail: "an empty delete predicate would match every row".to_string(),
+        });
+    }
+    Ok(format!("parent_key IN ({})", in_literals(parent_keys)))
+}
+
+/// The escaped, quoted literal list for one `IN` clause.
+fn in_literals(keys: &[String]) -> String {
+    keys.iter()
         .map(|key| escape_predicate_literal(key))
-        .collect();
-    Ok(format!("canonical_key IN ({})", literals.join(", ")))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -2121,6 +2608,7 @@ mod tests {
             manifest_path: format!("generations/{generation_id}.json"),
             manifest_sha256: "aa".to_string(),
             embedding_artifacts_head: None,
+            embedding_sections_head: None,
         }
     }
 
@@ -2211,6 +2699,20 @@ mod tests {
     // -------------------------------------------------------------------
 
     fn manifest_with_versions(artifacts: u64, relations: u64) -> GenerationManifest {
+        manifest_with_sections(artifacts, relations, None)
+    }
+
+    fn manifest_with_sections(
+        artifacts: u64,
+        relations: u64,
+        sections: Option<u64>,
+    ) -> GenerationManifest {
+        let mut manifest = manifest_with_versions_inner(artifacts, relations);
+        manifest.table_versions.sections = sections;
+        manifest
+    }
+
+    fn manifest_with_versions_inner(artifacts: u64, relations: u64) -> GenerationManifest {
         GenerationManifest {
             schema_version: crate::constellation::FORMAT_VERSION,
             generation_id: "gen-1".to_string(),
@@ -2236,41 +2738,84 @@ mod tests {
 
     #[test]
     fn nothing_published_means_nothing_to_diverge_from() {
-        assert_eq!(compare_heads(None, 7, 9), HeadComparison::Matches);
+        assert_eq!(compare_heads(None, 7, 9, 4), HeadComparison::Matches);
     }
 
     #[test]
     fn matching_heads_restore_nothing_and_commit_nothing() {
         let published = manifest_with_versions(3, 2);
+        // No sections pin: any sections head is free, never divergent.
         assert_eq!(
-            compare_heads(Some(&published), 3, 2),
+            compare_heads(Some(&published), 3, 2, 9),
+            HeadComparison::Matches
+        );
+    }
+
+    #[test]
+    fn matching_three_way_heads_restore_nothing() {
+        let published = manifest_with_sections(3, 2, Some(5));
+        assert_eq!(
+            compare_heads(Some(&published), 3, 2, 5),
             HeadComparison::Matches
         );
     }
 
     #[test]
     fn divergence_names_exactly_the_table_that_moved() {
-        let published = manifest_with_versions(3, 2);
+        let published = manifest_with_sections(3, 2, Some(5));
         assert_eq!(
-            compare_heads(Some(&published), 4, 2),
+            compare_heads(Some(&published), 4, 2, 5),
             HeadComparison::Diverged {
                 artifacts_diverged: true,
-                relations_diverged: false
+                relations_diverged: false,
+                sections_diverged: false
             }
         );
         assert_eq!(
-            compare_heads(Some(&published), 3, 5),
+            compare_heads(Some(&published), 3, 5, 5),
             HeadComparison::Diverged {
                 artifacts_diverged: false,
-                relations_diverged: true
+                relations_diverged: true,
+                sections_diverged: false
             }
         );
         assert_eq!(
-            compare_heads(Some(&published), 4, 5),
+            compare_heads(Some(&published), 3, 2, 6),
+            HeadComparison::Diverged {
+                artifacts_diverged: false,
+                relations_diverged: false,
+                sections_diverged: true
+            }
+        );
+        assert_eq!(
+            compare_heads(Some(&published), 4, 5, 7),
             HeadComparison::Diverged {
                 artifacts_diverged: true,
-                relations_diverged: true
+                relations_diverged: true,
+                sections_diverged: true
             }
+        );
+    }
+
+    #[test]
+    fn a_pre_sections_generation_never_reports_sections_divergence() {
+        // `sections: None` means the pin does not exist — the physical head
+        // is free whatever it is, so nothing rewinds it.
+        let published = manifest_with_versions(3, 2);
+        assert_eq!(
+            compare_heads(Some(&published), 3, 2, 42),
+            HeadComparison::Matches
+        );
+    }
+
+    #[test]
+    fn a_sections_pin_of_zero_is_torn_not_divergence() {
+        // `Some(0)` is not a real version — the empty creation commit is v1.
+        // It means the manifest was torn mid-write, not that the table moved.
+        let published = manifest_with_sections(3, 2, Some(0));
+        assert_eq!(
+            compare_heads(Some(&published), 3, 2, 3),
+            HeadComparison::MissingPublishedVersion { role: "sections" }
         );
     }
 
@@ -2278,7 +2823,7 @@ mod tests {
     fn a_published_pair_with_a_missing_half_is_unavailable_not_divergence() {
         let published = manifest_with_versions(0, 2);
         assert_eq!(
-            compare_heads(Some(&published), 4, 2),
+            compare_heads(Some(&published), 4, 2, 1),
             HeadComparison::MissingPublishedVersion { role: "pair" }
         );
     }
@@ -2319,6 +2864,7 @@ mod tests {
             source_set_digest: "ss".to_string(),
             config_digest: "cd".to_string(),
             artifacts: Vec::new(),
+            sections: Vec::new(),
             coverage: Coverage {
                 expected: enumerated.len(),
                 read: entries.len(),
@@ -2611,6 +3157,14 @@ mod tests {
         }
     }
 
+    fn no_sections() -> SectionsPlan {
+        SectionsPlan {
+            parent_delete_keys: vec![],
+            merge_rows: 0,
+            bootstrap: false,
+        }
+    }
+
     #[test]
     fn a_stage_with_confirmed_deletes_emits_one_bounded_delete_op() {
         let sequence = stage_sequence(
@@ -2618,6 +3172,7 @@ mod tests {
             0,
             vec!["PRD-002".to_string(), "PRD-003".to_string()],
             &no_relations(),
+            &no_sections(),
         );
         assert_eq!(sequence.commit_count(), 1);
         assert_eq!(
@@ -2633,7 +3188,13 @@ mod tests {
 
     #[test]
     fn creates_and_updates_emit_a_merge_carrying_the_full_source_gate() {
-        let sequence = stage_sequence(&commit_plan(true, 1, 1, 0), 2, vec![], &no_relations());
+        let sequence = stage_sequence(
+            &commit_plan(true, 1, 1, 0),
+            2,
+            vec![],
+            &no_relations(),
+            &no_sections(),
+        );
         assert_eq!(sequence.commit_count(), 1);
         assert_eq!(
             sequence.ops,
@@ -2658,6 +3219,7 @@ mod tests {
             2,
             vec!["PRD-002".into()],
             &no_relations(),
+            &no_sections(),
         );
         assert_eq!(
             sequence.ops,
@@ -2680,6 +3242,7 @@ mod tests {
                 delete_keys: vec!["PRD-001".into(), "PRD-002".into()],
                 merge_rows: 3,
             },
+            &no_sections(),
         );
         assert_eq!(
             sequence.ops,
@@ -2703,8 +3266,162 @@ mod tests {
     }
 
     #[test]
+    fn sections_ops_follow_the_artifact_and_relations_ops() {
+        let sequence = stage_sequence(
+            &commit_plan(true, 1, 0, 1),
+            2,
+            vec!["PRD-002".into()],
+            &RelationsPlan {
+                delete_keys: vec!["PRD-001".into()],
+                merge_rows: 3,
+            },
+            &SectionsPlan {
+                parent_delete_keys: vec!["PRD-002".into()],
+                merge_rows: 4,
+                bootstrap: false,
+            },
+        );
+        assert_eq!(
+            sequence.ops,
+            vec![
+                CommitOp::MergeUpsert {
+                    rows: 2,
+                    full_source_batch: true
+                },
+                CommitOp::RelationsDelete {
+                    keys: vec!["PRD-001".into()]
+                },
+                CommitOp::RelationsMerge { rows: 3 },
+                CommitOp::SectionsDelete {
+                    parent_keys: vec!["PRD-002".into()]
+                },
+                CommitOp::SectionsMerge {
+                    rows: 4,
+                    full_source_batch: true
+                },
+            ],
+            "sections are replaced after the artifacts they belong to, \
+             delete before merge exactly like relations"
+        );
+        assert_eq!(sequence.ops[4].table(), CommitTable::Sections);
+    }
+
+    #[test]
+    fn a_noop_artifact_pass_still_populates_sections_on_upgrade() {
+        // `bootstrap` is the pre-sections-generation upgrade path: the
+        // artifact side staged nothing, but the table must still be filled —
+        // otherwise a reopened index would sit sectionless until the next
+        // content change.
+        let sequence = stage_sequence(
+            &commit_plan(true, 0, 0, 0),
+            0,
+            vec![],
+            &no_relations(),
+            &SectionsPlan {
+                parent_delete_keys: vec![],
+                merge_rows: 5,
+                bootstrap: true,
+            },
+        );
+        assert_eq!(
+            sequence.ops,
+            vec![CommitOp::SectionsMerge {
+                rows: 5,
+                full_source_batch: true
+            }],
+            "an upgraded index fills the sections table even when nothing else moved"
+        );
+
+        let same_without_bootstrap = stage_sequence(
+            &commit_plan(true, 0, 0, 0),
+            0,
+            vec![],
+            &no_relations(),
+            &SectionsPlan {
+                parent_delete_keys: vec![],
+                merge_rows: 5,
+                bootstrap: false,
+            },
+        );
+        assert!(
+            same_without_bootstrap.is_empty(),
+            "without bootstrap a no-op pass emits nothing — the sections merge \
+             is gated on real work"
+        );
+    }
+
+    #[test]
+    fn a_sections_delete_is_emitted_for_confirmed_parent_losses_only() {
+        // Delete-all case: the section batch is empty, so no merge exists to
+        // carry the source-delete — the parent-key delete is the only way
+        // the rows retire.
+        let sequence = stage_sequence(
+            &commit_plan(true, 0, 0, 1),
+            0,
+            vec!["PRD-009".into()],
+            &no_relations(),
+            &SectionsPlan {
+                parent_delete_keys: vec!["PRD-009".into()],
+                merge_rows: 0,
+                bootstrap: false,
+            },
+        );
+        assert_eq!(
+            sequence.ops,
+            vec![
+                CommitOp::DeleteByPredicate {
+                    keys: vec!["PRD-009".into()]
+                },
+                CommitOp::SectionsDelete {
+                    parent_keys: vec!["PRD-009".into()]
+                },
+            ],
+            "the parent-key delete is the only section retiree when no merge runs"
+        );
+    }
+
+    #[test]
+    fn a_partial_capture_never_gives_the_sections_merge_a_source_gate() {
+        // The completeness gate lives on the op: under a partial capture the
+        // merge still upserts but may not delete by source — and the
+        // parent-key list stays empty because tombstones only exist when the
+        // capture proved absence.
+        let sequence = stage_sequence(
+            &commit_plan(false, 1, 0, 0),
+            1,
+            vec![],
+            &no_relations(),
+            &SectionsPlan {
+                parent_delete_keys: vec![],
+                merge_rows: 5,
+                bootstrap: false,
+            },
+        );
+        assert_eq!(
+            sequence.ops,
+            vec![
+                CommitOp::MergeUpsert {
+                    rows: 1,
+                    full_source_batch: false
+                },
+                CommitOp::SectionsMerge {
+                    rows: 5,
+                    full_source_batch: false
+                },
+            ],
+            "without a complete capture the merge may upsert but may not delete"
+        );
+    }
+
+    #[test]
     fn a_partial_capture_never_attaches_the_bulk_delete_clause() {
-        let sequence = stage_sequence(&commit_plan(false, 1, 0, 0), 1, vec![], &no_relations());
+        let sequence = stage_sequence(
+            &commit_plan(false, 1, 0, 0),
+            1,
+            vec![],
+            &no_relations(),
+            &no_sections(),
+        );
         assert_eq!(
             sequence.ops,
             vec![CommitOp::MergeUpsert {
@@ -2718,7 +3435,13 @@ mod tests {
 
     #[test]
     fn a_stage_that_changes_nothing_emits_no_commits() {
-        let sequence = stage_sequence(&commit_plan(true, 0, 0, 0), 0, vec![], &no_relations());
+        let sequence = stage_sequence(
+            &commit_plan(true, 0, 0, 0),
+            0,
+            vec![],
+            &no_relations(),
+            &no_sections(),
+        );
         assert!(sequence.is_empty());
         assert_eq!(sequence.commit_count(), 0);
     }
@@ -3134,8 +3857,11 @@ mod tests {
         match op {
             CommitOp::DeleteByPredicate { keys } => keys.clone(),
             CommitOp::RelationsDelete { keys } => keys.clone(),
+            CommitOp::SectionsDelete { parent_keys } => parent_keys.clone(),
             CommitOp::ColumnUpdate { keys, .. } => keys.clone(),
-            CommitOp::MergeUpsert { .. } | CommitOp::RelationsMerge { .. } => Vec::new(),
+            CommitOp::MergeUpsert { .. }
+            | CommitOp::RelationsMerge { .. }
+            | CommitOp::SectionsMerge { .. } => Vec::new(),
         }
     }
 
@@ -3211,6 +3937,48 @@ mod tests {
         assert!(
             err.to_string().contains("no binding"),
             "publishing without an input digest is the bypass in another name: {err}"
+        );
+    }
+
+    fn captured_section() -> super::super::capture::CapturedSection {
+        super::super::capture::CapturedSection {
+            canonical_key: "PRD-001#s1".to_string(),
+            parent_key: "PRD-001".to_string(),
+            ordinal: 1,
+            heading: Some("Problem".to_string()),
+            level: Some(2),
+            content: std::sync::Arc::from("section body"),
+            input_digest: "section-input-digest".to_string(),
+            parent_input_digest: "id".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_section_binding_borrows_the_parent_and_keeps_its_own_key_and_digest() {
+        let parent = source_entry(Some("id"));
+        let binding = binding_for_section(&captured_section(), &parent, "pid").unwrap();
+
+        // Durable identity comes from the parent entry wholesale.
+        assert_eq!(binding.index_epoch, 5);
+        assert_eq!(binding.checkout_id, "local-a");
+        assert_eq!(binding.incarnation, 2);
+        assert_eq!(binding.row_revision, 7);
+        assert_eq!(binding.source_digest, "sd");
+        // But the row identity and the input digest are the section's own —
+        // publishing under the parent's `input_digest` would bind a vector to
+        // bytes it was never computed from.
+        assert_eq!(binding.canonical_key, "PRD-001#s1");
+        assert_eq!(binding.input_digest, "section-input-digest");
+        assert_ne!(
+            binding.input_digest,
+            parent.input_digest.unwrap(),
+            "the section digest is the section input's hash, never the parent's"
+        );
+        assert_eq!(binding.profile_id, "pid");
+        assert_eq!(
+            binding.predicate().matches("'PRD-001#s1'").count(),
+            1,
+            "the predicate binds the section key so a stale parent move still refuses the write"
         );
     }
 }

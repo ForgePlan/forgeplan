@@ -107,9 +107,15 @@ async fn run_constellation(
     struct Hit {
         id: String,
         key: String,
+        /// The artifact this hit belongs to — the hit's own key for an
+        /// artifact row, the parent's key for a section row (`"X#s3"` hits
+        /// still resolve to artifact `X`).
+        doc_key: String,
         kind: Option<String>,
         status: Option<String>,
         title: String,
+        /// `Some("§3 <heading>")` on a section hit; displayed beside the id.
+        section_label: Option<String>,
         score: Option<f64>,
         channel: &'static str,
     }
@@ -126,17 +132,24 @@ async fn run_constellation(
                     .display_id
                     .clone()
                     .unwrap_or_else(|| h.canonical_key.clone()),
+                doc_key: h.canonical_key.clone(),
                 key: h.canonical_key,
                 kind: h.kind,
                 status: h.status,
                 title: h.title,
+                section_label: None,
                 score: None,
                 channel: "keyword",
             }
         }));
     }
 
+    // Mutable only where the feature can actually flip it — without the
+    // feature the flag stays `false` and `mut` would warn.
+    #[cfg(feature = "semantic-search")]
     let mut semantic_available = false;
+    #[cfg(not(feature = "semantic-search"))]
+    let semantic_available = false;
     #[cfg(feature = "semantic-search")]
     if matches!(mode, SearchMode::Semantic | SearchMode::Smart) {
         // The descriptor's profile_id names the space ready vectors live in;
@@ -153,28 +166,48 @@ async fn run_constellation(
                 // the pinned get only when a filter actually needs it.
                 let mut sem = Vec::new();
                 for h in out.hits {
+                    // A section hit's kind/status live on its parent row;
+                    // `get_pinned_artifact` is keyed by artifact key, so the
+                    // resolution goes through `parent_key`, not the section
+                    // key.
+                    let resolve_key = h.parent_key.as_deref().unwrap_or(&h.canonical_key);
                     let (k, s) = if kindf.is_some() || statusf.is_some() {
-                        match facade::get_pinned_artifact(&index_root, &h.canonical_key).await? {
+                        match facade::get_pinned_artifact(&index_root, resolve_key).await? {
                             Some((a, _, _)) => (a.kind, a.status),
                             None => (None, None),
                         }
                     } else {
                         (None, None)
                     };
+                    let section_label =
+                        h.section_ordinal
+                            .map(|ordinal| match h.section_heading.as_deref() {
+                                Some(heading) => format!("§{ordinal} {heading}"),
+                                None => format!("§{ordinal}"),
+                            });
                     sem.push(Hit {
-                        id: h.display_id.unwrap_or_else(|| h.canonical_key.clone()),
+                        // The displayed id and `forgeplan get` target stay the
+                        // *artifact* — the section label says which part won.
+                        id: h.display_id.unwrap_or_else(|| resolve_key.to_string()),
+                        doc_key: resolve_key.to_string(),
                         key: h.canonical_key,
                         kind: k,
                         status: s,
                         title: h.title,
+                        section_label,
                         score: Some(h.similarity),
                         channel: "semantic",
                     });
                 }
+                // Dedupe by document: an artifact row and its own `X#sN`
+                // section are the same document — the earlier (higher-scored)
+                // row wins because `out.hits` arrives similarity-sorted.
+                let mut seen_docs = std::collections::BTreeSet::new();
+                sem.retain(|h| seen_docs.insert(h.doc_key.clone()));
                 // Semantic first (similarity order), then lexical leftovers.
                 let seen: std::collections::BTreeSet<_> =
-                    sem.iter().map(|h| h.key.clone()).collect();
-                hits.retain(|h| !seen.contains(&h.key));
+                    sem.iter().map(|h| h.doc_key.clone()).collect();
+                hits.retain(|h| !seen.contains(&h.doc_key));
                 sem.extend(hits);
                 hits = sem;
             }
@@ -227,6 +260,8 @@ async fn run_constellation(
                 serde_json::json!({
                     "id": h.id,
                     "canonical_key": h.key,
+                    "document_key": h.doc_key,
+                    "section": h.section_label,
                     "kind": h.kind,
                     "status": h.status,
                     "title": h.title,
@@ -244,12 +279,19 @@ async fn run_constellation(
         return Ok(());
     }
 
-    let mut lines = vec![format!("{:<14} {:<22} {}", "ID", "KIND", "TITLE")];
+    let mut lines = vec![format!("{:<28} {:<22} {}", "ID", "KIND", "TITLE")];
     for h in &hits {
         let score = h.score.map(|s| format!(" {:.3}", s)).unwrap_or_default();
+        // A section hit displays as `ID §N <heading>` — the artifact id stays
+        // the address (`forgeplan get` resolves it), the suffix says which
+        // part of the body won.
+        let id = match &h.section_label {
+            Some(label) => format!("{} {}", h.id, label),
+            None => h.id.clone(),
+        };
         lines.push(format!(
-            "{:<14} {:<22} {}{}",
-            h.id,
+            "{:<28} {:<22} {}{}",
+            id,
             h.kind.as_deref().unwrap_or("—"),
             h.title,
             score
