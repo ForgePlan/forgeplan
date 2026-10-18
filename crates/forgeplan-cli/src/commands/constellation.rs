@@ -545,7 +545,18 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                 let found = snap::snapshot_get(&snap, &id)?;
                 return match found.len() {
                     0 => {
-                        println!("Not found at snapshot {snap_id}: {id}");
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&serde_json::json!({
+                                    "result": "not_found",
+                                    "id": id,
+                                    "snapshot": snap_id,
+                                }))?
+                            );
+                        } else {
+                            println!("Not found at snapshot {snap_id}: {id}");
+                        }
                         Ok(())
                     }
                     1 => {
@@ -567,12 +578,30 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                         Ok(())
                     }
                     _ => {
-                        println!(
-                            "'{id}' is claimed by {} sources at this snapshot:",
-                            found.len()
-                        );
-                        for (source, rel, _) in &found {
-                            println!("  {} ({})", rel, source.source_id);
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&serde_json::json!({
+                                    "result": "ambiguous",
+                                    "id": id,
+                                    "snapshot": snap_id,
+                                    "sources": found
+                                        .iter()
+                                        .map(|(source, rel, _)| serde_json::json!({
+                                            "relative_path": rel,
+                                            "source_id": source.source_id,
+                                        }))
+                                        .collect::<Vec<_>>(),
+                                }))?
+                            );
+                        } else {
+                            println!(
+                                "'{id}' is claimed by {} sources at this snapshot:",
+                                found.len()
+                            );
+                            for (source, rel, _) in &found {
+                                println!("  {} ({})", rel, source.source_id);
+                            }
                         }
                         Ok(())
                     }
@@ -639,18 +668,52 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                     }
                 }
                 FederatedGet::Ambiguous { sources } => {
-                    println!(
-                        "'{id}' is claimed by {} sources — qualify which you mean:",
-                        sources.len()
-                    );
-                    for source in &sources {
-                        println!("  {} ({})", source.path, source.source_id);
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "result": "ambiguous",
+                                "id": id,
+                                "sources": sources
+                                    .iter()
+                                    .map(|s| serde_json::json!({
+                                        "path": s.path,
+                                        "source_id": s.source_id,
+                                    }))
+                                    .collect::<Vec<_>>(),
+                            }))?
+                        );
+                    } else {
+                        println!(
+                            "'{id}' is claimed by {} sources — qualify which you mean:",
+                            sources.len()
+                        );
+                        for source in &sources {
+                            println!("  {} ({})", source.path, source.source_id);
+                        }
                     }
                 }
                 FederatedGet::NotFound { failures } => {
-                    println!("Not found: {id}");
-                    for failure in &failures {
-                        println!("  (unread source: {} — {})", failure.path, failure.reason);
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "result": "not_found",
+                                "id": id,
+                                "failures": failures
+                                    .iter()
+                                    .map(|f| serde_json::json!({
+                                        "path": f.path,
+                                        "reason": f.reason,
+                                    }))
+                                    .collect::<Vec<_>>(),
+                            }))?
+                        );
+                    } else {
+                        println!("Not found: {id}");
+                        for failure in &failures {
+                            println!("  (unread source: {} — {})", failure.path, failure.reason);
+                        }
                     }
                 }
             }

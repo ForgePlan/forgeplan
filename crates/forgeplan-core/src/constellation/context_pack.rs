@@ -313,6 +313,23 @@ fn build_pack(
     let mut omitted = Vec::new();
     let mut used = 0usize;
     for (rank, item) in scored.into_iter().enumerate() {
+        // A zero score means nothing matched. Naming such a unit in
+        // `omitted` is evidence next to a real answer ("seen and rejected"),
+        // but on a zero-match task it would list the entire corpus as
+        // omitted — noise instead of signal. `scored` is sorted by score
+        // desc, so every included unit is already in `units` before the
+        // first zero-score row arrives.
+        if item.score <= 0.0 {
+            if !units.is_empty() {
+                omitted.push(Omission {
+                    canonical_key: item.doc.canonical_key,
+                    source_id: item.source.source_id.clone(),
+                    reason: "below_threshold".into(),
+                    score: item.score,
+                });
+            }
+            continue;
+        }
         if item.score < SCORE_FLOOR {
             omitted.push(Omission {
                 canonical_key: item.doc.canonical_key,
