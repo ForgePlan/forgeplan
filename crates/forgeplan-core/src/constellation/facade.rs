@@ -471,6 +471,43 @@ pub async fn embed_with_publisher(
     let results: Vec<EmbeddingPublish> =
         publish_embeddings(&tables, &captured, &profile_id, vectors).await?;
 
+    // 6b. Record the heads this publish moved and the space it claims, on the
+    //     descriptor — the manifest is immutable, so completed heads live on
+    //     it. Without this the next reconcile reads the movement as divergence
+    //     (the embed→erase cycle), and pinned semantic reads cannot name the
+    //     profile whose vectors actually stand. The publisher is still held,
+    //     so nothing else can move the heads before this republish.
+    if let Some(descriptor) = super::storage::read_current(&index_root)? {
+        let section_keys: std::collections::BTreeSet<&str> = captured
+            .sections
+            .iter()
+            .map(|s| s.canonical_key.as_str())
+            .collect();
+        let artifacts_embedded = results
+            .iter()
+            .filter(|o| o.published() && !section_keys.contains(o.binding.canonical_key.as_str()))
+            .count();
+        let sections_embedded = results
+            .iter()
+            .filter(|o| o.published() && section_keys.contains(o.binding.canonical_key.as_str()))
+            .count();
+        let claims_space =
+            artifacts_embedded + sections_embedded > 0 || !eligibility.current_keys().is_empty();
+        let mut next = descriptor.clone();
+        if artifacts_embedded > 0 {
+            next.embedding_artifacts_head = Some(tables.artifacts_version().await?);
+        }
+        if sections_embedded > 0 {
+            next.embedding_sections_head = Some(tables.sections_version().await?);
+        }
+        if claims_space {
+            next.profile_id = Some(profile_id.clone());
+        }
+        if next != descriptor {
+            publisher.republish_current(&next)?;
+        }
+    }
+
     // 7. Release: tables first, then the owner with the publisher.
     drop(tables);
     drop(publisher);

@@ -129,6 +129,67 @@ pub fn list_sections(body: &str) -> Vec<Section> {
     sections
 }
 
+/// Split a body at **every** heading, regardless of level.
+///
+/// The flat counterpart of [`list_sections`]: a `###` under a `##` starts its
+/// own section instead of folding into the parent's content. This is the
+/// split semantic indexing needs — a long `#` document whose `##` blocks hold
+/// the meaning must yield one unit per block, or the tail of the single nested
+/// section would hit the input-length cap and stay invisible to the vector
+/// index, recreating the prefix-only gap the table exists to close.
+///
+/// `content` is the raw text between the heading's end and the next heading's
+/// start — it may still be long, and callers bound it themselves (embedding
+/// applies its own prefix cap per section).
+///
+/// Uses `into_offset_iter`, so spans are real byte ranges of `body`; headings
+/// inside fenced code blocks are ignored exactly as in [`list_sections`].
+pub fn list_section_spans(body: &str) -> Vec<Section> {
+    let parser = Parser::new_ext(body, Options::all());
+
+    let mut sections = Vec::new();
+    // (heading text, level, byte offset where this section's content starts).
+    let mut open: Option<(String, u8, usize)> = None;
+    let mut in_heading = false;
+    let mut heading_text = String::new();
+    let mut heading_level = 0u8;
+
+    for (event, range) in parser.into_offset_iter() {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                if let Some((heading, level, content_start)) = open.take() {
+                    sections.push(Section {
+                        heading,
+                        level,
+                        content: body[content_start..range.start].trim().to_string(),
+                    });
+                }
+                in_heading = true;
+                heading_text.clear();
+                heading_level = level_to_u8(level);
+            }
+            Event::End(TagEnd::Heading(_)) if in_heading => {
+                open = Some((std::mem::take(&mut heading_text), heading_level, range.end));
+                in_heading = false;
+            }
+            Event::Text(text) | Event::Code(text) if in_heading => {
+                heading_text.push_str(&text);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some((heading, level, content_start)) = open {
+        sections.push(Section {
+            heading,
+            level,
+            content: body[content_start..].trim().to_string(),
+        });
+    }
+
+    sections
+}
+
 /// Extract the content of a specific section by heading name (case-insensitive).
 ///
 /// Returns [`None`] if the section does not exist.
@@ -178,6 +239,78 @@ Make it fast.
         assert!(sections[0].content.contains("The system is slow."));
         assert_eq!(sections[1].heading, "Goals");
         assert!(sections[1].content.contains("Make it fast."));
+    }
+
+    #[test]
+    fn flat_spans_split_at_every_level() {
+        let md = "\
+# Title
+
+## Problem
+
+Overview of the problem.
+
+### Sub-problem
+
+Details here.
+
+## Goals
+
+Make it work.
+";
+        let sections = list_section_spans(md);
+        assert_eq!(sections.len(), 4);
+        assert_eq!(sections[0].heading, "Title");
+        assert_eq!(sections[0].level, 1);
+        assert_eq!(sections[1].heading, "Problem");
+        assert_eq!(sections[1].level, 2);
+        // Flat, not nested: the parent's content stops where `###` opens.
+        assert_eq!(sections[1].content, "Overview of the problem.");
+        assert_eq!(sections[2].heading, "Sub-problem");
+        assert_eq!(sections[2].level, 3);
+        assert_eq!(sections[2].content, "Details here.");
+        assert_eq!(sections[3].heading, "Goals");
+        assert_eq!(sections[3].content, "Make it work.");
+    }
+
+    #[test]
+    fn flat_spans_ignore_headings_inside_code_fences() {
+        let md = "\
+## Real
+
+```markdown
+## Not a section
+```
+
+After the fence.
+";
+        let sections = list_section_spans(md);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].heading, "Real");
+        assert!(sections[0].content.contains("## Not a section"));
+        assert!(sections[0].content.contains("After the fence."));
+    }
+
+    #[test]
+    fn flat_spans_handle_a_heading_with_no_body() {
+        let md = "# Lone title\n";
+        let sections = list_section_spans(md);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].heading, "Lone title");
+        assert_eq!(sections[0].level, 1);
+        assert_eq!(sections[0].content, "");
+    }
+
+    #[test]
+    fn flat_spans_match_nested_sections_when_nothing_is_nested() {
+        let md = "## A\none\n## B\ntwo\n";
+        let flat = list_section_spans(md);
+        let nested = list_sections(md);
+        assert_eq!(flat.len(), nested.len());
+        for (f, n) in flat.iter().zip(nested.iter()) {
+            assert_eq!(f.heading, n.heading);
+            assert_eq!(f.level, n.level);
+        }
     }
 
     #[test]

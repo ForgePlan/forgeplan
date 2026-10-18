@@ -202,14 +202,16 @@ pub struct CapturedSection {
     pub canonical_key: String,
     /// Canonical key of the artifact this section was parsed from.
     pub parent_key: String,
-    /// Position in `list_sections` order. Reordering sections changes which
+    /// Position in `list_section_spans` order. Reordering sections changes which
     /// content a key binds; `input_digest` detects the change.
     pub ordinal: u32,
     /// Heading text, or `None` for the no-headings whole-body fallback.
     pub heading: Option<String>,
     /// Markdown heading level (1–6), `None` for the fallback section.
     pub level: Option<u8>,
-    /// Exact section bytes as captured — nested subsections included.
+    /// Exact section bytes as captured — the text between this heading and
+    /// the next heading of **any** level (`list_section_spans` semantics, not
+    /// `list_sections`' nested fold — a `###` gets its own row).
     /// `Arc`-shared into the artifact body like every other captured text.
     pub content: Arc<str>,
     /// SHA-256 of `section_input_text(parent title, heading, content)`.
@@ -222,24 +224,28 @@ pub struct CapturedSection {
 
 /// Derive the deterministic section set for one captured artifact.
 ///
-/// Derived from the **captured bytes** — `list_sections` parses
+/// Derived from the **captured bytes** — `list_section_spans` parses
 /// `artifact.body`, never the filesystem. Three cases:
 ///
 /// * **No headings at all** — one whole-body section at ordinal 0 with no
 ///   heading. Every captured artifact always produces at least one section
 ///   row, so an empty `sections` vec can only mean an empty `artifacts` vec.
-/// * **Preamble** — `list_sections` drops text before the first heading, so
+/// * **Preamble** — `list_section_spans` drops text before the first heading, so
 ///   a body that starts with prose gets one extra synthetic section for it
 ///   at ordinal 0 (heading `None`), with the heading sections shifted to
 ///   ordinals 1... Without this a long preamble would be the same
 ///   not-searchable tail the sections table exists to remove.
-/// * **Headed sections** — one row each, in `list_sections` order.
+/// * **Headed sections** — one row each, in `list_section_spans` order. The
+///   split is flat: every heading opens a new row, so a nested `###` is its
+///   own unit rather than content inside its parent's — otherwise one long
+///   `#` document would produce a single section whose tail hits the input
+///   cap and stays invisible, the very gap this table exists to close.
 ///
 /// Ordinal keys are positional on purpose: two sections that share a heading
 /// are still distinct rows, and reordering sections changes which content a
 /// key binds — `input_digest` detects that the way it does for any edit.
 pub fn sections_for(artifact: &ParsedArtifact, body_prefix_chars: usize) -> Vec<CapturedSection> {
-    let parsed = crate::artifact::sections::list_sections(&artifact.body);
+    let parsed = crate::artifact::sections::list_section_spans(&artifact.body);
     if parsed.is_empty() {
         return vec![CapturedSection {
             canonical_key: section_key(&artifact.canonical_key, 0),
@@ -306,7 +312,7 @@ pub fn sections_for(artifact: &ParsedArtifact, body_prefix_chars: usize) -> Vec<
 /// The raw body bytes before the first markdown heading, if non-whitespace.
 ///
 /// Byte offsets come from the same `pulldown-cmark` event stream
-/// `list_sections` uses, so "before the first heading" means exactly what
+/// `list_section_spans` uses, so "before the first heading" means exactly what
 /// the section parser calls a heading — fenced code blocks still do not
 /// count. Returns `None` when there is no heading or the run is blank.
 fn preamble_text(body: &str) -> Option<&str> {
@@ -1513,7 +1519,10 @@ mod tests {
 
         let sections: Vec<_> = view.sections_of("PRD-001").collect();
         let keys: Vec<&str> = sections.iter().map(|s| s.canonical_key.as_str()).collect();
-        assert_eq!(keys, ["PRD-001#s0", "PRD-001#s1", "PRD-001#s2"]);
+        assert_eq!(
+            keys,
+            ["PRD-001#s0", "PRD-001#s1", "PRD-001#s2", "PRD-001#s3"]
+        );
 
         let preamble = sections[0];
         assert_eq!(preamble.heading, None);
@@ -1523,11 +1532,16 @@ mod tests {
         let problem = sections[1];
         assert_eq!(problem.heading.as_deref(), Some("Problem"));
         assert_eq!(problem.level, Some(2));
-        // A nested heading is part of the parent's content, not its own row.
-        assert!(problem.content.contains("### Detail"));
-        assert!(problem.content.contains("Subheading content"));
+        // A nested heading is its own row, not part of the parent's content.
+        assert!(!problem.content.contains("### Detail"));
+        assert!(problem.content.contains("Login is slow."));
 
-        let goals = sections[2];
+        let detail = sections[2];
+        assert_eq!(detail.heading.as_deref(), Some("Detail"));
+        assert_eq!(detail.level, Some(3));
+        assert!(detail.content.contains("Subheading content"));
+
+        let goals = sections[3];
         assert_eq!(goals.heading.as_deref(), Some("Goals"));
         assert!(goals.content.contains("Make it fast."));
 
