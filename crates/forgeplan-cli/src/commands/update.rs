@@ -1,6 +1,7 @@
 use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
+use forgeplan_core::workspace::lock::WorkspaceLock;
 
 use crate::commands::common;
 
@@ -20,7 +21,10 @@ pub async fn run(
         forgeplan_core::artifact::validate_title(t)?;
     }
 
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let Some(store) = store else {
+        return run_file_first(ws, _lock, id, status, title, depth, body).await;
+    };
 
     // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
     // Resolve once at the top so every downstream operation (lifecycle,
@@ -224,6 +228,163 @@ Fix: forgeplan list",
         Some(r) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&r.body, &r.id),
         None => id.to_string(),
     };
+    let next_hints: Vec<Hint> = vec![
+        Hint::info("Updated — re-run validator")
+            .with_action(format!("forgeplan validate {}", ref_form)),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
+
+    Ok(())
+}
+
+/// File-first `update` for constellation-migrated workspaces: no
+/// `LanceStore` exists, so the mutation edits the markdown directly
+/// (`update_metadata_file_first` / `update_body_file_first`) and one
+/// reconcile pass publishes it. Store-backed extras (changelog row,
+/// old-projection cleanup bookkeeping beyond the rename itself) are
+/// skipped — the note names the owner instead of faking them.
+///
+/// Same gates, ordering and output shape as the store path: resolve →
+/// nothing-to-update → status guards → metadata+rename → body → prints.
+async fn run_file_first(
+    ws: std::path::PathBuf,
+    lock: WorkspaceLock,
+    id: &str,
+    status: Option<&str>,
+    title: Option<&str>,
+    depth: Option<&str>,
+    body: Option<&str>,
+) -> anyhow::Result<()> {
+    use forgeplan_core::artifact::store::resolve_artifact_path;
+
+    let artifact_path = resolve_artifact_path(&ws, id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let content = tokio::fs::read_to_string(&artifact_path).await?;
+    let (fm, old_body) = forgeplan_core::artifact::frontmatter::parse_frontmatter(&content)?;
+    // Canonical id from the file's own `id:` field — every downstream
+    // message and the rename use it, regardless of input form (slug or
+    // display id, same as `store.resolve_id` produced).
+    let id_owned = fm
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| id.to_string());
+    let id = id_owned.as_str();
+
+    if status.is_none() && title.is_none() && depth.is_none() && body.is_none() {
+        anyhow::bail!(
+            "Nothing to update. Use --status, --title, --depth, or --body.\nFix: forgeplan update {} --status draft",
+            id
+        );
+    }
+
+    if let Some(s) = status
+        && s.eq_ignore_ascii_case("active")
+    {
+        anyhow::bail!(
+            "Direct status change to 'active' is not allowed.\nFix: forgeplan activate {}",
+            id
+        );
+    }
+
+    // Same lifecycle-laundering guard as the store path — terminal statuses
+    // go through `supersede`/`deprecate` even on a migrated workspace.
+    if let Some(s) = status
+        && (s.eq_ignore_ascii_case("superseded") || s.eq_ignore_ascii_case("deprecated"))
+    {
+        anyhow::bail!(
+            "Direct status change to '{}' is not allowed — displacement goes through the lifecycle.\nFix: forgeplan supersede {} --by <NEW-ID>\nOr: forgeplan deprecate {} --reason \"...\"",
+            s.to_lowercase(),
+            id,
+            id
+        );
+    }
+
+    if let Some(d) = depth {
+        let _: forgeplan_core::artifact::types::Mode = d.parse().map_err(|_| {
+            anyhow::anyhow!(
+                "Invalid depth '{}'. Valid: tactical, standard, deep, critical\nFix: forgeplan update {} --depth standard",
+                d,
+                id,
+            )
+        })?;
+    }
+
+    // Metadata first (renames the file on --title), then body against the
+    // possibly-renamed path — mirrors the store path's ordering.
+    let mut final_path = artifact_path.clone();
+    if status.is_some() || title.is_some() || depth.is_some() {
+        final_path =
+            projection::update_metadata_file_first(&artifact_path, status, title, depth).await?;
+    }
+
+    if let Some(b) = body {
+        let raw_content = if let Some(path) = b.strip_prefix('@') {
+            tokio::fs::read_to_string(path)
+                .await
+                .map_err(|e| anyhow::anyhow!("Cannot read '{}': {}", path, e))?
+        } else {
+            b.to_string()
+        };
+
+        // Strip YAML frontmatter if present (when reading from @file.md)
+        let body_content = if raw_content.starts_with("---") {
+            use forgeplan_core::artifact::frontmatter;
+            match frontmatter::parse_frontmatter(&raw_content) {
+                Ok((_fm, body)) => body.to_string(),
+                Err(_) => raw_content,
+            }
+        } else {
+            raw_content
+        };
+
+        // Same short-body warning as the store path, measured on the file's
+        // own body portion.
+        let old_len = old_body.len();
+        let new_len = body_content.len();
+        if old_len > 100 && new_len < old_len / 3 {
+            eprintln!(
+                "  ⚠ Warning: new body ({} chars) is much shorter than existing ({} chars).",
+                new_len, old_len
+            );
+            eprintln!(
+                "  Tip: use --body @file.md for safe multi-line updates (avoids shell escaping issues)."
+            );
+        }
+
+        projection::update_body_file_first(&final_path, &body_content).await?;
+    }
+
+    println!("  Updated: {}", id);
+    if let Some(s) = status {
+        println!("  Status:  {}", s);
+    }
+    if let Some(t) = title {
+        println!("  Title:   {}", sanitize_for_hint(t));
+    }
+    if body.is_some() {
+        println!("  Body:    updated");
+    }
+
+    // Ref form for the validate hint: slug pre-merge, display id
+    // post-merge — read from the mutated file's body portion, the file-first
+    // equivalent of `refs_form_from_body(&record.body, ..)`.
+    let ref_form = match tokio::fs::read_to_string(&final_path).await {
+        Ok(content) => {
+            let body_portion = forgeplan_core::artifact::frontmatter::parse_frontmatter(&content)
+                .map(|(_, b)| b)
+                .unwrap_or_default();
+            forgeplan_core::artifact::frontmatter::refs_form_from_body(&body_portion, id)
+        }
+        Err(_) => id.to_string(),
+    };
+
+    common::note_constellation_owns_index();
+    // Lock must drop before reconcile — see `common::reconcile_after_file_mutation`.
+    drop(lock);
+    common::reconcile_after_file_mutation(&ws).await;
+
     let next_hints: Vec<Hint> = vec![
         Hint::info("Updated — re-run validator")
             .with_action(format!("forgeplan validate {}", ref_form)),

@@ -1,0 +1,19 @@
+# Eval runtime state — generated per run, never committed
+results/
+corpus/*/.git/
+corpus/*/.forgeplan/lance/
+corpus/*/.forgeplan/logs/
+corpus/*/.forgeplan/trash/
+corpus/*/.forgeplan/state/
+corpus/*/.forgeplan/journal/
+corpus/*/.forgeplan/memory/
+corpus/*/.forgeplan/discovery/
+corpus/*/.forgeplan/refresh/
+corpus/*/.forgeplan/claims/
+corpus/*/.forgeplan/session.yaml
+corpus/*/.forgeplan/secrets.env
+corpus/*/.forgeplan/*.jsonl
+corpus/*/.forgeplan/tgrep/
+corpus/*/.forgeplan/.lock
+corpus/*/.forgeplan/.constellation-owner-*.lock
+corpus/*/.forgeplan-backup*/

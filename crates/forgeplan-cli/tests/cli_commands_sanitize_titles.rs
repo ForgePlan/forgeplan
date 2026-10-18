@@ -187,7 +187,7 @@ fn sec_h1_all_eight_commands_wire_sanitize_for_hint() {
 }
 
 /// Per-file count guard: at least the expected number of
-/// `sanitize_for_hint(&` invocations must remain. Set to the minimum so
+/// `sanitize_for_hint(...)` invocations must remain. Set to the minimum so
 /// future hardening that adds more wraps is still allowed (≥ guard).
 ///
 /// Site map (post-SEC-H1 closure):
@@ -196,7 +196,7 @@ fn sec_h1_all_eight_commands_wire_sanitize_for_hint() {
 ///   - blindspots.rs        : 2 (spot.title + spot.issue)
 ///   - journal.rs           : 1 (entry.title)
 ///   - decay.rs             : 1 (entry.artifact_title)
-///   - embed.rs             : 1 (record.title in success arm)
+///   - embed.rs             : 1 (key ids in success arm)
 ///   - promote.rs           : 1 (title println)
 ///   - calibrate_estimate.rs: 1 (record.title header)
 #[test]
@@ -213,12 +213,14 @@ fn sec_h1_per_file_wrap_count_lower_bound() {
     ];
     for (name, min) in expectations {
         let src = read_cli_command(name);
-        // Count the canonical wrap form `sanitize_for_hint(&` — matches
-        // both `sanitize_for_hint(&a.title)` and `sanitize_for_hint(&record.title)`.
-        let count = src.matches("sanitize_for_hint(&").count();
+        // Count call sites `sanitize_for_hint(` — matches both the
+        // by-reference form `sanitize_for_hint(&a.title)` and receivers
+        // already borrowed, e.g. `sanitize_for_hint(key)` where `key`
+        // is `&String`/`&str`. The `use` import line carries no `(`.
+        let count = src.matches("sanitize_for_hint(").count();
         assert!(
             count >= min,
-            "{name}: expected ≥ {min} `sanitize_for_hint(&...)` invocations, found {count} — SEC-H1 regression"
+            "{name}: expected ≥ {min} `sanitize_for_hint(...)` invocations, found {count} — SEC-H1 regression"
         );
     }
 }

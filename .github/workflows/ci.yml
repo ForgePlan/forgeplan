@@ -254,6 +254,32 @@ jobs:
         if: always() && env.RUSTC_WRAPPER == 'sccache'
         run: sccache --show-stats || true
 
+  model-cache-platforms:
+    name: Model home (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    # The existing core test build has an unrelated dead_code warning in
+    # anomalies.rs; this job checks path behavior, while `check` enforces lints.
+    env:
+      RUSTFLAGS: ""
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable branch @ 2026-03-27
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - name: Test model path without downloading a model
+        run: cargo test -p forgeplan-core --lib embed::cache_dir_tests --locked
+
   test:
     name: Tests
     runs-on: ubuntu-latest

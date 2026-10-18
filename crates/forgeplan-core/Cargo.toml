@@ -46,6 +46,35 @@ dirs = "6"
 tempfile = "3"
 bm25 = { version = "2.3.2", features = ["language_detection"] }
 sha2 = "0.11"
+# ADR-029 §0 durability seam. The two public injection points the protocol
+# is built on are `lance_io::object_store::WrappingObjectStore` (what
+# `NativeTable::{create,create_empty,open_with_params}` accepts as
+# `write_store_wrapper`) and `object_store::ObjectStore` (what a wrapping
+# store must implement to be wrapped). Pinned exactly so the lockfile's
+# already-resolved `lance-io 4.0.0` / `object_store 0.12.5` entries are
+# reused rather than re-resolved to a different version.
+#
+# `default-features = false` is **required**, not a preference. lance-io's
+# `default = ["aws", "azure", "gcp"]`, and each of those enables
+# `dep:opendal` + `dep:object_store_opendal` — which drags in the whole cloud
+# SDK stack (aws-config and friends, requiring rustc 1.94.1 against the
+# toolchain's 1.91.1) and added 75 packages to the lockfile. `lancedb` 0.27.2
+# declares its own `lance-io` with `default-features = false` precisely for
+# this reason; this line matches it.
+#
+# No feature is enabled in place of `default`: `lance_io::object_store` is a
+# plain, unconditional `pub mod` (`lance-io-4.0.0/src/lib.rs:17`) and
+# `WrappingObjectStore` is declared ungated (`src/object_store.rs:154`), so
+# the local `file-object-store` provider and the wrapper trait are reachable
+# with the crate's features off. The `file-object-store` registration in
+# `src/object_store/providers.rs:300-303` is likewise unconditional.
+lance-io = { version = "=4.0.0", default-features = false }
+# tgrep-core is Microsoft's trigram index library (MIT). Pinned to a tag —
+# never a floating branch — because the index format is on-disk state: a
+# drifting format would read a foreign index as ours. The vendored `ignore`
+# path dep resolves inside the git checkout; `rusqlite` pins itself.
+tgrep-core = { git = "https://github.com/microsoft/tgrep", tag = "v1.2.2" }
+object_store = "=0.12.5"
 tracing = "0.1"
 rand = "0.9"
 fs2.workspace = true
@@ -65,6 +94,23 @@ globset.workspace = true
 # crates used unconditionally in `src/ingest/` and `src/projection/`.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# ADR-029 §0 `WindowsNtfsDurability`: public Win32 file and namespace
+# operations only — `CreateFileW` / `WriteFile` / `FlushFileBuffers` /
+# `CreateDirectoryW` / `MoveFileExW`. `Win32_Security` is required for the
+# security attributes the file and directory calls take. `Win32_System_IO`
+# is required because `WriteFile` is gated behind it in windows-sys 0.61.2.
+# `Win32_System_WindowsProgramming` is required for the `DRIVE_*` constants
+# that distinguish a local fixed volume from a network mount.
+# No administrator rights, no volume flush, no TxF.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_WindowsProgramming",
+] }
 
 [features]
 default = []
@@ -123,4 +169,40 @@ proptest = "1"
 [[test]]
 name = "lance_stale_refresh_test"
 path = "tests/lance_stale_refresh_test.rs"
+required-features = ["test-helpers"]
+
+# Same PROB-074 gate for the remaining targets that call `*_for_test`
+# helpers: without `required-features` they fail E0599 under the default
+# `cargo test --workspace` / `cargo bench` baseline.
+[[test]]
+name = "health_verdict_test"
+path = "tests/health_verdict_test.rs"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "integrity_test"
+path = "tests/integrity_test.rs"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "phase_read_errors_e2e_test"
+path = "tests/phase_read_errors_e2e_test.rs"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "scoring_cascade_test"
+path = "tests/scoring_cascade_test.rs"
+required-features = ["test-helpers"]
+
+# These are `#[test]`-style latency probes (`Instant` + `#[ignore]`, no
+# criterion harness) that happen to carry "bench" in the name — declaring
+# them [[bench]] would demand a main() they do not have.
+[[test]]
+name = "create_roundtrip_bench"
+path = "tests/create_roundtrip_bench.rs"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "health_bench"
+path = "tests/health_bench.rs"
 required-features = ["test-helpers"]

@@ -311,13 +311,38 @@ pub async fn allocate_and_create_artifact(
     digits: u32,
     build: &BuildArtifactFn,
 ) -> anyhow::Result<AllocatedArtifact> {
+    allocate_and_create_impl(workspace, Some(store), kind, digits, build).await
+}
+
+/// Constellation-migrated variant of [`allocate_and_create_artifact`]: on a
+/// workspace whose index moved to the constellation protocol there is no
+/// `LanceStore` to take the derived row — the markdown write IS the whole
+/// mutation, and reconcile (`maintain_index` / `forgeplan index`) publishes
+/// the row afterwards. Identical cross-worktree lock, id computation,
+/// collision-retry and render discipline; only the index insert is absent.
+pub async fn allocate_and_create_artifact_file_first(
+    workspace: &Path,
+    kind: &ArtifactKind,
+    digits: u32,
+    build: &BuildArtifactFn,
+) -> anyhow::Result<AllocatedArtifact> {
+    allocate_and_create_impl(workspace, None, kind, digits, build).await
+}
+
+async fn allocate_and_create_impl(
+    workspace: &Path,
+    store: Option<&LanceStore>,
+    kind: &ArtifactKind,
+    digits: u32,
+    build: &BuildArtifactFn,
+) -> anyhow::Result<AllocatedArtifact> {
     let _lock = acquire_id_alloc_lock(workspace, kind)
         .await
         .with_context(|| format!("acquire id-alloc lock for {}", kind.prefix()))?;
 
     let mut bump_above: Option<u32> = None;
     for attempt in 0..MAX_COLLISION_RETRIES {
-        let (id, number) = compute_next_id(workspace, Some(store), kind, digits, bump_above)
+        let (id, number) = compute_next_id(workspace, store, kind, digits, bump_above)
             .await
             .context("compute next-id under id-alloc lock")?;
 
@@ -343,10 +368,39 @@ pub async fn allocate_and_create_artifact(
         }
         let rendered_body = artifact.body.clone();
 
-        let ctx = MutationContext::new(workspace, store);
-        let filepath = projection::create_artifact_with_projection(&ctx, &artifact)
-            .await
-            .with_context(|| format!("create projection for {id}"))?;
+        let filepath = match store {
+            Some(store) => {
+                let ctx = MutationContext::new(workspace, store);
+                projection::create_artifact_with_projection(&ctx, &artifact)
+                    .await
+                    .with_context(|| format!("create projection for {id}"))?
+            }
+            None => {
+                // No store: file-first write is the whole mutation. Re-run
+                // the two validation guards `create_artifact_with_projection`
+                // applies so both branches enforce the same boundary.
+                crate::db::store::validate_artifact_id(&artifact.id)
+                    .with_context(|| format!("allocated id {:?} failed validation", artifact.id))?;
+                let _: ArtifactKind = artifact.kind.parse().with_context(|| {
+                    format!("invalid kind {:?} for {}", artifact.kind, artifact.id)
+                })?;
+                projection::render_projection_with_body(
+                    workspace,
+                    &artifact.id,
+                    &artifact.kind,
+                    &artifact.title,
+                    &artifact.status,
+                    &artifact.depth,
+                    artifact.author.as_deref(),
+                    artifact.parent_epic.as_deref(),
+                    artifact.valid_until.as_deref(),
+                    &artifact.body,
+                    &[],
+                )
+                .await
+                .with_context(|| format!("create projection for {id}"))?
+            }
+        };
 
         // Post-write: re-confirm `{ID}-` prefix uniqueness. If a parallel
         // unlocked path slipped in between compute_next_id and projection,

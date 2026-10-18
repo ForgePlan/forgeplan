@@ -177,9 +177,9 @@ fn hook_body(kind: &str) -> String {
          # silently, including semantic results computed from text that is no\n\
          # longer in the artifact (PROB-097).\n\
          #\n\
-         # Deliberately does NOT run `forgeplan embed`: that needs the 2.1 GB\n\
-         # model and seconds per artifact. `search` reports how many artifacts\n\
-         # still lack a vector, which is the right place to decide.\n\
+         # git-sync drains pending vectors only if a model is already cached.\n\
+         # Git never starts a multi-GB download; missing vectors stay visible\n\
+         # in Constellation status until a model becomes available.\n\
          #\n\
          # Remove this file to opt out; `forgeplan setup --hooks` restores it.\n\
          \n\

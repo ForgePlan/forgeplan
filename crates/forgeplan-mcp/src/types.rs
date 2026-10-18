@@ -569,6 +569,34 @@ pub struct OrderResponse {
 pub struct SearchResponse {
     pub results: Vec<SearchResultDto>,
     pub total: usize,
+    /// Which channels actually contributed to this ranking.
+    ///
+    /// Without it a client cannot tell a complete answer from a lexical-only
+    /// one: both arrive as a list of hits with scores, and a semantic channel
+    /// that never ran is indistinguishable from one that ran and matched
+    /// nothing. `semantic: false` means the ranking is **incomplete**, not that
+    /// nothing was found.
+    pub coverage: SearchCoverage,
+}
+
+/// What participated in a search's ranking.
+///
+/// Reported separately so "source freshness", "lexical coverage" and "semantic
+/// coverage" are never conflated into a single completeness claim. Only the
+/// channels this handler can know about are listed.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SearchCoverage {
+    /// Real semantic scores were computed and fed into the ranking.
+    ///
+    /// `false` when the build has no `semantic-search` feature, when no model
+    /// snapshot is cached (a query never downloads one), or when no row was
+    /// eligible. Never substituted with zeros: a zero score reads as "matched,
+    /// and scored nothing", which is a real-looking hit that is not one.
+    pub semantic: bool,
+    /// BM25 lexical matching contributed.
+    pub lexical: bool,
+    /// Knowledge-graph centrality and neighbour expansion contributed.
+    pub graph: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

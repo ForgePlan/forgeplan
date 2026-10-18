@@ -139,10 +139,15 @@ pub trait VectorStorage: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Update the embedding column for an artifact.
-    async fn update_embedding(&self, _id: &str, _embedding: &[f32]) -> anyhow::Result<()> {
-        Ok(())
-    }
+    // `update_embedding` was removed from this trait. It was an unguarded
+    // vector write: a caller could stamp a vector onto a row without the
+    // binding, incarnation or profile identity the protocol requires, and the
+    // sweep found **zero** production callers of it — CLI and MCP reach the
+    // store directly, never through `VectorStorage`. It was an exported
+    // back door with no user. Vectors are published conditionally, through
+    // the constellation facade; if a storage back end ever needs a vector
+    // write it must arrive with the binding that authorises it, not as a
+    // trait method whose default silently succeeds.
 }
 
 /// FPF (First Principles Framework) knowledge base storage.

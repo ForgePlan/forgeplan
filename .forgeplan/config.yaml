@@ -11,8 +11,8 @@ llm:
   # max_tokens: 4096 # ≥300 per их note для reasoning tokens
   # temperature: 0.3
   # reason_temperature: 0.3
-  provider: claude-code
-  model: claude-opus-5
+  provider: codex-cli
+  model: "" # use the model selected by the local Codex CLI
   # provider: gemini
   # model: gemini-3.1-pro-preview
   # api_key_env: GEMINI_API_KEY

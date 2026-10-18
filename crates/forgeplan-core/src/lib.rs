@@ -5,6 +5,7 @@ pub mod brownfield;
 pub mod changelog;
 pub mod claim;
 pub mod config;
+pub mod constellation;
 pub mod coverage;
 pub mod db;
 pub mod depth;

@@ -442,6 +442,37 @@ impl ForgeplanServer {
         param_workspace: Option<&str>,
         policy: DetectionPolicy,
     ) -> Result<ResolvedWorkspace, McpError> {
+        let (workspace_dir, resolved_via) =
+            self.resolve_workspace_dir(param_workspace, policy).await?;
+        let store = self.get_or_open_store(&workspace_dir).await.map_err(|e| {
+            safe_invalid_params(
+                format!(
+                    "workspace found at `{}` but store could not be opened: {e}",
+                    workspace_dir.display()
+                ),
+                None,
+            )
+        })?;
+        Ok(ResolvedWorkspace {
+            workspace_dir,
+            resolved_via,
+            store,
+        })
+    }
+
+    /// The resolution chain of [`resolve_workspace_core`] without the store
+    /// open: returns the canonicalised `.forgeplan/` directory and how it was
+    /// found. Read paths that never touch the legacy projection — the
+    /// constellation tools and Stage-1 federated reads — must not require a
+    /// `LanceStore`: opening one runs schema migrations, and a read-only tool
+    /// has no business migrating anything. The four-step chain (param → env →
+    /// default workspace → cwd, with the same strict worktree gate) is
+    /// byte-identical to what `resolve_workspace_core` used to do inline.
+    pub(crate) async fn resolve_workspace_dir(
+        &self,
+        param_workspace: Option<&str>,
+        policy: DetectionPolicy,
+    ) -> Result<(PathBuf, ResolutionSource), McpError> {
         // ── Step 1: param ────────────────────────────────────────────────
         if let Some(raw) = param_workspace {
             // Expand leading `~` to the home directory.
@@ -472,20 +503,7 @@ impl ForgeplanServer {
             // find_workspace walks up until it finds `.forgeplan/`.
             match workspace::find_workspace(&candidate) {
                 Some(ws_dir) => {
-                    let store = self.get_or_open_store(&ws_dir).await.map_err(|e| {
-                        safe_invalid_params(
-                            format!(
-                                "workspace `{raw}` found at `{}` but store could not be opened: {e}",
-                                ws_dir.display()
-                            ),
-                            None,
-                        )
-                    })?;
-                    return Ok(ResolvedWorkspace {
-                        workspace_dir: Self::canonical_ws_dir(ws_dir),
-                        resolved_via: ResolutionSource::Param,
-                        store,
-                    });
+                    return Ok((Self::canonical_ws_dir(ws_dir), ResolutionSource::Param));
                 }
                 None => {
                     return Err(safe_invalid_params(
@@ -506,21 +524,7 @@ impl ForgeplanServer {
             let candidate = PathBuf::from(&env_val);
             match workspace::find_workspace(&candidate) {
                 Some(ws_dir) => {
-                    let store = self.get_or_open_store(&ws_dir).await.map_err(|e| {
-                        safe_invalid_params(
-                            format!(
-                                "FORGEPLAN_WORKSPACE=`{env_val}` found `.forgeplan/` at \
-                                 `{}` but store could not be opened: {e}",
-                                ws_dir.display()
-                            ),
-                            None,
-                        )
-                    })?;
-                    return Ok(ResolvedWorkspace {
-                        workspace_dir: Self::canonical_ws_dir(ws_dir),
-                        resolved_via: ResolutionSource::Env,
-                        store,
-                    });
+                    return Ok((Self::canonical_ws_dir(ws_dir), ResolutionSource::Env));
                 }
                 None => {
                     return Err(safe_invalid_params(
@@ -561,20 +565,7 @@ impl ForgeplanServer {
         // performed. Only when `default_workspace` is `None` (cold start, no init)
         // do we fall through to `current_dir()`.
         if let Some(ws_dir) = self.default_workspace.read().await.clone() {
-            let store = self.get_or_open_store(&ws_dir).await.map_err(|e| {
-                safe_invalid_params(
-                    format!(
-                        "workspace found at `{}` but store could not be opened: {e}",
-                        ws_dir.display()
-                    ),
-                    None,
-                )
-            })?;
-            return Ok(ResolvedWorkspace {
-                workspace_dir: Self::canonical_ws_dir(ws_dir),
-                resolved_via: ResolutionSource::Cwd,
-                store,
-            });
+            return Ok((Self::canonical_ws_dir(ws_dir), ResolutionSource::Cwd));
         }
 
         // default_workspace not set — cold start / no init yet.  Try cwd.
@@ -640,22 +631,7 @@ impl ForgeplanServer {
             ));
         }
         match workspace::find_workspace(&cwd) {
-            Some(ws_dir) => {
-                let store = self.get_or_open_store(&ws_dir).await.map_err(|e| {
-                    safe_invalid_params(
-                        format!(
-                            "workspace found at `{}` but store could not be opened: {e}",
-                            ws_dir.display()
-                        ),
-                        None,
-                    )
-                })?;
-                Ok(ResolvedWorkspace {
-                    workspace_dir: Self::canonical_ws_dir(ws_dir),
-                    resolved_via: ResolutionSource::Cwd,
-                    store,
-                })
-            }
+            Some(ws_dir) => Ok((Self::canonical_ws_dir(ws_dir), ResolutionSource::Cwd)),
             None => Err(safe_invalid_params(
                 "no `.forgeplan/` directory found in current directory or any parent. \
                  Run `forgeplan init` first, or pass an explicit `workspace` parameter."
@@ -5807,7 +5783,22 @@ impl ForgeplanServer {
                     None => format!("{total} hit(s)."),
                 }
             };
-            return hinted_result(&SearchResponse { results, total }, next_action);
+            // Keyword mode was requested explicitly, so lexical-only coverage is the
+            // answer and is stated as such — the same shape as a semantic
+            // channel that did not run, because to a client both mean "this
+            // ranking did not use that channel".
+            return hinted_result(
+                &SearchResponse {
+                    results,
+                    total,
+                    coverage: crate::types::SearchCoverage {
+                        semantic: false,
+                        lexical: true,
+                        graph: false,
+                    },
+                },
+                next_action,
+            );
         }
 
         // Smart / semantic: use smart_search over all records.
@@ -5830,11 +5821,23 @@ impl ForgeplanServer {
             KnowledgeGraph::from_store(&store).await.ok()
         };
 
+        // Real semantic scores, from the same facade the CLI uses —
+        // `forgeplan_core::search::semantic::semantic_scores`. This line used to
+        // pass `None`, so MCP search was lexical+graph only while the CLI had
+        // semantic ranking: the same query, two different answers.
+        //
+        // `(None, false)` — no cached model, nothing downloadable on a query path,
+        // or no eligible rows — is passed through as honest absence. It is NOT
+        // substituted with zeros: a zero vector reads as "scored, and matched
+        // nothing", which is indistinguishable from a real weak hit.
+        let (semantic_scores, has_embeddings) =
+            forgeplan_core::search::semantic::semantic_scores(&store, &p.query).await;
+
         let results = smart::smart_search(
             &records,
             &p.query,
             graph_opt.as_ref(),
-            None, // semantic_scores — not wired in MCP yet
+            semantic_scores.as_ref(),
             filter.as_ref(),
             limit,
         );
@@ -5887,10 +5890,21 @@ impl ForgeplanServer {
             }
         };
 
+        // The flag reaches the client instead of being discarded. A client that
+        // sees `coverage.semantic == false` knows the ranking is lexical/graph
+        // only — an incomplete negative, stated as one — rather than a complete
+        // answer that merely happened to have no semantic hits.
+        let coverage = crate::types::SearchCoverage {
+            semantic: has_embeddings,
+            lexical: true,
+            graph: !p.no_expand,
+        };
+
         hinted_result(
             &SearchResponse {
                 results: dtos,
                 total,
+                coverage,
             },
             next_action,
         )
@@ -10234,6 +10248,326 @@ impl ForgeplanServer {
             "Fix: install plugin — see marketplace issue #79 (`forgeplan-brownfield-pack`).",
         )
     }
+
+    #[tool(
+        description = "Constellation index status — the published generation, its coverage,                        and the pinned table versions it serves from. This is the corrected                        0A/0B index; `present: false` means `forgeplan index` has not run on                        this workspace yet.",
+        annotations(
+            title = "Constellation Status",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_constellation_status(&self) -> Result<CallToolResult, McpError> {
+        let (workspace_dir, _via) = match self
+            .resolve_workspace_dir(None, DetectionPolicy::SoftFallback)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
+        };
+        let index_root = workspace_dir.join("lance");
+
+        // Read-only: CURRENT + manifest. No locks, no maintenance trigger —
+        // status answers from what is published, never starts work.
+        let descriptor = match forgeplan_core::constellation::storage::read_current(&index_root) {
+            Ok(Some(descriptor)) => descriptor,
+            Ok(None) => {
+                return hinted_result(
+                    &serde_json::json!({
+                        "present": false,
+                        "index_root": index_root.display().to_string(),
+                    }),
+                    "No published generation. Run `forgeplan index` once to bootstrap.",
+                );
+            }
+            Err(e) => return Ok(safe_err_result("constellation status: ", e)),
+        };
+        let manifest =
+            match forgeplan_core::constellation::storage::read_manifest(&index_root, &descriptor) {
+                Ok(manifest) => manifest,
+                Err(e) => return Ok(safe_err_result("constellation manifest: ", e)),
+            };
+
+        hinted_result(
+            &serde_json::json!({
+                "present": true,
+                "generation_id": manifest.generation_id,
+                "evaluated_at": manifest.evaluated_at,
+                "index_epoch": manifest.index_epoch,
+                "entries": manifest.source_entries.len(),
+                "coverage": manifest.coverage,
+                "table_versions": {
+                    "artifacts": manifest.table_versions.artifacts,
+                    "relations": manifest.table_versions.relations,
+                },
+            }),
+            "Search the published projection: `forgeplan_constellation_search query=\"<text>\"`.",
+        )
+    }
+
+    #[tool(
+        description = "Lexical search over the pinned Constellation artifacts table —                        case-insensitive substring match on canonical_key, title and body                        at the *published* generation (a pinned reader, never latest).                        Each hit reports its stored `semantic_state` honestly; ANN/vector                        search is a later stage and is not claimed here.",
+        annotations(
+            title = "Constellation Search",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_constellation_search(
+        &self,
+        Parameters(p): Parameters<ConstellationSearchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (workspace_dir, _via) = match self
+            .resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::SoftFallback)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
+        };
+        let index_root = workspace_dir.join("lance");
+        let query = p.query.trim();
+        if query.is_empty() {
+            return Ok(err_hinted(
+                "empty query",
+                "Pass a non-empty `query` — the match is a case-insensitive substring.",
+            ));
+        }
+        let limit = p.limit.unwrap_or(10).clamp(1, 100) as usize;
+
+        // Semantic channel, attempted before lexical: only when this build has
+        // the engine, the model snapshot is already cached (a query never
+        // downloads), the embedding profile resolves, and the query embeds.
+        // Every failure degrades to lexical with the reason reported — never
+        // to an empty hit list masquerading as a complete answer.
+        #[cfg(feature = "semantic-search")]
+        let semantic: Option<(String, Vec<f32>)> = {
+            use forgeplan_core::constellation::jobs::{self, DEFAULT_MODEL_REPO};
+            use forgeplan_core::embed::{resolve_cache_dir, tract_engine};
+            let cache_dir = resolve_cache_dir();
+            tract_engine::find_snapshot(&cache_dir, DEFAULT_MODEL_REPO).and_then(|snapshot| {
+                let checksums = jobs::snapshot_checksums(&cache_dir, DEFAULT_MODEL_REPO).ok()?;
+                let resolved = jobs::ResolvedProfile::open(
+                    &cache_dir,
+                    DEFAULT_MODEL_REPO,
+                    &checksums,
+                    forgeplan_core::constellation::facade::ENGINE_VERSION,
+                )
+                .ok()?;
+                let profile_id = resolved.profile.profile_id();
+                let engine = tract_engine::TractEmbedder::from_snapshot(
+                    &snapshot,
+                    DEFAULT_MODEL_REPO,
+                    resolved.profile.dimensions as usize,
+                )
+                .ok()?;
+                engine.embed(query).ok().map(|v| (profile_id, v))
+            })
+        };
+        #[cfg(not(feature = "semantic-search"))]
+        let semantic: Option<(String, Vec<f32>)> = None;
+
+        if let Some((profile_id, query_vector)) = semantic {
+            match forgeplan_core::constellation::facade::search_pinned_semantic(
+                &index_root,
+                &query_vector,
+                &profile_id,
+                limit,
+            )
+            .await
+            {
+                Ok(o) => {
+                    return hinted_result(
+                        &serde_json::json!({
+                            "mode": "semantic",
+                            "semantic_available": true,
+                            "profile_id": profile_id,
+                            "generation_id": o.generation_id,
+                            "pinned_artifacts_version": o.pinned_artifacts_version,
+                            "pinned_sections_version": o.pinned_sections_version,
+                            "semantic_scope": o.semantic_scope,
+                            "eligible_rows": o.eligible_rows,
+                            "hits": o.hits,
+                        }),
+                        if o.eligible_rows == 0 {
+                            "No rows hold a ready vector under this profile — run `forgeplan index --embed-profile` to drain the queue."
+                        } else {
+                            "Read one artifact fully: `forgeplan_constellation_get key=\"<canonical_key-or-id>\"`. A hit whose canonical_key contains `#s` is a section row — get its `parent_key`."
+                        },
+                    );
+                }
+                Err(
+                    forgeplan_core::constellation::ConstellationError::IndexGenerationUnavailable {
+                        detail,
+                    },
+                ) => {
+                    return hinted_result(
+                        &serde_json::json!({
+                            "mode": "semantic",
+                            "hits": [],
+                            "index_present": false,
+                            "detail": detail,
+                        }),
+                        "No usable published generation. Run `forgeplan index` once to bootstrap.",
+                    );
+                }
+                Err(e) => {
+                    // The engine ran but the pinned ANN failed — report the
+                    // failure on the lexical result rather than hiding it.
+                    let outcome =
+                        match forgeplan_core::constellation::facade::search_pinned_lexical(
+                            &index_root,
+                            query,
+                            limit,
+                        )
+                        .await
+                        {
+                            Ok(o) => o,
+                            Err(e2) => return Ok(safe_err_result("constellation search: ", e2)),
+                        };
+                    return hinted_result(
+                        &serde_json::json!({
+                            "mode": "lexical",
+                            "via_trigram": outcome.via_trigram,
+                            "semantic_available": true,
+                            "semantic_error": e.to_string(),
+                            "generation_id": outcome.generation_id,
+                            "pinned_artifacts_version": outcome.pinned_artifacts_version,
+                            "rows_scanned": outcome.rows_scanned,
+                            "truncated": outcome.truncated,
+                            "hits": outcome.hits,
+                        }),
+                        "Semantic channel failed; lexical ran instead — see `semantic_error`.",
+                    );
+                }
+            }
+        }
+
+        let outcome = match forgeplan_core::constellation::facade::search_pinned_lexical(
+            &index_root,
+            query,
+            limit,
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(
+                forgeplan_core::constellation::ConstellationError::IndexGenerationUnavailable {
+                    detail,
+                },
+            ) => {
+                return hinted_result(
+                    &serde_json::json!({
+                        "mode": "lexical",
+                        "hits": [],
+                        "index_present": false,
+                        "detail": detail,
+                    }),
+                    "No usable published generation. Run `forgeplan index` once to bootstrap.",
+                );
+            }
+            Err(e) => return Ok(safe_err_result("constellation search: ", e)),
+        };
+
+        hinted_result(
+            &serde_json::json!({
+                "mode": "lexical",
+                "via_trigram": outcome.via_trigram,
+                "semantic_available": false,
+                "generation_id": outcome.generation_id,
+                "pinned_artifacts_version": outcome.pinned_artifacts_version,
+                "rows_scanned": outcome.rows_scanned,
+                "truncated": outcome.truncated,
+                "hits": outcome.hits,
+            }),
+            "Read one artifact fully: `forgeplan_constellation_get key=\"<canonical_key-or-id>\"`.",
+        )
+    }
+
+    #[tool(
+        description = "Read ONE artifact at the pinned Constellation generation —                        exact match on `canonical_key` or the human id (`SPEC-001`).                        Returns the stored row verbatim: body, digests, semantic_state.                        A miss is `found: false`, never a substituted row.",
+        annotations(
+            title = "Constellation Get",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn forgeplan_constellation_get(
+        &self,
+        Parameters(p): Parameters<ConstellationGetParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (workspace_dir, _via) = match self
+            .resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::SoftFallback)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
+        };
+        let index_root = workspace_dir.join("lance");
+        let key = p.key.trim();
+
+        match forgeplan_core::constellation::facade::get_pinned_artifact(&index_root, key).await {
+            Ok(Some((artifact, generation_id, version))) => hinted_result(
+                &serde_json::json!({
+                    "found": true,
+                    "generation_id": generation_id,
+                    "pinned_artifacts_version": version,
+                    "artifact": {
+                        "canonical_key": artifact.canonical_key,
+                        "id": artifact.display_id,
+                        "title": artifact.title,
+                        "kind": artifact.kind,
+                        "status": artifact.status,
+                        "source_path": artifact.source_path,
+                        "source_digest": artifact.source_digest,
+                        "semantic_state": artifact.semantic_state,
+                        "body": artifact.body,
+                    },
+                }),
+                "Search the same generation: `forgeplan_constellation_search query=\"<text>\"`.",
+            ),
+            Ok(None) => hinted_result(
+                &serde_json::json!({ "found": false, "key": key }),
+                "No artifact with that canonical_key or id at the pinned generation.",
+            ),
+            Err(
+                forgeplan_core::constellation::ConstellationError::IndexGenerationUnavailable {
+                    detail,
+                },
+            ) => hinted_result(
+                &serde_json::json!({ "found": false, "index_present": false, "detail": detail }),
+                "No usable published generation. Run `forgeplan index` once to bootstrap.",
+            ),
+            Err(e) => Ok(safe_err_result("constellation get: ", e)),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ConstellationGetParams {
+    /// Canonical key or human id (`SPEC-001`) — exact, case-insensitive
+    key: String,
+    /// Optional explicit workspace directory — same routing as other reads
+    #[serde(default)]
+    workspace: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ConstellationSearchParams {
+    /// Substring to match (case-insensitive) against canonical_key, title, body
+    query: String,
+    /// Max hits (default 10, hard cap 100)
+    #[serde(default)]
+    limit: Option<u32>,
+    /// Optional explicit workspace directory for this call — same routing as
+    /// every other read tool (PRD-078 / ADR-015).
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 // ── Phase 5 helpers (PRD-065/066/067) ────────────────────────

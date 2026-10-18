@@ -28,16 +28,27 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
 
     let kind: ArtifactKind = kind_str.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let (workspace, _lock, store) = common::open_store_locked().await?;
+    let (workspace, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
     // Duplicate guard (FR-001 of PRD-043): warn before creating an artifact
-    // whose title closely matches an existing one of the same kind.
+    // whose title closely matches an existing one of the same kind. On a
+    // constellation-migrated workspace (store == None) the markdown scan is
+    // the source of truth already — same filter shape, no store.
     let template_key_for_filter = kind.template_key().to_string();
-    let filter = ArtifactFilter {
-        kind: Some(template_key_for_filter.clone()),
-        status: None,
+    let existing = match &store {
+        Some(store) => {
+            let filter = ArtifactFilter {
+                kind: Some(template_key_for_filter.clone()),
+                status: None,
+            };
+            store.list_artifacts(Some(&filter)).await?
+        }
+        None => forgeplan_core::artifact::store::list_artifacts(&workspace)
+            .await?
+            .into_iter()
+            .filter(|s| s.kind == template_key_for_filter)
+            .collect(),
     };
-    let existing = store.list_artifacts(Some(&filter)).await?;
     if let Some((dup_id, dup_title, dup_score)) = find_duplicate(&existing, title) {
         if allow_duplicate {
             eprintln!(
@@ -203,16 +214,39 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
             tags: Vec::new(),
         })
     };
-    let allocated = forgeplan_core::artifact::id_alloc::allocate_and_create_artifact(
-        &workspace, &store, &kind, 3, &build,
-    )
-    .await
+    let allocated = match &store {
+        Some(store) => {
+            forgeplan_core::artifact::id_alloc::allocate_and_create_artifact(
+                &workspace, store, &kind, 3, &build,
+            )
+            .await
+        }
+        // Constellation-migrated: the file write is the whole mutation.
+        // Reconcile (right below) publishes the derived row immediately.
+        None => {
+            forgeplan_core::artifact::id_alloc::allocate_and_create_artifact_file_first(
+                &workspace, &kind, 3, &build,
+            )
+            .await
+        }
+    }
     .with_context(|| format!("PROB-067 id-alloc failed for kind {prefix}"))?;
     let id = allocated.id;
     let filepath = allocated.filepath;
 
-    // Log creation in change_log
-    common::log_change(&store, &id, "create", "cli").await;
+    // Log creation in change_log — store-backed audit only exists when the
+    // legacy index does. On a migrated workspace the one-line note explains
+    // who owns the derived index, and reconcile publishes the new artifact.
+    match &store {
+        Some(store) => common::log_change(store, &id, "create", "cli").await,
+        None => {
+            common::note_constellation_owns_index();
+            // Lock must drop before reconcile — see
+            // `common::reconcile_after_file_mutation`.
+            drop(_lock);
+            common::reconcile_after_file_mutation(&workspace).await;
+        }
+    }
 
     println!("  Created: {}", filepath.display());
     println!("  ID:      {}", id);

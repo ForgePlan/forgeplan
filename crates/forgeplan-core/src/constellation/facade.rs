@@ -1,0 +1,3209 @@
+//! The narrow surface CLI and MCP call.
+//!
+//! Everything a caller needs to *read* goes through [`capture_for_read`] and
+//! [`ensure_read_view`], and nothing gives a caller a way to write an index
+//! row without presenting a [`MaintainCapability`]. That asymmetry is the
+//! protocol: a read handler that could reach the publisher would, on a fresh
+//! checkout, start creating tables from inside a query — which is how a read
+//! path acquires migrations and hidden model downloads it was never supposed
+//! to have.
+//!
+//! ADR-016's resolution chain stays the single source of truth for *which*
+//! workspace is addressed. This module never re-implements it; the
+//! [`ResolutionPolicy`] below only records which branch of that chain
+//! produced the workspace path.
+//!
+//! # What is here and what is not
+//!
+//! Present: the two read boundaries and [`shutdown_runtime`].
+//!
+//! Absent, deliberately: `maintain_index` and the publisher behind it. That
+//! function needs the staged-row path — the `merge_insert` / `Table::delete` /
+//! `UpdateBuilder` commits, the head comparison and the conditional restore —
+//! and none of that exists yet. A `maintain_index` that fabricated a
+//! generation manifest and pointed `CURRENT.json` at it would publish an
+//! index whose rows were never written, and every reader after it would serve
+//! them as current. The absence is reported rather than filled.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use super::capture::{CaptureLimits, CaptureRequest, CapturedSourceView, capture_source};
+use super::manifest::{CurrentDescriptor, GenerationManifest};
+use super::storage::{self, IndexProtocolState};
+use super::view::ReadView;
+use super::{ConstellationError, checked_increment};
+
+/// Whether this process still admits maintenance.
+///
+/// Read paths are unaffected: a query must keep answering during a shutdown,
+/// because refusing reads would turn a graceful stop into an outage.
+static ADMITTING: AtomicBool = AtomicBool::new(true);
+
+/// Which branch of the ADR-016 resolution chain produced the workspace path.
+///
+/// `SoftFallback` is the read policy: it never escalates to a maintain
+/// capability and never errors on multi-worktree detection, because a read
+/// that cannot determine a workspace still has an honest answer to give. It
+/// is not a permission level — it does not unlock writing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionPolicy {
+    /// Read path. No owner, no `WorkspaceLock`, no index writes, no
+    /// migrations, no model download.
+    SoftFallback,
+    /// Mutation path. The resolver errors instead of guessing.
+    Strict,
+}
+
+/// Proof that the caller came through the resolver's Strict branch and is
+/// allowed to maintain one physical index.
+///
+/// Opaque on purpose: a caller cannot construct its way to a write by
+/// assembling a struct literal, and the token names the one index root it is
+/// good for. SoftFallback never receives one.
+///
+/// # Why it carries the workspace, not just the index root
+///
+/// It previously stored only an index root, and `maintain_index` recovered
+/// the workspace with `index_root.parent()`. That inference is unsound: nothing
+/// established that the root was `<workspace>/lance`, so a root that was not a
+/// direct child of a workspace made every capture in that function read a
+/// different tree — silently, because the capture would simply have found
+/// fewer artifacts.
+///
+/// So the relationship is **established here and nowhere else**: the root is
+/// *derived* from the workspace at construction, and neither field can be
+/// supplied independently. `maintain_index` never infers one from the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaintainCapability {
+    workspace: PathBuf,
+    index_root: PathBuf,
+}
+
+impl MaintainCapability {
+    /// Directory name of the derived index, under a workspace's `.forgeplan`.
+    pub const INDEX_DIR: &'static str = "lance";
+
+    /// Issued by the resolver's Strict branch for one **workspace**.
+    pub fn for_strict_maintenance(workspace: impl Into<PathBuf>) -> Self {
+        let workspace = workspace.into();
+        let index_root = workspace.join(Self::INDEX_DIR);
+        Self {
+            workspace,
+            index_root,
+        }
+    }
+
+    /// The workspace whose canonical markdown this capability may reconcile.
+    ///
+    /// This is what capture reads. It is a field, never a `parent()` of the
+    /// index root.
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
+    /// The single index root this capability covers.
+    ///
+    /// Derived from [`Self::workspace`] at construction, so a capability can
+    /// never name an index that does not belong to the workspace it reads.
+    /// A capability that could name several roots is one that could let a
+    /// caller publish into a worktree it never resolved.
+    pub fn index_root(&self) -> &Path {
+        &self.index_root
+    }
+}
+
+/// Read-only capture for CLI and MCP handlers.
+///
+/// Takes no owner, no `WorkspaceLock`, writes nothing — not to the index, not
+/// to the derived tables, not to canonical markdown — and never triggers
+/// maintenance or a model download.
+///
+/// `previous` lets a caller keep `incarnation` and `row_revision` moving
+/// across calls. Passing `None` observes every artifact as new, which is
+/// correct for a first read and wrong for a steady-state one.
+///
+/// # Errors
+///
+/// [`ConstellationError::SourceBusy`] when the source is moving; the caller
+/// may return `index_pending` with honest lexical coverage rather than
+/// pretending the previous generation is current.
+pub async fn capture_for_read(
+    workspace: &Path,
+    previous: Option<Arc<CapturedSourceView>>,
+    limits: CaptureLimits,
+) -> Result<ReadView, ConstellationError> {
+    let mut request = CaptureRequest::new(workspace);
+    if let Some(previous) = previous {
+        request = request.with_previous(previous);
+    }
+    let captured = capture_source(&request, limits).await?;
+    Ok(ReadView::from_capture(Arc::new(captured)))
+}
+
+/// Read-only freshness barrier: persisted view when the published manifest
+/// still matches the capture, ephemeral otherwise.
+///
+/// Takes no owner, no `WorkspaceLock`, writes nothing, and waits for no
+/// owner. It is **not** reconcile persistence: matching digests only decide
+/// *which kind* of view the caller gets, never whether to publish one.
+///
+/// * No pointer at all → ephemeral. A first run must answer, and answering
+///   must not create anything.
+/// * Pointer present, but the captured bytes or config moved → ephemeral.
+///   The published generation describes a different source set, so serving it
+///   would be stale and persisting the new one from a read would be a write.
+/// * Pointer present and matching → the published generation, after its
+///   manifest and checksum are verified. A pointer that does not resolve is
+///   not a fast path.
+///
+/// # Errors
+///
+/// [`ConstellationError::IndexGenerationUnavailable`] when a pointer exists
+/// but its manifest is missing or its checksum disagrees. That is never
+/// downgraded to an ephemeral view: "I could not read what was published" and
+/// "nothing has been published" are different facts, and only one of them
+/// should be answered with fresh bytes.
+pub async fn ensure_read_view(
+    workspace: &Path,
+    captured: Arc<CapturedSourceView>,
+) -> Result<ReadView, ConstellationError> {
+    let index_root = workspace.join("lance");
+    let descriptor = storage::read_current(&index_root)?;
+
+    let Some(descriptor) = descriptor else {
+        return Ok(ReadView::from_capture(captured));
+    };
+
+    if descriptor.source_set_digest != captured.source_set_digest
+        || descriptor.config_digest != captured.config_digest
+    {
+        return Ok(ReadView::from_capture(captured));
+    }
+
+    let manifest = Arc::new(storage::read_manifest(&index_root, &descriptor)?);
+    if manifest.source_set_digest != descriptor.source_set_digest {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "manifest {} disagrees with CURRENT about the source set",
+                descriptor.manifest_path
+            ),
+        });
+    }
+    Ok(ReadView::from_manifest(manifest))
+}
+
+/// A pinned view: exact table versions, nothing newer.
+///
+/// There is deliberately no `open_pinned_view_at_latest` and no
+/// retry-on-stale variant. A reader that refreshed itself would be answering a
+/// different question than the one that pinned it, and the one that pinned it
+/// is the one whose answer the caller is going to trust.
+#[derive(Debug, Clone)]
+pub struct PinnedVectorView {
+    pub descriptor: CurrentDescriptor,
+    pub manifest: Arc<GenerationManifest>,
+    pub artifacts_version: u64,
+    pub relations_version: u64,
+    /// The exact sections version this generation pins — `None` for a
+    /// generation written before `constellation_sections_v1` existed. `None`
+    /// means "section search is not part of this generation", never "open
+    /// the latest": there is no fallback to head anywhere in this protocol.
+    pub sections_version: Option<u64>,
+}
+
+/// Open the generation a descriptor names, at its **exact** versions.
+///
+/// # Errors
+///
+/// [`ConstellationError::IndexGenerationUnavailable`] when the manifest is
+/// missing, fails its checksum, names a different generation than `CURRENT`,
+/// or names a pair with a missing half. Never a fallback to latest.
+pub fn open_pinned_view(
+    index_root: &Path,
+    descriptor: &CurrentDescriptor,
+) -> Result<PinnedVectorView, ConstellationError> {
+    let manifest = Arc::new(storage::read_manifest(index_root, descriptor)?);
+
+    if manifest.generation_id != descriptor.generation_id {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "CURRENT names `{}` but its manifest is `{}`",
+                descriptor.generation_id, manifest.generation_id
+            ),
+        });
+    }
+    if !manifest.table_versions.is_publishable() {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "generation `{}` names table versions {:?}; a coherent pair needs both",
+                manifest.generation_id, manifest.table_versions
+            ),
+        });
+    }
+
+    Ok(PinnedVectorView {
+        descriptor: descriptor.clone(),
+        artifacts_version: descriptor.effective_artifacts_version(&manifest)?,
+        relations_version: manifest.table_versions.relations,
+        sections_version: descriptor.effective_sections_version(&manifest)?,
+        manifest,
+    })
+}
+
+/// Stop admitting maintenance.
+///
+/// Admission stops first; joins come next; the owner is released last. The
+/// function gets that ordering for free by not holding an owner itself:
+/// `acquire_owner` returns a guard scoped to a single maintenance pass, so by
+/// the time this runs no guard of ours is live.
+///
+/// Reads are unaffected — a query keeps answering during a graceful stop,
+/// because refusing reads would turn a shutdown into an outage.
+///
+/// A model soft timeout does **not** kill a native call. That belongs to the
+/// inference worker, and it is why shutdown joins rather than detaches: a
+/// detached worker still holding publisher capability would let a
+/// shutting-down process publish.
+pub fn shutdown_runtime() -> Result<(), ConstellationError> {
+    ADMITTING.store(false, Ordering::SeqCst);
+    // Retention stays off across a restart too: nothing here removes a
+    // generation, a table version, or a lock inode.
+    storage::assert_retention_policy()
+}
+
+/// What one explicit embedding batch achieved.
+///
+/// The fields exist so that "embedded 3" can never be confused with
+/// "embedded 0 because 4 could not be judged". Both are the same count of
+/// successes over a different total, and only `eligible_keys` beside
+/// `cannot_judge` tells them apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingBatchOutcome {
+    /// The profile every vector was published against. Resolved here, never
+    /// supplied by a caller.
+    pub profile_id: String,
+    /// The work list: keys whose vector was not current.
+    pub eligible_keys: Vec<String>,
+    /// Vectors that were written.
+    pub published: Vec<String>,
+    /// Keys whose completion matched no row — the row moved. **Not** a
+    /// failure; it is the expected outcome of a stale worker.
+    pub stale: Vec<String>,
+    /// Rows whose eligibility could not be judged, with the reason.
+    pub cannot_judge: Vec<(String, String)>,
+}
+
+impl EmbeddingBatchOutcome {
+    /// Whether every captured row's eligibility was decided.
+    pub fn is_complete(&self) -> bool {
+        self.cannot_judge.is_empty()
+    }
+}
+
+/// The engine this build embeds with.
+///
+/// Identifies the **engine**, not the crate: it must change whenever the
+/// `tract-onnx` dependency or the pooling/normalisation it performs changes,
+/// because vectors from two engines are not interchangeable.
+///
+/// Lives here rather than in `embed` because it is part of the *profile
+/// identity* and must travel with it; a caller must never supply it, for the
+/// same reason it must never supply a `profile_id`.
+///
+/// Gated with the only body that uses it, so the default build does not warn
+/// on a constant it cannot act on.
+#[cfg(feature = "semantic-search")]
+pub const ENGINE_VERSION: &str = "tract-onnx-0.23";
+
+/// The text each artifact contributes to its vector, for every key the capture
+/// can bind.
+///
+/// **Read-only. No owner, no tables, no store write.** The text is the
+/// **capture's own** data — [`ParsedArtifact::title`] and
+/// [`ParsedArtifact::body`] — run through
+/// [`embedding_input_text`](super::jobs::embedding_input_text), which is
+/// exactly the string the tokenizer receives. Nothing here reads the store,
+/// and a caller that could read the store would be a caller that could write
+/// it.
+///
+/// Separated from [`embed_with_publisher`] because the vectors depend on this
+/// text and the **model must not run under the owner guard**. Splitting them
+/// is what keeps model compute outside every lock.
+///
+/// # Superset, deliberately
+///
+/// It returns an input for every bindable captured row rather than only the
+/// rows the index says are stale. Over-computing is safe and under-computing
+/// is not: a vector computed for an already-current row is rejected by
+/// [`embed_with_publisher`]'s guard and reported in `stale`, whereas a row
+/// wrongly omitted is never embedded at all.
+///
+/// # Errors
+///
+/// [`ConstellationError::SourceBusy`] when the capture cannot be confirmed.
+#[cfg(feature = "semantic-search")]
+pub async fn eligible_inputs(
+    workspace: &Path,
+) -> Result<Vec<(String, String)>, ConstellationError> {
+    use super::publisher::capture_under_workspace_lock;
+
+    let captured =
+        capture_under_workspace_lock(workspace, super::capture::CaptureLimits::default()).await?;
+
+    let prefix_chars = crate::workspace::init::load_config(workspace)
+        .ok()
+        .and_then(|config| config.embedding.map(|embedding| embedding.chunk_size))
+        .unwrap_or(super::jobs::DEFAULT_BODY_PREFIX_CHARS);
+
+    let mut inputs: Vec<(String, String)> = captured
+        .artifacts
+        .iter()
+        // A row with no input digest cannot be bound, so it cannot be
+        // published; returning its text would produce work that can only be
+        // refused.
+        .filter(|artifact| !artifact.input_digest.is_empty())
+        .map(|artifact| {
+            (
+                artifact.canonical_key.clone(),
+                super::jobs::embedding_input_text(&artifact.title, &artifact.body, prefix_chars),
+            )
+        })
+        .collect();
+    // Section inputs join under their own keys (`"{parent}#s{ordinal}"`).
+    // Every captured section carries a digest by construction, so there is
+    // no bindability gate — and the input text is the capture's own
+    // `section_input`, the same string the tokenizer receives.
+    for section in &captured.sections {
+        inputs.push((
+            section.canonical_key.clone(),
+            captured.section_input(section, prefix_chars),
+        ));
+    }
+    Ok(inputs)
+}
+
+/// Publish explicitly-computed vectors against the captured source.
+///
+/// The caller **computes** — explicit `embed` is one of the three permitted
+/// model obtainers — and this **writes**, which is where the binding matters.
+/// The illegitimacy is never a caller computing; it is a caller writing.
+///
+/// Takes a **workspace**, like `maintain_index`, and never an
+/// `&IndexTables` and never a `profile_id`: both would put the identity
+/// decision back in the caller's hands.
+///
+/// # Ordering
+///
+/// Owner → profile resolution → capture → open tables → eligibility →
+/// publish → release. **One** store, **one** tracker, **one** connection set
+/// for the whole run; opening tables twice is a bug, not a style choice,
+/// because two trackers would each see half the closure.
+///
+/// It does not duplicate `maintain_index`: that reconciles rows from a
+/// capture, this publishes vectors a caller explicitly computed.
+#[cfg(feature = "semantic-search")]
+pub async fn embed_with_publisher(
+    workspace: &Path,
+    vectors: &BTreeMap<String, Vec<f32>>,
+) -> Result<EmbeddingBatchOutcome, ConstellationError> {
+    use super::jobs::{DEFAULT_MODEL_REPO, EmbeddingPublish, snapshot_checksums};
+    use super::lance_tables::open_active_tables;
+    use super::publisher::{
+        IndexPublisher, capture_under_workspace_lock, identity_for, publish_embeddings,
+    };
+
+    // 1. Owner first, before anything else.
+    let index_root = workspace.join("lance");
+    let publisher = IndexPublisher::acquire(&index_root, inner_store_for(&index_root))?;
+
+    // 2. Profile resolved HERE, never supplied. The cache directory comes from
+    //    the embed module's own resolver (`embed/mod.rs:85`), which honours
+    //    `FORGEPLAN_MODEL_CACHE` then the platform user cache; a caller-chosen
+    //    path would be a caller choosing which weights to trust.
+    let cache_dir = crate::embed::resolve_cache_dir();
+    let checksums = snapshot_checksums(&cache_dir, DEFAULT_MODEL_REPO)?;
+    let profile = super::jobs::ResolvedProfile::open(
+        &cache_dir,
+        DEFAULT_MODEL_REPO,
+        &checksums,
+        ENGINE_VERSION,
+    )?;
+    let profile_id = profile.profile.profile_id();
+
+    // 3. Capture under the workspace lock, released before any write.
+    let captured =
+        capture_under_workspace_lock(workspace, super::capture::CaptureLimits::default()).await?;
+
+    let identity = identity_for(&index_root);
+    let marker = super::manifest::ProtocolMarker {
+        protocol_version: super::FORMAT_VERSION,
+        state: super::manifest::BootstrapState::Active,
+        index_epoch: identity.index_epoch(),
+        checkout_id: identity.checkout_id().to_string(),
+        table_names: super::manifest::ProtocolMarker::active_table_names(),
+        storage_scheme: super::manifest::STORAGE_SCHEME_FILE_OBJECT_STORE.to_string(),
+        bootstrap_attempt: 1,
+    };
+
+    // 4. One store, one tracker, one connection set. `tracking_store()` lends a
+    //    reference; `open_active_tables` takes ownership, so the `Arc` is
+    //    cloned — the same instance, one strong count added, not a new store
+    //    and therefore not a second tracker.
+    let tables =
+        open_active_tables(&index_root, &marker, Arc::clone(publisher.tracking_store())).await?;
+
+    // 5. What needs doing, judged against the captured binding — artifacts
+    //    and sections under one report (section keys are `"{parent}#sN"`,
+    //    disjoint from artifact keys by construction).
+    let mut eligibility = tables.artifacts_eligibility(&captured, &profile_id).await?;
+    eligibility.merge_from(&tables.sections_eligibility(&captured, &profile_id).await?);
+    let eligible_keys: Vec<String> = eligibility
+        .eligible_keys()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    // 6. Publish. A key absent from the capture is refused inside
+    //    `publish_embeddings`, not here.
+    let results: Vec<EmbeddingPublish> =
+        publish_embeddings(&tables, &captured, &profile_id, vectors).await?;
+
+    // 6b. Record the heads this publish moved and the space it claims, on the
+    //     descriptor — the manifest is immutable, so completed heads live on
+    //     it. Without this the next reconcile reads the movement as divergence
+    //     (the embed→erase cycle), and pinned semantic reads cannot name the
+    //     profile whose vectors actually stand. The publisher is still held,
+    //     so nothing else can move the heads before this republish.
+    if let Some(descriptor) = super::storage::read_current(&index_root)? {
+        let section_keys: std::collections::BTreeSet<&str> = captured
+            .sections
+            .iter()
+            .map(|s| s.canonical_key.as_str())
+            .collect();
+        let artifacts_embedded = results
+            .iter()
+            .filter(|o| o.published() && !section_keys.contains(o.binding.canonical_key.as_str()))
+            .count();
+        let sections_embedded = results
+            .iter()
+            .filter(|o| o.published() && section_keys.contains(o.binding.canonical_key.as_str()))
+            .count();
+        let claims_space =
+            artifacts_embedded + sections_embedded > 0 || !eligibility.current_keys().is_empty();
+        let mut next = descriptor.clone();
+        if artifacts_embedded > 0 {
+            next.embedding_artifacts_head = Some(tables.artifacts_version().await?);
+        }
+        if sections_embedded > 0 {
+            next.embedding_sections_head = Some(tables.sections_version().await?);
+        }
+        if claims_space {
+            next.profile_id = Some(profile_id.clone());
+        }
+        if next != descriptor {
+            publisher.republish_current(&next)?;
+        }
+    }
+
+    // 7. Release: tables first, then the owner with the publisher.
+    drop(tables);
+    drop(publisher);
+
+    Ok(EmbeddingBatchOutcome {
+        profile_id,
+        eligible_keys,
+        published: results
+            .iter()
+            .filter(|outcome| outcome.published())
+            .map(|outcome| outcome.binding.canonical_key.clone())
+            .collect(),
+        stale: results
+            .iter()
+            .filter(|outcome| !outcome.published())
+            .map(|outcome| outcome.binding.canonical_key.clone())
+            .collect(),
+        cannot_judge: eligibility
+            .cannot_judge()
+            .into_iter()
+            .map(|(key, reason)| (key.to_string(), reason.to_string()))
+            .collect(),
+    })
+}
+
+/// The "is there embed work" answer, before the model is paid for.
+///
+/// Counts come from the same `artifacts_eligibility` the publish path uses,
+/// so what this reports is what `embed_with_publisher` would find.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbedPrecheck {
+    /// Rows whose vector the current profile still owes.
+    pub eligible: usize,
+    /// Rows already bound to the current profile and `ready`.
+    pub current: usize,
+    /// Rows whose eligibility could not be decided.
+    pub cannot_judge: usize,
+}
+
+/// Decide whether an explicit `embed` has work **without** loading weights.
+///
+/// `eligible_inputs` lists what the capture contains — it cannot see the
+/// stored binding, so it cannot answer "nothing to do". This runs the first
+/// half of `embed_with_publisher` (profile → capture → tables → eligibility)
+/// and stops before any vector is computed or written.
+///
+/// `Ok(None)` is an honest abstention, not an error: no published
+/// generation, no cached snapshot to checksum, an owner held by another
+/// pass — in each case the caller proceeds to the model path, where the real
+/// publish recomputes the same eligibility. Profile resolution reads only
+/// files already in the cache; it never downloads and never loads weights.
+#[cfg(feature = "semantic-search")]
+pub async fn embedding_precheck(
+    workspace: &Path,
+) -> Result<Option<EmbedPrecheck>, ConstellationError> {
+    use super::jobs::{DEFAULT_MODEL_REPO, snapshot_checksums};
+    use super::lance_tables::open_active_tables;
+    use super::publisher::{IndexPublisher, capture_under_workspace_lock, identity_for};
+
+    let index_root = workspace.join("lance");
+
+    // No published generation — nothing stored to judge against. The caller
+    // bootstraps the index or proceeds to the model path.
+    if super::storage::read_current(&index_root)?.is_none() {
+        return Ok(None);
+    }
+
+    // The profile from the *cached* snapshot: checksums are file reads. A
+    // snapshot that is not cached abstains — the download-capable path is
+    // the caller's, not a precheck's.
+    let cache_dir = crate::embed::resolve_cache_dir();
+    let Ok(checksums) = snapshot_checksums(&cache_dir, DEFAULT_MODEL_REPO) else {
+        return Ok(None);
+    };
+    let Ok(profile) = super::jobs::ResolvedProfile::open(
+        &cache_dir,
+        DEFAULT_MODEL_REPO,
+        &checksums,
+        ENGINE_VERSION,
+    ) else {
+        return Ok(None);
+    };
+    let profile_id = profile.profile.profile_id();
+
+    // The owner briefly — the same acquire `embed_with_publisher` performs.
+    // A busy owner means another pass holds the index; abstain and let the
+    // real publish surface the contention properly.
+    let publisher = match IndexPublisher::acquire(&index_root, inner_store_for(&index_root)) {
+        Ok(publisher) => publisher,
+        Err(ConstellationError::IndexBusy { .. }) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+
+    let captured =
+        capture_under_workspace_lock(workspace, super::capture::CaptureLimits::default()).await?;
+    let identity = identity_for(&index_root);
+    let marker = super::manifest::ProtocolMarker {
+        protocol_version: super::FORMAT_VERSION,
+        state: super::manifest::BootstrapState::Active,
+        index_epoch: identity.index_epoch(),
+        checkout_id: identity.checkout_id().to_string(),
+        table_names: super::manifest::ProtocolMarker::active_table_names(),
+        storage_scheme: super::manifest::STORAGE_SCHEME_FILE_OBJECT_STORE.to_string(),
+        bootstrap_attempt: 1,
+    };
+    let tables =
+        open_active_tables(&index_root, &marker, Arc::clone(publisher.tracking_store())).await?;
+    let mut eligibility = tables.artifacts_eligibility(&captured, &profile_id).await?;
+    eligibility.merge_from(&tables.sections_eligibility(&captured, &profile_id).await?);
+    drop(tables);
+    drop(publisher);
+
+    Ok(Some(EmbedPrecheck {
+        eligible: eligibility.eligible_keys().len(),
+        current: eligibility.current_keys().len(),
+        cannot_judge: eligibility.cannot_judge().len(),
+    }))
+}
+
+/// Feature-off abstains the way `Ok(None)` does: nothing to report.
+#[cfg(not(feature = "semantic-search"))]
+pub async fn embedding_precheck(
+    _workspace: &Path,
+) -> Result<Option<EmbedPrecheck>, ConstellationError> {
+    Ok(None)
+}
+
+/// Feature-off is `unavailable`, not `failed`.
+///
+/// This arm acquires **nothing** — no owner, no tables, no tracker — and does
+/// no partial work, because a caller seeing "0 embedded" would reasonably
+/// conclude work had been attempted. It does not report success either:
+/// `ModelUnavailable` is the state SPEC-008 defines for a missing feature,
+/// and naming the feature is what lets a caller tell the user what to do.
+#[cfg(not(feature = "semantic-search"))]
+pub async fn embed_with_publisher(
+    _workspace: &Path,
+    _vectors: &BTreeMap<String, Vec<f32>>,
+) -> Result<EmbeddingBatchOutcome, ConstellationError> {
+    Err(ConstellationError::ModelUnavailable {
+        detail: "this build was compiled without the `semantic-search` feature, so no vector can \
+                 be produced. This is `unavailable`, not a failed embedding."
+            .to_string(),
+    })
+}
+
+/// Whether this process still admits maintenance.
+pub fn is_admitting() -> bool {
+    ADMITTING.load(Ordering::SeqCst)
+}
+
+/// One commit that ran, as reported to the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitSummary {
+    /// `merge`, `column_update` or `delete`.
+    pub kind: &'static str,
+    pub version: u64,
+    /// Rows affected. `0` is a legitimate outcome — "matched nothing" is not
+    /// the same as "the commit failed", and the two are told apart here.
+    pub rows_affected: u64,
+}
+
+/// What one maintenance pass did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconcileOutcome {
+    pub progress: super::publisher::BootstrapProgress,
+    pub generation_id: String,
+    pub table_versions: super::manifest::TableVersions,
+    pub commits: Vec<CommitSummary>,
+    /// Populated when a stage ran and was verified. `None` when nothing was
+    /// staged — a real outcome, and `commits` says which it was.
+    pub verification: Option<super::publisher::VerificationReport>,
+    /// Head versions **after** any conditional restore. The pre-restore pair
+    /// is never what gets published.
+    pub head_versions: super::manifest::TableVersions,
+    /// What the trigram side-index did this pass: `Bound` means it was rebuilt
+    /// from the published generation's exact bytes, `Drifted` means a source
+    /// moved mid-build and reads must fall back, `Missing`/`Stale` before a
+    /// heal attempt stay `None`-adjacent — the field is `None` only when the
+    /// pass never reached the point of tagging.
+    pub lexical_index: Option<super::lexical_index::LexicalRebind>,
+}
+
+/// A published generation, as the caller receives it.
+#[derive(Debug, Clone)]
+pub struct PublishedReadView {
+    pub descriptor: CurrentDescriptor,
+    pub manifest: Arc<GenerationManifest>,
+}
+
+/// Bind the trigram side-index to `manifest`'s generation.
+///
+/// Skips the rebuild entirely when the existing tag already names this
+/// generation and digest — the common case for no-op passes. A rebuild
+/// failure degrades to `None` in the outcome rather than failing the pass:
+/// the pinned scan answers the same queries, slower.
+fn rebind_lexical_index(
+    workspace: &Path,
+    manifest: &GenerationManifest,
+    entries: &[super::capture::SourceEntry],
+) -> Option<super::lexical_index::LexicalRebind> {
+    use super::lexical_index::{LexicalBinding, binding_for, rebuild_for_generation};
+    if binding_for(workspace, manifest) == LexicalBinding::Bound {
+        return None;
+    }
+    rebuild_for_generation(
+        workspace,
+        &manifest.generation_id,
+        &manifest.source_set_digest,
+        entries,
+    )
+    .ok()
+}
+
+/// Run one steady-state maintenance pass.
+///
+/// Reachable only with a [`MaintainCapability`], which only the resolver's
+/// Strict branch issues. [`ResolutionPolicy::SoftFallback`] never receives
+/// one, so a read cannot reach this and cannot cause a table write.
+///
+/// # Guard discipline
+///
+/// * The **owner** spans recover → capture → stage → verify → publish and is
+///   released when the publisher drops. It is never held across model
+///   loading, inference or a queue wait — none of which this function does.
+/// * The **WorkspaceLock** is taken once per storage commit and released
+///   before the next, in owner → workspace order. Never across two commits,
+///   never acquired before the owner.
+/// * An expired deadline is checked **before** any work starts. Once work has
+///   begun it is not enforced mid-commit: the guard is held until every child
+///   operation finishes and the caller is told `index_busy`. Releasing a lock
+///   on timeout would leave a Lance commit unsupervised.
+///
+/// # The two-connections assumption
+///
+/// `verify_staged` opens a **separate** reader through
+/// `lance_tables::open_table_at_version` while the writers are still open, so
+/// two connections to one index exist at once. That is presumed fine on the
+/// `file-object-store` scheme and is **untested**. The reader is deliberately
+/// **not** wrapped to make the two look symmetric: a wrapped reader shares
+/// the writer's `ObjectStore` instance and could observe in-flight writes,
+/// which is exactly what a pinned reader must not do.
+///
+/// # Errors
+///
+/// [`ConstellationError::IndexBusy`] when another live process owns the
+/// index, or when the deadline had already expired. A `publication_uncertain`
+/// surfaces as itself — never a rollback, never a success. A
+/// `durability_unavailable` from the closure barrier stops before any
+/// generation or CURRENT write, because the barrier runs inside `publish`
+/// before either.
+pub async fn maintain_index(
+    capability: &MaintainCapability,
+    capture_limits: super::capture::CaptureLimits,
+    deadline: std::time::Instant,
+) -> Result<(PublishedReadView, ReconcileOutcome), ConstellationError> {
+    use super::publisher::{
+        HeadComparison, IndexPublisher, artifacts_batch, capture_under_workspace_lock,
+        compare_heads, plan_commits, stage_sequence,
+    };
+
+    if !is_admitting() {
+        return Err(ConstellationError::IndexBusy {
+            detail: "this process is shutting down and admits no new maintenance".to_string(),
+        });
+    }
+    if std::time::Instant::now() >= deadline {
+        // Refused before anything starts, so no guard exists to leak.
+        return Err(ConstellationError::IndexBusy {
+            detail: "the maintenance deadline had already expired; no work was started".to_string(),
+        });
+    }
+
+    // Both paths come from the capability as fields. Nothing here infers one
+    // from the other — that inference was unsound and is gone.
+    let index_root = capability.index_root().to_path_buf();
+    let workspace = capability.workspace().to_path_buf();
+
+    let publisher = IndexPublisher::acquire(&index_root, inner_store_for(&index_root))?;
+
+    // Bootstrap on a first run, or recover on a restart. Either leaves the
+    // index with a published generation or an error.
+    let progress =
+        super::publisher::bootstrap_or_recover(&publisher, &workspace, capture_limits).await?;
+
+    let descriptor = super::storage::read_current(&index_root)?.ok_or_else(|| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: "maintenance finished without a published pointer".to_string(),
+        }
+    })?;
+    let published = Arc::new(super::storage::read_manifest(&index_root, &descriptor)?);
+
+    // Recover the baseline. Matching heads restore nothing and commit
+    // nothing — the rule that stops a pointless commit before every stage.
+    //
+    // The artifacts baseline is the descriptor's *effective* version: an
+    // embedding drain legitimately advances the head past the manifest's pin
+    // and records it there. Comparing against the manifest alone would call
+    // those writes "divergence" and restore over them, erasing committed
+    // vectors on every reconcile.
+    let mut baseline = (*published).clone();
+    baseline.table_versions.artifacts = descriptor.effective_artifacts_version(&published)?;
+    // Same rule for sections: a completed drain advances the head and the
+    // descriptor records it. Comparing against the manifest's pin alone
+    // would call those writes divergence and restore over committed section
+    // vectors — the exact thing `effective_sections_version` exists to
+    // prevent.
+    baseline.table_versions.sections = descriptor.effective_sections_version(&published)?;
+
+    let marker = marker_for(&published);
+    let tables = super::lance_tables::open_active_tables(
+        &index_root,
+        &marker,
+        std::sync::Arc::clone(publisher.tracking_store()),
+    )
+    .await?;
+
+    match compare_heads(
+        Some(&baseline),
+        tables.artifacts_version().await?,
+        tables.relations_version().await?,
+        tables.sections_version().await?,
+    ) {
+        HeadComparison::Matches => {}
+        HeadComparison::Diverged {
+            artifacts_diverged,
+            relations_diverged,
+            sections_diverged,
+        } => {
+            // Only the affected table is rewound. Each restore creates a NEW
+            // physical head, so versions are re-read afterwards and that
+            // post-restore set is what gets recorded. A pre-sections
+            // generation pins `sections: None`, so `sections_diverged` can
+            // never be true under one — the head is free, not divergent.
+            if artifacts_diverged {
+                tables
+                    .restore_artifacts_to(baseline.table_versions.artifacts)
+                    .await?;
+            }
+            if relations_diverged {
+                tables
+                    .restore_relations_to(baseline.table_versions.relations)
+                    .await?;
+            }
+            if sections_diverged {
+                let pinned = baseline.table_versions.sections.ok_or_else(|| {
+                    ConstellationError::IndexGenerationUnavailable {
+                        detail: "sections head diverged but the published manifest pins none"
+                            .to_string(),
+                    }
+                })?;
+                tables.restore_sections_to(pinned).await?;
+            }
+        }
+        HeadComparison::MissingPublishedVersion { role } => {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!(
+                    "the published {role} version is gone; there is no latest fallback"
+                ),
+            });
+        }
+    }
+    // Re-read after any restore: what is recorded is what exists now, never
+    // the pre-restore numbers.
+    let head_versions = tables.head_versions().await?;
+
+    // Capture under the workspace lock, released before the first commit.
+    let captured = capture_under_workspace_lock(&workspace, capture_limits).await?;
+    let reconcile = super::reconciler::plan_reconcile(&captured, Some(&published));
+    let commits_plan = plan_commits(&reconcile);
+    // Tombstones name artifacts a complete capture proved absent — their
+    // whole edge set goes. Changed artifacts get their outgoing edges
+    // replaced: delete everything the key owns, then merge the new set.
+    let delete_keys: Vec<String> = reconcile
+        .tombstones
+        .iter()
+        .map(|t| t.canonical_key.clone())
+        .collect();
+    let changed_keys: std::collections::BTreeSet<String> = reconcile
+        .deltas
+        .iter()
+        .filter(|delta| {
+            matches!(
+                delta.action,
+                super::reconciler::DeltaAction::Create | super::reconciler::DeltaAction::Update
+            )
+        })
+        .filter_map(|delta| delta.canonical_key.clone())
+        .collect();
+    let relations_delete_keys: Vec<String> = changed_keys
+        .iter()
+        .cloned()
+        .chain(delete_keys.iter().cloned())
+        .collect();
+    let changed_artifacts: Vec<Arc<super::capture::ParsedArtifact>> = captured
+        .artifacts
+        .iter()
+        .filter(|artifact| changed_keys.contains(&artifact.canonical_key))
+        .cloned()
+        .collect();
+    let edge_batch = super::publisher::relations_batch(&changed_artifacts)?;
+    let relations_plan = super::publisher::RelationsPlan {
+        delete_keys: relations_delete_keys,
+        merge_rows: edge_batch.num_rows(),
+    };
+    let section_batch = super::publisher::sections_batch(&captured)?;
+    let sections_plan = super::publisher::SectionsPlan {
+        // Sections of a deleted parent die by parent key — the tombstones
+        // are the same confirmed absences the artifact delete used.
+        parent_delete_keys: reconcile
+            .tombstones
+            .iter()
+            .map(|t| t.canonical_key.clone())
+            .collect(),
+        merge_rows: section_batch.num_rows(),
+        // A published generation that predates the sections table has no pin;
+        // its first post-upgrade pass must populate the table even when the
+        // artifact side is a no-op.
+        bootstrap: baseline.table_versions.sections.is_none(),
+    };
+    let sequence = stage_sequence(
+        &commits_plan,
+        captured.artifacts.len(),
+        delete_keys,
+        &relations_plan,
+        &sections_plan,
+    );
+
+    let mut commits: Vec<CommitSummary> = Vec::new();
+    let mut verification: Option<super::publisher::VerificationReport> = None;
+    let mut committed_versions = head_versions;
+
+    if !sequence.is_empty() {
+        let batch = artifacts_batch(
+            &captured.artifacts,
+            captured.index_epoch,
+            &captured.checkout_id,
+        )?;
+
+        for op in &sequence.ops {
+            // One lock per commit, released before the next. Never across two.
+            let guard = crate::workspace::acquire_workspace_lock(&workspace)
+                .await
+                .map_err(|e| ConstellationError::Io {
+                    detail: format!("cannot take the workspace lock for a commit: {e}"),
+                })?;
+            match op {
+                super::publisher::CommitOp::MergeUpsert {
+                    full_source_batch, ..
+                } => {
+                    let outcome = tables
+                        .merge_into_artifacts(std::sync::Arc::clone(&batch), *full_source_batch)
+                        .await?;
+                    commits.push(CommitSummary {
+                        kind: "merge",
+                        version: outcome.version,
+                        rows_affected: outcome.num_inserted_rows
+                            + outcome.num_updated_rows
+                            + outcome.num_deleted_rows,
+                    });
+                }
+                super::publisher::CommitOp::ColumnUpdate { keys, assignments } => {
+                    let outcome = tables.update_artifacts_columns(keys, assignments).await?;
+                    commits.push(CommitSummary {
+                        kind: "column_update",
+                        version: outcome.version,
+                        rows_affected: outcome.rows_updated,
+                    });
+                }
+                super::publisher::CommitOp::DeleteByPredicate { keys } => {
+                    let outcome = tables.delete_from_artifacts(keys).await?;
+                    commits.push(CommitSummary {
+                        kind: "delete",
+                        version: outcome.version,
+                        rows_affected: outcome.rows_deleted,
+                    });
+                }
+                super::publisher::CommitOp::RelationsDelete { keys } => {
+                    let outcome = tables.delete_from_relations(keys).await?;
+                    commits.push(CommitSummary {
+                        kind: "relations_delete",
+                        version: outcome.version,
+                        rows_affected: outcome.rows_deleted,
+                    });
+                }
+                super::publisher::CommitOp::RelationsMerge { .. } => {
+                    let outcome = tables
+                        .merge_into_relations(std::sync::Arc::clone(&edge_batch), false)
+                        .await?;
+                    commits.push(CommitSummary {
+                        kind: "relations_merge",
+                        version: outcome.version,
+                        rows_affected: outcome.num_inserted_rows
+                            + outcome.num_updated_rows
+                            + outcome.num_deleted_rows,
+                    });
+                }
+                super::publisher::CommitOp::SectionsDelete { parent_keys } => {
+                    let outcome = tables.delete_from_sections(parent_keys).await?;
+                    commits.push(CommitSummary {
+                        kind: "sections_delete",
+                        version: outcome.version,
+                        rows_affected: outcome.rows_deleted,
+                    });
+                }
+                super::publisher::CommitOp::SectionsMerge {
+                    full_source_batch, ..
+                } => {
+                    let outcome = tables
+                        .merge_into_sections(
+                            std::sync::Arc::clone(&section_batch),
+                            *full_source_batch,
+                        )
+                        .await?;
+                    commits.push(CommitSummary {
+                        kind: "sections_merge",
+                        version: outcome.version,
+                        rows_affected: outcome.num_inserted_rows
+                            + outcome.num_updated_rows
+                            + outcome.num_deleted_rows,
+                    });
+                }
+            }
+            drop(guard);
+        }
+
+        // The versions the manifest will pin must be the ones the commits
+        // produced — re-read after the last commit. Pinning the pre-commit
+        // pair would publish a generation whose readers open versions that
+        // do not carry the rows it claims.
+        committed_versions = tables.head_versions().await?;
+
+        // Read back through a SEPARATE reader while the writers are still
+        // open. Two connections at once is presumed fine and is untested; the
+        // reader stays unwrapped so it cannot see in-flight writes.
+        let expected: std::collections::BTreeMap<String, String> = captured
+            .entries
+            .iter()
+            .map(|entry| (entry.canonical_key.clone(), entry.source_digest.clone()))
+            .collect();
+        let expected_edges: usize = captured
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.outgoing.len())
+            .sum();
+        // The sections check is pinned to the committed head and proves every
+        // captured section row carries its parent's source digest. It always
+        // runs when a stage ran: this build owns a sections table, so the new
+        // manifest will pin `Some(_)` and the rows must actually exist.
+        let expected_sections_map: std::collections::BTreeMap<String, String> = captured
+            .sections
+            .iter()
+            .filter_map(|section| {
+                captured
+                    .entries
+                    .iter()
+                    .find(|entry| entry.canonical_key == section.parent_key)
+                    .map(|entry| (section.canonical_key.clone(), entry.source_digest.clone()))
+            })
+            .collect();
+        let sections_expectation =
+            committed_versions
+                .sections
+                .map(|version| super::publisher::SectionsExpectation {
+                    version,
+                    digests: expected_sections_map,
+                });
+        verification = Some(
+            super::publisher::verify_staged(
+                &index_root,
+                &marker,
+                committed_versions.artifacts,
+                &expected,
+                committed_versions.relations,
+                expected_edges,
+                sections_expectation.as_ref(),
+            )
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("post-commit verification failed: {e}"),
+            })?,
+        );
+    }
+
+    // A pass that committed nothing publishes nothing: the pointer, the
+    // manifest directory and the fsyncs all stay where they are, and the
+    // caller gets the already-published generation back. Publishing an
+    // identical manifest under a new id on every pass would churn the
+    // generations directory for no benefit.
+    if sequence.is_empty() {
+        let lexical_index = rebind_lexical_index(&workspace, &published, &captured.entries);
+        return Ok((
+            PublishedReadView {
+                descriptor,
+                manifest: Arc::clone(&published),
+            },
+            ReconcileOutcome {
+                progress,
+                generation_id: published.generation_id.clone(),
+                table_versions: head_versions,
+                commits,
+                verification: None,
+                head_versions,
+                lexical_index,
+            },
+        ));
+    }
+
+    // Final source validation, under the workspace lock, before the pointer
+    // moves. The digests compared are the ones the staging was computed
+    // against — `captured`'s, not the previously published manifest's:
+    // comparing against `published.source_set_digest` would refuse every
+    // real update, since a changed source is exactly what a publish exists
+    // to record. Generation/epoch still come from the published pointer:
+    // those catch the CURRENT having moved under us.
+    let recheck = capture_under_workspace_lock(&workspace, capture_limits).await?;
+    super::publisher::candidate_is_current(
+        Some(published.generation_id.as_str()),
+        Some(descriptor.generation_id.as_str()),
+        published.index_epoch,
+        descriptor.index_epoch,
+        captured.source_set_digest.as_str(),
+        recheck.source_set_digest.as_str(),
+        captured.config_digest.as_str(),
+        recheck.config_digest.as_str(),
+    )?;
+    drop(recheck);
+
+    let generation_id = super::publisher::generation_id_for(&captured.evaluated_at);
+    let mut next = (*published).clone();
+    next.generation_id = generation_id.clone();
+    next.source_entries = captured.entries.clone();
+    next.coverage = captured.coverage;
+    next.evaluated_at = captured.evaluated_at.clone();
+    next.table_versions = committed_versions;
+
+    // finish_writes → sync_written_set → write_generation_manifest →
+    // descriptor_for(real owner epoch) → publish_current, in that order.
+    publisher.publish(&next)?;
+    drop(tables);
+    // The owner is released when `publisher` drops at the end of this scope.
+    // Waking readers is P4's runtime; nothing here has one to signal yet.
+
+    let new_descriptor =
+        super::storage::read_current(&index_root)?.ok_or_else(|| ConstellationError::Io {
+            detail: "publication left no pointer".to_string(),
+        })?;
+    let new_manifest = Arc::new(super::storage::read_manifest(&index_root, &new_descriptor)?);
+
+    // Rebuild + re-verify the trigram index against the bytes this
+    // generation pinned — post-publish, so a crash mid-build can at worst
+    // leave an untagged index, which every read treats as absent.
+    let lexical_index = rebind_lexical_index(&workspace, &new_manifest, &captured.entries);
+
+    Ok((
+        PublishedReadView {
+            descriptor: new_descriptor,
+            manifest: Arc::clone(&new_manifest),
+        },
+        ReconcileOutcome {
+            progress,
+            generation_id,
+            table_versions: committed_versions,
+            commits,
+            verification,
+            head_versions,
+            lexical_index,
+        },
+    ))
+}
+
+/// What [`rebind_index_identity`] changed about one physical index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebindReport {
+    /// The checkout the marker claimed before the rewrite.
+    pub old_checkout_id: String,
+    /// The path-bound checkout id the marker now claims — always
+    /// `path_bound_checkout_id(index_root)` for the root the call rebound.
+    pub new_checkout_id: String,
+    /// The durable epoch before the rewrite.
+    pub old_epoch: u64,
+    /// The durable epoch after: `old_epoch + 1`, checked. Bumping retires
+    /// every pending embedding job honestly — job eligibility is the tuple
+    /// `(index_epoch, checkout_id, incarnation)`, and work queued under the
+    /// old epoch can never satisfy it again.
+    pub new_epoch: u64,
+}
+
+/// The checkout id an index at `index_root` would mint with no marker at
+/// all — `local-<sha256(root)[..16]>` over the root **as spelled**.
+///
+/// Pure: a function of the path's bytes, no I/O. Callers spell the root
+/// exactly as a maintainer would (canonical), and use the id to reason
+/// about a marker's claim *before* deciding to rewrite it — a marker whose
+/// `checkout_id` equals this value belongs to this path; anything else is
+/// a foreign index. This is the one piece of identity the rebind flow
+/// needs outside the owner module, so it is named here rather than through
+/// a wider `IndexIdentity` export.
+pub fn path_bound_checkout_id(index_root: &Path) -> String {
+    super::owner::IndexIdentity::path_bound_checkout_id(&super::owner::IndexLocation::new(
+        index_root,
+    ))
+}
+
+/// Rebind a moved index to the path it now sits at.
+///
+/// The marker's `checkout_id` is path-derived, so a checkout that moved
+/// leaves an index claiming its old home — the next `maintain_index`
+/// refuses it with `index_identity_mismatch`, loudly and correctly. This
+/// is the explicit operator step that lifts the refusal: take the owner
+/// (the same discipline a publisher keeps — a rewrite must never race a
+/// live publish), read the marker, rewrite the identity, and put it back
+/// under the platform durability barrier.
+///
+/// Two deliberate choices:
+///
+/// * `index_epoch` is **bumped**, not preserved. Eligibility for pending
+///   embedding jobs is the tuple `(index_epoch, checkout_id, incarnation)`;
+///   keeping the epoch would let work queued under the old checkout still
+///   apply.
+/// * Already-published generations are **not** rewritten. `CURRENT` and
+///   its manifest keep the identity they were published under — they are
+///   the record of what was true then; the marker governs what the *next*
+///   publisher claims.
+///
+/// Returns `None` when there is nothing to rewrite: no marker at all (a
+/// fresh workspace — the next publish mints its own identity), or a marker
+/// already bound to this path (a re-run must not burn an epoch).
+///
+/// # Errors
+///
+/// [`ConstellationError::IndexBusy`] when another live process owns the
+/// index or this process is shutting down, and the marker-read / barrier
+/// errors a publisher would also report.
+pub fn rebind_index_identity(
+    index_root: &Path,
+) -> Result<Option<RebindReport>, ConstellationError> {
+    if !is_admitting() {
+        return Err(ConstellationError::IndexBusy {
+            detail: "this process is shutting down and admits no new maintenance".to_string(),
+        });
+    }
+    let location = super::owner::IndexLocation::new(index_root);
+    // Owner first, before the marker is read or written: the rewrite is
+    // serialised against a live publisher exactly as a publish would be.
+    // `acquire_owner` verifies the canonical parent itself.
+    let _owner = super::owner::acquire_owner(
+        &location,
+        std::time::Duration::from_millis(super::owner::OWNER_ACQUIRE_BUDGET_MS),
+    )?;
+    let marker = match storage::read_marker(index_root)?.marker().cloned() {
+        Some(marker) => marker,
+        None => return Ok(None),
+    };
+    let new_checkout_id = super::owner::IndexIdentity::path_bound_checkout_id(&location);
+    if marker.checkout_id == new_checkout_id {
+        return Ok(None);
+    }
+    let (_support, platform, diagnostic) = super::durability::platform_barrier(index_root);
+    if let Some(diagnostic) = diagnostic {
+        return Err(ConstellationError::UnsupportedIndexFilesystem {
+            detail: diagnostic.detail,
+        });
+    }
+    let platform = platform.ok_or_else(|| ConstellationError::UnsupportedIndexFilesystem {
+        detail: "the index root has no write barrier".to_string(),
+    })?;
+    let mut rewritten = marker.clone();
+    let old_epoch = rewritten.index_epoch;
+    rewritten.checkout_id = new_checkout_id.clone();
+    rewritten.index_epoch = checked_increment("index_epoch", old_epoch)?;
+    storage::write_marker(index_root, &rewritten, platform.as_ref())?;
+    Ok(Some(RebindReport {
+        old_checkout_id: marker.checkout_id,
+        new_checkout_id,
+        old_epoch,
+        new_epoch: rewritten.index_epoch,
+    }))
+}
+
+/// What one embedding-queue drain did, as the caller reports it.
+#[derive(Debug)]
+pub struct EmbeddingQueueOutcome {
+    /// The generation the vectors were published onto.
+    pub generation_id: String,
+    /// The profile the queue ran under.
+    pub profile_id: String,
+    /// Eligibility *before* the drain — what the index asked for.
+    pub before: super::jobs::EligibilityReport,
+    /// Vectors that landed (rows actually updated, not merely attempted).
+    pub embedded: usize,
+    /// Completions that arrived stale — the row moved between eligibility
+    /// and publish, and the conditional update matched zero rows. Counted,
+    /// not errored: stale is information, not failure.
+    pub stale_completions: usize,
+    /// Eligibility *after* the drain — the caller-visible coverage proof.
+    pub after: super::jobs::EligibilityReport,
+}
+
+/// Drain the embedding queue for one workspace, under one profile.
+///
+/// This is the 0B "queue in serve/watch" runner. The model itself is not in
+/// core — `embed` is injected by the caller (`forgeplan-cli` passes the
+/// `semantic-search` embedder), so the core stays model-agnostic and the
+/// whole fence/eligibility machinery is testable without weights.
+///
+/// Order of operations, and why:
+///
+/// 1. The index must already exist and be publishable — the queue is a
+///    writer onto rows, never a bootstrapper.
+/// 2. `artifacts_eligibility` answers "which rows need a vector for this
+///    profile" by scalar scan of the nine stored binding fields — never a
+///    vector query (see [`super::jobs::eligibility_for`]).
+/// 3. Vectors are computed **before** any publish lock is taken: inference
+///    is the slow part and the workspace lock is a writer-serialisation
+///    primitive, not a semaphore for the model.
+/// 4. Each publish takes the workspace lock for exactly one conditional
+///    update and releases it — the same one-lock-per-commit rule the merge
+///    stage follows. The predicate is the row's own stored binding, so a
+///    completion that arrives after the row moved updates zero rows; that
+///    is counted in `stale_completions`, not retried here.
+/// 5. Eligibility is re-read at the end so the outcome reports coverage the
+///    index actually holds, not coverage the queue hoped to produce.
+///
+/// `body_prefix_chars` bounds how much body goes into the embedding input —
+/// the same bound the captured `input_digest` was computed over, so a caller
+/// that changes it changes the digests and thereby correctly re-eligibilises
+/// every row.
+pub async fn drain_embedding_queue(
+    capability: &MaintainCapability,
+    profile_id: &str,
+    body_prefix_chars: usize,
+    mut embed: impl FnMut(&[(String, String)]) -> Result<Vec<Vec<f32>>, ConstellationError>,
+    deadline: std::time::Instant,
+) -> Result<EmbeddingQueueOutcome, ConstellationError> {
+    if !is_admitting() {
+        return Err(ConstellationError::IndexBusy {
+            detail: "this process is shutting down and admits no new maintenance".to_string(),
+        });
+    }
+    if std::time::Instant::now() >= deadline {
+        return Err(ConstellationError::IndexBusy {
+            detail: "the queue deadline had already expired; no work was started".to_string(),
+        });
+    }
+
+    let index_root = capability.index_root().to_path_buf();
+    let workspace = capability.workspace().to_path_buf();
+
+    // (1) The queue never bootstraps: an index that is not yet publishable is
+    // `maintain_index`'s job, and silently creating one here would hide the
+    // distinction in exactly the wrong place.
+    let descriptor = super::storage::read_current(&index_root)?.ok_or_else(|| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: "no published generation; run index maintenance first".to_string(),
+        }
+    })?;
+    let published = Arc::new(super::storage::read_manifest(&index_root, &descriptor)?);
+    if !published.table_versions.is_publishable() {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "generation `{}` names non-publishable table versions {:?}",
+                published.generation_id, published.table_versions
+            ),
+        });
+    }
+
+    let publisher =
+        super::publisher::IndexPublisher::acquire(&index_root, inner_store_for(&index_root))?;
+    let marker = marker_for(&published);
+    let tables = super::lance_tables::open_active_tables(
+        &index_root,
+        &marker,
+        std::sync::Arc::clone(publisher.tracking_store()),
+    )
+    .await?;
+
+    // The capture is under the workspace lock and the lock is released
+    // before any write — same rule as the merge stage.
+    let captured = super::publisher::capture_under_workspace_lock(
+        &workspace,
+        super::capture::CaptureLimits::default(),
+    )
+    .await?;
+
+    // (2) What the index asks for, before we spend a model call — artifact
+    // rows and section rows judged under one report. The key namespace is
+    // disjoint by construction (section keys carry `#s<ordinal>`), so a
+    // merged report can never confuse the two.
+    let mut before = tables.artifacts_eligibility(&captured, profile_id).await?;
+    let sections_before = tables.sections_eligibility(&captured, profile_id).await?;
+    before.merge_from(&sections_before);
+
+    let work_keys: Vec<String> = before
+        .eligible_keys()
+        .iter()
+        .map(|key| (*key).to_string())
+        .collect();
+
+    let mut vectors: std::collections::BTreeMap<String, Vec<f32>> =
+        std::collections::BTreeMap::new();
+    if !work_keys.is_empty() {
+        // (3) Inference before any publish lock. Inputs are built from the
+        // same captured bytes the binding digests came from, so the vector
+        // and its binding can never drift apart. An artifact key gets
+        // `title + body prefix`; a section key gets `title + heading +
+        // content prefix` — the two inputs are distinct strings over
+        // distinct digests, never interchangeable.
+        let mut inputs: Vec<(String, String)> = Vec::with_capacity(work_keys.len());
+        for key in &work_keys {
+            if let Some(artifact) = captured.artifact(key) {
+                inputs.push((
+                    key.clone(),
+                    super::jobs::embedding_input_text(
+                        &artifact.title,
+                        &artifact.body,
+                        body_prefix_chars,
+                    ),
+                ));
+                continue;
+            }
+            if let Some(section) = captured.section(key) {
+                inputs.push((
+                    key.clone(),
+                    captured.section_input(section, body_prefix_chars),
+                ));
+                continue;
+            }
+            // Eligible but not captured: leave it for the next drain and let
+            // the `after` report say so.
+        }
+
+        const EMBED_BATCH: usize = 32;
+        for chunk in inputs.chunks(EMBED_BATCH) {
+            if std::time::Instant::now() >= deadline {
+                return Err(ConstellationError::IndexBusy {
+                    detail: "the queue deadline expired mid-inference;                              computed vectors were not published"
+                        .to_string(),
+                });
+            }
+            let batch = embed(chunk)?;
+            if batch.len() != chunk.len() {
+                return Err(ConstellationError::ModelUnavailable {
+                    detail: format!(
+                        "the embedder returned {} vectors for {} inputs",
+                        batch.len(),
+                        chunk.len()
+                    ),
+                });
+            }
+            for ((key, _), vector) in chunk.iter().zip(batch.into_iter()) {
+                vectors.insert(key.clone(), vector);
+            }
+        }
+    }
+
+    // (4) One lock per publish, released before the next. `publish_embeddings`
+    // refuses a key absent from the capture and the row-side predicate does
+    // the staleness work, so a vector is never installed onto a moved row.
+    let mut embedded = 0usize;
+    // Whether this drain issued any section publish — even a stale one can
+    // commit a version bump, so the head must be recorded on attempt, not
+    // on landed rows.
+    let mut sections_touched = false;
+    let mut stale_completions = 0usize;
+    for (key, vector) in vectors {
+        if std::time::Instant::now() >= deadline {
+            return Err(ConstellationError::IndexBusy {
+                detail: format!(
+                    "the queue deadline expired after {embedded} publishes;                      remaining vectors are dropped, not staged"
+                ),
+            });
+        }
+        let guard = crate::workspace::acquire_workspace_lock(&workspace)
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("cannot take the workspace lock for a vector publish: {e}"),
+            })?;
+        sections_touched |= captured.section(&key).is_some();
+        let mut single = std::collections::BTreeMap::new();
+        single.insert(key, vector);
+        for outcome in
+            super::publisher::publish_embeddings(&tables, &captured, profile_id, &single).await?
+        {
+            if outcome.stale {
+                stale_completions += 1;
+            } else {
+                embedded += 1;
+            }
+        }
+        drop(guard);
+    }
+
+    // (5) Coverage as the index holds it, not as the queue hoped — artifact
+    // and section rows again under one report.
+    let mut after = tables.artifacts_eligibility(&captured, profile_id).await?;
+    let sections_after = tables.sections_eligibility(&captured, profile_id).await?;
+    after.merge_from(&sections_after);
+
+    // (6) Record where embedding completion left the heads it wrote. The
+    // manifest is immutable, so completed heads live on the descriptor:
+    // without them the next reconcile would read the movement as divergence
+    // and restore over the vectors this drain just wrote. The publisher is
+    // still held, so nothing else can move the heads before this republish.
+    //
+    // `embedding_sections_head` mirrors `embedding_artifacts_head` exactly:
+    // it is set when a section publish actually landed. The manifest may
+    // still pin `sections: None` — a pre-sections generation — and
+    // `effective_sections_version` resolves that: the descriptor head is the
+    // only source until a reconcile pins the table properly.
+    //
+    // `profile_id` follows the same rule: when this drain put or confirmed
+    // vectors under `profile_id`, that is the space pinned semantic reads
+    // must query — the manifest's `pending_jobs` never named it because the
+    // profile arrived after publication.
+    let claims_space = embedded > 0 || !after.current_keys().is_empty();
+    let head = tables.artifacts_version().await?;
+    let mut next = descriptor.clone();
+    if embedded > 0 {
+        next.embedding_artifacts_head = Some(head);
+    }
+    if sections_touched {
+        // The drain wrote section rows, so the sections head moved. Record
+        // it on the descriptor even when the manifest still pins
+        // `sections: None` (a pre-sections generation) — that pin is resolved
+        // by `effective_sections_version`, which treats the descriptor head
+        // as the only source until a reconcile pins the table.
+        next.embedding_sections_head = Some(tables.sections_version().await?);
+    }
+    if claims_space {
+        next.profile_id = Some(profile_id.to_string());
+    }
+    if next != descriptor {
+        publisher.republish_current(&next)?;
+    }
+
+    drop(tables);
+    Ok(EmbeddingQueueOutcome {
+        generation_id: published.generation_id.clone(),
+        profile_id: profile_id.to_string(),
+        before,
+        embedded,
+        stale_completions,
+        after,
+    })
+}
+
+/// One lexical hit at the pinned artifacts version.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LexicalHit {
+    pub canonical_key: String,
+    pub display_id: Option<String>,
+    pub title: String,
+    pub kind: Option<String>,
+    pub status: Option<String>,
+    /// The row's stored `semantic_state` as-is — reported honestly, never
+    /// interpreted: `ready`/`pending`/`failed`/`unavailable`/absent are all
+    /// legal, and the caller sees which.
+    pub semantic_state: Option<String>,
+}
+
+/// What a lexical search over the pinned projection returned.
+#[derive(Debug)]
+pub struct LexicalSearchOutcome {
+    pub generation_id: String,
+    pub pinned_artifacts_version: u64,
+    pub rows_scanned: usize,
+    pub truncated: bool,
+    /// `true` when hits came through the bound trigram index; `false` when
+    /// the pinned table was scanned row by row. Both answer at the same
+    /// generation — the flag only reports which path produced them.
+    pub via_trigram: bool,
+    pub hits: Vec<LexicalHit>,
+}
+
+/// One document in the published artifacts table (not a live filesystem scan).
+#[derive(Debug, serde::Serialize)]
+pub struct IndexedDocument {
+    pub canonical_key: String,
+    pub display_id: Option<String>,
+    pub relative_path: String,
+    pub source_digest: String,
+    pub semantic_state: Option<String>,
+}
+
+/// One bounded inventory page and the generation it was read from.
+#[derive(Debug)]
+pub struct IndexedDocumentPage {
+    pub generation_id: String,
+    pub pinned_artifacts_version: u64,
+    pub documents: Vec<IndexedDocument>,
+    pub has_more: bool,
+}
+
+/// List documents at CURRENT's pinned table version without opening a writer.
+pub async fn list_pinned_documents(
+    index_root: &Path,
+    offset: usize,
+    limit: usize,
+) -> Result<IndexedDocumentPage, ConstellationError> {
+    use arrow_array::{Array, StringArray};
+
+    if !(1..=100).contains(&limit) {
+        return Err(ConstellationError::Io {
+            detail: "inventory limit must be between 1 and 100".to_string(),
+        });
+    }
+    let descriptor = super::storage::read_current(index_root)?.ok_or_else(|| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: "no published generation to list".to_string(),
+        }
+    })?;
+    let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let artifacts_version = descriptor.effective_artifacts_version(&manifest)?;
+    // Stage 8 — pin this generation for the read's duration: GC may not
+    // delete a generation a live reader is about to open.
+    let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
+    let marker = marker_for(&manifest);
+    let table = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "artifacts",
+        artifacts_version,
+    )
+    .await?;
+    let batches = table.artifact_page(offset, limit + 1).await?;
+    let mut documents = Vec::new();
+    for batch in &batches {
+        let value = |col: &str, row: usize| {
+            batch
+                .column_by_name(col)
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .filter(|c| !c.is_null(row))
+                .map(|c| c.value(row).to_string())
+        };
+        for row in 0..batch.num_rows() {
+            documents.push(IndexedDocument {
+                canonical_key: value("canonical_key", row).unwrap_or_default(),
+                display_id: value("id", row),
+                relative_path: value("relative_path", row).unwrap_or_default(),
+                source_digest: value("source_digest", row).unwrap_or_default(),
+                semantic_state: value("semantic_state", row),
+            });
+        }
+    }
+    let has_more = documents.len() > limit;
+    documents.truncate(limit);
+    Ok(IndexedDocumentPage {
+        generation_id: manifest.generation_id,
+        pinned_artifacts_version: artifacts_version,
+        documents,
+        has_more,
+    })
+}
+
+/// The pinned relation graph of one workspace: every node (id, title,
+/// kind) and every exact edge `(from → target, relation)` — the read
+/// shape stage-7 impact analysis walks. Read-only, pinned to the
+/// published manifest's table versions; never latest, never a writer.
+pub struct PinnedGraph {
+    pub generation_id: String,
+    /// (canonical_key, display_id, title, kind)
+    pub nodes: Vec<(String, Option<String>, String, String)>,
+    /// (from canonical_key, target, relation) — `target` is whatever the
+    /// source wrote, resolved by the caller against this source's keys.
+    pub edges: Vec<(String, String, String)>,
+}
+
+/// Read the pinned artifacts+relations tables as a graph.
+pub async fn list_pinned_graph(index_root: &Path) -> Result<PinnedGraph, ConstellationError> {
+    use arrow_array::{Array, StringArray};
+
+    let descriptor = super::storage::read_current(index_root)?.ok_or_else(|| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: "no published generation to read the graph from".to_string(),
+        }
+    })?;
+    let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let artifacts_version = descriptor.effective_artifacts_version(&manifest)?;
+    // Stage 8 — pin this generation for the read's duration: GC may not
+    // delete a generation a live reader is about to open.
+    let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
+    let marker = marker_for(&manifest);
+    let artifacts = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "artifacts",
+        artifacts_version,
+    )
+    .await?;
+    let relations = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "relations",
+        manifest.table_versions.relations,
+    )
+    .await?;
+    let mut nodes = Vec::new();
+    for batch in &artifacts
+        .select_columns(&["canonical_key", "id", "title", "kind"])
+        .await?
+    {
+        let value = |col: &str, row: usize| {
+            batch
+                .column_by_name(col)
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .filter(|c| !c.is_null(row))
+                .map(|c| c.value(row).to_string())
+        };
+        for row in 0..batch.num_rows() {
+            nodes.push((
+                value("canonical_key", row).unwrap_or_default(),
+                value("id", row),
+                value("title", row).unwrap_or_default(),
+                value("kind", row).unwrap_or_default(),
+            ));
+        }
+    }
+    let mut edges = Vec::new();
+    for batch in &relations
+        .select_columns(&["canonical_key", "target", "relation"])
+        .await?
+    {
+        let value = |col: &str, row: usize| {
+            batch
+                .column_by_name(col)
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .filter(|c| !c.is_null(row))
+                .map(|c| c.value(row).to_string())
+        };
+        for row in 0..batch.num_rows() {
+            edges.push((
+                value("canonical_key", row).unwrap_or_default(),
+                value("target", row).unwrap_or_default(),
+                value("relation", row).unwrap_or_default(),
+            ));
+        }
+    }
+    Ok(PinnedGraph {
+        generation_id: manifest.generation_id,
+        nodes,
+        edges,
+    })
+}
+
+/// Case-insensitive substring search over the artifacts table **at the
+/// version the published manifest pins** — never latest.
+///
+/// This is the read-side of the 0A/0B query surface: it opens an independent
+/// pinned reader, scans scalar columns, and matches on `canonical_key`,
+/// `title` and `body`. It is deliberately lexical — the spec's semantic
+/// search is gated on profile-bound vectors, and this function never
+/// pretends substring matching is similarity. `hits` carry the stored
+/// `semantic_state` verbatim so a caller can tell coverage apart from
+/// absence.
+///
+/// Reads only: no locks, no maintenance trigger, no writes of any kind.
+pub async fn search_pinned_lexical(
+    index_root: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<LexicalSearchOutcome, ConstellationError> {
+    if limit == 0 {
+        return Err(ConstellationError::Io {
+            detail: "a lexical search with limit 0 cannot return anything".to_string(),
+        });
+    }
+    let descriptor = super::storage::read_current(index_root)?.ok_or_else(|| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: "no published generation to search".to_string(),
+        }
+    })?;
+    let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let artifacts_version = descriptor.effective_artifacts_version(&manifest)?;
+    // Stage 8 — pin this generation for the read's duration: GC may not
+    // delete a generation a live reader is about to open.
+    let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
+    if !manifest.table_versions.is_publishable() {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "generation `{}` names non-publishable table versions {:?}",
+                manifest.generation_id, manifest.table_versions
+            ),
+        });
+    }
+    let marker = marker_for(&manifest);
+    let table = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "artifacts",
+        artifacts_version,
+    )
+    .await?;
+    let read_str = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<String> {
+        use arrow_array::Array;
+        let column = batch.column_by_name(col)?;
+        if row >= column.len() || column.is_null(row) {
+            return None;
+        }
+        // `body` is LargeUtf8, the rest are Utf8 — read both.
+        if let Some(a) = column.as_any().downcast_ref::<arrow_array::StringArray>() {
+            return Some(a.value(row).to_string());
+        }
+        column
+            .as_any()
+            .downcast_ref::<arrow_array::LargeStringArray>()
+            .map(|a| a.value(row).to_string())
+    };
+
+    // Source-byte trigrams cannot see keys derived from filenames. Supplement
+    // them with a streamed metadata scan of the same pinned table; on any
+    // incomplete or oversized shortlist, the full pinned scan remains safe.
+    const SHORTLIST_CAP: usize = 128;
+    if let Some(forgeplan_dir) = index_root.parent()
+        && super::lexical_index::binding_for(forgeplan_dir, &manifest)
+            == super::lexical_index::LexicalBinding::Bound
+        && query.is_ascii()
+        && let Ok(Some(source_paths)) =
+            super::lexical_index::query_paths(forgeplan_dir, query, SHORTLIST_CAP)
+        && source_paths.len() < SHORTLIST_CAP
+        && let Ok(Some(metadata_paths)) = table
+            .lexical_metadata_paths(&query.to_lowercase(), SHORTLIST_CAP)
+            .await
+    {
+        let paths: std::collections::BTreeSet<_> =
+            source_paths.into_iter().chain(metadata_paths).collect();
+        if paths.len() < SHORTLIST_CAP {
+            if paths.is_empty()
+                && super::lexical_index::binding_for(forgeplan_dir, &manifest)
+                    == super::lexical_index::LexicalBinding::Bound
+            {
+                return Ok(LexicalSearchOutcome {
+                    generation_id: manifest.generation_id.clone(),
+                    pinned_artifacts_version: artifacts_version,
+                    rows_scanned: 0,
+                    truncated: false,
+                    hits: Vec::new(),
+                    via_trigram: true,
+                });
+            }
+            if !paths.is_empty() {
+                let predicate = format!(
+                    "relative_path IN ({})",
+                    paths
+                        .iter()
+                        .map(|p| super::publisher::escape_predicate_literal(p))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                match table.query_batches_where(&predicate).await {
+                    Ok(batches) => {
+                        let needle = query.to_lowercase();
+                        let mut hits: Vec<LexicalHit> = Vec::new();
+                        let mut rows_scanned = 0;
+                        'candidates: for batch in &batches {
+                            for row in 0..batch.num_rows() {
+                                rows_scanned += 1;
+                                let key = read_str(batch, "canonical_key", row).unwrap_or_default();
+                                let title = read_str(batch, "title", row).unwrap_or_default();
+                                let body = read_str(batch, "body", row).unwrap_or_default();
+                                if !key.to_lowercase().contains(&needle)
+                                    && !title.to_lowercase().contains(&needle)
+                                    && !body.to_lowercase().contains(&needle)
+                                {
+                                    continue;
+                                }
+                                hits.push(LexicalHit {
+                                    canonical_key: key,
+                                    display_id: read_str(batch, "id", row),
+                                    title,
+                                    kind: read_str(batch, "kind", row),
+                                    status: read_str(batch, "status", row),
+                                    semantic_state: read_str(batch, "semantic_state", row),
+                                });
+                                if hits.len() >= limit {
+                                    break 'candidates;
+                                }
+                            }
+                        }
+                        if super::lexical_index::binding_for(forgeplan_dir, &manifest)
+                            == super::lexical_index::LexicalBinding::Bound
+                        {
+                            return Ok(LexicalSearchOutcome {
+                                generation_id: manifest.generation_id.clone(),
+                                pinned_artifacts_version: artifacts_version,
+                                rows_scanned,
+                                truncated: hits.len() >= limit,
+                                hits,
+                                via_trigram: true,
+                            });
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        "trigram shortlist join failed; falling back to the pinned scan: {e}"
+                    ),
+                }
+            }
+        }
+    }
+
+    // Stream the pinned fallback one batch at a time; a failed side-index
+    // must not force every body and embedding into memory for one query.
+    let needle = query.to_lowercase();
+    let mut hits: Vec<LexicalHit> = Vec::new();
+    let mut rows_scanned = 0usize;
+    table
+        .scan_lexical_batches(|batch| {
+            for row in 0..batch.num_rows() {
+                rows_scanned += 1;
+                let key = read_str(batch, "canonical_key", row).unwrap_or_default();
+                let title = read_str(batch, "title", row).unwrap_or_default();
+                let body = read_str(batch, "body", row).unwrap_or_default();
+                if !key.to_lowercase().contains(&needle)
+                    && !title.to_lowercase().contains(&needle)
+                    && !body.to_lowercase().contains(&needle)
+                {
+                    continue;
+                }
+                hits.push(LexicalHit {
+                    canonical_key: key,
+                    display_id: read_str(batch, "id", row),
+                    title,
+                    kind: read_str(batch, "kind", row),
+                    status: read_str(batch, "status", row),
+                    semantic_state: read_str(batch, "semantic_state", row),
+                });
+                if hits.len() >= limit {
+                    return false;
+                }
+            }
+            true
+        })
+        .await?;
+
+    Ok(LexicalSearchOutcome {
+        generation_id: manifest.generation_id.clone(),
+        pinned_artifacts_version: artifacts_version,
+        rows_scanned,
+        truncated: hits.len() >= limit,
+        hits,
+        via_trigram: false,
+    })
+}
+
+/// One semantic hit at the pinned generation — artifact row or section row.
+#[derive(Debug, serde::Serialize)]
+pub struct SemanticHit {
+    /// The matched row's own key: the artifact `canonical_key`, or the
+    /// section key `"{parent}#s{ordinal}"` when a section row won.
+    pub canonical_key: String,
+    /// For a section hit, the artifact it belongs to. `None` on an
+    /// artifact-level hit — the key already is the artifact's.
+    pub parent_key: Option<String>,
+    /// Section ordinal within the parent, `None` on an artifact-level hit.
+    pub section_ordinal: Option<u64>,
+    /// The section's heading text, `None` for the whole-body fallback row.
+    pub section_heading: Option<String>,
+    pub display_id: Option<String>,
+    pub title: String,
+    /// Cosine similarity derived from lance's `_distance`: `1.0 - distance`.
+    /// Reported as a score, never as a fake rank position.
+    pub similarity: f64,
+}
+
+/// What a semantic search over the pinned projection returned.
+#[derive(Debug)]
+pub struct SemanticSearchOutcome {
+    pub generation_id: String,
+    pub pinned_artifacts_version: u64,
+    /// The pinned sections version the search also queried, or `None` when
+    /// this generation predates `constellation_sections_v1` — the hits then
+    /// came from artifact rows alone and `semantic_scope` says so.
+    pub pinned_sections_version: Option<u64>,
+    /// Which embedding space the hits span: `prefix` or `prefix+sections`.
+    pub semantic_scope: &'static str,
+    /// How many stored vectors were eligible to rank — ready under *this*
+    /// profile, across both tables. Distinct from `hits.len()`: a corpus can
+    /// hold zero ready rows under the profile and still contain plenty under
+    /// another.
+    pub eligible_rows: usize,
+    pub hits: Vec<SemanticHit>,
+}
+
+/// ANN search over the artifacts table **at the version the published
+/// manifest pins**, restricted to rows whose vectors were computed for
+/// `profile_id` and reached `ready`.
+///
+/// The `query_vector` is produced by the caller — the core never picks or
+/// loads a model — and its profile is the caller's claim. The prefilter
+/// (`semantic_state = 'ready' AND profile_id = '<profile>'`) is what makes
+/// that claim real: a vector stored under another profile never enters the
+/// ranking, so a similarity number is never computed against a foreign
+/// embedding space.
+///
+/// Returns `Ok(outcome)` even with an empty `hits` — "no vectors ready" is
+/// honest coverage the client sees via `eligible_rows`, not an error.
+pub async fn search_pinned_semantic(
+    index_root: &Path,
+    query_vector: &[f32],
+    profile_id: &str,
+    limit: usize,
+) -> Result<SemanticSearchOutcome, ConstellationError> {
+    if limit == 0 {
+        return Err(ConstellationError::Io {
+            detail: "a semantic search with limit 0 cannot return anything".to_string(),
+        });
+    }
+    let descriptor = super::storage::read_current(index_root)?.ok_or_else(|| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: "no published generation to search".to_string(),
+        }
+    })?;
+    let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let artifacts_version = descriptor.effective_artifacts_version(&manifest)?;
+    // Stage 8 — pin this generation for the read's duration: GC may not
+    // delete a generation a live reader is about to open.
+    let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
+    if !manifest.table_versions.is_publishable() {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "generation `{}` names non-publishable table versions {:?}",
+                manifest.generation_id, manifest.table_versions
+            ),
+        });
+    }
+    let marker = marker_for(&manifest);
+    let table = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "artifacts",
+        artifacts_version,
+    )
+    .await?;
+
+    // The sections half pins to the descriptor's effective version — the
+    // manifest's pin or the drain head — and is absent entirely for a
+    // pre-sections generation. `None` never means "open latest".
+    let sections_version = descriptor.effective_sections_version(&manifest)?;
+    let sections_table = match sections_version {
+        Some(version) => Some(
+            super::lance_tables::open_table_at_version(index_root, &marker, "sections", version)
+                .await?,
+        ),
+        None => None,
+    };
+
+    // `escape_predicate_literal` already returns a delimited literal —
+    // wrapping it in quotes again would produce `''x''`, which parses as an
+    // empty string beside a bare identifier and matches nothing.
+    let predicate = format!(
+        "semantic_state = 'ready' AND profile_id = {}",
+        super::publisher::escape_predicate_literal(profile_id)
+    );
+    let batches = table
+        .nearest_embeddings(query_vector, &predicate, limit)
+        .await?;
+    let section_batches = match &sections_table {
+        Some(sections) => {
+            sections
+                .nearest_embeddings(query_vector, &predicate, limit)
+                .await?
+        }
+        None => Vec::new(),
+    };
+
+    let read_str = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<String> {
+        use arrow_array::Array;
+        let column = batch.column_by_name(col)?;
+        if row >= column.len() || column.is_null(row) {
+            return None;
+        }
+        if let Some(a) = column.as_any().downcast_ref::<arrow_array::StringArray>() {
+            return Some(a.value(row).to_string());
+        }
+        column
+            .as_any()
+            .downcast_ref::<arrow_array::LargeStringArray>()
+            .map(|a| a.value(row).to_string())
+    };
+    let read_dist = |batch: &arrow_array::RecordBatch, row: usize| -> Option<f64> {
+        use arrow_array::Array;
+        let column = batch.column_by_name("_distance")?;
+        if row >= column.len() || column.is_null(row) {
+            return None;
+        }
+        column
+            .as_any()
+            .downcast_ref::<arrow_array::Float32Array>()
+            .map(|a| f64::from(a.value(row)))
+            .or_else(|| {
+                column
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .map(|a| a.value(row))
+            })
+    };
+    let read_u64 = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<u64> {
+        use arrow_array::Array;
+        let column = batch.column_by_name(col)?;
+        if row >= column.len() || column.is_null(row) {
+            return None;
+        }
+        column
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .map(|a| a.value(row))
+    };
+
+    let mut hits = Vec::new();
+    let mut eligible_rows = 0usize;
+    for batch in &batches {
+        eligible_rows += batch.num_rows();
+        for row in 0..batch.num_rows() {
+            hits.push(SemanticHit {
+                canonical_key: read_str(batch, "canonical_key", row).unwrap_or_default(),
+                parent_key: None,
+                section_ordinal: None,
+                section_heading: None,
+                display_id: read_str(batch, "id", row),
+                title: read_str(batch, "title", row).unwrap_or_default(),
+                similarity: read_dist(batch, row).map_or(0.0, |d| 1.0 - d),
+            });
+        }
+    }
+    for batch in &section_batches {
+        eligible_rows += batch.num_rows();
+        for row in 0..batch.num_rows() {
+            hits.push(SemanticHit {
+                canonical_key: read_str(batch, "canonical_key", row).unwrap_or_default(),
+                parent_key: read_str(batch, "parent_key", row),
+                section_ordinal: read_u64(batch, "ordinal", row),
+                section_heading: read_str(batch, "heading", row),
+                display_id: read_str(batch, "parent_display_id", row),
+                title: read_str(batch, "title", row).unwrap_or_default(),
+                similarity: read_dist(batch, row).map_or(0.0, |d| 1.0 - d),
+            });
+        }
+    }
+    // Merge deterministically: similarity descending, then canonical_key
+    // ascending — a bare artifact key sorts before its own `X#sN` sections,
+    // so a tie prefers the whole-artifact row over any of its sections. The
+    // order is stable across runs because both inputs come from fixed pinned
+    // versions and the tie-break is total.
+    hits.sort_by(|a, b| {
+        b.similarity
+            .total_cmp(&a.similarity)
+            .then_with(|| a.canonical_key.cmp(&b.canonical_key))
+    });
+    hits.truncate(limit);
+
+    Ok(SemanticSearchOutcome {
+        generation_id: manifest.generation_id.clone(),
+        pinned_artifacts_version: artifacts_version,
+        pinned_sections_version: sections_version,
+        semantic_scope: if sections_version.is_some() {
+            super::jobs::SEMANTIC_SCOPE_WITH_SECTIONS
+        } else {
+            super::jobs::SEMANTIC_SCOPE
+        },
+        eligible_rows,
+        hits,
+    })
+}
+
+/// A single artifact row at the pinned generation, by canonical key or
+/// display id — the `get` half of the read surface.
+#[derive(Debug)]
+pub struct PinnedArtifact {
+    pub canonical_key: String,
+    pub display_id: Option<String>,
+    pub title: String,
+    pub kind: Option<String>,
+    pub status: Option<String>,
+    pub body: Option<String>,
+    pub source_path: Option<String>,
+    pub source_digest: Option<String>,
+    pub semantic_state: Option<String>,
+}
+
+/// Exact read at the pinned generation: one row by `canonical_key`, or by
+/// `display_id` when the caller hands over the human-facing id (`SPEC-001`).
+///
+/// Like the lexical search this opens an independent pinned reader — the row
+/// returned is the row the published manifest guarantees, not whatever a
+/// later commit may have landed. A miss is a miss: `Ok(None)`, never a
+/// substitute row.
+pub async fn get_pinned_artifact(
+    index_root: &Path,
+    key_or_id: &str,
+) -> Result<Option<(PinnedArtifact, String, u64)>, ConstellationError> {
+    if key_or_id.trim().is_empty() {
+        return Err(ConstellationError::Io {
+            detail: "an empty key cannot identify an artifact".to_string(),
+        });
+    }
+    let descriptor = super::storage::read_current(index_root)?.ok_or_else(|| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: "no published generation to read".to_string(),
+        }
+    })?;
+    let manifest = super::storage::read_manifest(index_root, &descriptor)?;
+    let artifacts_version = descriptor.effective_artifacts_version(&manifest)?;
+    // Stage 8 — pin this generation for the read's duration: GC may not
+    // delete a generation a live reader is about to open.
+    let _lease = super::generations::ReaderLease::acquire(index_root, &manifest.generation_id)?;
+    if !manifest.table_versions.is_publishable() {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "generation `{}` names non-publishable table versions {:?}",
+                manifest.generation_id, manifest.table_versions
+            ),
+        });
+    }
+    let marker = marker_for(&manifest);
+    let table = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "artifacts",
+        artifacts_version,
+    )
+    .await?;
+    let batches = table.query_batches().await?;
+
+    let read_str = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<String> {
+        use arrow_array::Array;
+        let column = batch.column_by_name(col)?;
+        if row >= column.len() || column.is_null(row) {
+            return None;
+        }
+        // `body` is LargeUtf8, the rest are Utf8 — read both.
+        if let Some(a) = column.as_any().downcast_ref::<arrow_array::StringArray>() {
+            return Some(a.value(row).to_string());
+        }
+        column
+            .as_any()
+            .downcast_ref::<arrow_array::LargeStringArray>()
+            .map(|a| a.value(row).to_string())
+    };
+
+    let wanted = key_or_id.to_lowercase();
+    for batch in &batches {
+        for row in 0..batch.num_rows() {
+            let key = read_str(batch, "canonical_key", row).unwrap_or_default();
+            let display = read_str(batch, "id", row);
+            if key.to_lowercase() != wanted
+                && display.as_deref().map(str::to_lowercase).as_deref() != Some(wanted.as_str())
+            {
+                continue;
+            }
+            return Ok(Some((
+                PinnedArtifact {
+                    canonical_key: key,
+                    display_id: display,
+                    title: read_str(batch, "title", row).unwrap_or_default(),
+                    kind: read_str(batch, "kind", row),
+                    status: read_str(batch, "status", row),
+                    body: read_str(batch, "body", row),
+                    source_path: read_str(batch, "relative_path", row),
+                    source_digest: read_str(batch, "source_digest", row),
+                    semantic_state: read_str(batch, "semantic_state", row),
+                },
+                manifest.generation_id.clone(),
+                artifacts_version,
+            )));
+        }
+    }
+    Ok(None)
+}
+
+/// The inner object store the publisher's tracking store wraps.
+///
+/// The registry builds this for the index URI; constructing it here keeps the
+/// wrapper paired with the index the caller actually resolved, rather than
+/// with whatever a global happened to point at.
+fn inner_store_for(index_root: &Path) -> Arc<dyn object_store::ObjectStore> {
+    // Root-anchored, not index-root-prefixed: lance addresses every object
+    // by the absolute path the `file-object-store` URI carries, so the inner
+    // store's own prefix must be the filesystem root for keys and files to
+    // agree. A `new_with_prefix(index_root)` store would double the root into
+    // every location — and its keys are what the tracker records, so the
+    // path model downstream assumes fs-root-relative strings.
+    let _ = index_root;
+    Arc::new(object_store::local::LocalFileSystem::new())
+}
+/// The protocol marker a reader or writer should be opened against.
+fn marker_for(manifest: &GenerationManifest) -> super::manifest::ProtocolMarker {
+    super::manifest::ProtocolMarker {
+        protocol_version: super::FORMAT_VERSION,
+        state: super::manifest::BootstrapState::Active,
+        index_epoch: manifest.index_epoch,
+        checkout_id: manifest.checkout_id.clone(),
+        table_names: super::manifest::ProtocolMarker::active_table_names(),
+        storage_scheme: super::manifest::STORAGE_SCHEME_FILE_OBJECT_STORE.to_string(),
+        bootstrap_attempt: 1,
+    }
+}
+
+/// Restore admission, for a supervisor that reuses the process.
+pub fn resume_admission() {
+    ADMITTING.store(true, Ordering::SeqCst)
+}
+
+/// What a restart found on disk, re-exported so a caller can report it
+/// without importing the storage module directly.
+pub type RestartState = IndexProtocolState;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constellation::manifest::{
+        BootstrapState, GenerationManifest, ProtocolMarker, STORAGE_SCHEME_FILE_OBJECT_STORE,
+        TableVersions,
+    };
+    use crate::workspace::ARTIFACT_DIRS;
+    use tempfile::TempDir;
+
+    fn workspace() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        std::fs::write(
+            tmp.path().join("prds").join("PRD-001-auth.md"),
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\n---\n\nBody.\n",
+        )
+        .unwrap();
+        tmp
+    }
+
+    async fn capture(root: &Path) -> Arc<CapturedSourceView> {
+        Arc::new(
+            capture_source(&CaptureRequest::new(root), CaptureLimits::default())
+                .await
+                .unwrap(),
+        )
+    }
+
+    fn index_root(tmp: &TempDir) -> std::path::PathBuf {
+        tmp.path().join("lance")
+    }
+
+    fn barrier_for(
+        root: &std::path::Path,
+    ) -> std::sync::Arc<dyn super::super::durability::PlatformDurability> {
+        let (_support, barrier, diagnostic) = super::super::durability::platform_barrier(root);
+        assert!(diagnostic.is_none());
+        barrier.expect("a supported root gets a barrier")
+    }
+
+    fn manifest_for(captured: &CapturedSourceView, generation_id: &str) -> GenerationManifest {
+        GenerationManifest::from_capture(captured, generation_id, TableVersions::new(1, 1))
+    }
+
+    #[tokio::test]
+    async fn no_pointer_yields_an_ephemeral_view_and_creates_nothing() {
+        let tmp = workspace();
+        let captured = capture(tmp.path()).await;
+        let before = listing(tmp.path());
+
+        let view = ensure_read_view(tmp.path(), Arc::clone(&captured))
+            .await
+            .unwrap();
+
+        assert!(!view.is_persisted());
+        assert_eq!(view.snapshot_id(), captured.snapshot_id);
+        assert_eq!(
+            listing(tmp.path()),
+            before,
+            "a read must not create a pointer, a marker or a lock"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_matching_pointer_yields_the_persisted_generation() {
+        let tmp = workspace();
+        let root = index_root(&tmp);
+        let captured = capture(tmp.path()).await;
+        let barrier = barrier_for(&root);
+
+        let manifest = manifest_for(&captured, "gen-1");
+        let sha =
+            super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
+                .unwrap();
+        let descriptor = super::super::storage::descriptor_for(&manifest, 7, &sha);
+        super::super::storage::publish_current(&root, &descriptor, barrier.as_ref()).unwrap();
+
+        let view = ensure_read_view(tmp.path(), Arc::clone(&captured))
+            .await
+            .unwrap();
+        assert!(view.is_persisted());
+        assert_eq!(view.snapshot_id(), "gen-1");
+        assert_eq!(view.coverage().read, captured.entries.len());
+    }
+
+    #[tokio::test]
+    async fn a_moved_source_yields_an_ephemeral_view_rather_than_a_stale_one() {
+        let tmp = workspace();
+        let root = index_root(&tmp);
+        let barrier = barrier_for(&root);
+        let captured = capture(tmp.path()).await;
+
+        let manifest = manifest_for(&captured, "gen-1");
+        let sha =
+            super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
+                .unwrap();
+        let descriptor = super::super::storage::descriptor_for(&manifest, 7, &sha);
+        super::super::storage::publish_current(&root, &descriptor, barrier.as_ref()).unwrap();
+
+        // The canonical source moves after publication.
+        std::fs::write(
+            tmp.path().join("prds").join("PRD-001-auth.md"),
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\n---\n\nDifferent.\n",
+        )
+        .unwrap();
+        let fresh = capture(tmp.path()).await;
+
+        let view = ensure_read_view(tmp.path(), Arc::clone(&fresh))
+            .await
+            .unwrap();
+        assert!(
+            !view.is_persisted(),
+            "serving gen-1 here would answer from bytes that no longer exist"
+        );
+        assert_eq!(view.snapshot_id(), fresh.snapshot_id);
+        assert_eq!(view.source_set_digest(), fresh.source_set_digest);
+    }
+
+    #[tokio::test]
+    async fn a_pointer_whose_manifest_is_missing_is_unavailable_not_ephemeral() {
+        let tmp = workspace();
+        let root = index_root(&tmp);
+        let barrier = barrier_for(&root);
+        let captured = capture(tmp.path()).await;
+        let manifest = manifest_for(&captured, "gen-1");
+        let sha =
+            super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
+                .unwrap();
+        let descriptor = super::super::storage::descriptor_for(&manifest, 7, &sha);
+        super::super::storage::publish_current(&root, &descriptor, barrier.as_ref()).unwrap();
+
+        // The pointer survives; the manifest it names does not.
+        std::fs::remove_file(root.join("generations").join("gen-1.json")).unwrap();
+
+        let err = ensure_read_view(tmp.path(), Arc::clone(&captured))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code(),
+            crate::constellation::DiagnosticCode::IndexGenerationUnavailable,
+            "an unreadable pointer is a fact about the index, not a first run"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pointer_whose_manifest_checksum_disagrees_is_unavailable() {
+        let tmp = workspace();
+        let root = index_root(&tmp);
+        let barrier = barrier_for(&root);
+        let captured = capture(tmp.path()).await;
+        let manifest = manifest_for(&captured, "gen-1");
+        let sha =
+            super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
+                .unwrap();
+        let descriptor = super::super::storage::descriptor_for(&manifest, 7, &sha);
+        super::super::storage::publish_current(&root, &descriptor, barrier.as_ref()).unwrap();
+
+        // Mutate the manifest behind the pointer's back.
+        let path = root.join("generations").join("gen-1.json");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push('\n');
+        std::fs::write(&path, text).unwrap();
+
+        let err = ensure_read_view(tmp.path(), Arc::clone(&captured))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code(),
+            crate::constellation::DiagnosticCode::IndexGenerationUnavailable
+        );
+    }
+
+    #[tokio::test]
+    async fn open_pinned_view_returns_the_exact_versions_and_refuses_a_half_pair() {
+        let tmp = workspace();
+        let root = index_root(&tmp);
+        let barrier = barrier_for(&root);
+        let captured = capture(tmp.path()).await;
+        let manifest = manifest_for(&captured, "gen-9");
+        let sha =
+            super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
+                .unwrap();
+        let descriptor = super::super::storage::descriptor_for(&manifest, 3, &sha);
+
+        let pinned = open_pinned_view(&root, &descriptor).unwrap();
+        assert_eq!(pinned.artifacts_version, 1);
+        assert_eq!(pinned.relations_version, 1);
+        assert_eq!(pinned.manifest.generation_id, "gen-9");
+        assert_eq!(pinned.descriptor.owner_epoch, 3);
+
+        // A descriptor naming a different generation than its manifest.
+        let mut wrong = descriptor.clone();
+        wrong.generation_id = "gen-8".to_string();
+        let err = open_pinned_view(&root, &wrong).unwrap_err();
+        assert_eq!(
+            err.code(),
+            crate::constellation::DiagnosticCode::IndexGenerationUnavailable
+        );
+    }
+
+    #[tokio::test]
+    async fn a_generation_naming_only_one_table_is_never_served_as_a_pair() {
+        let tmp = workspace();
+        let root = index_root(&tmp);
+        let barrier = barrier_for(&root);
+        let captured = capture(tmp.path()).await;
+        let manifest = manifest_for(&captured, "gen-10");
+        // One half of the pair is version 0: never committed, never coherent.
+        let manifest = GenerationManifest {
+            table_versions: TableVersions::new(1, 0),
+            ..manifest
+        };
+        let sha =
+            super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
+                .unwrap();
+        let descriptor = super::super::storage::descriptor_for(&manifest, 1, &sha);
+        let err = open_pinned_view(&root, &descriptor).unwrap_err();
+        assert_eq!(
+            err.code(),
+            crate::constellation::DiagnosticCode::IndexGenerationUnavailable
+        );
+    }
+
+    #[tokio::test]
+    async fn an_immutable_generation_may_not_be_republished_under_the_same_id() {
+        let tmp = workspace();
+        let root = index_root(&tmp);
+        let barrier = barrier_for(&root);
+        let captured = capture(tmp.path()).await;
+        let manifest = manifest_for(&captured, "gen-11");
+
+        super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
+            .unwrap();
+        let err =
+            super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
+                .unwrap_err();
+        assert_eq!(
+            err.code(),
+            crate::constellation::DiagnosticCode::IndexProtocolMismatch
+        );
+    }
+
+    #[test]
+    fn shutdown_stops_admission_and_leaves_reads_and_retention_alone() {
+        resume_admission();
+        assert!(is_admitting());
+        shutdown_runtime().unwrap();
+        assert!(!is_admitting());
+        // Retention is a separate promise and is unaffected by shutdown.
+        // `AUTOMATIC_RETENTION_ENABLED` is a compile-time false; the live
+        // check is the policy assertion below.
+        assert!(super::super::storage::assert_retention_policy().is_ok());
+        resume_admission();
+        assert!(is_admitting());
+    }
+
+    #[test]
+    fn a_protocol_marker_round_trips_and_an_initializing_one_is_not_uninitialized() {
+        let tmp = workspace();
+        let root = index_root(&tmp);
+        let barrier = barrier_for(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert_eq!(
+            super::super::storage::read_marker(&root).unwrap(),
+            IndexProtocolState::Uninitialized,
+            "a missing marker is a normal first run, not corruption"
+        );
+
+        let marker = ProtocolMarker {
+            protocol_version: crate::constellation::FORMAT_VERSION,
+            state: BootstrapState::Initializing,
+            index_epoch: 1,
+            checkout_id: "local-x".to_string(),
+            table_names: ProtocolMarker::active_table_names(),
+            storage_scheme: STORAGE_SCHEME_FILE_OBJECT_STORE.to_string(),
+            bootstrap_attempt: 1,
+        };
+        super::super::storage::write_marker(&root, &marker, barrier.as_ref()).unwrap();
+
+        match super::super::storage::read_marker(&root).unwrap() {
+            IndexProtocolState::Initializing(read) => {
+                assert_eq!(read.checkout_id, "local-x");
+                assert_eq!(read.index_epoch, 1);
+            }
+            other => panic!("expected Initializing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_corrupt_marker_is_a_protocol_mismatch_not_an_uninitialized_index() {
+        let tmp = workspace();
+        let root = index_root(&tmp);
+        std::fs::create_dir_all(root.join("constellation")).unwrap();
+        std::fs::write(root.join("constellation").join("PROTOCOL.json"), "{nope").unwrap();
+
+        let err = super::super::storage::read_marker(&root).unwrap_err();
+        assert_eq!(
+            err.code(),
+            crate::constellation::DiagnosticCode::IndexProtocolMismatch,
+            "silently restarting a bootstrap over an index that was mid-flight \
+             is exactly what this must not do"
+        );
+    }
+
+    #[test]
+    fn a_marker_naming_the_wrong_scheme_is_refused() {
+        let tmp = workspace();
+        let root = index_root(&tmp);
+        let barrier = barrier_for(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let marker = ProtocolMarker {
+            protocol_version: crate::constellation::FORMAT_VERSION,
+            state: BootstrapState::Active,
+            index_epoch: 1,
+            checkout_id: "local-x".to_string(),
+            table_names: ProtocolMarker::active_table_names(),
+            storage_scheme: "file".to_string(),
+            bootstrap_attempt: 1,
+        };
+        let err =
+            super::super::storage::write_marker(&root, &marker, barrier.as_ref()).unwrap_err();
+        assert_eq!(
+            err.code(),
+            crate::constellation::DiagnosticCode::IndexProtocolMismatch
+        );
+    }
+
+    #[test]
+    fn rebind_of_a_root_with_no_marker_rewrites_nothing() {
+        let tmp = workspace();
+        let root = tmp.path().canonicalize().unwrap().join("lance");
+        // The index root itself need not exist — the owner lock lives in
+        // the (existing) canonical parent, and there is no marker to move.
+        assert_eq!(rebind_index_identity(&root).unwrap(), None);
+        assert_eq!(
+            super::super::storage::read_marker(&root).unwrap(),
+            IndexProtocolState::Uninitialized,
+            "a fresh workspace mints its own identity at first publish"
+        );
+    }
+
+    #[test]
+    fn rebind_rewrites_a_moved_marker_and_burns_an_epoch() {
+        let tmp = workspace();
+        // The root must exist for the marker to exist, and an existing root
+        // is classified component-wise — a TempDir's uncanonicalized `/var`
+        // is itself a symlink on macOS, so the canonical spelling is used.
+        let base = tmp.path().canonicalize().unwrap();
+        let root = base.join("lance");
+        let barrier = barrier_for(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        // The marker an index carries after its checkout moved: it still
+        // claims the identity of the old location.
+        let old_root = tmp.path().join("old-home").join("lance");
+        let old_bound = path_bound_checkout_id(&old_root);
+        let new_bound = path_bound_checkout_id(&root);
+        assert_ne!(old_bound, new_bound);
+        let marker = ProtocolMarker {
+            protocol_version: crate::constellation::FORMAT_VERSION,
+            state: BootstrapState::Active,
+            index_epoch: 1,
+            checkout_id: old_bound.clone(),
+            table_names: ProtocolMarker::active_table_names(),
+            storage_scheme: STORAGE_SCHEME_FILE_OBJECT_STORE.to_string(),
+            bootstrap_attempt: 2,
+        };
+        super::super::storage::write_marker(&root, &marker, barrier.as_ref()).unwrap();
+
+        // Before the rebind the path-bound check refuses the index — the
+        // `index_identity_mismatch` `maintain_index` would report.
+        marker.check_identity(&new_bound).unwrap_err();
+
+        let report = rebind_index_identity(&root)
+            .unwrap()
+            .expect("a marker exists");
+        assert_eq!(report.old_checkout_id, old_bound);
+        assert_eq!(report.new_checkout_id, new_bound);
+        assert_eq!(report.old_epoch, 1);
+        assert_eq!(report.new_epoch, 2);
+
+        // After the rewrite the marker claims this path — `forgeplan index`
+        // at the new location passes `check_identity`.
+        match super::super::storage::read_marker(&root).unwrap() {
+            IndexProtocolState::Active(read) => {
+                read.check_identity(&new_bound).unwrap();
+                assert_eq!(read.index_epoch, 2);
+                // State survives the rewrite: an active index stays active.
+                assert_eq!(read.state, BootstrapState::Active);
+            }
+            other => panic!("expected Active, got {other:?}"),
+        }
+
+        // The identity the next publisher derives is the rebound one — jobs
+        // bound to the old `(index_epoch, checkout_id)` pair can never match.
+        let identity = super::super::publisher::identity_for(&root);
+        assert_eq!(identity.checkout_id(), new_bound);
+        assert_eq!(identity.index_epoch(), 2);
+
+        // A second rebind is a no-op: already bound, so no epoch is burned.
+        assert_eq!(rebind_index_identity(&root).unwrap(), None);
+        match super::super::storage::read_marker(&root).unwrap() {
+            IndexProtocolState::Active(read) => assert_eq!(read.index_epoch, 2),
+            other => panic!("expected Active, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn path_bound_checkout_id_tracks_the_spelled_root() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("a").join("lance");
+        let b = tmp.path().join("b").join("lance");
+        assert_ne!(path_bound_checkout_id(&a), path_bound_checkout_id(&b));
+        assert_eq!(path_bound_checkout_id(&a), path_bound_checkout_id(&a));
+        assert!(path_bound_checkout_id(&a).starts_with("local-"));
+    }
+
+    #[test]
+    fn a_capability_derives_its_index_root_from_the_workspace_it_names() {
+        let a = MaintainCapability::for_strict_maintenance("/ws/a");
+        let b = MaintainCapability::for_strict_maintenance("/ws/b");
+        assert_ne!(a, b);
+        // The relationship is established at construction, not inferred later:
+        // a capability cannot name an index that is not under its workspace.
+        assert_eq!(a.workspace(), Path::new("/ws/a"));
+        assert_eq!(a.index_root(), Path::new("/ws/a").join("lance"));
+        assert_eq!(b.index_root(), Path::new("/ws/b").join("lance"));
+    }
+
+    #[test]
+    fn two_capabilities_for_one_workspace_are_identical() {
+        let a = MaintainCapability::for_strict_maintenance("/ws/a");
+        let b = MaintainCapability::for_strict_maintenance("/ws/a");
+        assert_eq!(
+            a, b,
+            "the same workspace must yield the same capability, so two \
+             processes agree on which index they are allowed to publish"
+        );
+    }
+
+    #[test]
+    fn resolution_policy_values_are_distinct() {
+        assert_ne!(ResolutionPolicy::SoftFallback, ResolutionPolicy::Strict);
+    }
+
+    #[tokio::test]
+    async fn capture_for_read_returns_an_ephemeral_view_and_writes_nothing() {
+        let tmp = workspace();
+        let before = listing(tmp.path());
+
+        let view = capture_for_read(tmp.path(), None, CaptureLimits::default())
+            .await
+            .unwrap();
+
+        assert!(!view.is_persisted());
+        assert_eq!(view.coverage().read, 1);
+        assert_eq!(
+            listing(tmp.path()),
+            before,
+            "a read must not create files, locks or markers"
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_for_read_carries_the_previous_capture_forward() {
+        let tmp = workspace();
+        let first = capture_for_read(tmp.path(), None, CaptureLimits::default())
+            .await
+            .unwrap();
+        let captured = Arc::new(first.captured().unwrap().clone());
+
+        let second = capture_for_read(tmp.path(), Some(captured), CaptureLimits::default())
+            .await
+            .unwrap();
+        let entry = &second.captured().unwrap().entries[0];
+        assert_eq!(entry.row_revision, 1, "identical bytes keep their revision");
+        assert_eq!(entry.incarnation, 1);
+    }
+
+    fn listing(root: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        for dir in ARTIFACT_DIRS {
+            let path = root.join(dir);
+            let Ok(entries) = std::fs::read_dir(path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                out.push(entry.path().to_string_lossy().to_string());
+            }
+        }
+        out.sort();
+        out
+    }
+
+    // -------------------------------------------------------------------
+    // End-to-end publish: the tests above cover each boundary in isolation;
+    // this one runs the real pipeline. It is the test that makes a manifest
+    // unable to claim rows its tables do not carry — the failure mode the
+    // whole protocol exists to prevent.
+    // -------------------------------------------------------------------
+
+    fn linked_workspace() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        std::fs::write(
+            tmp.path().join("adrs").join("ADR-002-storage.md"),
+            "---\nid: ADR-002\nkind: adr\nstatus: active\ntitle: Storage\n---\n\nBody.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("prds").join("PRD-001-auth.md"),
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\nlinks:\n  - target: ADR-002\n    relation: refines\n---\n\nBody.\n",
+        )
+        .unwrap();
+        tmp
+    }
+
+    #[tokio::test]
+    async fn a_first_publish_writes_the_rows_the_manifest_claims() {
+        resume_admission();
+        let tmp = linked_workspace();
+        // `/var` is a symlink on macOS; the owner-location check refuses a
+        // spelled root whose components are aliases, so the capability is
+        // built on the canonical spelling — same rule as the POSIX fixtures.
+        let canonical = tmp.path().canonicalize().unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(canonical);
+
+        let (view, outcome) = maintain_index(
+            &capability,
+            CaptureLimits::default(),
+            std::time::Instant::now() + std::time::Duration::from_secs(120),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(view.manifest.source_entries.len(), 2);
+        // A first pass publishes exactly one generation — the bootstrap's;
+        // the reconcile pass on an unchanged source commits nothing and the
+        // early return above keeps the same pointer.
+        assert!(
+            matches!(
+                outcome.progress,
+                crate::constellation::publisher::BootstrapProgress::CreatedTables { .. }
+            ),
+            "a first publish must report table creation, got {:?}",
+            outcome.progress
+        );
+        assert!(
+            !view.manifest.generation_id.contains(':'),
+            "the id becomes a filename; `:` is illegal on NTFS"
+        );
+
+        // The pinned artifacts version must hold exactly the claimed rows —
+        // read through an independent pinned reader, never latest.
+        let marker = marker_for(&view.manifest);
+        let artifacts = super::super::lance_tables::open_table_at_version(
+            capability.index_root(),
+            &marker,
+            "artifacts",
+            view.manifest.table_versions.artifacts,
+        )
+        .await
+        .unwrap();
+        let rows: usize = artifacts
+            .query_batches()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(
+            rows, 2,
+            "the manifest claims two artifacts; the pinned table must carry them"
+        );
+
+        let relations = super::super::lance_tables::open_table_at_version(
+            capability.index_root(),
+            &marker,
+            "relations",
+            view.manifest.table_versions.relations,
+        )
+        .await
+        .unwrap();
+        let edges: usize = relations
+            .query_batches()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(edges, 1, "PRD-001 -> ADR-002 refines must be written");
+
+        // A second pass over an unchanged source commits nothing new.
+        let (second_view, second) = maintain_index(
+            &capability,
+            CaptureLimits::default(),
+            std::time::Instant::now() + std::time::Duration::from_secs(120),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            second_view.manifest.generation_id,
+            view.manifest.generation_id
+        );
+        assert!(
+            second.commits.is_empty(),
+            "an unchanged source must not produce commits: {:?}",
+            second.commits
+        );
+
+        // The trigram side-index must be bound to this generation, and the
+        // lexical search must answer through it — `via_trigram: false` would
+        // mean the fast path silently fell back to the row scan.
+        assert!(
+            matches!(
+                outcome.lexical_index,
+                Some(crate::constellation::lexical_index::LexicalRebind::Bound { .. })
+            ),
+            "the lexical index should be bound after publish: {:?}",
+            outcome.lexical_index
+        );
+        let found = search_pinned_lexical(capability.index_root(), "storage", 10)
+            .await
+            .unwrap();
+        assert!(
+            found.via_trigram,
+            "the bound trigram index must serve the query"
+        );
+        assert_eq!(found.hits.len(), 1);
+        assert_eq!(found.hits[0].canonical_key, "ADR-002");
+    }
+
+    #[tokio::test]
+    async fn inventory_stays_pinned_and_tracks_updates_and_deletes() {
+        resume_admission();
+        let tmp = linked_workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root.clone());
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let first = list_pinned_documents(capability.index_root(), 0, 100)
+            .await
+            .unwrap();
+        assert_eq!(first.documents.len(), 2);
+        assert!(
+            first
+                .documents
+                .iter()
+                .all(|row| !row.source_digest.is_empty())
+        );
+        let adr = root.join("adrs/ADR-002-storage.md");
+        std::fs::write(
+            &adr,
+            "---\nid: ADR-002\nkind: adr\nstatus: active\ntitle: New storage\n---\n\nNew body.\n",
+        )
+        .unwrap();
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let updated = list_pinned_documents(capability.index_root(), 0, 100)
+            .await
+            .unwrap();
+        assert_ne!(first.generation_id, updated.generation_id);
+        let digest = |page: &IndexedDocumentPage| {
+            page.documents
+                .iter()
+                .find(|row| row.canonical_key == "ADR-002")
+                .unwrap()
+                .source_digest
+                .clone()
+        };
+        assert_ne!(digest(&first), digest(&updated));
+        std::fs::remove_file(&adr).unwrap();
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let after_delete = list_pinned_documents(capability.index_root(), 0, 100)
+            .await
+            .unwrap();
+        assert_eq!(after_delete.documents.len(), 1);
+        assert_eq!(after_delete.documents[0].canonical_key, "PRD-001");
+        assert_eq!(
+            after_delete.documents[0].source_digest,
+            first
+                .documents
+                .iter()
+                .find(|row| row.canonical_key == "PRD-001")
+                .unwrap()
+                .source_digest
+        );
+    }
+
+    /// The drain writes vectors past the manifest's pin and records that head
+    /// on the descriptor. The next reconcile must treat it as the baseline —
+    /// before this contract existed, `compare_heads` read the movement as
+    /// divergence and restored over the vectors on every pass.
+    #[tokio::test]
+    async fn an_embedding_drain_survives_the_next_reconcile() {
+        resume_admission();
+        let tmp = linked_workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root.clone());
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+
+        let mut embed = |inputs: &[(String, String)]| {
+            Ok(inputs
+                .iter()
+                .map(|_| vec![0.25f32; crate::db::schema::EMBEDDING_DIM as usize])
+                .collect())
+        };
+        let first = drain_embedding_queue(&capability, "test-profile", 512, &mut embed, deadline())
+            .await
+            .unwrap();
+        assert!(
+            first.embedded >= 1,
+            "the drain must publish at least one vector: {:?}",
+            first.after
+        );
+
+        // A reconcile over unchanged sources commits nothing — and must not
+        // rewind the head the drain recorded.
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let page = list_pinned_documents(capability.index_root(), 0, 100)
+            .await
+            .unwrap();
+        assert!(
+            page.documents
+                .iter()
+                .all(|d| d.semantic_state.as_deref() == Some("ready")),
+            "a pinned read of the current generation must serve the completed state"
+        );
+
+        // And the queue is closed: the same row reports Current, not Eligible.
+        let second =
+            drain_embedding_queue(&capability, "test-profile", 512, &mut embed, deadline())
+                .await
+                .unwrap();
+        assert_eq!(
+            second.embedded, 0,
+            "a completed row must not be re-embedded: {:?}",
+            second.after
+        );
+        assert!(second.after.eligible_keys().is_empty());
+
+        // The vector itself is reachable: querying with the same vector the
+        // drain published must return the row — similarity 1.0 modulo f32.
+        let query = vec![0.25f32; crate::db::schema::EMBEDDING_DIM as usize];
+        let found = search_pinned_semantic(capability.index_root(), &query, "test-profile", 10)
+            .await
+            .unwrap();
+        assert!(
+            !found.hits.is_empty(),
+            "a ready row at the completed head must be queryable: {:?}/{:?}",
+            found.eligible_rows,
+            found.pinned_artifacts_version
+        );
+    }
+
+    #[tokio::test]
+    async fn incremental_publication_matches_a_fresh_build_after_mixed_changes() {
+        resume_admission();
+        let incremental = linked_workspace();
+        let fresh = linked_workspace();
+        let apply_final_state = |root: &Path| {
+            std::fs::remove_file(root.join("adrs/ADR-002-storage.md")).unwrap();
+            std::fs::rename(
+                root.join("prds/PRD-001-auth.md"),
+                root.join("prds/PRD-001-renamed.md"),
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("prds/PRD-001-renamed.md"),
+                "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth revised\n---\n\nChanged.\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("specs/SPEC-002-new.md"),
+                "---\nid: SPEC-002\nkind: spec\nstatus: draft\ntitle: New\n---\n\nNew document.\n",
+            )
+            .unwrap();
+        };
+        let incremental_cap =
+            MaintainCapability::for_strict_maintenance(incremental.path().canonicalize().unwrap());
+        let fresh_cap =
+            MaintainCapability::for_strict_maintenance(fresh.path().canonicalize().unwrap());
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+        maintain_index(&incremental_cap, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        apply_final_state(incremental.path());
+        apply_final_state(fresh.path());
+        // Stage 8 requires the equivalence to be *measured*: both the
+        // delta pass and the fresh build report their wall time and their
+        // commit counters, and the resulting row sets must coincide.
+        let t_delta = std::time::Instant::now();
+        let (updated, delta_outcome) =
+            maintain_index(&incremental_cap, CaptureLimits::default(), deadline())
+                .await
+                .unwrap();
+        let delta_elapsed = t_delta.elapsed();
+        let t_fresh = std::time::Instant::now();
+        let (rebuilt, fresh_outcome) =
+            maintain_index(&fresh_cap, CaptureLimits::default(), deadline())
+                .await
+                .unwrap();
+        let fresh_elapsed = t_fresh.elapsed();
+        let rows_of = |outcome: &ReconcileOutcome| -> u64 {
+            outcome.commits.iter().map(|c| c.rows_affected).sum()
+        };
+        eprintln!(
+            "equivalence measurement: delta pass {delta_elapsed:?} ({} commits, {} rows) vs fresh build {fresh_elapsed:?} ({} commits, {} rows)",
+            delta_outcome.commits.len(),
+            rows_of(&delta_outcome),
+            fresh_outcome.commits.len(),
+            rows_of(&fresh_outcome),
+        );
+        // On a two-doc fixture a delta pass can legitimately touch as
+        // many rows as a fresh build — deletes and merges are counted on
+        // both sides. The assertion that carries the spec's weight is
+        // below: identical resulting key/path/digest sets. The counters
+        // above exist so a regression that makes "incremental" mean
+        // "rewrite everything" shows up in the numbers, not the verdict.
+        assert!(
+            !delta_outcome.commits.is_empty(),
+            "a changed corpus produced no delta commits"
+        );
+        let page = |rows: Vec<IndexedDocument>| {
+            rows.into_iter()
+                .map(|row| (row.canonical_key, row.relative_path, row.source_digest))
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let delta_rows = list_pinned_documents(incremental_cap.index_root(), 0, 100)
+            .await
+            .unwrap()
+            .documents;
+        let fresh_rows = list_pinned_documents(fresh_cap.index_root(), 0, 100)
+            .await
+            .unwrap()
+            .documents;
+        assert_eq!(page(delta_rows), page(fresh_rows));
+        assert_eq!(updated.manifest.coverage, rebuilt.manifest.coverage);
+    }
+
+    #[tokio::test]
+    async fn lexical_shortlist_includes_derived_keys_and_falls_back_when_stale() {
+        resume_admission();
+        let tmp = linked_workspace();
+        std::fs::write(
+            tmp.path().join("specs/SPEC-003-filenameonly.md"),
+            "---\nkind: spec\nstatus: draft\ntitle: Unrelated\n---\n\nNothing about its name.\n",
+        )
+        .unwrap();
+        let capability =
+            MaintainCapability::for_strict_maintenance(tmp.path().canonicalize().unwrap());
+        maintain_index(
+            &capability,
+            CaptureLimits::default(),
+            std::time::Instant::now() + std::time::Duration::from_secs(120),
+        )
+        .await
+        .unwrap();
+        let result = search_pinned_lexical(capability.index_root(), "filenameonly", 10)
+            .await
+            .unwrap();
+        assert!(result.via_trigram);
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].canonical_key, "SPEC-003-filenameonly");
+
+        std::fs::write(
+            tmp.path().join("tgrep/generation.json"),
+            r#"{"generation_id":"stale","source_set_digest":"stale","built_at":"now"}"#,
+        )
+        .unwrap();
+        let fallback = search_pinned_lexical(capability.index_root(), "filenameonly", 10)
+            .await
+            .unwrap();
+        assert!(!fallback.via_trigram);
+        assert_eq!(fallback.hits[0].canonical_key, "SPEC-003-filenameonly");
+    }
+}

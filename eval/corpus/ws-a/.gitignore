@@ -1,0 +1,13 @@
+# forgeplan runtime state — derived, not source
+.forgeplan/lance/
+.forgeplan/logs/
+.forgeplan/trash/
+.forgeplan/state/
+.forgeplan/journal/
+.forgeplan/memory/
+.forgeplan/discovery/
+.forgeplan/refresh/
+.forgeplan/claims/
+.forgeplan/session.yaml
+.forgeplan/secrets.env
+.forgeplan/*.jsonl

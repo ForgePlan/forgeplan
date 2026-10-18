@@ -10,7 +10,7 @@ use crate::commands::common;
 /// Detects .forgeplan/ files changed since a git ref (default: ORIG_HEAD from last pull/merge)
 /// and syncs them into LanceDB with source=git_sync and commit_hash.
 pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, store) = common::open_store_tolerating_constellation().await?;
 
     // PRD-071 contract: errors emit `Fix:` markers so agents have a
     // deterministic next action.
@@ -51,10 +51,27 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
             "  No .forgeplan/ files changed since {}.",
             since_ref.chars().take(10).collect::<String>()
         );
-        // PRD-071 contract: nothing to sync — terminal state.
+        // The diff can be empty while a previous run left pending vectors.
+        reconcile_and_drain(&ws).await?;
         println!("\nDone.");
         return Ok(());
     }
+
+    // On a migrated workspace the legacy store is retired: the per-file
+    // writes below have no target, and the canonical reconcile subsumes the
+    // whole diff. List what changed for visibility, reconcile once, done.
+    let Some(store) = store else {
+        println!(
+            "  {} file(s) changed — legacy index retired; constellation reconcile owns them:",
+            changed.len()
+        );
+        for file in &changed {
+            println!("    {} {}", file.status, file.path);
+        }
+        reconcile_and_drain(&ws).await?;
+        println!("\nDone.");
+        return Ok(());
+    };
 
     let mut synced = 0usize;
     let mut deleted = 0usize;
@@ -223,13 +240,39 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 synced += 1;
             }
             _ => {
-                // R (rename), C (copy), etc. — skip silently.
-                // Renames produce two-path output that our parser doesn't handle.
-                // The renamed file will be picked up on next reindex.
+                // R (rename), C (copy), D (delete) and the rest are **not**
+                // applied here, because deciding what a rename means is the
+                // reconciler's job, not this loop's. What used to live here
+                // was `continue` with the comment "the renamed file will be
+                // picked up on next reindex" — which left a phantom node for
+                // the old path and lost the copy entirely until someone
+                // remembered to run `reindex`.
+                //
+                // One reconciliation runs after the loop and decides all of it
+                // from the captured source: renames are identity moves, copies
+                // are new artifacts, deletions retire rows, and outgoing links
+                // and metadata are **replaced exactly** rather than unioned.
+                // See `maintain_index` below.
                 continue;
             }
         }
     }
+
+    // One reconcile for the whole sync, not one per changed file. The capture
+    // reads the entire workspace, so batching is what keeps N files in one
+    // commit from becoming N publications.
+    //
+    // Signatures:
+    //   `MaintainCapability::for_strict_maintenance(impl Into<PathBuf>)`
+    //     — facade.rs:90
+    //   `maintain_index(&MaintainCapability, CaptureLimits, Instant)
+    //     -> Result<(PublishedReadView, ReconcileOutcome), ConstellationError>`
+    //     — facade.rs:577
+    //
+    // The capability takes the **canonical** workspace path: identity is
+    // scheme-independent, and a non-canonical path would be a different
+    // physical index and a different owner lock.
+    reconcile_and_drain(&ws).await?;
 
     println!(
         "\nGit sync complete: {} synced, {} deleted, {} errors (commit {})",
@@ -242,6 +285,40 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
     ];
     print!("{}", hints::render_next_action_line(&hints_vec));
 
+    Ok(())
+}
+
+async fn reconcile_and_drain(ws: &std::path::Path) -> anyhow::Result<()> {
+    let canonical = ws.canonicalize().unwrap_or_else(|_| ws.to_path_buf());
+    let capability =
+        forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
+            canonical,
+        );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    match forgeplan_core::constellation::facade::maintain_index(
+        &capability,
+        forgeplan_core::constellation::capture::CaptureLimits::default(),
+        deadline,
+    )
+    .await
+    {
+        Ok((view, outcome)) => {
+            println!(
+                "  reconciled into generation {} ({} commit(s))",
+                view.manifest.generation_id,
+                outcome.commits.len()
+            );
+            crate::commands::index::drain_queue_if_cached(
+                &capability,
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+                "git-sync",
+            )
+            .await;
+        }
+        Err(e) => {
+            anyhow::bail!("canonical Git sync completed, but Constellation reconcile failed: {e}");
+        }
+    }
     Ok(())
 }
 

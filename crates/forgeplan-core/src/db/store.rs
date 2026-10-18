@@ -46,6 +46,47 @@ pub fn validate_artifact_id(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Validate a *link target* — everything [`validate_artifact_id`] accepts,
+/// plus a qualified cross-source reference `KEY@qualifier` (Constellation
+/// stage 4: `ADR-001@src:b7d6…` or `ADR-001@<path-fragment>`).
+///
+/// A qualified target names an artifact that lives in a *different*
+/// workspace. The relation row stores the ref verbatim in this
+/// workspace's `links:` frontmatter and relations table — nothing here
+/// opens, resolves, or writes the foreign workspace.
+///
+/// The qualifier charset is `[A-Za-z0-9._:-]`, deliberately tighter than
+/// "anything after the `@`":
+///
+/// * `:` admits `src:` source ids, `.` `_` `-` admit path fragments like
+///   `ws-b` or `forge.plan`.
+/// * No whitespace, quotes, `'`/`"`, `/`, `\`, or a second `@` — the
+///   stored string is later interpolated into LanceDB delete-filter
+///   predicates (`target_id = '{target}'`) and rendered into YAML
+///   frontmatter, so the same no-operator-no-quote discipline as
+///   [`validate_artifact_id`] applies.
+///
+/// The *key* half stays under the strict artifact-id rule — qualified
+/// refs name a real artifact on the far side, not an arbitrary string.
+pub fn validate_link_target(id: &str) -> anyhow::Result<()> {
+    if validate_artifact_id(id).is_ok() {
+        return Ok(());
+    }
+    if let Some((key, qualifier)) = id.split_once('@')
+        && validate_artifact_id(key).is_ok()
+        && !qualifier.is_empty()
+        && qualifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "Link target is neither a valid artifact ID nor a qualified 'KEY@qualifier' \
+         reference (qualifier allowed: a-z, A-Z, 0-9, ., _, :, -): '{id}'"
+    )
+}
+
 /// Storage-layer filter for listing artifacts by kind/status.
 ///
 /// Semantically distinct from the composable query DSL in
@@ -1146,7 +1187,7 @@ impl LanceStore {
     /// Lance's optimistic-concurrency commit loop with retries.
     ///
     /// See Sprint 13.3 audit finding H3 for context.
-    async fn replace_record(&self, record: &ArtifactRecord) -> anyhow::Result<()> {
+    pub(crate) async fn replace_record(&self, record: &ArtifactRecord) -> anyhow::Result<()> {
         validate_artifact_id(&record.id)?;
         let schema = schema::artifacts_schema();
         let tags_slices: Vec<&[String]> = vec![record.tags.as_slice()];
@@ -1269,7 +1310,9 @@ impl LanceStore {
         relation: &str,
     ) -> anyhow::Result<()> {
         validate_artifact_id(source)?;
-        validate_artifact_id(target)?;
+        // The target may be a qualified cross-source ref (`KEY@qualifier`,
+        // stage 4) — stored verbatim, never resolved against this store.
+        validate_link_target(target)?;
         // Self-link guard (PROB-019)
         if source.eq_ignore_ascii_case(target) {
             anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
@@ -1715,47 +1758,23 @@ impl LanceStore {
         Ok(hits)
     }
 
-    /// Update the embedding column for an artifact.
-    pub async fn update_embedding(&self, id: &str, embedding: &[f32]) -> anyhow::Result<()> {
-        let embedding_str = format!(
-            "[{}]",
-            embedding
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
-        self.artifacts
-            .update()
-            .only_if(predicate)
-            .column("embedding", &embedding_str)
-            .execute()
-            .await?;
-        Ok(())
-    }
-
-    /// Stamp the content hash a vector was computed from.
-    ///
-    /// Public for the same reason [`Self::update_embedding`] is, and it is not
-    /// an ADR-003 bypass: both write **derived index metadata**, never artifact
-    /// content. The markdown file stays the source of truth — nothing here can
-    /// change what an artifact says. That is why neither appears in the
-    /// `FORBIDDEN_METHODS` list guarded by `tests/adr_003_invariant.rs`.
-    ///
-    /// Written by `forgeplan embed` right after the vector, so the next run can
-    /// tell an already-current record from one that moved (PROB-093).
-    pub async fn update_body_hash(&self, id: &str, hash: &str) -> anyhow::Result<()> {
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
-        let escaped = hash.replace('\'', "''");
-        self.artifacts
-            .update()
-            .only_if(predicate)
-            .column("body_hash", format!("'{}'", escaped))
-            .execute()
-            .await?;
-        Ok(())
-    }
+    // `update_embedding` and `update_body_hash` were DELETED, not demoted.
+    //
+    // Both were unguarded `pub` writes onto an artifacts row: no binding, no
+    // incarnation check, no profile identity. `forgeplan embed` reached the first
+    // one directly, so a vector could be stamped onto a row whose binding had
+    // moved — the exact staleness this protocol exists to prevent. `body_hash`
+    // stamped alongside it was then used as an "already embedded" test, which
+    // cannot see a profile change.
+    //
+    // After the migration to `constellation::facade::embed_with_publisher`, which
+    // publishes through the conditional `Binding::predicate` guard, they had zero
+    // production callers — only their own unit tests, which is not coverage but a
+    // reason for the function to survive. Per the cutover rule, old paths are
+    // deleted once every consumer has migrated.
+    //
+    // A vector is now written only by
+    // `IndexTables::publish_embedding_into_artifacts`.
 
     /// Find artifacts where `valid_until` is set and is earlier than the current date.
     pub async fn find_stale(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
@@ -3577,6 +3596,100 @@ mod tests {
         assert!(all.is_empty());
     }
 
+    // ─── Qualified link targets (Constellation stage 4) ───────────────
+
+    #[test]
+    fn validate_link_target_accepts_plain_and_qualified_forms() {
+        // Plain artifact ids pass through the strict rule unchanged.
+        for ok in ["PRD-001", "adr-012", "mem-my-decision"] {
+            validate_link_target(ok).unwrap_or_else(|e| panic!("{ok} must pass: {e}"));
+        }
+        // Qualified forms: `src:` ids, path fragments, dotted/underscored
+        // qualifiers.
+        for ok in [
+            "ADR-001@src:b7d6f0e1a2c3d4e5",
+            "ADR-001@ws-b",
+            "PRD-001@team_a",
+            "NOTE-007@repo.name",
+            "mem-x@src:9",
+        ] {
+            validate_link_target(ok).unwrap_or_else(|e| panic!("{ok} must pass: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_link_target_rejects_malformed_and_injectable_forms() {
+        for bad in [
+            "a@",               // empty qualifier
+            "@b",               // empty key
+            "@",                // both empty
+            "a@b c",            // whitespace in qualifier
+            "a@b/c",            // path separator
+            "a@b\\c",           // backslash
+            "a@b'c",            // single quote — filter-predicate escape
+            "a@b\"c",           // double quote
+            "a@b@c",            // second `@` is not qualifier charset
+            "a@b;",             // statement separator
+            "1A@b",             // key must still be a valid artifact id
+            "../bad@ws-b",      // traversal in the key half
+            "ADR-001@@src:x",   // doubled separator
+            "ADR-001@ ",        // whitespace-only qualifier
+            "ADR-001@ws b/x:y", // mixed separators
+        ] {
+            assert!(
+                validate_link_target(bad).is_err(),
+                "{bad} must be rejected as a link target"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn add_relation_stores_a_qualified_target_verbatim() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // The foreign target does not exist in this store — that is the
+        // point of a qualified ref. The row stores the ref verbatim.
+        store
+            .add_relation("PRD-001", "ADR-001@src:b7d6f0e1a2c3d4e5", "informs")
+            .await
+            .unwrap();
+
+        let rels = store.get_relations("PRD-001").await.unwrap();
+        assert_eq!(
+            rels,
+            vec![(
+                "ADR-001@src:b7d6f0e1a2c3d4e5".to_string(),
+                "informs".to_string()
+            )],
+            "the qualified target must round-trip byte-for-byte"
+        );
+
+        // … and deletes by the same verbatim string (unlink path).
+        store
+            .delete_relation("PRD-001", "ADR-001@src:b7d6f0e1a2c3d4e5", "informs")
+            .await
+            .unwrap();
+        assert!(store.get_relations("PRD-001").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_relation_still_rejects_an_injectable_qualified_target() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+
+        // The qualifier charset excludes quotes and separators, so this
+        // never reaches the filter builder below.
+        let err = store
+            .add_relation("PRD-001", "ADR-001@x' OR '1'='1", "informs")
+            .await
+            .expect_err("an injectable qualified target must be rejected");
+        assert!(
+            format!("{err}").contains("qualified"),
+            "the error should name the rejected contract, got: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn artifact_record_to_summary() {
         let record = ArtifactRecord {
@@ -4320,57 +4433,17 @@ mod tests {
         assert_eq!(rev[0].id, "PRD-121");
     }
 
-    /// PROB-093 regression. The defect this pins is not "the vector is old" —
-    /// it is that a rewritten artifact kept matching text it no longer
-    /// contained, *better* than text it did. Measured before the fix: a note
-    /// rewritten from submarines to bread baking still scored 0.80 on the
-    /// deleted subject (unchanged to the hundredth) against 0.62 on the actual
-    /// content.
-    #[tokio::test]
-    async fn update_body_retires_the_vector_of_the_previous_text() {
-        let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store
-            .create_artifact(&sample_artifact("PRD-300"))
-            .await
-            .unwrap();
-        store
-            .update_embedding("PRD-300", &vec![0.5f32; 1024])
-            .await
-            .unwrap();
-        assert!(
-            store
-                .get_record("PRD-300")
-                .await
-                .unwrap()
-                .unwrap()
-                .embedding
-                .is_some(),
-            "precondition: the record must carry a vector before the rewrite"
-        );
-
-        store
-            .update_body("PRD-300", "Completely different subject matter.")
-            .await
-            .unwrap();
-
-        let after = store.get_record("PRD-300").await.unwrap().unwrap();
-        assert!(
-            after.embedding.is_none(),
-            "a vector describing the previous body must not survive the rewrite — \
-             a missing vector is reportable, a wrong one is not"
-        );
-        assert_eq!(
-            after.body_hash.as_deref(),
-            Some(compute_content_hash(&after.title, &after.body).as_str()),
-            "the hash must track the new content so `embed` re-encodes this \
-             record alone rather than all of them"
-        );
-    }
-
-    /// The hash must cover the title, because `embedding_text` embeds title +
-    /// body — hashing the body alone would call a title-only edit "unchanged"
-    /// and leave the stale vector in place, reintroducing PROB-093 by a side door.
+    /// PROB-093 regression for the hash.
+    ///
+    /// The original test also asserted that `update_body` retires a stale
+    /// vector. **That half is gone with `update_embedding`**: seeding a vector
+    /// now requires the conditional publisher path, which needs a real
+    /// workspace, an owner and a resolved profile. The vector-retirement
+    /// property is therefore no longer pinned at this layer; it is a property
+    /// of `publish_embedding_into_artifacts`, whose predicate refuses to write
+    /// onto a row whose `row_revision` moved.
+    ///
+    /// What remains here is the part that is still this layer's to pin.
     #[test]
     fn content_hash_changes_when_only_the_title_moves() {
         let a = compute_content_hash("Submarine navigation", "same body");
@@ -4406,24 +4479,6 @@ mod tests {
             "a fresh artifact has no vector yet — hash present + vector absent \
              is exactly the state `embed` must recognise as work to do"
         );
-    }
-
-    #[tokio::test]
-    async fn update_body_hash_writes_the_stamp() {
-        let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store
-            .create_artifact(&sample_artifact("PRD-302"))
-            .await
-            .unwrap();
-
-        store
-            .update_body_hash("PRD-302", "abc123-deadbeef")
-            .await
-            .unwrap();
-
-        let rec = store.get_record("PRD-302").await.unwrap().unwrap();
-        assert_eq!(rec.body_hash.as_deref(), Some("abc123-deadbeef"));
     }
 
     #[tokio::test]

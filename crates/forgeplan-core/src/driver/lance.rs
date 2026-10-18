@@ -143,9 +143,10 @@ impl VectorStorage for LanceDriver {
         cfg!(feature = "semantic-search")
     }
 
-    async fn update_embedding(&self, id: &str, embedding: &[f32]) -> anyhow::Result<()> {
-        self.store.update_embedding(id, embedding).await
-    }
+    // `update_embedding` was removed: it forwarded to
+    // `LanceStore::update_embedding` with no binding, incarnation or profile
+    // check, and no production caller existed. Publishing a vector goes
+    // through the conditional path in the constellation facade.
 
     #[cfg(feature = "semantic-search")]
     async fn vector_search(

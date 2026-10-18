@@ -584,10 +584,38 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// A throwaway repo — environment-independent: these tests must pass
+    /// from a vendored source tree or a scratch dir, not only inside the
+    /// ForgePlan checkout (the old `Path::new(".")` form flaked when the
+    /// build ran outside a repo).
+    fn temp_repo() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        run(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "init",
+            "--allow-empty",
+        ]);
+        tmp
+    }
+
     #[test]
     fn head_commit_hash_returns_7_chars() {
-        // Run in current repo which is a git repo
-        let hash = head_commit_hash(Path::new("."));
+        let repo = temp_repo();
+        let hash = head_commit_hash(repo.path());
         assert!(hash.is_some(), "should find HEAD in git repo");
         let h = hash.unwrap();
         assert!(
@@ -607,7 +635,8 @@ mod tests {
     #[test]
     fn changed_artifact_files_no_diff() {
         // HEAD..HEAD = no changes
-        let files = changed_artifact_files(Path::new("."), "HEAD");
+        let repo = temp_repo();
+        let files = changed_artifact_files(repo.path(), "HEAD");
         assert!(files.is_ok());
         assert!(files.unwrap().is_empty());
     }

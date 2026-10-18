@@ -100,6 +100,60 @@ Two related traps, same family:
   disk-full trap above — the number is real, it is just measuring something
   else.
 
+## Working mode: /smith first, then role-matched subagents
+
+Standing owner rule (2026-10): every **non-trivial** task goes through two
+steps, in order:
+
+1. **`/smith`** — routing. Reads state (`forgeplan health`, git, memory),
+   classifies the context against the routing matrix, and returns a Plan that
+   names which specialist subagents to dispatch and in what order. Smith picks
+   the route; it never writes code itself.
+2. **Role-matched dispatch** — each plan step goes to a subagent of the right
+   profile: `subagent_explore` for read-only research, `subagent_general` for
+   implementation. File-disjoint steps may run in parallel; **at most one
+   agent compiles at a time** (see "Parallel agents and the build directory" —
+   the disk rule above applies to every dispatch, no exceptions).
+
+Exempt: single-line tactical fixes, conversational answers, and **stateful
+runs** (live processes, DB observation, interactive sessions) — a subagent has
+no long-lived process and no session memory, so those stay in the main thread.
+
+## Searching the tree: tgrep, not rg
+
+This repo has a **tgrep** server (`microsoft/tgrep`, trigram index + watcher).
+Prefer it over `rg`/`grep` for content search — it answers in milliseconds and
+its exit codes/flags follow ripgrep.
+
+```bash
+tgrep -- "fn parse_config" "$PWD"          # regex
+tgrep -F -- "Vec<Option<T>>" "$PWD"        # literal string — prefer for symbols
+tgrep -t rust -l -- "plan_reconcile" "$PWD"  # files only, narrow first
+tgrep -g "src/**" -C 2 -- "TODO|FIXME" "$PWD"
+tgrep --vimgrep -- "pattern" "$PWD"        # file:line:col, jump-ready
+tgrep status "$PWD"                        # server + index health
+```
+
+Rules that bite if ignored:
+
+- **`--` before the pattern, absolute path as root.** Bare `index`, `serve`,
+  `status`, `search` are parsed as subcommands; everything after `--` is the
+  pattern and paths. All flags go before `--`.
+- **Pass `$PWD`, not `.`** — this checkout is a *worktree*; `tgrep status .`
+  resolves through the gitdir to the main worktree and reports a missing
+  index. Absolute path is correct everywhere.
+- **Freshness**: the watcher updates the index asynchronously. A search issued
+  immediately after an edit can run before the index caught up — use
+  `--no-index` when the search must read the exact bytes on disk right now
+  (e.g., verifying an edit you just made, or the "another agent touched the
+  file" races described above).
+- **`.tgrep/` is generated state** — index + `serve.json` (PID/port). It is
+  gitignored; never commit it. If the server dies: `tgrep serve .` rebuilds.
+- **Flags that force a slow full scan**: `--no-index`, `-u`, `-a`, `--binary`,
+  `-L`, naming a single file. Fine on small trees; avoid on the whole repo.
+- **Fallback**: if `tgrep` is absent or the server is down, `rg` is still the
+  fallback — the server isn't a hard dependency.
+
 ## Findings have a home, and it is not the chat
 
 A finding that lives only in a reply is gone at the end of the session. This has
