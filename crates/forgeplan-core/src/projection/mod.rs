@@ -2085,6 +2085,153 @@ pub async fn replace_link_with_projection(
 }
 
 // =============================================================================
+// File-first helpers for constellation-migrated workspaces (no LanceStore)
+// -----------------------------------------------------------------------------
+// On a workspace whose index moved to the constellation protocol the legacy
+// `artifacts.lance` is retired and there is no store to sync through — the
+// markdown edit IS the whole mutation, and the reconcile pass
+// (`maintain_index` / `forgeplan index`) owns the derived row afterwards.
+// These are the no-store siblings of `update_*_with_projection`: they edit
+// the projection frontmatter / body in place with the same invariants
+// (files-first, carry-forward, atomic write) minus the store round-trip.
+// =============================================================================
+
+/// Update `status:` / `title:` / `depth:` inside an artifact's projection
+/// frontmatter in place — the no-store sibling of
+/// [`update_metadata_with_projection`] + [`update_depth_with_projection`].
+/// Every other frontmatter key and the body are preserved byte-for-byte.
+///
+/// A `--title` change also renames the file to the canonical
+/// `{id}-{slug}.md` (via [`projection_slug`]) — the convention
+/// `resolve_artifact_path` and reconcile both key on. The id comes from the
+/// file's own `id:` field; a title that slugifies to the same filename
+/// writes in place (the same-slug rule
+/// [`remove_stale_projection_after_rename`] documents).
+///
+/// Returns the file's path after the mutation — which differs from the
+/// input exactly when the title renamed it, so a following
+/// [`update_body_file_first`] in the same command hits the new path.
+/// No-change input leaves the file untouched (mtime stays put, reconcile
+/// sees an unmoved source).
+///
+/// # Errors
+///
+/// - blank `status` / `title` / `depth` value (mirrors the `EmptyField`
+///   guards on `update_metadata_with_projection`)
+/// - unparseable frontmatter, or a missing `id:` field on a rename
+/// - I/O failures on read, atomic write, or the stale-file removal —
+///   leaving a second `{id}-*.md` behind would double-publish the id, so
+///   the removal is fatal rather than best-effort
+pub async fn update_metadata_file_first(
+    artifact_path: &Path,
+    status: Option<&str>,
+    title: Option<&str>,
+    depth: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    for (field, value) in [("status", status), ("title", title), ("depth", depth)] {
+        if let Some(v) = value
+            && v.trim().is_empty()
+        {
+            anyhow::bail!("update: --{field} cannot be blank");
+        }
+    }
+
+    let content = tokio::fs::read_to_string(artifact_path).await?;
+    let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
+    if let Some(s) = status {
+        fm.insert(
+            "status".to_string(),
+            serde_yaml::Value::String(s.to_string()),
+        );
+    }
+    if let Some(t) = title {
+        fm.insert(
+            "title".to_string(),
+            serde_yaml::Value::String(t.to_string()),
+        );
+    }
+    if let Some(d) = depth {
+        fm.insert(
+            "depth".to_string(),
+            serde_yaml::Value::String(d.to_string()),
+        );
+    }
+    let mut rendered = frontmatter::render_frontmatter(&fm, &body)?;
+    if !rendered.ends_with('\n') {
+        rendered.push('\n');
+    }
+
+    // Title change → the canonical filename follows the NEW slug.
+    let mut final_path = artifact_path.to_path_buf();
+    if let Some(t) = title {
+        let id = fm.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "cannot rename {}: frontmatter has no `id:` field",
+                artifact_path.display()
+            )
+        })?;
+        let candidate = artifact_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{id}-{}.md", projection_slug(t)));
+        if candidate != artifact_path {
+            final_path = candidate;
+        }
+    }
+
+    if final_path == artifact_path && rendered == content {
+        return Ok(artifact_path.to_path_buf());
+    }
+    atomic_markdown_write(&final_path, rendered.as_bytes()).await?;
+    if final_path != artifact_path {
+        tokio::fs::remove_file(artifact_path).await?;
+    }
+    Ok(final_path)
+}
+
+/// Replace an artifact's body — the no-store sibling of
+/// [`update_body_with_projection`]. "Body" is everything below the
+/// projection frontmatter block: the canonical body-frontmatter plus prose.
+///
+/// Same invariants as the store path:
+/// - [`carry_identity_forward`] — body-frontmatter fields the projection
+///   does not own (`slug`, `assigned_number`, `created`, …) survive a body
+///   replacement that omits them.
+/// - status sync — a `status:` declared inside the NEW body's own
+///   frontmatter propagates into the projection block (audit-r7 F1 rule).
+/// - the write is atomic and skipped when nothing would change.
+pub async fn update_body_file_first(artifact_path: &Path, new_body: &str) -> anyhow::Result<()> {
+    let content = tokio::fs::read_to_string(artifact_path).await?;
+    let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
+
+    let carried = carry_identity_forward(&body, new_body);
+    if let Some(derived_status) =
+        frontmatter::parse_frontmatter(&carried)
+            .ok()
+            .and_then(|(bfm, _)| {
+                bfm.get("status")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+    {
+        fm.insert(
+            "status".to_string(),
+            serde_yaml::Value::String(derived_status),
+        );
+    }
+
+    let mut rendered = frontmatter::render_frontmatter(&fm, &carried)?;
+    if !rendered.ends_with('\n') {
+        rendered.push('\n');
+    }
+    if rendered == content {
+        return Ok(());
+    }
+    atomic_markdown_write(artifact_path, rendered.as_bytes()).await?;
+    Ok(())
+}
+
+// =============================================================================
 // PRD-073 Phase 3b — sync-mechanism helpers (file→DB direction)
 // -----------------------------------------------------------------------------
 // `reindex`, `git_sync`, `watch` read FROM the markdown file (which is already
