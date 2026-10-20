@@ -11,10 +11,8 @@
 //!   vector cache for exactly those captured inputs.
 //!
 //! Both are produced by one snapshot id. Neither is assembled from separate
-//! live reads, and neither is allowed to silently fall back to the other's
-//! data: mixing an ephemeral text set with a persisted vector table is how a
-//! reader ends up returning text it no longer has and vectors it never
-//! justified.
+//! live reads. Reused vectors must match the captured document path and exact
+//! input digest before ranking; a changed or removed input cannot enter it.
 
 use std::sync::Arc;
 
@@ -23,7 +21,9 @@ use super::capture::{CapturedSourceView, Coverage};
 use super::FORMAT_VERSION;
 use super::SourceDiagnostic;
 use super::jobs::SemanticState;
-use super::manifest::{GenerationManifest, TableVersions};
+use super::manifest::{CurrentDescriptor, GenerationManifest, TableVersions};
+use crate::constellation::ConstellationError;
+use crate::constellation::storage::PinnedGeneration;
 
 /// How current one channel of an answer is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,23 +75,206 @@ pub enum ReadView {
         table_versions: TableVersions,
         /// Shared immutable manifest — not re-read per question.
         manifest: Arc<GenerationManifest>,
+        /// The `CURRENT.json` descriptor this generation was selected by.
+        ///
+        /// Kept because it, and not the manifest, is what records the
+        /// **embedding heads**: `embedding_artifacts_head` and
+        /// `embedding_sections_head` are written by a drain that republishes
+        /// the descriptor without rewriting the immutable manifest. A reader
+        /// that only carried the manifest would answer every semantic question
+        /// against the generation's pre-drain heads, which is exactly the
+        /// generation's first embedding batch.
+        descriptor: CurrentDescriptor,
+        /// The shared lock on that generation's manifest file, held for as
+        /// long as this view lives.
+        ///
+        /// This is what makes "the reader holds one generation until the end
+        /// of the answer" true rather than aspirational. A view that carried
+        /// only the manifest could be answered after GC removed the generation
+        /// its tables were pinned to. Dropping the view releases the lock,
+        /// because the lock lives on a descriptor the kernel drops with the
+        /// last open handle — there is no lease to expire and no cleanup that
+        /// can fail.
+        pin: Arc<PinnedGeneration>,
     },
     /// A confirmed capture, used when there is no pointer or the source moved.
-    Ephemeral { captured: Arc<CapturedSourceView> },
+    Ephemeral {
+        captured: Arc<CapturedSourceView>,
+        /// Verified generation retained only as a cache of eligible vectors.
+        vector_cache: Option<Arc<PinnedGeneration>>,
+    },
 }
 
 impl ReadView {
     /// Wrap a confirmed capture as an ephemeral view.
     pub fn from_capture(captured: Arc<CapturedSourceView>) -> Self {
-        Self::Ephemeral { captured }
+        Self::Ephemeral {
+            captured,
+            vector_cache: None,
+        }
     }
 
-    /// Wrap a published manifest as a persisted view.
-    pub fn from_manifest(manifest: Arc<GenerationManifest>) -> Self {
-        Self::Persisted {
+    /// Wrap a pinned generation as a persisted view.
+    ///
+    /// The three arguments are not three independent facts about a generation;
+    /// they are one generation seen three ways, and this checks that before
+    /// returning. A view assembled from a manifest that does not belong to
+    /// `descriptor`, or that pins a different file than the descriptor names,
+    /// would serve rows from a generation `CURRENT` never claimed — and every
+    /// field it carries would look internally consistent while doing so.
+    ///
+    /// The binding is exact: `manifest` must be the manifest the `pin`
+    /// verified, compared document by document, not merely a manifest that
+    /// agrees about `generation_id` / `index_epoch` / `checkout_id`. Those
+    /// three fields are shared by every rewrite along one generation line, so
+    /// they prove the *line*, not the document.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::constellation::ConstellationError::IndexGenerationUnavailable`]
+    /// when the three disagree about `generation_id`, `index_epoch`,
+    /// `checkout_id`, the manifest's own path or checksum, or when `manifest`
+    /// is not the document the pin verified. Never a silent repair: a reader
+    /// that cannot prove which generation it holds returns nothing rather than
+    /// guessing.
+    pub fn from_manifest(
+        manifest: Arc<GenerationManifest>,
+        descriptor: CurrentDescriptor,
+        pin: Arc<PinnedGeneration>,
+    ) -> Result<Self, ConstellationError> {
+        if manifest.generation_id != descriptor.generation_id {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!(
+                    "manifest names generation `{}` but CURRENT names `{}`",
+                    manifest.generation_id, descriptor.generation_id
+                ),
+            });
+        }
+        if manifest.index_epoch != descriptor.index_epoch
+            || manifest.checkout_id != descriptor.checkout_id
+        {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!(
+                    "manifest {} belongs to epoch {}/checkout `{}`, CURRENT names epoch \
+                     {}/checkout `{}`",
+                    manifest.generation_id,
+                    manifest.index_epoch,
+                    manifest.checkout_id,
+                    descriptor.index_epoch,
+                    descriptor.checkout_id
+                ),
+            });
+        }
+        // The pin is what makes the answer safe; a view that reports a
+        // generation it did not actually lock is a view GC is free to delete
+        // out from under.
+        if pin.generation_id() != descriptor.generation_id
+            || pin.descriptor().manifest_path != descriptor.manifest_path
+            || pin.descriptor().manifest_sha256 != descriptor.manifest_sha256
+        {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!(
+                    "the pinned generation is `{}` at `{}` (sha {}), not `{}` at `{}` (sha {})",
+                    pin.generation_id(),
+                    pin.descriptor().manifest_path,
+                    pin.descriptor().manifest_sha256,
+                    descriptor.generation_id,
+                    descriptor.manifest_path,
+                    descriptor.manifest_sha256
+                ),
+            });
+        }
+        // The manifest must be **the manifest that was verified**, not merely
+        // one that happens to agree about the three identity fields.
+        //
+        // Generation id, epoch and checkout are shared by every rewrite of a
+        // generation line: an older manifest read from a backup, a
+        // re-serialisation, a manifest from a different index that was copied
+        // under this root. Each of those carries the same ids and can be
+        // handed to this constructor without any compiler complaint, and each
+        // would produce a view that reports table versions, pending jobs and
+        // coverage from bytes nobody verified against `manifest_sha256`.
+        //
+        // Comparing the whole manifest is what closes it: the pin holds the
+        // exact parsed bytes it checksummed, so anything that is not
+        // byte-for-byte that document is a different document.
+        if manifest.as_ref() != pin.manifest() {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!(
+                    "the manifest supplied for `{}` is not the one the pin verified at `{}`; a \
+                     caller may not attach an unrelated manifest that shares this generation's \
+                     ids",
+                    descriptor.generation_id, descriptor.manifest_path
+                ),
+            });
+        }
+        Ok(Self::Persisted {
             generation_id: manifest.generation_id.clone(),
             table_versions: manifest.table_versions,
             manifest,
+            descriptor,
+            pin,
+        })
+    }
+
+    /// The descriptor a persisted view was selected by, and `None` for an
+    /// ephemeral one — which has no pointer behind it to describe.
+    pub fn descriptor(&self) -> Option<&CurrentDescriptor> {
+        match self {
+            Self::Persisted { descriptor, .. } => Some(descriptor),
+            Self::Ephemeral { .. } => None,
+        }
+    }
+
+    /// The pinned vector space, including a cache retained for a fresh capture.
+    /// This does not make an ephemeral source view persisted.
+    pub fn semantic_profile_id(&self) -> Option<&str> {
+        match self {
+            Self::Persisted { descriptor, .. } => descriptor.profile_id.as_deref(),
+            Self::Ephemeral { vector_cache, .. } => vector_cache
+                .as_ref()
+                .and_then(|pin| pin.descriptor().profile_id.as_deref()),
+        }
+    }
+
+    /// The pin behind a persisted view's identity, or `None` for a capture.
+    ///
+    /// An ephemeral view may still carry a verified vector cache; that cache
+    /// is data about rows, not a generation this view claims to be. Keeping
+    /// the two separate is what stops a fresh capture from being reported as
+    /// published.
+    pub fn pin(&self) -> Option<&Arc<PinnedGeneration>> {
+        match self {
+            Self::Persisted { pin, .. } => Some(pin),
+            Self::Ephemeral { .. } => None,
+        }
+    }
+
+    /// The verified vector cache a capture may retain for exact inputs.
+    pub fn vector_cache(&self) -> Option<&Arc<PinnedGeneration>> {
+        match self {
+            Self::Persisted { pin, .. } => Some(pin),
+            Self::Ephemeral { vector_cache, .. } => vector_cache.as_ref(),
+        }
+    }
+
+    /// The embedding heads this view serves.
+    ///
+    /// Taken from the **descriptor**, not from the manifest: a drain that
+    /// completes embeddings republishes `CURRENT` with the new heads and
+    /// leaves the immutable manifest alone, so the manifest's own table
+    /// versions are the generation's pre-drain values. Reading them from there
+    /// is how a reader serves `pending` rows as though nothing had completed.
+    ///
+    /// `None` on an ephemeral view: there is no descriptor, and guessing one
+    /// would be inventing an index identity a capture never had.
+    pub fn embedding_heads(&self) -> Option<(Option<u64>, Option<u64>)> {
+        match self {
+            Self::Persisted { descriptor, .. } => Some((
+                descriptor.embedding_artifacts_head,
+                descriptor.embedding_sections_head,
+            )),
+            Self::Ephemeral { .. } => None,
         }
     }
 
@@ -103,7 +286,7 @@ impl ReadView {
     /// The capture behind an ephemeral view.
     pub fn captured(&self) -> Option<&CapturedSourceView> {
         match self {
-            Self::Ephemeral { captured } => Some(captured),
+            Self::Ephemeral { captured, .. } => Some(captured),
             Self::Persisted { .. } => None,
         }
     }
@@ -121,7 +304,7 @@ impl ReadView {
     pub fn snapshot_id(&self) -> &str {
         match self {
             Self::Persisted { generation_id, .. } => generation_id,
-            Self::Ephemeral { captured } => &captured.snapshot_id,
+            Self::Ephemeral { captured, .. } => &captured.snapshot_id,
         }
     }
 
@@ -129,7 +312,7 @@ impl ReadView {
     pub fn source_set_digest(&self) -> &str {
         match self {
             Self::Persisted { manifest, .. } => &manifest.source_set_digest,
-            Self::Ephemeral { captured } => &captured.source_set_digest,
+            Self::Ephemeral { captured, .. } => &captured.source_set_digest,
         }
     }
 
@@ -137,7 +320,7 @@ impl ReadView {
     pub fn checkout_id(&self) -> &str {
         match self {
             Self::Persisted { manifest, .. } => &manifest.checkout_id,
-            Self::Ephemeral { captured } => &captured.checkout_id,
+            Self::Ephemeral { captured, .. } => &captured.checkout_id,
         }
     }
 
@@ -145,7 +328,7 @@ impl ReadView {
     pub fn coverage(&self) -> Coverage {
         match self {
             Self::Persisted { manifest, .. } => manifest.coverage,
-            Self::Ephemeral { captured } => captured.coverage,
+            Self::Ephemeral { captured, .. } => captured.coverage,
         }
     }
 
@@ -153,7 +336,7 @@ impl ReadView {
     pub fn evaluated_at(&self) -> &str {
         match self {
             Self::Persisted { manifest, .. } => &manifest.evaluated_at,
-            Self::Ephemeral { captured } => &captured.evaluated_at,
+            Self::Ephemeral { captured, .. } => &captured.evaluated_at,
         }
     }
 }
@@ -202,7 +385,7 @@ impl<T> ReadResult<T> {
                     .iter()
                     .any(|e| e.semantic_state == SemanticState::Ready),
             ),
-            ReadView::Ephemeral { captured } => (
+            ReadView::Ephemeral { captured, .. } => (
                 captured
                     .entries
                     .iter()
@@ -251,7 +434,7 @@ impl<T> ReadResult<T> {
                 {
                     super::jobs::SEMANTIC_SCOPE_WITH_SECTIONS.to_string()
                 }
-                ReadView::Ephemeral { captured } if !captured.sections.is_empty() => {
+                ReadView::Ephemeral { captured, .. } if !captured.sections.is_empty() => {
                     super::jobs::SEMANTIC_SCOPE_WITH_SECTIONS.to_string()
                 }
                 _ => super::jobs::SEMANTIC_SCOPE.to_string(),
@@ -261,7 +444,7 @@ impl<T> ReadResult<T> {
             truncation: None,
             diagnostics: match view {
                 ReadView::Persisted { manifest, .. } => manifest.diagnostics.clone(),
-                ReadView::Ephemeral { captured } => captured.diagnostics.clone(),
+                ReadView::Ephemeral { captured, .. } => captured.diagnostics.clone(),
             },
         }
     }
@@ -312,6 +495,7 @@ mod tests {
             evaluated_at: "2026-10-17T00:00:00.000Z".to_string(),
             source_set_digest: "srcset".to_string(),
             config_digest: "cfg".to_string(),
+            body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
             sections: Vec::new(),
             coverage: Coverage {
@@ -351,16 +535,239 @@ mod tests {
 
     #[test]
     fn persisted_view_reports_the_manifest_identity() {
-        let captured = capture_with(&[SemanticState::Ready], 0);
-        let manifest = Arc::new(GenerationManifest::from_capture(
-            &captured,
-            "gen-7",
-            TableVersions::new(4, 2),
-        ));
-        let view = ReadView::from_manifest(manifest);
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let pin = Arc::new(
+            crate::constellation::storage::pin_generation_read(&root, &descriptor).unwrap(),
+        );
+        let view = ReadView::from_manifest(pin.manifest_arc(), descriptor.clone(), pin)
+            .expect("a manifest, the descriptor that names it and the pin on it agree");
+
         assert!(view.is_persisted());
         assert!(view.manifest().is_some());
         assert!(view.captured().is_none());
+        assert_eq!(view.snapshot_id(), "gen-7");
+        assert_eq!(
+            view.descriptor().map(|d| d.generation_id.as_str()),
+            Some("gen-7"),
+            "the descriptor is what records the embedding heads, so a persisted view without \
+             one cannot answer a semantic question about them"
+        );
+        assert!(view.pin().is_some());
+        assert_eq!(view.embedding_heads(), Some((None, None)));
+    }
+
+    /// The embedding heads a persisted view serves come from `CURRENT`, not
+    /// from the manifest.
+    ///
+    /// The manifest is immutable, so a completion drain cannot move its table
+    /// versions; it republishes the **descriptor** with the new heads instead.
+    /// A reader that took the heads from the manifest would answer `pending`
+    /// about rows a previous process already published — and every field it
+    /// reported would be internally consistent, which is what makes this
+    /// expensive to notice.
+    #[test]
+    fn a_persisted_view_serves_the_heads_the_descriptor_published() {
+        let (_tmp, root, mut descriptor) = pinned_fixture();
+        descriptor.embedding_artifacts_head = Some(9);
+        descriptor.embedding_sections_head = Some(4);
+        let pin = Arc::new(
+            crate::constellation::storage::pin_generation_read(&root, &descriptor).unwrap(),
+        );
+        let view = ReadView::from_manifest(pin.manifest_arc(), descriptor.clone(), pin).unwrap();
+
+        assert_eq!(view.embedding_heads(), Some((Some(9), Some(4))));
+        assert_ne!(
+            view.manifest().unwrap().table_versions.artifacts,
+            9,
+            "the manifest is immutable and still names its own versions; that is exactly why the \
+             heads have to come from somewhere else"
+        );
+    }
+
+    /// A view may not report a generation it did not pin.
+    ///
+    /// The pin is what keeps GC from deleting the generation a reader is
+    /// answering from. A view assembled from a manifest plus a descriptor that
+    /// name *different* generations would be internally consistent and
+    /// completely unsound, so the constructor refuses instead of repairing.
+    #[test]
+    fn a_view_whose_manifest_and_pin_name_different_generations_is_refused() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let mut other = descriptor.clone();
+        other.generation_id = "gen-8".to_string();
+
+        let pin = Arc::new(
+            crate::constellation::storage::pin_generation_read(&root, &descriptor).unwrap(),
+        );
+        let manifest = pin.manifest_arc();
+        let err = ReadView::from_manifest(manifest, other, pin).unwrap_err();
+        assert_eq!(
+            err.code(),
+            crate::constellation::DiagnosticCode::IndexGenerationUnavailable,
+            "an unprovable generation is unavailable, not an ephemeral fallback: {err}"
+        );
+    }
+
+    /// Sharing the three identity fields is **not** enough.
+    ///
+    /// Every rewrite along one generation line carries the same
+    /// `generation_id`, `index_epoch` and `checkout_id`, so an older manifest
+    /// read from a backup — or one copied here from a different index — passes
+    /// every id comparison while describing different table versions, different
+    /// pending jobs and a different coverage. A view built from it would
+    /// report a publication nobody verified.
+    ///
+    /// The observable is the constructor's answer, and it must be a refusal
+    /// naming the mismatch rather than a view.
+    #[test]
+    fn a_stale_manifest_that_shares_the_generation_ids_is_refused() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let pin = Arc::new(
+            crate::constellation::storage::pin_generation_read(&root, &descriptor).unwrap(),
+        );
+        let verified = pin.manifest_arc();
+
+        // Same ids, different content: an older publication of the same
+        // generation line, which is exactly what a restored backup looks like.
+        let mut stale = (*verified).clone();
+        stale.table_versions.artifacts = 1;
+        stale.evaluated_at = "2020-01-01T00:00:00Z".to_string();
+
+        // The id comparison alone would have accepted this.
+        assert_eq!(stale.generation_id, descriptor.generation_id);
+        assert_eq!(stale.index_epoch, descriptor.index_epoch);
+        assert_eq!(stale.checkout_id, descriptor.checkout_id);
+
+        let err = ReadView::from_manifest(Arc::new(stale), descriptor.clone(), pin).unwrap_err();
+        assert_eq!(
+            err.code(),
+            crate::constellation::DiagnosticCode::IndexGenerationUnavailable,
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("not the one the pin verified"),
+            "the refusal must name the actual problem: {err}"
+        );
+    }
+
+    /// A descriptor whose checksum disagrees with the pin is refused even when
+    /// the generation and path match.
+    ///
+    /// The checksum is what binds a descriptor to specific manifest bytes; a
+    /// descriptor that names a different checksum is naming different bytes, and
+    /// a view built from it would serve a generation the pointer never claimed.
+    #[test]
+    fn a_descriptor_whose_checksum_differs_from_the_pin_is_refused() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let pin = Arc::new(
+            crate::constellation::storage::pin_generation_read(&root, &descriptor).unwrap(),
+        );
+        let manifest = pin.manifest_arc();
+
+        let mut other_checksum = descriptor.clone();
+        other_checksum.manifest_sha256 = "0".repeat(64);
+        let err = ReadView::from_manifest(manifest, other_checksum, pin).unwrap_err();
+        assert_eq!(
+            err.code(),
+            crate::constellation::DiagnosticCode::IndexGenerationUnavailable,
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("sha"),
+            "the refusal must name the checksum that disagreed: {err}"
+        );
+    }
+
+    /// The pin the view holds is the one it was given, and it keeps the
+    /// generation alive for as long as the view lives.
+    #[test]
+    fn the_view_keeps_exactly_the_pin_it_was_built_from() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let pin = Arc::new(
+            crate::constellation::storage::pin_generation_read(&root, &descriptor).unwrap(),
+        );
+        let view =
+            ReadView::from_manifest(pin.manifest_arc(), descriptor.clone(), Arc::clone(&pin))
+                .expect("manifest, descriptor and pin are the same verified publication");
+
+        assert!(
+            Arc::ptr_eq(view.pin().unwrap(), &pin),
+            "a view must not substitute a different pin: that pin is what keeps GC from \
+             deleting the generation this view answers from"
+        );
+        assert_eq!(view.pin().unwrap().generation_id(), "gen-7");
+    }
+
+    /// An ephemeral view has no descriptor and does not invent one.
+    #[test]
+    fn an_ephemeral_view_has_no_descriptor_and_no_pin() {
+        let view = ReadView::from_capture(capture_with(&[SemanticState::Ready], 0));
+        assert!(view.descriptor().is_none());
+        assert!(view.pin().is_none());
+        assert!(
+            view.embedding_heads().is_none(),
+            "there is no index identity behind a capture; inventing one would let a caller read \
+             embedding heads for a generation that was never published"
+        );
+    }
+
+    /// An index root holding one immutable manifest plus its descriptor.
+    ///
+    /// Written by hand rather than through a publisher: this is the only place
+    /// that needs a real file behind a pin, and a publish pass would bring the
+    /// owner lock, the protocol marker and the derived tables along with it.
+    ///
+    /// The `TempDir` is returned too, and each test binds it — a manifest whose
+    /// directory is deleted while a descriptor holds it open would turn the
+    /// test into a check of unlink-while-open semantics, which is a different
+    /// property and one this crate does not claim on every platform.
+    fn pinned_fixture() -> (tempfile::TempDir, PathBuf, CurrentDescriptor) {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path().join("lance");
+        std::fs::create_dir_all(root.join(crate::constellation::storage::GENERATIONS_DIR))
+            .expect("generations dir");
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "generation_id": "gen-7",
+            "checkout_id": "local-test",
+            "index_epoch": 3,
+            "source_set_digest": "d",
+            "config_digest": "c",
+            "table_versions": {"artifacts": 4, "relations": 2},
+            "source_entries": [],
+            "tombstones": [],
+            "pending_jobs": {},
+            "coverage": {"expected":0,"read":0,"invalid":0,"unavailable":0,"excluded":0},
+            "diagnostics": [],
+            "evaluated_at": "2026-01-01T00:00:00Z",
+        });
+        let bytes = serde_json::to_vec(&manifest).expect("serialize manifest");
+        std::fs::write(
+            root.join(crate::constellation::storage::GENERATIONS_DIR)
+                .join("gen-7.json"),
+            &bytes,
+        )
+        .expect("write manifest");
+        let descriptor: CurrentDescriptor = serde_json::from_value(serde_json::json!({
+            "format_version": 1,
+            "index_epoch": 3,
+            "checkout_id": "local-test",
+            "generation_id": "gen-7",
+            "owner_epoch": 9,
+            "source_set_digest": "d",
+            "config_digest": "c",
+            "profile_id": null,
+            "evaluated_at": "2026-01-01T00:00:00Z",
+            "manifest_path": "generations/gen-7.json",
+            "manifest_sha256": sha256_hex(&bytes),
+        }))
+        .expect("descriptor");
+        (tmp, root, descriptor)
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        crate::constellation::hex_encode(&Sha256::digest(bytes))
     }
 
     #[test]

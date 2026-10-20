@@ -228,6 +228,33 @@ impl EmbeddingJob {
         Ok(next)
     }
 
+    /// The job a **failed** attempt produces: attempt advanced, `retry_after`
+    /// set to the moment this key may be admitted again.
+    ///
+    /// Every other field is carried unchanged. A failure changes how hard the
+    /// worker has tried and when it may try again — never *what* the work is,
+    /// because a job that re-binds its digest on failure is a job that could
+    /// publish against bytes it never computed from.
+    ///
+    /// The attempt counter advances on failure, never on admission, so a
+    /// reconcile between two attempts cannot reset how many times this has
+    /// already been tried.
+    pub fn failed_at(&self, retry_after: String) -> Result<Self, ConstellationError> {
+        let mut next = self.next_attempt()?;
+        next.retry_after = Some(retry_after);
+        Ok(next)
+    }
+
+    /// Whether this job is inside its retry delay at `now`.
+    ///
+    /// `None` means no failure was recorded, so the job is due now. A
+    /// `retry_after` that cannot be parsed is treated as **due**: a clock this
+    /// build cannot read is not a reason to park a key forever, and the
+    /// alternative — never retrying — is the failure that actually loses work.
+    pub fn retry_is_due(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        retry_is_due(self.retry_after.as_deref(), now)
+    }
+
     /// Whether this job may still be published against the given binding.
     ///
     /// All nine components are compared. This is the predicate the publisher
@@ -253,6 +280,150 @@ impl EmbeddingJob {
             && self.source_digest == source_digest
             && self.input_digest == input_digest
             && self.profile_id == profile_id
+    }
+
+    /// The binding this job publishes against, rebuilt from the job itself.
+    ///
+    /// From the **job**, never from a capture taken after the compute: that is
+    /// the whole point of carrying the job into the completion. A binding read
+    /// off a fresh capture would let a vector computed from superseded bytes
+    /// be relabelled onto the bytes that replaced them.
+    pub fn binding(&self) -> Binding {
+        Binding {
+            index_epoch: self.index_epoch,
+            checkout_id: self.checkout_id.clone(),
+            canonical_key: self.canonical_key.clone(),
+            incarnation: self.incarnation,
+            row_revision: self.row_revision,
+            source_digest: self.source_digest.clone(),
+            input_digest: self.input_digest.clone(),
+            profile_id: self.profile_id.clone(),
+        }
+    }
+
+    /// Which table this job's row lives in.
+    pub fn row_role(&self) -> EmbeddingRowRole {
+        if section_parent_key(&self.canonical_key).is_some() {
+            EmbeddingRowRole::Section
+        } else {
+            EmbeddingRowRole::Artifact
+        }
+    }
+
+    /// The canonical `captured_input_ref` for one admission.
+    ///
+    /// `"<admission_generation>:<canonical_key>"`. It is an **identity of the
+    /// right to publish**, never a path to read: the bytes were captured once,
+    /// under the owner, and the compute reads them from the prepared batch.
+    /// Making it a path would invite a completion to re-read the file and bind
+    /// a vector to whatever is there now.
+    pub fn captured_input_ref(admission_generation: &str, canonical_key: &str) -> String {
+        format!("{admission_generation}:{canonical_key}")
+    }
+
+    /// Build a job for one admitted binding.
+    ///
+    /// `attempt` starts at `0` and `retry_after` is absent: a job that has
+    /// never run has neither failed nor been asked to wait.
+    pub fn for_binding(
+        binding: &Binding,
+        admission_generation: &str,
+    ) -> Result<Self, ConstellationError> {
+        if binding.canonical_key.is_empty() {
+            return Err(ConstellationError::Io {
+                detail: "an embedding job needs a canonical key; an empty one binds no row"
+                    .to_string(),
+            });
+        }
+        if binding.input_digest.is_empty() {
+            return Err(ConstellationError::Io {
+                detail: format!(
+                    "refusing to admit `{}`: it carries no input digest, so no binding can \
+                     fence the result",
+                    binding.canonical_key
+                ),
+            });
+        }
+        Ok(Self {
+            index_epoch: binding.index_epoch,
+            checkout_id: binding.checkout_id.clone(),
+            canonical_key: binding.canonical_key.clone(),
+            incarnation: binding.incarnation,
+            row_revision: binding.row_revision,
+            source_digest: binding.source_digest.clone(),
+            input_digest: binding.input_digest.clone(),
+            profile_id: binding.profile_id.clone(),
+            captured_input_ref: Self::captured_input_ref(
+                admission_generation,
+                &binding.canonical_key,
+            ),
+            attempt: 0,
+            retry_after: None,
+        })
+    }
+
+    /// Whether this job describes **the same work** as `binding`.
+    ///
+    /// Compared without `captured_input_ref`, `attempt` and `retry_after`:
+    /// those record *which admission* asked and *how often it has been tried*,
+    /// not what the vector must be computed from. An admission that re-derives
+    /// an identical binding must therefore keep the job already pending —
+    /// minting a fresh one would reset its attempt counter on every reconcile
+    /// and make a permanently failing key look brand new each pass.
+    pub fn describes(&self, binding: &Binding) -> bool {
+        self.matches_binding(
+            binding.index_epoch,
+            &binding.checkout_id,
+            &binding.canonical_key,
+            binding.incarnation,
+            binding.row_revision,
+            &binding.source_digest,
+            &binding.input_digest,
+            &binding.profile_id,
+        )
+    }
+}
+
+/// The first retry delay, in seconds. One minute.
+pub const RETRY_BASE_SECONDS: i64 = 60;
+
+/// The longest a failing key is ever parked, in seconds. One hour.
+pub const RETRY_CEILING_SECONDS: i64 = 3_600;
+
+/// The delay before attempt `attempt + 1`, doubling from
+/// [`RETRY_BASE_SECONDS`] and capped at [`RETRY_CEILING_SECONDS`].
+///
+/// `attempt` is the count already recorded, so the first failure waits one
+/// base interval and a key that has failed thirty times still comes back.
+pub fn retry_delay_seconds(attempt: u32) -> i64 {
+    let shift = attempt.min(16) as i64;
+    RETRY_BASE_SECONDS
+        .saturating_mul(1i64 << shift)
+        .min(RETRY_CEILING_SECONDS)
+}
+
+/// The RFC 3339 instant at which a job with `attempt` recorded may be tried
+/// again.
+///
+/// `now` is a parameter so a caller — and a test — controls the clock.
+pub fn retry_after_at(attempt: u32, now: chrono::DateTime<chrono::Utc>) -> String {
+    (now + chrono::Duration::seconds(retry_delay_seconds(attempt)))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// Whether `retry_after` permits another attempt at `now`.
+///
+/// `None` is due. An unparseable stamp is **due**: this is the one place where
+/// being wrong in the permissive direction loses a bounded amount of work
+/// (one extra inference) and being wrong the other way loses it permanently.
+pub fn retry_is_due(retry_after: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> bool {
+    let Some(stamp) = retry_after else {
+        return true;
+    };
+    match chrono::DateTime::parse_from_rfc3339(stamp) {
+        Ok(until) => now >= until.with_timezone(&chrono::Utc),
+        // Unreadable: due rather than parked forever.
+        Err(_) => true,
     }
 }
 
@@ -486,9 +657,6 @@ pub fn snapshot_checksums(
     cache_dir: &Path,
     repo: &str,
 ) -> Result<SnapshotChecksums, super::ConstellationError> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-
     let evidence = SnapshotEvidence::read(cache_dir, repo).ok_or_else(|| {
         super::ConstellationError::ModelUnavailable {
             detail: format!(
@@ -498,11 +666,17 @@ pub fn snapshot_checksums(
             ),
         }
     })?;
+    snapshot_checksums_for_evidence(&evidence)
+}
+
+fn snapshot_checksums_for_evidence(
+    evidence: &SnapshotEvidence,
+) -> Result<SnapshotChecksums, super::ConstellationError> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
 
     let hash_file = |relative: &str| -> Result<String, super::ConstellationError> {
         let path = evidence.root.join(relative);
-        // `File::open` follows the `blobs/` symlink; the target's bytes are
-        // what get hashed.
         let mut file = std::fs::File::open(&path).map_err(|e| {
             super::ConstellationError::ModelUnavailable {
                 detail: format!("cannot open snapshot file {}: {e}", path.display()),
@@ -558,71 +732,52 @@ pub fn snapshot_checksums(
 #[cfg(feature = "semantic-search")]
 pub struct ResolvedProfile {
     pub profile: EmbeddingProfile,
+    pub snapshot_root: PathBuf,
+    pub snapshot_id: String,
 }
 
 #[cfg(feature = "semantic-search")]
 impl ResolvedProfile {
-    /// Resolve the **already-cached** snapshot for `repo`, or explain why the
-    /// semantic channel is unavailable.
+    /// Resolve the already-cached model snapshot and its content digests.
     ///
-    /// # Pinned signatures, written here rather than recalled
+    /// This never downloads a model. Query and maintenance paths use the
+    /// returned snapshot identity for both profile construction and engine
+    /// loading, so a changed `refs/main` cannot silently select different
+    /// weights between the two operations.
     ///
-    /// ```text
-    /// // crates/forgeplan-core/src/embed/tract_engine.rs:229
-    /// pub fn find_snapshot(cache_dir: &Path, repo: &str) -> Option<PathBuf>
+    /// # Argument order
     ///
-    /// // crates/forgeplan-core/src/embed/tract_engine.rs:264
-    /// pub fn ensure_model(cache_dir: &Path, repo: &str, show_progress: bool) -> Result<PathBuf>
-    /// ```
-    ///
-    /// # Why `ensure_model` is not called
-    ///
-    /// Its third parameter is `show_progress` — **not** permission to
-    /// download. Calling it from a query or maintenance path would fetch 2 GB
-    /// while the caller believed it was reading a cache. Only explicit
-    /// `embed`, `setup warm_model` and FPF ingest may obtain weights, and
-    /// none of those comes through here.
-    ///
-    /// # Where the engine goes
-    ///
-    /// `TractEmbedder::from_snapshot`
-    /// (`crates/forgeplan-core/src/embed/tract_engine.rs:70`) is deliberately
-    /// **not** called. This type answers *which weights*; the engine belongs to
-    /// the caller that will actually embed, and it returns in P4 with that
-    /// reader. Opening it here would load a model into memory for a process
-    /// that may never encode a single string.
-    ///
-    /// # Errors
-    ///
-    /// [`super::ConstellationError::ModelUnavailable`] when no snapshot is
-    /// cached, a required file is missing, or no real content digests were
-    /// supplied. Never a guessed revision.
+    /// `(cache_dir, repo, engine_version, body_prefix_chars)` — the RFC-015
+    /// order, and it is fixed: two `&str`/`usize` neighbours that are easy to
+    /// swap at a call site, and swapping them compiles. `engine_version` is the
+    /// *build's* identity and belongs with the other identity arguments;
+    /// `body_prefix_chars` is the *workspace's* chunk size, read from that
+    /// workspace's config, and belongs last where a caller cannot plausibly
+    /// reach for it by mistake.
     pub fn open(
         cache_dir: &Path,
         repo: &str,
-        checksums: &SnapshotChecksums,
         engine_version: &str,
+        body_prefix_chars: usize,
     ) -> Result<Self, super::ConstellationError> {
-        use crate::embed::tract_engine;
-
-        if tract_engine::find_snapshot(cache_dir, repo).is_none() {
-            return Err(super::ConstellationError::ModelUnavailable {
-                detail: format!(
-                    "no cached snapshot for `{repo}` under {}",
-                    cache_dir.display()
-                ),
-            });
-        }
-
+        // Same absence, same wording as `snapshot_checksums`: no `refs/main`
+        // under the cache dir means the model was never downloaded. Calling it
+        // an "unreadable layout" pointed an operator at a corrupt cache they
+        // did not have, when the truthful reading was "nothing is there".
         let evidence = SnapshotEvidence::read(cache_dir, repo).ok_or_else(|| {
             super::ConstellationError::ModelUnavailable {
-                detail: format!("snapshot layout unreadable for `{repo}`"),
+                detail: format!(
+                    "no cached snapshot for `{repo}` under {}; the model was never downloaded, or \
+                     `refs/main` is unreadable",
+                    cache_dir.display()
+                ),
             }
         })?;
+        let checksums = snapshot_checksums_for_evidence(&evidence)?;
         let profile = evidence.to_profile(
-            checksums.weights.clone(),
-            checksums.tokenizer.clone(),
-            checksums.tokenizer_config.clone(),
+            checksums.weights,
+            checksums.tokenizer,
+            checksums.tokenizer_config,
             engine_version,
         )?;
         if !evidence.checksums_resolved(
@@ -638,8 +793,14 @@ impl ResolvedProfile {
                 ),
             });
         }
+        let mut profile = profile;
+        profile.body_prefix_chars = body_prefix_chars;
 
-        Ok(Self { profile })
+        Ok(Self {
+            profile,
+            snapshot_root: evidence.root,
+            snapshot_id: evidence.revision,
+        })
     }
 }
 
@@ -665,6 +826,102 @@ impl std::fmt::Debug for ResolvedProfile {
             .field("profile_id", &self.profile.profile_id())
             .finish_non_exhaustive()
     }
+}
+
+/// The configured model name the profile above belongs to.
+///
+/// `resolve_repo(DEFAULT_MODEL_NAME) == DEFAULT_MODEL_REPO`; the two are kept
+/// apart because one is a user-facing config value and the other is an identity
+/// recorded in an index. Every engine constructor takes the **name**, and every
+/// profile records the **repo**, so neither has to be derived from the other at
+/// a call site.
+pub const DEFAULT_MODEL_NAME: &str = "bge-m3";
+
+/// A query engine opened from the snapshot this machine already has, under the
+/// profile identity the index pinned.
+///
+/// This is the one constructor every **read** path uses. It pairs the two facts
+/// a semantic query needs and that nothing else ties together:
+///
+/// * the engine, opened from a snapshot verified complete
+///   ([`crate::embed::CachedSnapshot`]) — never a download; and
+/// * the profile whose weights those bytes hash to, resolved from the same
+///   cache by content ([`ResolvedProfile::open`]).
+///
+/// Comparing the resolved `profile_id` against the one `CURRENT` pins is what
+/// makes a query answerable rather than merely possible: vectors from two
+/// revisions are both 1024 floats and both normalize to unit length, so
+/// nothing downstream would notice that the comparison was meaningless.
+#[cfg(feature = "semantic-search")]
+pub struct CachedQueryEngine {
+    pub profile_id: String,
+    model: crate::embed::CachedSnapshot,
+}
+
+#[cfg(feature = "semantic-search")]
+impl CachedQueryEngine {
+    /// Embed one query string.
+    pub fn embed(&mut self, text: &str) -> Result<Vec<f32>, super::ConstellationError> {
+        self.model
+            .embedder
+            .embed(text)
+            .map_err(|e| super::ConstellationError::ModelUnavailable {
+                detail: format!(
+                    "the query could not be embedded by the cached model at {}: {e}",
+                    self.model.snapshot_root.display()
+                ),
+            })
+    }
+}
+
+/// Open a cached-only query engine for the captured profile parameters.
+/// A different profile is refused before constructing the inference engine.
+#[cfg(feature = "semantic-search")]
+pub fn open_cached_query_engine_in(
+    cache_dir: &Path,
+    model_name: &str,
+    expected_profile_id: Option<&str>,
+    body_prefix_chars: usize,
+) -> Result<CachedQueryEngine, super::ConstellationError> {
+    let repo = crate::embed::resolve_repo(model_name).ok_or_else(|| {
+        super::ConstellationError::ModelUnavailable {
+            detail: format!("unsupported embedding model: {model_name}"),
+        }
+    })?;
+    let resolved = ResolvedProfile::open(
+        cache_dir,
+        repo,
+        super::facade::ENGINE_VERSION,
+        body_prefix_chars,
+    )?;
+    let profile_id = resolved.profile.profile_id();
+
+    if let Some(expected) = expected_profile_id {
+        if expected != profile_id {
+            return Err(super::ConstellationError::ModelUnavailable {
+                detail: format!(
+                    "the index pinned profile `{expected}` but the cached snapshot resolves to \
+                     `{profile_id}`. Vectors from two revisions are both unit-length float \
+                     vectors, so querying across them returns plausible nonsense. Fix: point \
+                     FORGEPLAN_MODEL_CACHE at the snapshot the index was built from, or re-embed \
+                     under the cached one."
+                ),
+            });
+        }
+    }
+
+    let embedder = crate::embed::Embedder::from_snapshot(&resolved.snapshot_root, model_name)
+        .map_err(|e| super::ConstellationError::ModelUnavailable {
+            detail: e.to_string(),
+        })?;
+    let model = crate::embed::CachedSnapshot {
+        embedder,
+        model_repo: repo.to_string(),
+        snapshot_id: resolved.snapshot_id,
+        snapshot_root: resolved.snapshot_root,
+    };
+
+    Ok(CachedQueryEngine { profile_id, model })
 }
 
 /// SHA-256 digests measured over snapshot **file content**.
@@ -709,8 +966,12 @@ impl SnapshotChecksums {
 
 /// The full identity a vector is published against.
 ///
-/// Nine fields, all mandatory. `matches` compares every one of them; dropping
-/// any field turns the predicate into a subset a stale job can satisfy.
+/// Nine fields, all mandatory. `matches` compares every one of them — the
+/// profile is part of a job's identity. [`Self::predicate`] compares the
+/// seven freshness fields **and** the exact profile: admission assigns the
+/// target profile to the row before any compute exists, so a completion can
+/// and must require it. [`Self::freshness_predicate`] is the profile-free
+/// form, and admission alone uses it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
     pub index_epoch: u64,
@@ -748,28 +1009,29 @@ impl Binding {
     /// suggestion, and the one thing a stale completion needs is for someone
     /// else to have decided the row still matches. Here the row decides.
     ///
-    /// Nine comparisons, `AND`-ed, covering every field of [`Binding`]. If
-    /// any one differs — a new incarnation after a delete/recreate, a new
-    /// `row_revision` after an edit, a different stored `profile_id` — the
-    /// predicate matches nothing and the update affects **zero rows**, so a
-    /// stale completion can neither insert nor revive.
+    /// Eight comparisons, `AND`-ed — the freshness identity of the row plus
+    /// the **exact** profile. If any one differs — a new incarnation after a
+    /// delete/recreate, a new `row_revision` after an edit, a different
+    /// `source_digest` or `input_digest`, or a profile that is not the one
+    /// this job was admitted under — the predicate matches nothing and the
+    /// update affects **zero rows**, so a stale completion can neither insert
+    /// nor revive.
     ///
-    /// `profile_id IS NULL` is admitted on purpose: a row published before
-    /// any model existed carries no binding at all, so no vector could ever
-    /// be clobbered by claiming it. A row bound to another profile still
-    /// refuses the write.
+    /// # Why `profile_id` is compared exactly, with no `OR … IS NULL`
     ///
-    /// # What replaces the old skip condition
+    /// The profile used to be the one field left out of the guard, because a
+    /// row bound to an older space has to be able to adopt the current one.
+    /// That concession required an `OR profile_id IS NULL`-shaped hole, and a
+    /// hole in a guard is a hole a late result walks through: a vector
+    /// computed under profile A could land on a row admission had already
+    /// re-pointed at profile B.
     ///
-    /// `forgeplan-cli`'s embed skipped a record when
-    /// `record.embedding.is_some() && record.body_hash == compute_content_hash(title, body)`.
-    /// `body_hash` is a content stamp: it sees the title and the body and
-    /// nothing else. It cannot see a **profile** change, so re-running embed
-    /// after a model swap skipped every record and left vectors from the old
-    /// space in place; nor an **incarnation** change, so a recreated artifact
-    /// was skipped; nor the **input digest**, which is what the tokenizer
-    /// actually receives. This predicate covers all three, which is why the
-    /// hash comparison goes rather than being kept alongside.
+    /// It is no longer needed. **Admission now assigns the target profile to
+    /// the row first**, atomically, under the owner, using
+    /// [`Self::freshness_predicate`] — the same seven freshness comparisons
+    /// with no profile term. By the time any compute exists, the row already
+    /// stores the profile its job names, so an exact equality is both correct
+    /// and sufficient. A late A after a B admission matches zero rows.
     ///
     /// # Escaping
     ///
@@ -777,9 +1039,21 @@ impl Binding {
     /// is ever concatenated unescaped: a predicate is the one place where a
     /// quote in the data becomes structure in the query.
     pub fn predicate(&self) -> String {
-        fn text(value: &str) -> String {
-            format!("'{}'", value.replace('\'', "''"))
-        }
+        format!(
+            "{} AND profile_id = {profile}",
+            self.freshness_predicate(),
+            profile = Self::quote(&self.profile_id),
+        )
+    }
+
+    /// The guard **without** the profile term — the freshness identity alone.
+    ///
+    /// Used by admission, which is the one write that must *change* a row's
+    /// profile: it matches the row on the seven freshness fields and then
+    /// assigns the target profile in the same statement. Refusing to use this
+    /// anywhere else is deliberate — every completion goes through
+    /// [`Self::predicate`].
+    pub fn freshness_predicate(&self) -> String {
         format!(
             "canonical_key = {key} \
              AND index_epoch = {epoch} \
@@ -787,17 +1061,20 @@ impl Binding {
              AND incarnation = {incarnation} \
              AND row_revision = {revision} \
              AND source_digest = {source} \
-             AND input_digest = {input} \
-             AND (profile_id = {profile} OR profile_id IS NULL)",
-            key = text(&self.canonical_key),
+             AND input_digest = {input}",
+            key = Self::quote(&self.canonical_key),
             epoch = self.index_epoch,
-            checkout = text(&self.checkout_id),
+            checkout = Self::quote(&self.checkout_id),
             incarnation = self.incarnation,
             revision = self.row_revision,
-            source = text(&self.source_digest),
-            input = text(&self.input_digest),
-            profile = text(&self.profile_id),
+            source = Self::quote(&self.source_digest),
+            input = Self::quote(&self.input_digest),
         )
+    }
+
+    /// A single-quoted SQL literal with embedded quotes doubled.
+    fn quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
     }
 }
 
@@ -1009,6 +1286,119 @@ impl EmbeddingPublish {
     }
 }
 
+/// Which table one prepared job's row lives in.
+///
+/// Decided from the key's shape, never from a caller: the two namespaces are
+/// disjoint **by construction** — [`section_key`] is the only producer of a
+/// `"{parent}#s{ordinal}"` key, and capture mints it only for a section that
+/// exists. [`EmbeddingJob::row_role`] is the single place that decision is
+/// made, so a result cannot be routed onto the wrong table by a call site
+/// guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingRowRole {
+    /// One row of `constellation_artifacts_v1`.
+    Artifact,
+    /// One row of `constellation_sections_v1`.
+    Section,
+}
+
+/// The parent canonical key a section job's row belongs to, when `key` is one.
+///
+/// `None` for a bare artifact key. Only the exact `"#s"` separator followed by
+/// a decimal ordinal counts: `"X#notes"` and `"X#s"` are not section keys and
+/// must not be routed to the sections table.
+pub fn section_parent_key(canonical_key: &str) -> Option<&str> {
+    let (parent, suffix) = canonical_key.rsplit_once("#s")?;
+    if parent.is_empty() || suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(parent)
+}
+
+/// One prepared unit of embedding work.
+///
+/// The pair is a unit because they were minted together under one owner from
+/// one capture: the job names the exact binding the vector may be published
+/// against, and `input_text` is the exact string that binding's `input_digest`
+/// was computed over. Separating them is what lets a completion rebind a
+/// vector to bytes a later capture happened to contain.
+///
+/// `Arc<str>`, not `String`: a prepared batch is handed to an inference thread
+/// and comes back, and the whole corpus is never copied into one job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedEmbeddingInput {
+    pub job: EmbeddingJob,
+    pub input_text: std::sync::Arc<str>,
+}
+
+/// Everything one admission pass froze, and nothing that could be recomputed
+/// differently later.
+///
+/// `admission_generation` and `config_digest` are the two facts a completion
+/// re-checks before writing anything: they are what says *this* batch belongs
+/// to *that* capture of *that* configuration. `profile` is the verified space
+/// the vectors are being computed in — never a bare id, so a completion cannot
+/// be handed a profile it did not resolve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedEmbeddingBatch {
+    /// The published generation this batch was admitted under.
+    pub admission_generation: String,
+    /// The config digest the capture that produced these inputs saw.
+    pub config_digest: String,
+    /// The verified profile every vector in this batch is computed in.
+    pub profile: EmbeddingProfile,
+    pub inputs: Vec<PreparedEmbeddingInput>,
+}
+
+/// One computed vector, still carrying the job it was computed for.
+///
+/// The job travels with the vector rather than a key, because the key alone
+/// cannot tell a late result from a current one: two admissions for the same
+/// canonical key under different profiles produce two vectors with one name,
+/// and only the job says which one this is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComputedEmbedding {
+    pub job: EmbeddingJob,
+    pub vector: Vec<f32>,
+}
+
+impl PreparedEmbeddingBatch {
+    /// The job admitted for `canonical_key`, if this batch holds one.
+    pub fn job_for(&self, canonical_key: &str) -> Option<&EmbeddingJob> {
+        self.inputs
+            .iter()
+            .find(|input| input.job.canonical_key == canonical_key)
+            .map(|input| &input.job)
+    }
+
+    /// Whether `job` is exactly the job this batch prepared for `key`.
+    ///
+    /// Field equality, not key equality. A result whose job names a different
+    /// incarnation, row revision, source or input digest — or a different
+    /// `captured_input_ref` — was computed for a state this batch never
+    /// admitted, and publishing it would rebind a row.
+    pub fn accepts(&self, key: &str, job: &EmbeddingJob) -> bool {
+        self.job_for(key).is_some_and(|prepared| prepared == job)
+    }
+}
+
+impl ComputedEmbedding {
+    /// Which table this result's row lives in.
+    pub fn row_role(&self) -> EmbeddingRowRole {
+        if section_parent_key(&self.job.canonical_key).is_some() {
+            EmbeddingRowRole::Section
+        } else {
+            EmbeddingRowRole::Artifact
+        }
+    }
+
+    /// The binding this vector is published against — from the job, never from
+    /// a capture taken after the compute.
+    pub fn binding(&self) -> Binding {
+        self.job.binding()
+    }
+}
+
 #[cfg(test)]
 mod profile_tests {
     use super::*;
@@ -1216,6 +1606,302 @@ mod profile_tests {
         let err =
             snapshot_checksums(Path::new("/definitely/not/here"), DEFAULT_MODEL_REPO).unwrap_err();
         assert_eq!(err.code(), super::super::DiagnosticCode::ModelUnavailable);
+    }
+
+    /// A fixture cache with every file a profile needs, whose *contents* are
+    /// fixture bytes — no weights, no network, and no dependency on what this
+    /// machine happens to have downloaded.
+    #[cfg(feature = "semantic-search")]
+    fn fixture_cache(root: &Path) -> PathBuf {
+        let repo_dir = root.join("models--BAAI--bge-m3");
+        std::fs::create_dir_all(repo_dir.join("refs")).unwrap();
+        std::fs::write(repo_dir.join("refs").join("main"), "rev1\n").unwrap();
+        let snapshot = repo_dir.join("snapshots").join("rev1");
+        std::fs::create_dir_all(snapshot.join("onnx")).unwrap();
+        for relative in [
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "onnx/model.onnx",
+            "onnx/model.onnx_data",
+        ] {
+            std::fs::write(snapshot.join(relative), format!("fixture:{relative}")).unwrap();
+        }
+        root.to_path_buf()
+    }
+
+    /// A query against an index that pinned a different profile must refuse,
+    /// not answer.
+    ///
+    /// Both revisions produce 1024-float unit vectors, so nothing downstream can
+    /// detect the mismatch — which is why the refusal has to happen here. Breaks
+    /// if the comparison is dropped, or if it happens *after* the engine is
+    /// built (the error would then be an ONNX parse failure that says nothing
+    /// about profiles).
+    #[cfg(feature = "semantic-search")]
+    #[test]
+    fn a_query_refuses_when_the_cached_snapshot_is_not_the_pinned_profile() {
+        let cache = tempfile::TempDir::new().unwrap();
+        let root = fixture_cache(cache.path());
+
+        // The id the fixture cache really resolves to, so the only thing wrong
+        // with this call is the expectation it is given.
+        let real = ResolvedProfile::open(
+            &root,
+            DEFAULT_MODEL_REPO,
+            crate::constellation::facade::ENGINE_VERSION,
+            512,
+        )
+        .unwrap()
+        .profile
+        .profile_id();
+
+        let err =
+            open_cached_query_engine_in(&root, DEFAULT_MODEL_NAME, Some("pinned-elsewhere"), 512)
+                .err()
+                .expect("a mismatched profile must refuse");
+        let detail = err.to_string();
+        assert!(
+            detail.contains("pinned-elsewhere") && detail.contains(&real),
+            "the refusal must name both profiles, was: {detail}"
+        );
+
+        // And the same call with the profile the cache actually resolves to
+        // gets past this gate — it fails later, on engine construction, which
+        // proves the mismatch check is what refused above.
+        let later = open_cached_query_engine_in(&root, DEFAULT_MODEL_NAME, Some(&real), 512)
+            .err()
+            .expect("fixture bytes are not a loadable model");
+        assert!(
+            !later.to_string().contains("pinned"),
+            "a matching profile must not fail on the profile comparison: {}",
+            later
+        );
+    }
+
+    /// The resolved snapshot identity and the profile come from **one** read of the
+    /// cache, and the profile's own prefix budget is the one it was opened with.
+    ///
+    /// This is the property `open`'s signature exists for. Before it, a caller
+    /// read the checksums, then handed them back to `open`, which read the
+    /// snapshot again: two lookups of `refs/main`, and a profile assembled from
+    /// a `revision` read at a different moment than the digests.
+    ///
+    /// Breaks if `snapshot_root`/`snapshot_id` stop being the root the
+    /// checksums were measured from, or if `body_prefix_chars` is ignored — the
+    /// second failure being the one that publishes vectors from a 2000-char
+    /// prefix under a `profile_id` that claims 512.
+    #[cfg(feature = "semantic-search")]
+    #[test]
+    fn a_resolved_profile_names_the_exact_snapshot_its_digests_were_read_from() {
+        let cache = tempfile::TempDir::new().unwrap();
+        let root = fixture_cache(cache.path());
+        let repo_dir = root.join("models--BAAI--bge-m3");
+
+        let resolved = ResolvedProfile::open(
+            &root,
+            DEFAULT_MODEL_REPO,
+            crate::constellation::facade::ENGINE_VERSION,
+            512,
+        )
+        .unwrap();
+
+        // The reported root is the one `refs/main` points at, by construction
+        // rather than by a second lookup that could disagree.
+        assert_eq!(resolved.snapshot_id, "rev1");
+        assert_eq!(
+            resolved.snapshot_root,
+            repo_dir.join("snapshots").join("rev1"),
+            "the engine must open the directory the digests were measured from"
+        );
+        assert!(
+            resolved.snapshot_root.join("onnx/model.onnx_data").exists(),
+            "the reported root is a real directory in this cache, not a name"
+        );
+
+        // The checksums the profile carries are the checksums of those files.
+        let checksums = snapshot_checksums(&root, DEFAULT_MODEL_REPO).unwrap();
+        assert_eq!(
+            resolved.profile.weights_checksums, checksums.weights,
+            "resolved weights must hash the snapshot `open` reported"
+        );
+        assert_eq!(resolved.profile.tokenizer_checksum, checksums.tokenizer);
+        assert_eq!(
+            resolved.profile.tokenizer_config_checksum,
+            checksums.tokenizer_config
+        );
+        assert_eq!(
+            resolved.profile.weights_revision, "rev1",
+            "the revision comes from the same read, not from the repo name"
+        );
+
+        // The prefix budget is the caller's, and it is part of the identity.
+        assert_eq!(resolved.profile.body_prefix_chars, 512);
+        let wide = ResolvedProfile::open(
+            &root,
+            DEFAULT_MODEL_REPO,
+            crate::constellation::facade::ENGINE_VERSION,
+            4096,
+        )
+        .unwrap();
+        assert_eq!(wide.profile.body_prefix_chars, 4096);
+        assert_ne!(
+            wide.profile.profile_id(),
+            resolved.profile.profile_id(),
+            "a changed chunk size is a different embedding space and must not share its id"
+        );
+    }
+
+    /// A resolved profile is a **snapshot of one moment**, and the worker built
+    /// from it stays on that snapshot.
+    ///
+    /// `spawn_resolved` is the only automatic constructor, and it exists to
+    /// avoid a second `find_snapshot`. If it went back to resolving the repo
+    /// itself, a `refs/main` that moved between resolution and spawn would load
+    /// different weights under the advertised profile — and nothing downstream
+    /// could tell, because both are 1024 unit-length float vectors.
+    ///
+    /// The engine is built lazily on the first job, so the observable is what
+    /// that job does with bytes that are not a model: it **fails**, loudly and
+    /// on its own thread. It never returns a zero vector, never starts a
+    /// download, and never publishes — the three ways an automatic path could
+    /// turn a moved cache into a corrupted index.
+    #[cfg(feature = "semantic-search")]
+    #[test]
+    fn a_worker_built_from_a_resolved_profile_stays_on_that_snapshot_and_never_answers_with_a_vector()
+     {
+        use crate::constellation::runtime::{InferenceJob, InferenceWorker, Poll};
+
+        let cache = tempfile::TempDir::new().unwrap();
+        let root = fixture_cache(cache.path());
+        let resolved = ResolvedProfile::open(
+            &root,
+            DEFAULT_MODEL_REPO,
+            crate::constellation::facade::ENGINE_VERSION,
+            DEFAULT_BODY_PREFIX_CHARS,
+        )
+        .unwrap();
+        let profile_id = resolved.profile.profile_id();
+        let resolved_root = resolved.snapshot_root.clone();
+
+        // Move `refs/main` after resolution, exactly as a background download
+        // would. A constructor that re-resolved would now be pointed at a
+        // revision that was never resolved, profiled or checksummed.
+        let repo_dir = root.join("models--BAAI--bge-m3");
+        std::fs::write(repo_dir.join("refs").join("main"), "rev2\n").unwrap();
+        assert!(
+            !repo_dir.join("snapshots").join("rev2").exists(),
+            "rev2 has no files: a re-resolved worker would fail on a missing file, not on bad bytes"
+        );
+
+        let worker = InferenceWorker::spawn_resolved(DEFAULT_MODEL_NAME, &resolved)
+            .expect("thread creation is not model loading");
+
+        let submitted = worker.submit(InferenceJob {
+            job: crate::constellation::jobs::EmbeddingJob {
+                index_epoch: 1,
+                checkout_id: "local-test".to_string(),
+                canonical_key: "PRD-001".to_string(),
+                incarnation: 1,
+                row_revision: 1,
+                source_digest: "s".to_string(),
+                input_digest: "i".to_string(),
+                profile_id,
+                captured_input_ref: "rev1:PRD-001".to_string(),
+                // First attempt, no backoff — the same shape
+                // `EmbeddingJob::from_binding` produces for a fresh admission.
+                attempt: 0,
+                retry_after: None,
+            },
+            input_text: "title body".to_string(),
+        });
+        assert_eq!(
+            submitted,
+            crate::constellation::runtime::SubmitOutcome::Queued,
+            "the job must reach the worker; a refusal here would hide the engine failure"
+        );
+
+        let mut deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let reason = loop {
+            match worker.try_failure() {
+                Poll::Ready(detail) => break detail,
+                Poll::Disconnected => {
+                    break "the worker disconnected without saying why".to_string();
+                }
+                Poll::Empty => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the worker neither produced a vector nor reported a failure"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+        };
+
+        assert!(
+            reason.contains("could not be constructed"),
+            "fixture bytes are not a model and the worker must say so, not answer: {reason}"
+        );
+
+        // Nothing may have come back as a result. A zero vector here would be
+        // published onto a row and read as "this document has no semantic
+        // content", which is a false negative nothing downstream can detect.
+        assert!(
+            matches!(worker.try_result(), Poll::Empty | Poll::Disconnected),
+            "no vector may be produced from bytes that are not a model"
+        );
+
+        // The profile still names the revision it resolved, whatever the cache
+        // has done since — it is a moment, not a live view of `refs/main`.
+        assert_eq!(resolved.snapshot_id, "rev1");
+        assert!(
+            resolved_root.ends_with("snapshots/rev1"),
+            "the resolved root is the revision directory, not the repo: {resolved_root:?}"
+        );
+        assert!(
+            resolved.profile.weights_checksums
+                != snapshot_checksums(&root, DEFAULT_MODEL_REPO)
+                    .unwrap_or_default()
+                    .weights,
+            "rev2 has no files, so a fresh read of the cache cannot reproduce rev1's digests; \
+             the profile was not re-read"
+        );
+
+        let _ = worker.shutdown();
+    }
+
+    /// An absent or unsupported model is `unavailable` with a detail that says
+    /// which — never a download, never a panic.
+    #[cfg(feature = "semantic-search")]
+    #[test]
+    fn a_query_with_no_usable_cache_is_model_unavailable_and_says_why() {
+        let empty = tempfile::TempDir::new().unwrap();
+        let err = open_cached_query_engine_in(
+            empty.path(),
+            DEFAULT_MODEL_NAME,
+            None,
+            DEFAULT_BODY_PREFIX_CHARS,
+        )
+        .err()
+        .expect("an empty cache must not open a query engine");
+        assert_eq!(err.code(), super::super::DiagnosticCode::ModelUnavailable);
+        assert!(
+            err.to_string().contains("no cached snapshot"),
+            "absence must read as absence, was: {err}"
+        );
+
+        let err = open_cached_query_engine_in(
+            empty.path(),
+            "not-a-model",
+            None,
+            DEFAULT_BODY_PREFIX_CHARS,
+        )
+        .err()
+        .expect("an unsupported model must not open");
+        assert!(
+            err.to_string().contains("unsupported embedding model"),
+            "was: {err}"
+        );
     }
 
     #[test]
@@ -1458,7 +2144,7 @@ mod profile_tests {
     }
 
     #[test]
-    fn the_publish_guard_covers_every_binding_field() {
+    fn the_publish_guard_covers_every_freshness_field_and_the_profile() {
         let predicate = binding().predicate();
         for column in [
             "canonical_key",
@@ -1478,7 +2164,29 @@ mod profile_tests {
         assert_eq!(
             predicate.matches(" AND ").count(),
             7,
-            "nine comparisons joined by seven ANDs"
+            "eight comparisons joined by seven ANDs"
+        );
+        assert!(
+            !predicate.contains(" OR "),
+            "no disjunct may soften the guard; an OR is a hole a late result \
+             walks through: {predicate}"
+        );
+        assert!(
+            !predicate.contains("IS NULL"),
+            "a NULL branch is the same hole spelled differently: {predicate}"
+        );
+    }
+
+    #[test]
+    fn the_freshness_guard_is_the_publish_guard_without_the_profile_term() {
+        let b = binding();
+        let freshness = b.freshness_predicate();
+        assert!(!freshness.contains("profile_id"), "{freshness}");
+        assert_eq!(
+            b.predicate(),
+            format!("{freshness} AND profile_id = '{}'", b.profile_id),
+            "the publish guard is exactly the freshness guard plus the profile \
+             term, so the two can never drift apart"
         );
     }
 
@@ -1487,12 +2195,17 @@ mod profile_tests {
         let mut b = binding();
         b.canonical_key = "O'Brien".to_string();
         b.checkout_id = "local'x".to_string();
+        b.profile_id = "pro'file".to_string();
         let predicate = b.predicate();
         assert!(
             predicate.contains("'O''Brien'"),
             "a quote in the data must not become structure: {predicate}"
         );
         assert!(predicate.contains("'local''x'"));
+        assert!(
+            predicate.contains("'pro''file'"),
+            "the profile term is data too: {predicate}"
+        );
     }
 
     #[test]
@@ -1511,7 +2224,10 @@ mod profile_tests {
     }
 
     #[test]
-    fn a_changed_profile_changes_the_guard() {
+    fn a_late_result_from_another_profile_matches_nothing() {
+        // A and B both admitted the same key. B's admission re-pointed the row
+        // at B, so A's completion — which still carries A's profile — must be
+        // refused outright rather than migrating the row back.
         let before = binding();
         let after = Binding {
             profile_id: "profile-d".to_string(),
@@ -1520,8 +2236,18 @@ mod profile_tests {
         assert_ne!(
             before.predicate(),
             after.predicate(),
-            "a model swap must not be skipped by a content-only stamp"
+            "a profile change must change the guard, or a late result under the \
+             old profile lands on a row that has since moved"
         );
+        assert_eq!(
+            before.freshness_predicate(),
+            after.freshness_predicate(),
+            "the freshness half is genuinely unchanged — that is what lets \
+             admission re-point a row without touching its freshness identity"
+        );
+        // A job minted under profile A is not the job a profile-B admission
+        // issued, even when every freshness field agrees.
+        assert!(!before.matches(&job_for(&after)));
     }
 
     #[test]
@@ -1697,5 +2423,265 @@ mod tests {
         let mut j = job();
         j.attempt = u32::MAX;
         assert!(j.next_attempt().is_err());
+    }
+
+    #[test]
+    fn a_failure_advances_the_attempt_and_records_when_to_try_again() {
+        let mut j = job();
+        j.attempt = 2;
+        let failed = j.failed_at("2026-10-19T00:01:00.000Z".to_string()).unwrap();
+        assert_eq!(failed.attempt, 3, "a failure counts as an attempt");
+        assert_eq!(
+            failed.retry_after.as_deref(),
+            Some("2026-10-19T00:01:00.000Z")
+        );
+        // The work itself is untouched: a failure changes how often the key
+        // has been tried, never what a vector would be computed from.
+        assert_eq!(failed.binding(), j.binding());
+        assert_eq!(failed.captured_input_ref, j.captured_input_ref);
+    }
+
+    #[test]
+    fn a_failure_at_the_attempt_ceiling_is_refused_rather_than_wrapping() {
+        let mut j = job();
+        j.attempt = u32::MAX;
+        assert!(j.failed_at("2026-10-19T00:01:00.000Z".to_string()).is_err());
+    }
+
+    #[test]
+    fn the_retry_schedule_backs_off_and_is_capped() {
+        assert_eq!(retry_delay_seconds(0), RETRY_BASE_SECONDS);
+        assert_eq!(retry_delay_seconds(1), RETRY_BASE_SECONDS * 2);
+        assert_eq!(retry_delay_seconds(3), RETRY_BASE_SECONDS * 8);
+        assert_eq!(
+            retry_delay_seconds(64),
+            RETRY_CEILING_SECONDS,
+            "a key that keeps failing is parked, not scheduled past the ceiling"
+        );
+        assert!(retry_delay_seconds(u32::MAX) <= RETRY_CEILING_SECONDS);
+    }
+
+    #[test]
+    fn a_job_with_no_failure_is_due_immediately() {
+        let j = job();
+        assert!(j.retry_is_due(chrono::Utc::now()));
+        assert!(j.retry_after.is_none());
+    }
+
+    #[test]
+    fn a_job_inside_its_retry_delay_is_not_due_and_a_past_one_is() {
+        let now = chrono::Utc::now();
+        let mut j = job();
+        j.retry_after = Some(retry_after_at(0, now));
+        assert!(
+            !j.retry_is_due(now),
+            "the base delay must actually park the key"
+        );
+        assert!(
+            j.retry_is_due(now + chrono::Duration::seconds(RETRY_BASE_SECONDS + 2)),
+            "once the delay has passed the key is due again"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_retry_stamp_is_due_rather_than_parked_forever() {
+        let mut j = job();
+        j.retry_after = Some("not-a-timestamp".to_string());
+        assert!(j.retry_is_due(chrono::Utc::now()));
+    }
+
+    #[test]
+    fn describes_ignores_the_admission_identity_and_the_attempt_counter() {
+        let binding = job().binding();
+        let mut admitted = EmbeddingJob::for_binding(&binding, "gen-7").unwrap();
+        admitted.attempt = 5;
+        admitted.retry_after = Some("2026-10-19T00:01:00.000Z".to_string());
+
+        // A later admission over the same bytes describes the same work, so it
+        // must not replace the pending job and reset the count.
+        assert!(admitted.describes(&binding));
+
+        // Any change to what the vector is computed from is different work.
+        assert!(!admitted.describes(&Binding {
+            input_digest: "other".to_string(),
+            ..binding.clone()
+        }));
+        assert!(!admitted.describes(&Binding {
+            profile_id: "other-space".to_string(),
+            ..binding.clone()
+        }));
+        assert!(!admitted.describes(&Binding {
+            row_revision: binding.row_revision + 1,
+            ..binding
+        }));
+    }
+
+    // -------------------------------------------------------------------
+    // Admission → compute → completion: the prepared types
+    // -------------------------------------------------------------------
+
+    fn prepared_binding(key: &str) -> Binding {
+        Binding {
+            canonical_key: key.to_string(),
+            ..job().binding()
+        }
+    }
+
+    fn prepared_batch() -> PreparedEmbeddingBatch {
+        PreparedEmbeddingBatch {
+            admission_generation: "gen-2026-10-19T00-00-00Z".to_string(),
+            config_digest: "cfg-a".to_string(),
+            profile: profile(),
+            inputs: vec![
+                PreparedEmbeddingInput {
+                    job: EmbeddingJob::for_binding(
+                        &prepared_binding("prd-auth"),
+                        "gen-2026-10-19T00-00-00Z",
+                    )
+                    .unwrap(),
+                    input_text: std::sync::Arc::from("Auth body"),
+                },
+                PreparedEmbeddingInput {
+                    job: EmbeddingJob::for_binding(
+                        &prepared_binding("prd-auth#s0"),
+                        "gen-2026-10-19T00-00-00Z",
+                    )
+                    .unwrap(),
+                    input_text: std::sync::Arc::from("Auth section"),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn captured_input_ref_names_the_admission_and_the_key_and_nothing_else() {
+        let b = prepared_binding("prd-auth");
+        let job = EmbeddingJob::for_binding(&b, "gen-7").unwrap();
+        assert_eq!(job.captured_input_ref, "gen-7:prd-auth");
+        assert_eq!(job.attempt, 0, "a job that has never run has no attempts");
+        assert_eq!(job.retry_after, None);
+        // The ref is an identity, not a path: it must not name a file, so a
+        // completion can never be tempted to re-read one.
+        assert!(
+            !job.captured_input_ref.contains(".md"),
+            "a captured_input_ref is the right to publish, not a path to read: {}",
+            job.captured_input_ref
+        );
+    }
+
+    #[test]
+    fn a_binding_with_no_input_digest_is_refused_at_admission() {
+        let mut b = prepared_binding("prd-auth");
+        b.input_digest = String::new();
+        let err = EmbeddingJob::for_binding(&b, "gen-7").unwrap_err();
+        assert!(
+            matches!(err, ConstellationError::Io { .. }),
+            "a job with no input digest binds nothing: {err}"
+        );
+    }
+
+    #[test]
+    fn a_section_key_is_recognised_only_by_the_exact_suffix() {
+        assert_eq!(section_parent_key("prd-auth#s0"), Some("prd-auth"));
+        assert_eq!(section_parent_key("prd-auth#s12"), Some("prd-auth"));
+        for not_a_section in [
+            "prd-auth",
+            "prd-auth#notes",
+            "prd-auth#s",
+            "#s0",
+            "prd-auth#s0x",
+            "prd-auth#s-1",
+        ] {
+            assert_eq!(
+                section_parent_key(not_a_section),
+                None,
+                "`{not_a_section}` is not a section key"
+            );
+        }
+    }
+
+    #[test]
+    fn row_role_follows_the_key_namespace() {
+        let artifact = job();
+        assert_eq!(artifact.row_role(), EmbeddingRowRole::Artifact);
+        let section = EmbeddingJob::for_binding(&prepared_binding("prd-auth#s3"), "gen-7").unwrap();
+        assert_eq!(section.row_role(), EmbeddingRowRole::Section);
+
+        let computed = ComputedEmbedding {
+            job: section,
+            vector: vec![0.1; 4],
+        };
+        assert_eq!(computed.row_role(), EmbeddingRowRole::Section);
+    }
+
+    #[test]
+    fn a_prepared_batch_accepts_only_the_exact_job_it_admitted() {
+        let batch = prepared_batch();
+        let admitted = batch.job_for("prd-auth").unwrap().clone();
+        assert!(batch.accepts("prd-auth", &admitted));
+
+        // Every field that identifies the state the vector was computed for
+        // must break acceptance on its own.
+        type JobMutator = Box<dyn Fn(&mut EmbeddingJob)>;
+        let mutators: Vec<JobMutator> = vec![
+            Box::new(|j: &mut EmbeddingJob| j.incarnation += 1),
+            Box::new(|j: &mut EmbeddingJob| j.row_revision += 1),
+            Box::new(|j: &mut EmbeddingJob| j.source_digest = "other".into()),
+            Box::new(|j: &mut EmbeddingJob| j.input_digest = "other".into()),
+            Box::new(|j: &mut EmbeddingJob| j.profile_id = "other".into()),
+            Box::new(|j: &mut EmbeddingJob| j.captured_input_ref = "gen-other:prd-auth".into()),
+            Box::new(|j: &mut EmbeddingJob| j.index_epoch += 1),
+            Box::new(|j: &mut EmbeddingJob| j.checkout_id = "other".into()),
+        ];
+        for m in mutators {
+            let mut drifted = admitted.clone();
+            m(&mut drifted);
+            assert!(
+                !batch.accepts("prd-auth", &drifted),
+                "a result whose job drifted in one field must not be accepted: \
+                 {drifted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_never_accepts_a_key_it_did_not_admit() {
+        let batch = prepared_batch();
+        let stranger = EmbeddingJob::for_binding(&prepared_binding("prd-other"), "gen-7").unwrap();
+        assert!(!batch.accepts("prd-other", &stranger));
+        assert_eq!(batch.job_for("prd-other"), None);
+        // And an admitted key with a stranger's job is refused too.
+        assert!(!batch.accepts("prd-auth", &stranger));
+    }
+
+    #[test]
+    fn prepared_input_texts_are_the_exact_strings_a_worker_embeds() {
+        let batch = prepared_batch();
+        let texts: Vec<&str> = batch
+            .inputs
+            .iter()
+            .map(|input| input.input_text.as_ref())
+            .collect();
+        assert_eq!(texts, vec!["Auth body", "Auth section"]);
+        // Ordering follows admission, so a worker can pair results positionally
+        // without re-deriving anything — and pairing by position is safe only
+        // because the batch never reorders.
+        let keys: Vec<&str> = batch
+            .inputs
+            .iter()
+            .map(|i| i.job.canonical_key.as_str())
+            .collect();
+        assert_eq!(keys, vec!["prd-auth", "prd-auth#s0"]);
+    }
+
+    #[test]
+    fn a_prepared_batch_survives_a_round_trip_through_json() {
+        // The batch travels to a caller and back; a job that lost a field on
+        // the way would stop being the exact job completion has to match.
+        let batch = prepared_batch();
+        let encoded = serde_json::to_string(&batch.inputs[0].job).unwrap();
+        let decoded: EmbeddingJob = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, batch.inputs[0].job);
+        assert!(batch.accepts("prd-auth", &decoded));
     }
 }

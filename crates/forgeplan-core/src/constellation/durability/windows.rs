@@ -56,14 +56,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW,
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_FLAG_WRITE_THROUGH, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FlushFileBuffers, GetDriveTypeW, GetFileAttributesW, GetFileInformationByHandle,
-    GetVolumeInformationW, INVALID_FILE_ATTRIBUTES, MOVEFILE_REPLACE_EXISTING,
-    MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING, WriteFile,
+    FILE_FLAG_WRITE_THROUGH, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FileIdInfo, FlushFileBuffers, GetDriveTypeW, GetFileAttributesW, GetFileInformationByHandle,
+    GetFileInformationByHandleEx, GetVolumeInformationW, INVALID_FILE_ATTRIBUTES,
+    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING, WriteFile,
 };
 use windows_sys::Win32::System::WindowsProgramming::{DRIVE_FIXED, DRIVE_REMOTE};
 
@@ -450,6 +452,132 @@ fn create_directory_write_through(dir: &Path) -> Result<(), ConstellationError> 
     Ok(())
 }
 
+/// Read the physical identity of an already-open handle.
+///
+/// Four arguments, exactly as `GetFileInformationByHandleEx` is bound in
+/// `windows-sys 0.61.2`: the handle, the information class, the output buffer
+/// and its size. `FileIdInfo` is the only `FILE_INFO_BY_HANDLE_CLASS` that
+/// returns a full 128-bit id — `BY_HANDLE_FILE_INFORMATION` gives a 64-bit
+/// index and a 32-bit volume serial, which collide on ReFS and on volumes with
+/// recycled serials — so the buffer is passed as a raw pointer with its own
+/// `size_of`. A class that disagrees with the buffer size fails with
+/// `ERROR_INVALID_PARAMETER` rather than truncating.
+pub(crate) fn identity_from_handle(
+    handle: HANDLE,
+    what: &str,
+) -> Result<super::PhysicalIdentity, String> {
+    let mut info: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast::<std::ffi::c_void>(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if ok == 0 {
+        let error = std::io::Error::last_os_error();
+        return Err(format!(
+            "GetFileInformationByHandleEx(FileIdInfo) failed for {what}: {error}"
+        ));
+    }
+    Ok(super::PhysicalIdentity {
+        volume: info.VolumeSerialNumber,
+        id: info.FileId.Identifier,
+    })
+}
+
+/// The identity of whatever `path` currently names.
+///
+/// Opened with full sharing including `FILE_SHARE_DELETE`, and with
+/// `FILE_FLAG_OPEN_REPARSE_POINT`. Full sharing is required because this is a
+/// *re-check*, not a guard: it has to succeed while a writer holds the file, or
+/// the re-check would report "cannot verify" for a perfectly good pin. The
+/// reparse flag keeps the handle on the link itself, so a substituted path
+/// reports the link's own id and never its target's.
+pub(crate) fn identity_of_path(path: &Path) -> Result<super::PhysicalIdentity, String> {
+    let name = wide(path);
+    let handle = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    let handle = OwnedHandle::open(handle, path, "CreateFileW(OPEN_EXISTING, read-only)")?;
+    identity_from_handle(handle.0, &path.display().to_string())
+}
+
+/// Open an immutable generation manifest for a **pinned read**.
+///
+/// # The one difference from every other open in this file
+///
+/// `FILE_SHARE_DELETE` is deliberately **absent**. On Windows a delete is only
+/// permitted while every open handle on the file shares delete access, so a
+/// reader that omits it makes `DeleteFile` / `MoveFileExW(REPLACE_EXISTING)`
+/// fail with `ERROR_SHARING_VIOLATION` for as long as the pin lives. That is
+/// what closes the unlink-while-open gap the POSIX `flock` closes for free:
+/// a GC pass that tries to prune the generation a reader is serving is refused
+/// by the kernel, not merely noticed afterwards by an identity re-check.
+///
+/// The cost is that the file cannot be renamed or deleted while a read holds it,
+/// which is precisely the intended contract — a generation manifest is
+/// immutable, so nothing legitimate needs to replace it.
+///
+/// `FILE_FLAG_OPEN_REPARSE_POINT` keeps the handle on the reparse point itself,
+/// so a symlink substituted at this path is refused by the caller's
+/// reparse/identity check instead of being read through.
+pub(crate) fn open_manifest_for_pinning(path: &Path) -> Result<std::fs::File, String> {
+    use std::os::windows::io::FromRawHandle;
+
+    let name = wide(path);
+    let handle = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ,
+            // No FILE_SHARE_DELETE — see the doc comment above.
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+        let error = std::io::Error::last_os_error();
+        return Err(format!(
+            "cannot open {} for a pinned read: {error}",
+            path.display()
+        ));
+    }
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe { CloseHandle(handle) };
+        return Err(format!(
+            "GetFileInformationByHandle failed for {}: {error}",
+            path.display()
+        ));
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
+    {
+        unsafe { CloseHandle(handle) };
+        return Err(format!(
+            "{} is not a plain file; a pinned manifest must not be read through an alias",
+            path.display()
+        ));
+    }
+    // The handle becomes the `File` that carries the `LockFileEx` region for
+    // the whole pin. `into_raw_handle`/`from_raw_handle` is the ownership
+    // transfer; there is no point at which both sides own it.
+    Ok(unsafe { std::fs::File::from_raw_handle(handle.into()) })
+}
+
 /// A unique sibling path next to `dir`, never colliding with a real object.
 fn temp_sibling(dir: &Path, name: &str, tag: &str) -> PathBuf {
     let nonce = TEMP_NONCE.fetch_add(1, Ordering::Relaxed);
@@ -793,5 +921,126 @@ mod windows_only_tests {
         std::os::windows::fs::symlink_dir(&real, &link).unwrap();
         let err = root_is_own(&link.join("lance")).unwrap_err();
         assert!(err.contains("reparse point"), "{err}");
+    }
+
+    // ── physical identity ──────────────────────────────────────────────────
+    //
+    // These run only on a real Windows host with a real NTFS volume. They are
+    // the evidence for the Windows identity claim; anywhere else the claim
+    // stays NOT RUN rather than assumed from the code reading correctly.
+
+    /// `GetFileInformationByHandleEx(FileIdInfo)` actually returns a usable
+    /// identity for a real file — a non-zero volume serial and an id that is
+    /// not the all-zero "unresolved" pattern.
+    #[test]
+    fn file_id_info_returns_a_real_identity() {
+        let (_tmp, root) = temp_index_root();
+        let file = root.join("id.bin");
+        std::fs::write(&file, b"payload").unwrap();
+
+        let id = identity_of_path(&file).unwrap();
+        assert_ne!(
+            id.volume_serial(),
+            0,
+            "a zero volume serial means the class or the buffer size was wrong"
+        );
+        assert_ne!(
+            id.file_id(),
+            &[0u8; 16],
+            "an all-zero file id is the kernel saying 'no id', not id zero"
+        );
+    }
+
+    /// The whole reason this exists: a same-length, same-mtime replacement is
+    /// a **different** file. `BY_HANDLE_FILE_INFORMATION`'s size/time fields
+    /// cannot see this; the 128-bit id can.
+    #[test]
+    fn a_same_length_replacement_gets_a_different_file_id() {
+        let (_tmp, root) = temp_index_root();
+        let file = root.join("swap.bin");
+        let staging = root.join("swap.staging");
+        std::fs::write(&file, b"AAAA").unwrap();
+        let before = identity_of_path(&file).unwrap();
+
+        std::fs::write(&staging, b"BBBB").unwrap();
+        std::fs::rename(&staging, &file).unwrap();
+
+        let after = identity_of_path(&file).unwrap();
+        assert_eq!(before.volume_serial(), after.volume_serial(), "same volume");
+        assert_ne!(
+            before.file_id(),
+            after.file_id(),
+            "a replaced file must not keep its NTFS file id — this is the \
+             substitution the size+mtime check could not see"
+        );
+    }
+
+    /// The handle-based reader agrees with the path-based one, which is the
+    /// property the pin's re-check rests on: the open descriptor and the name
+    /// must report one identity.
+    #[test]
+    fn handle_and_path_report_one_identity() {
+        let (_tmp, root) = temp_index_root();
+        let file = root.join("agree.bin");
+        std::fs::write(&file, b"payload").unwrap();
+        let handle = std::fs::File::open(&file).unwrap();
+        let from_handle = identity_from_handle(
+            {
+                use std::os::windows::io::AsRawHandle;
+                handle.as_raw_handle()
+            },
+            "the test handle",
+        )
+        .unwrap();
+        assert_eq!(from_handle, identity_of_path(&file).unwrap());
+    }
+
+    /// A missing file has no identity, and the error says so rather than
+    /// returning something a comparison would accept.
+    #[test]
+    fn a_missing_file_has_no_identity() {
+        let (_tmp, root) = temp_index_root();
+        let err = identity_of_path(&root.join("absent.bin")).unwrap_err();
+        assert!(
+            err.contains("CreateFileW"),
+            "the failure must name the call that failed: {err}"
+        );
+    }
+
+    /// The pinned open withholds delete sharing, which is what makes GC's
+    /// `remove_file` fail while a read is in progress — and what a `std` open
+    /// (which always requests `FILE_SHARE_DELETE`) would not have done.
+    #[test]
+    fn the_pinned_open_withholds_delete_sharing() {
+        let (_tmp, root) = temp_index_root();
+        let file = root.join("pinned.json");
+        std::fs::write(&file, b"{}").unwrap();
+
+        let pinned = open_manifest_for_pinning(&file).unwrap();
+        let refused = std::fs::remove_file(&file);
+        assert!(
+            refused.is_err(),
+            "a manifest opened for pinning must not be deletable while pinned"
+        );
+        assert_eq!(refused.unwrap_err().raw_os_error(), Some(32));
+        drop(pinned);
+        std::fs::remove_file(&file).expect("the pin must not leave protection behind");
+    }
+
+    /// …and it refuses to open a reparse point, so a symlink substituted at a
+    /// manifest path is never read through.
+    #[test]
+    fn the_pinned_open_refuses_a_reparse_point() {
+        let (_tmp, root) = temp_index_root();
+        let real = root.join("real.json");
+        let link = root.join("link.json");
+        std::fs::write(&real, b"{}").unwrap();
+        std::os::windows::fs::symlink_file(&real, &link).unwrap();
+
+        let err = open_manifest_for_pinning(&link).unwrap_err();
+        assert!(
+            err.contains("plain file"),
+            "a reparse point must be refused by name: {err}"
+        );
     }
 }

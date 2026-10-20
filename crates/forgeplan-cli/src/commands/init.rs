@@ -16,6 +16,7 @@ use forgeplan_core::plugins::{
 use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_import_to_workspace};
 use forgeplan_core::workspace::{ARTIFACT_DIRS, FORGEPLAN_DIR, find_workspace, init_workspace};
 
+use crate::commands::common;
 use crate::ui;
 
 /// Default project name fallback (unified for both paths).
@@ -781,9 +782,21 @@ async fn refresh_existing_workspace(workspace: &std::path::Path, project_name: &
     let yaml = serde_yaml::to_string(&config)?;
     tokio::fs::write(&config_path, yaml).await?;
 
-    // Reinit LanceDB index. LanceStore::init is idempotent for an
-    // existing dataset, so this is safe to run repeatedly.
-    LanceStore::init(workspace).await?;
+    // Reinit the legacy index — but only where the legacy index still exists.
+    // On a constellation-owned workspace `LanceStore::init` would recreate the
+    // retired `artifacts`/`evidence`/`relations` tables beside the live index,
+    // and nothing can remove them afterwards. The canonical markdown is
+    // already the source of truth there; publishing it is `forgeplan index`.
+    if common::index_migrated(workspace) {
+        println!(
+            "  {} Index owned by the constellation protocol — kept as is \
+             (`forgeplan index` reconciles it)",
+            style("→").cyan()
+        );
+    } else {
+        // Idempotent for an existing dataset, so this is safe to repeat.
+        LanceStore::init(workspace).await?;
+    }
 
     // PROB-062: refresh the canonical .gitignore section. The workspace
     // root is the parent of `.forgeplan/` for the standard layout; fall
@@ -990,6 +1003,27 @@ async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
         "\n  {} Scanning for existing documents...",
         style("◉").cyan()
     );
+
+    // `scan_and_import_to_workspace` allocates ids and creates rows through a
+    // `LanceStore`. On a workspace the constellation protocol owns, that store
+    // is retired — calling `LanceStore::init` here would recreate the retired
+    // artifact tables beside the live index, and nothing can remove them
+    // afterwards. So the legacy scan path does not run at all there.
+    //
+    // Known gap, deliberately visible: brownfield scan-import on a migrated
+    // workspace needs a file-first variant of the core importer, which does not
+    // exist yet. `forgeplan scan-import` has the same limitation and reports it
+    // the same way; `init --scan` does not pretend to be a second, working
+    // implementation of it.
+    if common::index_migrated(workspace) {
+        println!(
+            "  {} Skipped: scan-import needs the legacy store, which the constellation \
+             protocol owns here.\n    Import documents on a legacy workspace, or \
+             reconcile existing markdown with `forgeplan index`.",
+            style("⚠").yellow().bold()
+        );
+        return Ok(());
+    }
 
     let store = LanceStore::init(workspace).await?;
     let options = ScanImportOptions::default();

@@ -105,7 +105,7 @@ Fix: forgeplan list",
         })?;
     }
 
-    let ctx = projection::MutationContext::new(&ws, &store);
+    let ctx = projection::MutationContext::new(&ws, &_lock, Some(&store));
     // Update metadata (status, title) FIRST so subsequent renders see the new title.
     if status.is_some() || title.is_some() {
         projection::update_metadata_with_projection(&ctx, id, status, title).await?;

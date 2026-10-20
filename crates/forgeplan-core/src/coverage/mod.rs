@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::db::store::LanceStore;
+use crate::db::store::{ArtifactRecord, LanceStore};
 use crate::validation::checks;
 
 /// A detected code module.
@@ -157,16 +157,23 @@ async fn count_files_and_lines(dir: &Path) -> anyhow::Result<(usize, usize)> {
     Ok((file_count, line_count))
 }
 
-/// Build coverage report: map modules to decisions via affected_files.
+/// Build coverage from the legacy store.
 pub async fn build_coverage(
     modules: &mut [CodeModule],
     store: &LanceStore,
 ) -> anyhow::Result<CoverageReport> {
     let records = store.list_records(None).await?;
+    Ok(build_coverage_from_records(modules, &records))
+}
 
+/// Build a coverage report from one captured record set.
+pub fn build_coverage_from_records(
+    modules: &mut [CodeModule],
+    records: &[ArtifactRecord],
+) -> CoverageReport {
     let mut file_to_decisions: HashMap<String, Vec<String>> = HashMap::new();
 
-    for record in &records {
+    for record in records {
         if record.status != "active" {
             continue;
         }
@@ -206,13 +213,24 @@ pub async fn build_coverage(
         0.0
     };
 
-    Ok(CoverageReport {
+    CoverageReport {
         total_modules: total,
         covered_modules: covered,
         uncovered_modules: uncovered,
         coverage_percent: percent,
         modules: modules.to_vec(),
-    })
+    }
+}
+
+/// Add the default affected-file patterns to a body that has no coverage section.
+pub fn body_with_affected_file_backfill(body: &str) -> Option<String> {
+    if body.contains("## Affected Files") || body.contains("## Affected Scope") {
+        return None;
+    }
+    Some(format!(
+        "{}\n\n## Affected Files\n\n- crates/forgeplan-core/src/**\n- crates/forgeplan-cli/src/**\n",
+        body.trim_end()
+    ))
 }
 
 /// Backfill "## Affected Files" section into artifacts that lack it.
@@ -229,15 +247,9 @@ pub async fn backfill_affected_files(store: &LanceStore) -> anyhow::Result<Vec<S
         if !matches!(record.kind.as_str(), "prd" | "rfc" | "adr") {
             continue;
         }
-        // Skip if already has the section
-        if record.body.contains("## Affected Files") || record.body.contains("## Affected Scope") {
+        let Some(new_body) = body_with_affected_file_backfill(&record.body) else {
             continue;
-        }
-        // Append section with glob patterns that module_matches_pattern can parse
-        let new_body = format!(
-            "{}\n\n## Affected Files\n\n- crates/forgeplan-core/src/**\n- crates/forgeplan-cli/src/**\n",
-            record.body.trim_end()
-        );
+        };
         if let Err(e) = store.update_body(&record.id, &new_body).await {
             eprintln!("  Warning: backfill failed for {}: {e}", record.id);
             continue;
@@ -464,5 +476,65 @@ mod tests {
 
         let updated = backfill_affected_files(&store).await.unwrap();
         assert_eq!(updated, vec!["RFC-001"], "Active RFC should be backfilled");
+    }
+
+    #[test]
+    fn captured_records_drive_coverage_from_their_affected_files() {
+        use crate::db::store::ArtifactRecord;
+
+        let records = vec![
+            ArtifactRecord {
+                id: "PRD-001".to_string(),
+                kind: "prd".to_string(),
+                status: "active".to_string(),
+                body: "## Affected Files\n\n- crates/forgeplan-core/src/**".to_string(),
+                ..ArtifactRecord::default()
+            },
+            ArtifactRecord {
+                id: "ADR-002".to_string(),
+                kind: "adr".to_string(),
+                status: "draft".to_string(),
+                body: "## Affected Files\n\n- crates/forgeplan-cli/src/**".to_string(),
+                ..ArtifactRecord::default()
+            },
+            ArtifactRecord {
+                id: "NOTE-001".to_string(),
+                kind: "note".to_string(),
+                status: "active".to_string(),
+                body: "## Affected Files\n\n- crates/forgeplan-cli/src/**".to_string(),
+                ..ArtifactRecord::default()
+            },
+        ];
+        let mut modules = vec![
+            CodeModule {
+                path: "crates/forgeplan-core/src/scoring".to_string(),
+                file_count: 1,
+                line_count: 1,
+                decisions: Vec::new(),
+            },
+            CodeModule {
+                path: "crates/forgeplan-cli/src/commands".to_string(),
+                file_count: 1,
+                line_count: 1,
+                decisions: Vec::new(),
+            },
+        ];
+
+        let report = build_coverage_from_records(&mut modules, &records);
+
+        assert_eq!(report.covered_modules, 1);
+        assert_eq!(report.modules[0].decisions, vec!["PRD-001"]);
+        assert!(report.modules[1].decisions.is_empty());
+    }
+
+    #[test]
+    fn body_backfill_adds_defaults_only_when_coverage_section_is_missing() {
+        let body = "## Summary\n\nExisting decision.";
+        let updated = body_with_affected_file_backfill(body).expect("missing section");
+
+        assert!(updated.starts_with(body));
+        assert!(updated.contains("- crates/forgeplan-core/src/**"));
+        assert!(body_with_affected_file_backfill("## Affected Files\n\n- src/**").is_none());
+        assert!(body_with_affected_file_backfill("## Affected Scope\n\n- src/**").is_none());
     }
 }

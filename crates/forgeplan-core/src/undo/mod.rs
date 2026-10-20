@@ -27,6 +27,7 @@
 //! when wrapping the first destructive op of a session. No background
 //! daemon.
 
+use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -441,8 +442,6 @@ pub async fn soft_delete_capture(
     reason: Option<&str>,
     replacement: Option<&str>,
 ) -> anyhow::Result<String> {
-    use crate::artifact::types::ArtifactKind;
-
     // Gather outgoing + incoming relations so restore can replay both
     // directions (PRD-055 ADR #6).
     let mut relations = Vec::new();
@@ -467,40 +466,50 @@ pub async fn soft_delete_capture(
         }
     }
 
-    // Resolve original projection path BEFORE move. Cannot trust
-    // `slugify(current_title)` because the title may have been edited
-    // after artifact creation, so the projection filename on disk may
-    // differ. Scan the kind directory for any file matching `<ID>-*.md`
-    // and take the first match. Fall back to slugify only if filesystem
-    // scan fails (e.g. missing dir).
-    let projection_path = if let Ok(kind) = record.kind.parse::<ArtifactKind>() {
-        let kind_dir = workspace.join(kind.dir_name());
-        let id_prefix = format!("{}-", record.id);
-        let mut found: Option<std::path::PathBuf> = None;
-        if let Ok(mut entries) = tokio::fs::read_dir(&kind_dir).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                if let Some(name) = entry.file_name().to_str()
-                    && name.starts_with(&id_prefix)
-                    && name.ends_with(".md")
-                {
-                    found = Some(entry.path());
-                    break;
-                }
+    soft_delete_capture_with_relations(workspace, record, relations, op, reason, replacement).await
+}
+
+/// The store-free half of [`soft_delete_capture`].
+///
+/// Everything the receipt needs that is NOT a legacy relation lookup: the
+/// projection path resolved from the filesystem, the slug parsed out of the
+/// body, the receipt write, the trash move, the TTL purge. The caller supplies
+/// the relation set it already observed, so a caller whose edges come from the
+/// constellation read view (where `artifacts.lance` is retired and must not be
+/// opened) gets byte-identical receipts instead of no receipts at all.
+///
+/// The crash invariant is unchanged: receipt first, projection move second.
+pub async fn soft_delete_capture_with_relations(
+    workspace: &std::path::Path,
+    record: &crate::db::store::ArtifactRecord,
+    relations: Vec<CapturedRelation>,
+    op: DestructiveOp,
+    reason: Option<&str>,
+    replacement: Option<&str>,
+) -> anyhow::Result<String> {
+    use crate::artifact::types::ArtifactKind;
+
+    // Resolve the canonical name rather than reconstructing it from mutable
+    // title metadata. A missing Delete source must not become a successful
+    // receipt whose file was never moved.
+    let projection_path =
+        match crate::artifact::store::resolve_artifact_path(workspace, &record.id).await {
+            Some(path) => path,
+            None if matches!(op, DestructiveOp::Delete) => {
+                anyhow::bail!(
+                    "canonical projection for {} is missing; nothing was deleted",
+                    record.id
+                )
             }
-        }
-        match found {
-            Some(p) => p.display().to_string(),
             None => {
-                let slug = crate::artifact::types::slugify(&record.title);
-                kind_dir
+                let kind = record.kind.parse::<ArtifactKind>()?;
+                let slug = crate::projection::projection_slug(&record.title);
+                workspace
+                    .join(kind.dir_name())
                     .join(format!("{}-{slug}.md", record.id))
-                    .display()
-                    .to_string()
             }
-        }
-    } else {
-        String::new()
-    };
+        };
+    let projection_path = projection_path.display().to_string();
 
     let receipt_id = generate_receipt_id(&record.kind, &record.id);
     let trashed = trashed_projection_path(workspace, &receipt_id)
@@ -550,16 +559,15 @@ pub async fn soft_delete_capture(
     // Move projection file into trash ONLY for Delete — supersede and
     // deprecate leave the markdown in place.
     let projection_pathbuf = std::path::PathBuf::from(&projection_path);
-    if matches!(op, DestructiveOp::Delete)
-        && projection_pathbuf.exists()
-        && let Err(e) = trash_projection(workspace, &receipt_id, &projection_pathbuf).await
-    {
-        tracing::warn!(
-            "soft_delete: failed to move projection {}: {}. Receipt written, artifact \
-             will still be recoverable via store snapshot.",
-            projection_pathbuf.display(),
-            e
-        );
+    if matches!(op, DestructiveOp::Delete) {
+        trash_projection(workspace, &receipt_id, &projection_pathbuf)
+            .await
+            .with_context(|| {
+                format!(
+                    "could not move canonical projection {} to trash",
+                    projection_pathbuf.display()
+                )
+            })?;
     }
 
     // Fire-and-forget TTL purge so trash stays bounded.
@@ -781,6 +789,86 @@ mod tests {
         let nowhere = tmp.path().join("ghost.md");
         let err = trash_projection(&ws, "prd-x-111-aaaa", &nowhere).await;
         assert!(err.is_err(), "missing file should error");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn soft_delete_propagates_a_rejected_canonical_trash_move() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        std::fs::create_dir_all(ws.join("prds")).unwrap();
+        let foreign = tmp.path().join("foreign.md");
+        let foreign_bytes = b"Foreign canonical bytes must survive.\n";
+        std::fs::write(&foreign, foreign_bytes).unwrap();
+        let source = ws.join("prds/PRD-901-linked.md");
+        std::os::unix::fs::symlink(&foreign, &source).unwrap();
+        let record = crate::db::store::ArtifactRecord {
+            id: "PRD-901".into(),
+            kind: "prd".into(),
+            status: "active".into(),
+            title: "Linked".into(),
+            body: "Retained recovery snapshot".into(),
+            ..Default::default()
+        };
+        let error = soft_delete_capture_with_relations(
+            &ws,
+            &record,
+            Vec::new(),
+            DestructiveOp::Delete,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("could not move canonical projection"),
+            "a rejected trash move must not read as a completed deletion: {error}"
+        );
+        assert_eq!(std::fs::read(&foreign).unwrap(), foreign_bytes);
+        assert!(
+            std::fs::symlink_metadata(&source)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let receipt = find_latest_for(&ws, &record.id).await.unwrap().unwrap();
+        assert!(!receipt.consumed, "a failed deletion stays reversible");
+        assert_eq!(receipt.snapshot.body, record.body);
+        assert!(!Path::new(&receipt.trashed_projection).exists());
+    }
+
+    #[tokio::test]
+    async fn missing_canonical_delete_does_not_create_a_success_receipt() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        std::fs::create_dir_all(&ws).unwrap();
+        let record = crate::db::store::ArtifactRecord {
+            id: "PRD-902".into(),
+            kind: "prd".into(),
+            title: "Missing file".into(),
+            ..Default::default()
+        };
+        let error = soft_delete_capture_with_relations(
+            &ws,
+            &record,
+            Vec::new(),
+            DestructiveOp::Delete,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("canonical projection for PRD-902")
+        );
+        assert!(
+            find_latest_for(&ws, &record.id).await.unwrap().is_none(),
+            "nothing was deleted, so no receipt may claim otherwise"
+        );
     }
 
     #[test]

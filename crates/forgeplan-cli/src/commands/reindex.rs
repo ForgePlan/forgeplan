@@ -50,6 +50,21 @@ pub async fn run() -> anyhow::Result<()> {
     // `index_migrated`: a workspace where a pre-fix reindex already
     // resurrected artifacts.lance must still route, never pile more
     // writes into the shadowed table.
+    // Reindex rebuilds the derived index from markdown — a mutation, so it
+    // runs under the workspace lock for its whole duration. The lock is
+    // taken BEFORE the ownership question is answered and before any store
+    // is opened: deciding first and opening second is exactly the race that
+    // resurrects `artifacts.lance` on a workspace another process migrated
+    // while this one waited.
+    //
+    // The lock is released again before the reconcile pass, which acquires
+    // its own per storage commit — holding it across that call would time
+    // the capture out.
+    let _lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await?;
+
+    // Re-read the markers UNDER the guard. Another process may have migrated
+    // this workspace while we waited for the lock, and the answer above is
+    // only true for the instant it was taken.
     let lance = ws.join("lance");
     let constellation_owned = lance
         .join(forgeplan_core::constellation::storage::CURRENT_FILE_NAME)
@@ -67,13 +82,13 @@ pub async fn run() -> anyhow::Result<()> {
             })
         });
     if constellation_owned {
+        drop(_lock);
         println!(
             "Index is constellation-managed — `forgeplan index` owns this layout; \
              running the reconcile pass:"
         );
         return common::reconcile_and_drain(&ws, "reindex").await;
     }
-
     let store = forgeplan_core::db::store::LanceStore::init(&ws).await?;
 
     println!("Reindexing from .forgeplan/ markdown files...\n");
@@ -165,7 +180,7 @@ pub async fn run() -> anyhow::Result<()> {
                         // orphan trim depends on Phase 1 completing for ALL
                         // files even when individual files fail to sync.
                         match projection::sync_body_from_file(
-                            &projection::MutationContext::new(&ws, &store),
+                            &projection::MutationContext::new(&ws, &_lock, Some(&store)),
                             &id,
                             &record.kind,
                             file_title,
@@ -223,7 +238,7 @@ pub async fn run() -> anyhow::Result<()> {
                     // the Some(record) branch above — don't let one bad file
                     // abort the entire reindex pass.
                     match projection::sync_artifact_from_file(
-                        &projection::MutationContext::new(&ws, &store),
+                        &projection::MutationContext::new(&ws, &_lock, Some(&store)),
                         &artifact,
                     )
                     .await
@@ -255,7 +270,7 @@ pub async fn run() -> anyhow::Result<()> {
                             existing_relations.iter().any(|(et, er)| et == t && er == r);
                         if !already_exists {
                             if let Err(e) = projection::sync_relation_from_file(
-                                &projection::MutationContext::new(&ws, &store),
+                                &projection::MutationContext::new(&ws, &_lock, Some(&store)),
                                 &id,
                                 t,
                                 r,
@@ -363,7 +378,7 @@ pub async fn run() -> anyhow::Result<()> {
 
         if let Some(reason) = orphan_reason {
             projection::delete_orphan_artifact(
-                &projection::MutationContext::new(&ws, &store),
+                &projection::MutationContext::new(&ws, &_lock, Some(&store)),
                 &record.id,
             )
             .await?;
@@ -404,7 +419,7 @@ pub async fn run() -> anyhow::Result<()> {
                     .is_some();
             if !source_exists || !target_exists {
                 if let Err(e) = projection::delete_orphan_relation(
-                    &projection::MutationContext::new(&ws, &store),
+                    &projection::MutationContext::new(&ws, &_lock, Some(&store)),
                     source,
                     target,
                     relation,

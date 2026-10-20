@@ -1,26 +1,25 @@
 //! Restore from a soft-delete receipt (PRD-055, increment 3).
 //!
 //! Given a receipt, reconstruct the artifact state it captured:
-//! - recreate the LanceDB row (or reset its status for supersede/deprecate)
-//! - move the projection markdown back (for Delete) or leave in place
-//! - re-link relations that were captured
+//! - restore canonical Markdown (move a Delete back, reset lifecycle metadata)
+//! - synchronize the optional legacy row and replay captured relations
 //! - mark the receipt consumed so undo-last doesn't re-apply it
 //!
 //! # Transactional semantics (PRD-055 FR-011)
 //!
-//! Restore either fully succeeds or leaves the trash receipt untouched.
-//! We do not mark the receipt consumed until every downstream step
-//! (row create, relation link, projection move) has completed. If any
-//! step fails, the receipt remains available for a later retry.
+//! The receipt is not marked consumed until canonical restoration, optional
+//! legacy synchronization, and relation replay have completed. An error can
+//! leave some writes applied, but the receipt remains unconsumed; restore
+//! never hides a failed write behind a successful recovery report.
 //!
 //! # Collision handling (PRD-055 R-3)
 //!
-//! If an artifact with the same ID already exists in the store (someone
-//! re-created it after delete), restore refuses and returns an error
-//! so the operator can resolve manually (merge / delete-and-retry).
+//! If the canonical artifact or its legacy row already exists after Delete,
+//! restore refuses so the operator can resolve the collision manually.
 
 use super::{DestructiveOp, Receipt, mark_consumed, receipt_path};
 use crate::db::store::{LanceStore, NewArtifact};
+use anyhow::Context;
 use std::path::{Path, PathBuf};
 
 /// Outcome of a successful restore. Surfaces warnings about partial
@@ -48,9 +47,9 @@ pub struct RestoreReport {
 /// Issue #291: restore an artifact AND override the restored status.
 ///
 /// Same as [`apply_restore`] but accepts a `target_status` override.
-/// When `target_status` is `Some(s)`, the artifact is restored to `s`
-/// regardless of what was captured in the receipt. When `None`, the
-/// captured `snapshot.status` is used (legacy behaviour).
+/// When `target_status` is `Some(s)`, the artifact is restored to `s`.
+/// Without an override, Delete preserves the exact trashed Markdown bytes;
+/// lifecycle reversals apply the captured `snapshot.status`.
 ///
 /// Valid status values: `"draft"`, `"active"`, `"deprecated"`. Any other
 /// value is rejected with an error so the caller can fix the request.
@@ -60,7 +59,7 @@ pub struct RestoreReport {
 /// will still show the original captured status.
 pub async fn apply_restore_with_target(
     workspace: &Path,
-    store: &LanceStore,
+    store: Option<&LanceStore>,
     receipt: &Receipt,
     target_status: Option<&str>,
 ) -> anyhow::Result<RestoreReport> {
@@ -71,7 +70,7 @@ pub async fn apply_restore_with_target(
     // `Some("  active  ")` doesn't fall through with an inscrutable
     // "invalid `  Active  `" message.
     let normalized_target: Option<String> = target_status.map(|t| t.trim().to_lowercase());
-    if let Some(ref lower) = normalized_target
+    if let Some(lower) = &normalized_target
         && !matches!(lower.as_str(), "draft" | "active" | "deprecated")
     {
         anyhow::bail!(
@@ -80,19 +79,38 @@ pub async fn apply_restore_with_target(
         );
     }
 
-    // Audit-dogfood SEC-2: FSM transition validation. Restore goes
-    // through `update_artifact` which writes raw status — bypassing
-    // `transitions::validate_transition`. Without this gate the operator
-    // can drive ANY artifact to ANY of 3 target states regardless of
-    // its current state, no lifecycle bookkeeping. We refuse transitions
-    // that the canonical lifecycle would reject, EXCEPT when the
-    // artifact is no longer in the store (Delete-op restore) — in that
-    // case the row is being re-created from the snapshot, not
-    // transitioned.
-    if let Some(ref new_status) = normalized_target
-        && let Ok(Some(current)) = store.get_record(&receipt.snapshot.id).await
+    // Explicit overrides respect the lifecycle FSM. Read canonical status
+    // first, with the legacy row as a fallback when the file has no status.
+    // Delete recreates an absent artifact rather than transitioning it.
+    let current_status = if normalized_target.is_some() {
+        let canonical_status =
+            match crate::artifact::store::resolve_artifact_path(workspace, &receipt.snapshot.id)
+                .await
+            {
+                Some(path) => {
+                    let content = tokio::fs::read_to_string(path).await?;
+                    let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&content)?;
+                    fm.get("status").and_then(|v| v.as_str()).map(str::to_owned)
+                }
+                None => None,
+            };
+        match canonical_status {
+            Some(status) => Some(status),
+            None => match store {
+                Some(store) => store
+                    .get_record(&receipt.snapshot.id)
+                    .await?
+                    .map(|record| record.status),
+                None => None,
+            },
+        }
+    } else {
+        None
+    };
+    if let Some(new_status) = &normalized_target
+        && let Some(current_status) = &current_status
         && let Err(e) =
-            super::super::lifecycle::transitions::validate_transition(&current.status, new_status)
+            super::super::lifecycle::transitions::validate_transition(current_status, new_status)
     {
         anyhow::bail!(
             "target_status override `{}` would violate lifecycle FSM \
@@ -100,22 +118,11 @@ pub async fn apply_restore_with_target(
              command (`forgeplan_activate` / `_deprecate` / `_supersede`) \
              instead of overriding restore.",
             new_status,
-            current.status
+            current_status
         );
     }
 
-    // Build an effective receipt with status overridden if requested.
-    // The struct is cloned cheaply — strings only — so this doesn't
-    // touch the persisted receipt on disk.
-    let effective_receipt = match normalized_target {
-        Some(t) => {
-            let mut r = receipt.clone();
-            r.snapshot.status = t;
-            r
-        }
-        None => receipt.clone(),
-    };
-    apply_restore(workspace, store, &effective_receipt).await
+    apply_restore_with_sink(workspace, store, receipt, normalized_target.as_deref()).await
 }
 
 pub async fn apply_restore(
@@ -123,187 +130,167 @@ pub async fn apply_restore(
     store: &LanceStore,
     receipt: &Receipt,
 ) -> anyhow::Result<RestoreReport> {
-    let id = receipt.snapshot.id.clone();
+    apply_restore_with_sink(workspace, Some(store), receipt, None).await
+}
 
-    // Collision check (R-3) + kind/title validation (audit H-4).
-    if let Some(existing) = store.get_record(&id).await? {
-        match receipt.op {
-            DestructiveOp::Delete => {
-                anyhow::bail!(
-                    "Artifact '{id}' already exists in the store — cannot restore over it. \
-                     Delete or rename the current `{id}` first."
-                );
-            }
-            DestructiveOp::Supersede | DestructiveOp::Deprecate => {
-                // For status-change ops, the row is still there. We
-                // reset its status and drop the supersede/deprecate
-                // artifacts. BUT — audit H-4 — the row we see might be
-                // a different artifact that happened to get the same
-                // ID via manual fiddling. If kind or title disagree
-                // with the snapshot, refuse to clobber.
-                if existing.kind != receipt.snapshot.kind {
-                    anyhow::bail!(
-                        "Artifact '{id}' in store has kind '{}' but receipt captured '{}' — \
-                         refusing to overwrite. Resolve manually.",
-                        existing.kind,
-                        receipt.snapshot.kind
-                    );
-                }
-                // Title can change legitimately via update; warn but
-                // do not bail. Kind is structural and should match.
-            }
-        }
-    } else if matches!(
+/// Restore canonical Markdown without a legacy derived sink.
+///
+/// This uses the same canonical writes, collision checks, relation replay, and
+/// receipt-consumption barrier as [`apply_restore`]. It never opens a retired
+/// legacy store.
+pub async fn apply_restore_file_first(
+    workspace: &Path,
+    receipt: &Receipt,
+) -> anyhow::Result<RestoreReport> {
+    apply_restore_with_sink(workspace, None, receipt, None).await
+}
+
+/// The one restore implementation both layouts share. Canonical Markdown is
+/// restored first; `sink` only adds legacy collision checks and derived writes.
+async fn apply_restore_with_sink(
+    workspace: &Path,
+    sink: Option<&LanceStore>,
+    receipt: &Receipt,
+    target_status: Option<&str>,
+) -> anyhow::Result<RestoreReport> {
+    let id = &receipt.snapshot.id;
+    let restored_status = target_status.unwrap_or(&receipt.snapshot.status);
+    let existing_path = crate::artifact::store::resolve_artifact_path(workspace, id).await;
+    let existing_record = match sink {
+        Some(store) => store.get_record(id).await?,
+        None => None,
+    };
+
+    // A stale or absent derived row must not let Delete overwrite a live file.
+    if receipt.op == DestructiveOp::Delete && (existing_path.is_some() || existing_record.is_some())
+    {
+        anyhow::bail!(
+            "Artifact '{id}' already exists — cannot restore over it. \
+             Delete or rename the current `{id}` first."
+        );
+    }
+    if matches!(
         receipt.op,
         DestructiveOp::Supersede | DestructiveOp::Deprecate
     ) {
-        // Edge case: row was deleted AFTER supersede/deprecate receipt
-        // was written. Recreate it from snapshot like Delete.
-    }
-
-    let mut warnings: Vec<String> = Vec::new();
-
-    // --- Restore artifact row ---
-    match receipt.op {
-        DestructiveOp::Delete => {
-            let new_art = NewArtifact {
-                id: receipt.snapshot.id.clone(),
-                kind: receipt.snapshot.kind.clone(),
-                status: receipt.snapshot.status.clone(),
-                title: receipt.snapshot.title.clone(),
-                body: receipt.snapshot.body.clone(),
-                depth: receipt.snapshot.depth.clone(),
-                author: receipt.snapshot.author.clone(),
-                parent_epic: receipt.snapshot.parent_epic.clone(),
-                valid_until: receipt.snapshot.valid_until.clone(),
-                tags: Vec::new(),
-            };
-            store.create_artifact(&new_art).await?;
-        }
-        DestructiveOp::Supersede | DestructiveOp::Deprecate => {
-            // If row exists, reset status + clear any supersede link.
-            // If row was also deleted after, recreate fully.
-            if store.get_record(&id).await?.is_some() {
-                store
-                    .update_artifact(
-                        &id,
-                        Some(&receipt.snapshot.status),
-                        Some(&receipt.snapshot.title),
-                    )
-                    .await?;
-                // Drop the new supersede link that lifecycle::supersede added.
-                if let DestructiveOp::Supersede = receipt.op
-                    && let Some(repl) = &receipt.replacement
-                    && let Err(e) = store.delete_relation(&id, repl, "supersedes").await
-                {
-                    warnings.push(format!("could not drop supersede link {id}→{repl}: {e}"));
-                }
-            } else {
-                // Row was deleted afterwards; recreate like Delete.
-                let new_art = NewArtifact {
-                    id: receipt.snapshot.id.clone(),
-                    kind: receipt.snapshot.kind.clone(),
-                    status: receipt.snapshot.status.clone(),
-                    title: receipt.snapshot.title.clone(),
-                    body: receipt.snapshot.body.clone(),
-                    depth: receipt.snapshot.depth.clone(),
-                    author: receipt.snapshot.author.clone(),
-                    parent_epic: receipt.snapshot.parent_epic.clone(),
-                    valid_until: receipt.snapshot.valid_until.clone(),
-                    tags: Vec::new(),
-                };
-                store.create_artifact(&new_art).await?;
+        let canonical_kind = match existing_path.as_deref() {
+            Some(path) => {
+                let content = tokio::fs::read_to_string(path).await?;
+                let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&content)?;
+                fm.get("kind").and_then(|v| v.as_str()).map(str::to_owned)
+            }
+            None => None,
+        };
+        // Kind is structural; title changes are legitimate and are reversed
+        // below. Preserve the legacy kind-collision refusal as well.
+        for kind in canonical_kind
+            .as_deref()
+            .into_iter()
+            .chain(existing_record.as_ref().map(|record| record.kind.as_str()))
+        {
+            if !kind.is_empty() && kind != receipt.snapshot.kind {
+                anyhow::bail!(
+                    "Artifact '{id}' has kind '{kind}' but receipt captured '{}' — \
+                     refusing to overwrite. Resolve manually.",
+                    receipt.snapshot.kind
+                );
             }
         }
     }
 
-    // --- Restore relations ---
-    let mut relations_restored = 0usize;
-    let mut relations_skipped: Vec<String> = Vec::new();
+    // Canonical restoration is mandatory regardless of the optional sink.
+    let path = match receipt.op {
+        DestructiveOp::Delete => {
+            if !restore_projection_file(workspace, receipt).await? {
+                anyhow::bail!(
+                    "No trashed projection exists for '{id}'; canonical restore \
+                     cannot complete. The receipt remains available."
+                );
+            }
+            let path = compute_safe_projection_path(workspace, &receipt.snapshot)?;
+            // Normal restore moves the exact trashed bytes. Only an explicit
+            // override authorizes rewriting their status frontmatter.
+            if let Some(status) = target_status {
+                crate::projection::update_metadata_file_first(&path, Some(status), None, None)
+                    .await?
+            } else {
+                path
+            }
+        }
+        DestructiveOp::Supersede | DestructiveOp::Deprecate => match existing_path {
+            Some(path) => {
+                // Keep the returned path: restoring the captured title can
+                // rename the file before the supersede edge is removed.
+                crate::projection::update_metadata_file_first(
+                    &path,
+                    Some(restored_status),
+                    Some(&receipt.snapshot.title),
+                    None,
+                )
+                .await?
+            }
+            None => {
+                render_snapshot_projection(workspace, receipt, restored_status).await?;
+                compute_safe_projection_path(workspace, &receipt.snapshot)?
+            }
+        },
+    };
+    if receipt.op == DestructiveOp::Supersede
+        && let Some(replacement) = &receipt.replacement
+    {
+        crate::link::remove_link(&path, replacement, "supersedes")
+            .await
+            .with_context(|| format!("could not drop supersede link {id}→{replacement}"))?;
+    }
 
+    // No store-to-file rendering here: it would replace the canonical bytes
+    // just restored from trash, including fields the receipt does not capture.
+    if let Some(store) = sink {
+        if existing_record.is_some() {
+            store
+                .update_artifact(id, Some(restored_status), Some(&receipt.snapshot.title))
+                .await?;
+        } else {
+            store
+                .create_artifact(&snapshot_artifact(receipt, restored_status))
+                .await?;
+        }
+        if receipt.op == DestructiveOp::Supersede
+            && let Some(replacement) = &receipt.replacement
+        {
+            store
+                .delete_relation(id, replacement, "supersedes")
+                .await
+                .with_context(|| {
+                    format!("could not drop legacy supersede link {id}→{replacement}")
+                })?;
+        }
+    }
+
+    let mut relations_restored = 0usize;
+    let mut relations_skipped = Vec::new();
     for rel in &receipt.snapshot.relations {
         let (source, target) = (rel.from.as_str(), rel.to.as_str());
-        // Outgoing: this artifact → target. Target must exist.
-        // Incoming: source → this artifact. Source must exist.
-        // For both we re-add the (source, target, relation) triple.
         let other_id = match rel.direction {
             super::RelationDirection::Outgoing => target,
             super::RelationDirection::Incoming => source,
         };
-        // Skip orphaned links if the other end is missing.
-        if store.get_record(other_id).await?.is_none() {
+        // Missing participants are the only explicit skip policy. Parse,
+        // permission, and write errors must leave the receipt unconsumed.
+        if !participant_exists(sink, workspace, other_id).await? {
             relations_skipped.push(other_id.to_string());
             continue;
         }
-        match store.add_relation(source, target, &rel.relation).await {
-            Ok(()) => relations_restored += 1,
-            Err(e) => warnings.push(format!("relation {source}→{target} skipped: {e}")),
-        }
+        replay_relation(sink, workspace, source, target, &rel.relation)
+            .await
+            .with_context(|| format!("could not restore relation {source}→{target}"))?;
+        relations_restored += 1;
     }
 
-    // --- Move projection back (Delete only) ---
-    let mut projection_restored = false;
-    if matches!(receipt.op, DestructiveOp::Delete) {
-        let trashed = Path::new(&receipt.trashed_projection);
-        // C-1 security (audit Round 3 — path traversal): NEVER trust
-        // `receipt.snapshot.projection_path` verbatim. A tampered
-        // receipt could point at `/etc/passwd` or anywhere outside
-        // the workspace. Recompute the destination from workspace +
-        // kind + id + slug, then verify it stays inside the workspace
-        // via canonicalize + starts_with.
-        let safe_original = match compute_safe_projection_path(workspace, &receipt.snapshot) {
-            Ok(p) => p,
-            Err(e) => {
-                warnings.push(format!(
-                    "cannot compute safe projection path: {e} — skipping projection restore"
-                ));
-                // Still mark overall as not restored; fall through.
-                PathBuf::new()
-            }
-        };
-        if !safe_original.as_os_str().is_empty() && trashed.exists() {
-            if let Some(parent) = safe_original.parent() {
-                let _ = tokio::fs::create_dir_all(parent).await;
-            }
-            match tokio::fs::rename(trashed, &safe_original).await {
-                Ok(()) => projection_restored = true,
-                Err(e) => {
-                    // Try copy+remove if cross-device.
-                    match tokio::fs::copy(trashed, &safe_original).await {
-                        Ok(_) => {
-                            let _ = tokio::fs::remove_file(trashed).await;
-                            projection_restored = true;
-                        }
-                        Err(copy_err) => {
-                            warnings.push(format!(
-                                "could not restore projection to {}: {} (rename: {})",
-                                safe_original.display(),
-                                copy_err,
-                                e
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        // For supersede/deprecate the projection was never moved.
-        projection_restored = true;
-    }
-
-    // --- Mark receipt consumed (prevents undo-last re-application) ---
-    //
-    // Audit C-1 logic (FR-011 transactional): mark_consumed failure is
-    // NOT a mere warning. If we return Ok() with the receipt still
-    // unconsumed on disk, a subsequent undo_last re-applies the same
-    // receipt — for Delete it collides (harmless), for Supersede/
-    // Deprecate it silently re-runs update_artifact (misleading
-    // "success"). Propagate the error so the caller sees the
-    // transactional failure.
     if let Err(e) = mark_consumed(workspace, &receipt.receipt_id).await {
         return Err(anyhow::anyhow!(
             "restore applied successfully but failed to mark receipt {} consumed: {e}. \
-             The artifact is restored in the store, but a subsequent undo_last would \
+             The artifact is restored, but a subsequent undo_last would \
              re-apply this receipt. Manual intervention: edit the receipt file and set \
              `consumed: true`, or retry restore after fixing the underlying I/O error.",
             receipt.receipt_id
@@ -311,15 +298,155 @@ pub async fn apply_restore(
     }
 
     Ok(RestoreReport {
-        artifact_id: id,
+        artifact_id: id.clone(),
         op: receipt.op,
         relations_restored,
         relations_skipped,
-        projection_restored,
-        warnings,
-        // Issue #291: surface the status the artifact was restored to.
-        restored_status: receipt.snapshot.status.clone(),
+        projection_restored: true,
+        warnings: Vec::new(),
+        restored_status: restored_status.to_string(),
     })
+}
+
+/// The `NewArtifact` a receipt's snapshot describes.
+///
+/// Tags are deliberately empty, matching the store path: the snapshot does
+/// not capture them (they live in the projection frontmatter the trashed
+/// file carries), and inventing them would claim a derivation that never
+/// happened.
+fn snapshot_artifact(receipt: &Receipt, status: &str) -> NewArtifact {
+    NewArtifact {
+        id: receipt.snapshot.id.clone(),
+        kind: receipt.snapshot.kind.clone(),
+        status: status.to_string(),
+        title: receipt.snapshot.title.clone(),
+        body: receipt.snapshot.body.clone(),
+        depth: receipt.snapshot.depth.clone(),
+        author: receipt.snapshot.author.clone(),
+        parent_epic: receipt.snapshot.parent_epic.clone(),
+        valid_until: receipt.snapshot.valid_until.clone(),
+        tags: Vec::new(),
+    }
+}
+
+/// Move the trashed projection back without re-rendering it on either layout.
+///
+/// The destination is recomputed from workspace + kind + id + slug, never
+/// taken from the receipt's recorded projection path. A missing trashed file
+/// returns `false`; the restore cannot then consume its receipt.
+async fn restore_projection_file(workspace: &Path, receipt: &Receipt) -> anyhow::Result<bool> {
+    let trashed = Path::new(&receipt.trashed_projection);
+    let safe_original = compute_safe_projection_path(workspace, &receipt.snapshot)?;
+    if !trashed.exists() {
+        // Nothing in trash for this receipt — a `Delete` whose move failed, or
+        // a supersede/deprecate that never moved a file. Nothing to move.
+        return Ok(false);
+    }
+    if let Some(parent) = safe_original.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    match tokio::fs::rename(trashed, &safe_original).await {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            // Cross-device fallback, identical to the store path.
+            match tokio::fs::copy(trashed, &safe_original).await {
+                Ok(_) => {
+                    tokio::fs::remove_file(trashed).await?;
+                    Ok(true)
+                }
+                Err(copy_err) => Err(anyhow::anyhow!(
+                    "could not restore projection to {}: {} (rename: {})",
+                    safe_original.display(),
+                    copy_err,
+                    e
+                )),
+            }
+        }
+    }
+}
+
+/// Re-render a receipt's snapshot into its canonical projection file.
+///
+/// Used when a status-change receipt's artifact is gone from the workspace
+/// entirely: there is no trashed body to move back (supersede/deprecate never
+/// trash one), so the canonical file is written from the captured fields.
+/// Every value comes from the receipt; nothing is inferred.
+async fn render_snapshot_projection(
+    workspace: &Path,
+    receipt: &Receipt,
+    status: &str,
+) -> anyhow::Result<()> {
+    let snapshot = &receipt.snapshot;
+    crate::projection::render_projection_with_body(
+        workspace,
+        &snapshot.id,
+        &snapshot.kind,
+        &snapshot.title,
+        status,
+        &snapshot.depth,
+        snapshot.author.as_deref(),
+        snapshot.parent_epic.as_deref(),
+        snapshot.valid_until.as_deref(),
+        &snapshot.body,
+        &[],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Canonical participants count even if the derived row is stale or absent.
+/// A legacy-only row also counts, so a missing SOURCE file becomes a replay
+/// error rather than silently discarding a known participant's relation.
+async fn participant_exists(
+    sink: Option<&LanceStore>,
+    workspace: &Path,
+    id: &str,
+) -> anyhow::Result<bool> {
+    if crate::artifact::store::resolve_artifact_path(workspace, id)
+        .await
+        .is_some()
+    {
+        return Ok(true);
+    }
+    match sink {
+        Some(store) => Ok(store.get_record(id).await?.is_some()),
+        None => Ok(false),
+    }
+}
+
+/// Re-add an edge to its canonical SOURCE file, then the optional legacy sink.
+///
+/// Only the typed `LinkExists` error is a canonical no-op. Legacy duplicates
+/// are confirmed by reading the existing triple, not by matching error text.
+async fn replay_relation(
+    sink: Option<&LanceStore>,
+    workspace: &Path,
+    source: &str,
+    target: &str,
+    relation: &str,
+) -> anyhow::Result<()> {
+    let path = crate::artifact::store::resolve_artifact_path(workspace, source)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("source artifact '{source}' not found"))?;
+    match crate::link::add_link_verbatim(&path, target, relation).await {
+        Err(error)
+            if matches!(
+                error.downcast_ref::<crate::error::ForgeplanError>(),
+                Some(crate::error::ForgeplanError::LinkExists { .. })
+            ) => {}
+        result => result?,
+    }
+    if let Some(store) = sink {
+        let duplicate = store
+            .get_relations(source)
+            .await?
+            .iter()
+            .any(|(t, r)| t.eq_ignore_ascii_case(target) && r == relation);
+        if !duplicate {
+            store.add_relation(source, target, relation).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Compute the destination projection path from snapshot fields,
@@ -333,12 +460,12 @@ fn compute_safe_projection_path(
     workspace: &Path,
     snapshot: &super::ArtifactSnapshot,
 ) -> anyhow::Result<PathBuf> {
-    use crate::artifact::types::{ArtifactKind, slugify};
+    use crate::artifact::types::ArtifactKind;
     let kind: ArtifactKind = snapshot
         .kind
         .parse()
         .map_err(|e| anyhow::anyhow!("receipt has unknown kind '{}': {e}", snapshot.kind))?;
-    let slug = slugify(&snapshot.title);
+    let slug = crate::projection::projection_slug(&snapshot.title);
     let filename = format!("{}-{}.md", snapshot.id, slug);
     let candidate = workspace.join(kind.dir_name()).join(&filename);
 
@@ -431,10 +558,42 @@ mod tests {
         }
     }
 
+    async fn stage_deleted_projection(workspace: &Path, receipt: &mut Receipt) {
+        render_snapshot_projection(workspace, receipt, &receipt.snapshot.status)
+            .await
+            .unwrap();
+        let original = compute_safe_projection_path(workspace, &receipt.snapshot).unwrap();
+        let trashed = trashed_projection_path(workspace, &receipt.receipt_id);
+        tokio::fs::create_dir_all(trashed.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::rename(&original, &trashed).await.unwrap();
+        receipt.snapshot.projection_path = original.display().to_string();
+        receipt.trashed_projection = trashed.display().to_string();
+    }
+
+    async fn assert_canonical_metadata(workspace: &Path, id: &str, status: &str, title: &str) {
+        let path = crate::artifact::store::resolve_artifact_path(workspace, id)
+            .await
+            .expect("canonical artifact must exist");
+        let text = tokio::fs::read_to_string(path).await.unwrap();
+        let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&text).unwrap();
+        assert_eq!(fm.get("id").and_then(|value| value.as_str()), Some(id));
+        assert_eq!(
+            fm.get("status").and_then(|value| value.as_str()),
+            Some(status)
+        );
+        assert_eq!(
+            fm.get("title").and_then(|value| value.as_str()),
+            Some(title)
+        );
+    }
+
     #[tokio::test]
     async fn restore_delete_recreates_row() {
         let (_tmp, ws, store) = fresh_ws().await;
-        let receipt = build_receipt("PRD-001", DestructiveOp::Delete, "# body");
+        let mut receipt = build_receipt("PRD-001", DestructiveOp::Delete, "# body");
+        stage_deleted_projection(&ws, &mut receipt).await;
         write_receipt(&ws, &receipt).await.unwrap();
 
         // Simulate prior delete: no row in store.
@@ -450,6 +609,14 @@ mod tests {
             .expect("row back");
         assert_eq!(restored.body, "# body");
         assert_eq!(restored.status, "active");
+        assert!(report.projection_restored);
+        assert_canonical_metadata(&ws, "PRD-001", "active", "Title PRD-001").await;
+        assert!(
+            super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+                .await
+                .unwrap()
+                .consumed
+        );
     }
 
     #[tokio::test]
@@ -511,6 +678,10 @@ mod tests {
             .update_artifact("PRD-002", Some("deprecated"), None)
             .await
             .unwrap();
+        crate::projection::render_after_mutation(&ws, &store, "PRD-002")
+            .await
+            .unwrap();
+        assert_canonical_metadata(&ws, "PRD-002", "deprecated", "To deprecate").await;
 
         // Receipt captured state BEFORE deprecate (status=active).
         let mut receipt = build_receipt("PRD-002", DestructiveOp::Deprecate, "b");
@@ -522,12 +693,20 @@ mod tests {
 
         let r = store.get_record("PRD-002").await.unwrap().unwrap();
         assert_eq!(r.status, "active");
+        assert_canonical_metadata(&ws, "PRD-002", "active", "To deprecate").await;
+        assert!(
+            super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+                .await
+                .unwrap()
+                .consumed
+        );
     }
 
     #[tokio::test]
     async fn restore_marks_receipt_consumed() {
         let (_tmp, ws, store) = fresh_ws().await;
-        let receipt = build_receipt("PRD-003", DestructiveOp::Delete, "x");
+        let mut receipt = build_receipt("PRD-003", DestructiveOp::Delete, "x");
+        stage_deleted_projection(&ws, &mut receipt).await;
         write_receipt(&ws, &receipt).await.unwrap();
         apply_restore(&ws, &store, &receipt).await.unwrap();
 
@@ -549,11 +728,20 @@ mod tests {
             relation: "informs".into(),
             direction: RelationDirection::Outgoing,
         });
+        stage_deleted_projection(&ws, &mut receipt).await;
         write_receipt(&ws, &receipt).await.unwrap();
 
         let report = apply_restore(&ws, &store, &receipt).await.unwrap();
         assert_eq!(report.relations_restored, 0);
         assert_eq!(report.relations_skipped, vec!["EVID-999".to_string()]);
+        assert!(report.warnings.is_empty());
+        assert_canonical_metadata(&ws, "PRD-004", "active", "Title PRD-004").await;
+        assert!(
+            super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+                .await
+                .unwrap()
+                .consumed
+        );
     }
 
     #[tokio::test]
@@ -606,6 +794,20 @@ mod tests {
             original.display()
         );
         assert!(!trashed.exists(), "trashed copy should be gone");
+        assert_eq!(
+            tokio::fs::read(&original).await.unwrap(),
+            b"# original body\n"
+        );
+        assert_eq!(
+            store.get_record("PRD-005").await.unwrap().unwrap().status,
+            "active"
+        );
+        assert!(
+            super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+                .await
+                .unwrap()
+                .consumed
+        );
     }
 
     // ── Audit Round 3 regression tests ────────────────────────
@@ -683,13 +885,11 @@ mod tests {
         // we MUST return Err, not Ok with a warning. Otherwise
         // undo_last re-applies the same receipt.
         //
-        // We simulate the failure by deleting the receipt file out
-        // from under mark_consumed so the `rename(tmp → path)` has
-        // no target directory entry issue — actually, mark_consumed
-        // will still work because it creates the tmp file and
-        // renames over. Better test: make the parent read-only.
+        // Remove the persisted receipt after preparing a real trashed
+        // projection, so the failure occurs at the consumption barrier.
         let (_tmp, ws, store) = fresh_ws().await;
-        let receipt = build_receipt("PRD-MC", DestructiveOp::Delete, "body");
+        let mut receipt = build_receipt("PRD-MC", DestructiveOp::Delete, "body");
+        stage_deleted_projection(&ws, &mut receipt).await;
         write_receipt(&ws, &receipt).await.unwrap();
 
         // Pre-delete the receipt file so mark_consumed's read fails.
@@ -706,6 +906,8 @@ mod tests {
             err.contains("failed to mark receipt"),
             "error should mention mark_consumed: {err}"
         );
+        assert_canonical_metadata(&ws, "PRD-MC", "active", "Title PRD-MC").await;
+        assert!(store.get_record("PRD-MC").await.unwrap().is_some());
     }
 
     #[tokio::test]
@@ -799,12 +1001,16 @@ mod tests {
             .update_artifact("PRD-291A", Some("deprecated"), None)
             .await
             .unwrap();
+        crate::projection::render_after_mutation(&ws, &store, "PRD-291A")
+            .await
+            .unwrap();
         let mut receipt = build_receipt("PRD-291A", DestructiveOp::Deprecate, "b");
         receipt.snapshot.status = "active".into();
         write_receipt(&ws, &receipt).await.unwrap();
 
         let report = apply_restore(&ws, &store, &receipt).await.unwrap();
         assert_eq!(report.restored_status, "active");
+        assert_canonical_metadata(&ws, "PRD-291A", "active", "Title PRD-291A").await;
     }
 
     /// `apply_restore_with_target` explicit override wins over snapshot
@@ -832,6 +1038,9 @@ mod tests {
             })
             .await
             .unwrap();
+        crate::projection::render_after_mutation(&ws, &store, "PRD-291B")
+            .await
+            .unwrap();
         // Receipt captured active (the prior_status before some earlier op);
         // current row is draft (a valid `draft → active` transition).
         let mut receipt = build_receipt("PRD-291B", DestructiveOp::Deprecate, "b");
@@ -839,13 +1048,19 @@ mod tests {
         write_receipt(&ws, &receipt).await.unwrap();
 
         // Override to `active` — FSM-valid from `draft`.
-        let report = apply_restore_with_target(&ws, &store, &receipt, Some("active"))
+        let report = apply_restore_with_target(&ws, Some(&store), &receipt, Some("active"))
             .await
             .unwrap();
         assert_eq!(report.restored_status, "active", "override wins");
 
         let r = store.get_record("PRD-291B").await.unwrap().unwrap();
         assert_eq!(r.status, "active", "store reflects override");
+        assert_canonical_metadata(&ws, "PRD-291B", "active", "Title PRD-291B").await;
+        let persisted = super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+            .await
+            .unwrap();
+        assert_eq!(persisted.snapshot.status, "draft");
+        assert!(persisted.consumed);
     }
 
     /// Audit-dogfood SEC-2: target_status override that violates the
@@ -875,12 +1090,15 @@ mod tests {
             .update_artifact("PRD-291E", Some("deprecated"), None)
             .await
             .unwrap();
+        crate::projection::render_after_mutation(&ws, &store, "PRD-291E")
+            .await
+            .unwrap();
         let mut receipt = build_receipt("PRD-291E", DestructiveOp::Deprecate, "b");
         receipt.snapshot.status = "active".into();
         write_receipt(&ws, &receipt).await.unwrap();
 
         // `deprecated → draft` is FSM-invalid — must be rejected.
-        let err = apply_restore_with_target(&ws, &store, &receipt, Some("draft"))
+        let err = apply_restore_with_target(&ws, Some(&store), &receipt, Some("draft"))
             .await
             .expect_err("FSM should reject deprecated->draft override");
         assert!(
@@ -890,6 +1108,13 @@ mod tests {
         // Store still deprecated — no partial mutation.
         let r = store.get_record("PRD-291E").await.unwrap().unwrap();
         assert_eq!(r.status, "deprecated", "no partial mutation on FSM reject");
+        assert_canonical_metadata(&ws, "PRD-291E", "deprecated", "T").await;
+        assert!(
+            !super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+                .await
+                .unwrap()
+                .consumed
+        );
     }
 
     /// Invalid target_status value is rejected BEFORE mutation.
@@ -911,11 +1136,14 @@ mod tests {
             })
             .await
             .unwrap();
+        crate::projection::render_after_mutation(&ws, &store, "PRD-291C")
+            .await
+            .unwrap();
         let mut receipt = build_receipt("PRD-291C", DestructiveOp::Deprecate, "b");
         receipt.snapshot.status = "active".into();
         write_receipt(&ws, &receipt).await.unwrap();
 
-        let err = apply_restore_with_target(&ws, &store, &receipt, Some("bogus"))
+        let err = apply_restore_with_target(&ws, Some(&store), &receipt, Some("bogus"))
             .await
             .unwrap_err();
         assert!(
@@ -925,6 +1153,13 @@ mod tests {
         // Store unchanged — error happened before mutation.
         let r = store.get_record("PRD-291C").await.unwrap().unwrap();
         assert_eq!(r.status, "deprecated", "no partial restore on bad input");
+        assert_canonical_metadata(&ws, "PRD-291C", "deprecated", "T").await;
+        assert!(
+            !super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+                .await
+                .unwrap()
+                .consumed
+        );
     }
 
     /// `None` override = legacy behaviour identical to `apply_restore`.
@@ -950,16 +1185,485 @@ mod tests {
             .update_artifact("PRD-291D", Some("deprecated"), None)
             .await
             .unwrap();
+        crate::projection::render_after_mutation(&ws, &store, "PRD-291D")
+            .await
+            .unwrap();
         let mut receipt = build_receipt("PRD-291D", DestructiveOp::Deprecate, "b");
         receipt.snapshot.status = "active".into();
         write_receipt(&ws, &receipt).await.unwrap();
 
-        let report = apply_restore_with_target(&ws, &store, &receipt, None)
+        let report = apply_restore_with_target(&ws, Some(&store), &receipt, None)
             .await
             .unwrap();
         assert_eq!(
             report.restored_status, "active",
             "None override uses captured snapshot.status"
         );
+        assert_canonical_metadata(&ws, "PRD-291D", "active", "Title PRD-291D").await;
+    }
+
+    #[tokio::test]
+    async fn legacy_delete_restore_preserves_bytes_and_replays_canonical_relations() {
+        let (_tmp, ws, store) = fresh_ws().await;
+        let target = build_receipt("PRD-412", DestructiveOp::Deprecate, "Target body.\n");
+        let incoming = build_receipt("PRD-413", DestructiveOp::Deprecate, "Incoming body.\n");
+        for participant in [&target, &incoming] {
+            render_snapshot_projection(&ws, participant, "active")
+                .await
+                .unwrap();
+            store
+                .create_artifact(&snapshot_artifact(participant, "active"))
+                .await
+                .unwrap();
+        }
+        let target_path = compute_safe_projection_path(&ws, &target.snapshot).unwrap();
+        let target_bytes = tokio::fs::read(&target_path).await.unwrap();
+        let mut receipt = build_receipt("PRD-411", DestructiveOp::Delete, "Original body.\n");
+        receipt.snapshot.relations = vec![
+            CapturedRelation {
+                from: "PRD-411".into(),
+                to: "PRD-412".into(),
+                relation: "based_on".into(),
+                direction: RelationDirection::Outgoing,
+            },
+            CapturedRelation {
+                from: "PRD-413".into(),
+                to: "PRD-411".into(),
+                relation: "informs".into(),
+                direction: RelationDirection::Incoming,
+            },
+        ];
+        // A surviving derived triple must be an exact duplicate no-op, not a
+        // swallowed relation error. Its missing canonical link still needs replay.
+        store
+            .add_relation("PRD-413", "PRD-411", "informs")
+            .await
+            .unwrap();
+        let original = "---\n# Keep operator formatting and fields not captured in the receipt.\nid: PRD-411\nkind: prd\nstatus: active\ntitle: 'Title PRD-411'\ndepth: standard\ntags: [kept]\ncustom: 'unchanged'\nlinks:\n  - target: PRD-412\n    relation: based_on\n---\n\nOriginal body.\n";
+        let trashed = trashed_projection_path(&ws, &receipt.receipt_id);
+        tokio::fs::create_dir_all(trashed.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&trashed, original).await.unwrap();
+        receipt.trashed_projection = trashed.display().to_string();
+        write_receipt(&ws, &receipt).await.unwrap();
+
+        let report = apply_restore(&ws, &store, &receipt).await.unwrap();
+        let restored_path = compute_safe_projection_path(&ws, &receipt.snapshot).unwrap();
+        assert_eq!(
+            tokio::fs::read(&restored_path).await.unwrap(),
+            original.as_bytes()
+        );
+        assert!(!trashed.exists());
+        assert!(report.projection_restored);
+        assert_eq!(report.relations_restored, 2);
+        assert!(report.relations_skipped.is_empty());
+        assert!(report.warnings.is_empty());
+        assert_canonical_metadata(&ws, "PRD-411", "active", "Title PRD-411").await;
+        let incoming_path = compute_safe_projection_path(&ws, &incoming.snapshot).unwrap();
+        let text = tokio::fs::read_to_string(incoming_path).await.unwrap();
+        let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&text).unwrap();
+        assert_eq!(
+            crate::link::list_links(&fm),
+            vec![("PRD-411".to_string(), "informs".to_string())]
+        );
+        assert_eq!(
+            store.get_relations("PRD-411").await.unwrap(),
+            vec![("PRD-412".to_string(), "based_on".to_string())]
+        );
+        assert_eq!(
+            store.get_relations("PRD-413").await.unwrap(),
+            vec![("PRD-411".to_string(), "informs".to_string())]
+        );
+        assert_eq!(
+            store.get_record("PRD-411").await.unwrap().unwrap().status,
+            "active"
+        );
+        assert_eq!(tokio::fs::read(target_path).await.unwrap(), target_bytes);
+        assert!(
+            super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+                .await
+                .unwrap()
+                .consumed
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_deleted_artifact_restore_applies_explicit_status() {
+        let (_tmp, ws, store) = fresh_ws().await;
+        let mut receipt = build_receipt("PRD-441", DestructiveOp::Delete, "Original body.\n");
+        stage_deleted_projection(&ws, &mut receipt).await;
+        write_receipt(&ws, &receipt).await.unwrap();
+
+        let report = apply_restore_with_target(&ws, Some(&store), &receipt, Some(" draft "))
+            .await
+            .unwrap();
+
+        assert_canonical_metadata(&ws, "PRD-441", "draft", "Title PRD-441").await;
+        assert_eq!(
+            store.get_record("PRD-441").await.unwrap().unwrap().status,
+            "draft"
+        );
+        assert_eq!(report.restored_status, "draft");
+        let persisted = super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+            .await
+            .unwrap();
+        assert_eq!(persisted.snapshot.status, "active");
+        assert!(persisted.consumed);
+        assert!(!Path::new(&receipt.trashed_projection).exists());
+    }
+
+    #[tokio::test]
+    async fn restore_supersede_reverses_title_rename_and_edge_on_both_layouts() {
+        for legacy in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let ws = workspace::init_workspace(tmp.path(), "restore-renamed-supersede").unwrap();
+            let sink = if legacy {
+                Some(LanceStore::init(&ws).await.unwrap())
+            } else {
+                None
+            };
+            let mut receipt = build_receipt("PRD-421", DestructiveOp::Supersede, "Source body.\n");
+            let replacement =
+                build_receipt("PRD-422", DestructiveOp::Deprecate, "Replacement body.\n");
+            for participant in [&receipt, &replacement] {
+                render_snapshot_projection(&ws, participant, "active")
+                    .await
+                    .unwrap();
+                if let Some(store) = sink.as_ref() {
+                    store
+                        .create_artifact(&snapshot_artifact(participant, "active"))
+                        .await
+                        .unwrap();
+                }
+            }
+            let original_path = compute_safe_projection_path(&ws, &receipt.snapshot).unwrap();
+            let replacement_path =
+                compute_safe_projection_path(&ws, &replacement.snapshot).unwrap();
+            receipt.replacement = Some("PRD-422".into());
+            write_receipt(&ws, &receipt).await.unwrap();
+            let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+            let ctx = crate::projection::MutationContext::new(&ws, &guard, sink.as_ref());
+            let read = crate::constellation::facade::open_workspace_read(
+                &ws,
+                None,
+                crate::constellation::capture::CaptureLimits::default(),
+            )
+            .await
+            .unwrap();
+            crate::lifecycle::canonical::supersede_captured(&ctx, &read, "PRD-421", "PRD-422")
+                .await
+                .unwrap();
+            crate::projection::update_metadata_with_projection(
+                &ctx,
+                "PRD-421",
+                None,
+                Some("Renamed after supersede"),
+            )
+            .await
+            .unwrap();
+            let renamed_path = crate::artifact::store::resolve_artifact_path(&ws, "PRD-421")
+                .await
+                .unwrap();
+            assert_ne!(renamed_path, original_path);
+            assert!(!original_path.exists());
+            let superseded_text = tokio::fs::read_to_string(&renamed_path).await.unwrap();
+            let (fm, _) =
+                crate::artifact::frontmatter::parse_frontmatter(&superseded_text).unwrap();
+            assert_eq!(
+                fm.get("status").and_then(|value| value.as_str()),
+                Some("superseded")
+            );
+            assert!(
+                crate::link::list_links(&fm)
+                    .contains(&("PRD-422".to_string(), "supersedes".to_string()))
+            );
+            let replacement_bytes = tokio::fs::read(&replacement_path).await.unwrap();
+
+            let report = match sink.as_ref() {
+                Some(store) => apply_restore(&ws, store, &receipt).await.unwrap(),
+                None => apply_restore_file_first(&ws, &receipt).await.unwrap(),
+            };
+
+            let restored_path = crate::artifact::store::resolve_artifact_path(&ws, "PRD-421")
+                .await
+                .unwrap();
+            assert_eq!(restored_path, original_path);
+            assert!(!renamed_path.exists());
+            assert_canonical_metadata(&ws, "PRD-421", "active", "Title PRD-421").await;
+            let text = tokio::fs::read_to_string(restored_path).await.unwrap();
+            let (fm, body) = crate::artifact::frontmatter::parse_frontmatter(&text).unwrap();
+            assert!(crate::link::list_links(&fm).is_empty());
+            assert_eq!(body.trim(), "Source body.");
+            assert!(report.projection_restored);
+            assert!(report.warnings.is_empty());
+            assert_eq!(report.restored_status, "active");
+            if let Some(store) = sink.as_ref() {
+                let record = store.get_record("PRD-421").await.unwrap().unwrap();
+                assert_eq!(record.status, "active");
+                assert_eq!(record.title, "Title PRD-421");
+                assert!(store.get_relations("PRD-421").await.unwrap().is_empty());
+            } else {
+                assert!(!ws.join("lance/artifacts.lance").exists());
+            }
+            assert_eq!(
+                tokio::fs::read(replacement_path).await.unwrap(),
+                replacement_bytes
+            );
+            assert!(
+                super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+                    .await
+                    .unwrap()
+                    .consumed
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_relation_write_failure_keeps_receipt_retryable_on_both_layouts() {
+        for legacy in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let ws = workspace::init_workspace(tmp.path(), "restore-relation-failure").unwrap();
+            let sink = if legacy {
+                Some(LanceStore::init(&ws).await.unwrap())
+            } else {
+                None
+            };
+            let mut receipt =
+                build_receipt("PRD-431", DestructiveOp::Deprecate, "Restored body.\n");
+            let incoming = build_receipt("PRD-432", DestructiveOp::Deprecate, "Incoming body.\n");
+            render_snapshot_projection(&ws, &receipt, "deprecated")
+                .await
+                .unwrap();
+            let source_path = compute_safe_projection_path(&ws, &incoming.snapshot).unwrap();
+            // This participant exists, but the real canonical link writer
+            // cannot append to its malformed links field. It must not count
+            // as an orphan, duplicate, or successful recovery.
+            let malformed = "---\nid: PRD-432\nkind: prd\nstatus: active\ntitle: Title PRD-432\nlinks: not-a-sequence\n---\n\nIncoming body.\n";
+            tokio::fs::write(&source_path, malformed).await.unwrap();
+            if let Some(store) = sink.as_ref() {
+                store
+                    .create_artifact(&snapshot_artifact(&receipt, "deprecated"))
+                    .await
+                    .unwrap();
+                store
+                    .create_artifact(&snapshot_artifact(&incoming, "active"))
+                    .await
+                    .unwrap();
+            }
+            receipt.snapshot.relations.push(CapturedRelation {
+                from: "PRD-432".into(),
+                to: "PRD-431".into(),
+                relation: "informs".into(),
+                direction: RelationDirection::Incoming,
+            });
+            write_receipt(&ws, &receipt).await.unwrap();
+            let receipt_file = receipt_path(&ws, &receipt.receipt_id);
+            let receipt_bytes = tokio::fs::read(&receipt_file).await.unwrap();
+
+            let error = apply_restore_with_target(&ws, sink.as_ref(), &receipt, None)
+                .await
+                .expect_err("a failed incoming relation write cannot consume the receipt");
+
+            assert!(matches!(
+                error.downcast_ref::<crate::error::ForgeplanError>(),
+                Some(crate::error::ForgeplanError::Frontmatter(_))
+            ));
+            assert_canonical_metadata(&ws, "PRD-431", "active", "Title PRD-431").await;
+            assert_eq!(
+                tokio::fs::read(&source_path).await.unwrap(),
+                malformed.as_bytes()
+            );
+            assert_eq!(tokio::fs::read(&receipt_file).await.unwrap(), receipt_bytes);
+            assert!(
+                !super::super::read_receipt(&receipt_file)
+                    .await
+                    .unwrap()
+                    .consumed
+            );
+            if let Some(store) = sink.as_ref() {
+                assert_eq!(
+                    store.get_record("PRD-431").await.unwrap().unwrap().status,
+                    "active"
+                );
+                assert!(store.get_relations("PRD-432").await.unwrap().is_empty());
+            }
+
+            render_snapshot_projection(&ws, &incoming, "active")
+                .await
+                .unwrap();
+            let report = apply_restore_with_target(&ws, sink.as_ref(), &receipt, None)
+                .await
+                .unwrap();
+            let text = tokio::fs::read_to_string(&source_path).await.unwrap();
+            let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&text).unwrap();
+            assert_eq!(
+                crate::link::list_links(&fm),
+                vec![("PRD-431".to_string(), "informs".to_string())]
+            );
+            assert_eq!(report.relations_restored, 1);
+            assert!(report.relations_skipped.is_empty());
+            assert!(report.warnings.is_empty());
+            assert!(
+                super::super::read_receipt(&receipt_file)
+                    .await
+                    .unwrap()
+                    .consumed
+            );
+            if let Some(store) = sink.as_ref() {
+                assert_eq!(
+                    store.get_relations("PRD-432").await.unwrap(),
+                    vec![("PRD-431".to_string(), "informs".to_string())]
+                );
+            } else {
+                assert!(!ws.join("lance/artifacts.lance").exists());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_delete_without_trash_keeps_receipt_unconsumed_on_both_layouts() {
+        for legacy in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let ws = workspace::init_workspace(tmp.path(), "restore-without-trash").unwrap();
+            let sink = if legacy {
+                Some(LanceStore::init(&ws).await.unwrap())
+            } else {
+                None
+            };
+            let receipt = build_receipt("PRD-451", DestructiveOp::Delete, "Body without trash.\n");
+            write_receipt(&ws, &receipt).await.unwrap();
+
+            let error = apply_restore_with_target(&ws, sink.as_ref(), &receipt, None)
+                .await
+                .unwrap_err();
+
+            assert!(error.to_string().contains("No trashed projection"));
+            assert!(
+                crate::artifact::store::resolve_artifact_path(&ws, "PRD-451")
+                    .await
+                    .is_none()
+            );
+            assert!(
+                !super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+                    .await
+                    .unwrap()
+                    .consumed
+            );
+            if let Some(store) = sink.as_ref() {
+                assert!(store.get_record("PRD-451").await.unwrap().is_none());
+            } else {
+                assert!(!ws.join("lance/artifacts.lance").exists());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_restore_refuses_canonical_collision_even_without_a_derived_row() {
+        let (_tmp, ws, store) = fresh_ws().await;
+        let mut receipt = build_receipt("PRD-461", DestructiveOp::Delete, "Original body.\n");
+        stage_deleted_projection(&ws, &mut receipt).await;
+        let mut collider = build_receipt("PRD-461", DestructiveOp::Deprecate, "Current body.\n");
+        collider.snapshot.title = "Current canonical file".into();
+        render_snapshot_projection(&ws, &collider, "active")
+            .await
+            .unwrap();
+        let collider_path = compute_safe_projection_path(&ws, &collider.snapshot).unwrap();
+        let current_bytes = tokio::fs::read(&collider_path).await.unwrap();
+        write_receipt(&ws, &receipt).await.unwrap();
+        assert!(store.get_record("PRD-461").await.unwrap().is_none());
+
+        let error = apply_restore(&ws, &store, &receipt).await.unwrap_err();
+
+        assert!(error.to_string().contains("already exists"));
+        assert_eq!(tokio::fs::read(collider_path).await.unwrap(), current_bytes);
+        assert!(Path::new(&receipt.trashed_projection).exists());
+        assert!(store.get_record("PRD-461").await.unwrap().is_none());
+        assert!(
+            !super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+                .await
+                .unwrap()
+                .consumed
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_delete_restore_preserves_bytes_and_existing_outgoing_edge() {
+        let tmp = TempDir::new().unwrap();
+        let ws = workspace::init_workspace(tmp.path(), "canonical-restore").unwrap();
+        let mut receipt = build_receipt("PRD-401", DestructiveOp::Delete, "Original body.\n");
+        let original = "---\nid: PRD-401\nkind: prd\nstatus: active\ntitle: Title PRD-401\ndepth: standard\nlinks:\n  - target: EVID-401\n    relation: based_on\n---\n\nOriginal body.\n";
+        tokio::fs::write(
+            ws.join("evidence/EVID-401-target.md"),
+            "---\nid: EVID-401\nkind: evidence\nstatus: active\ntitle: Target\n---\n\nEvidence.\n",
+        )
+        .await
+        .unwrap();
+        receipt.snapshot.relations.push(CapturedRelation {
+            from: "PRD-401".into(),
+            to: "EVID-401".into(),
+            relation: "based_on".into(),
+            direction: RelationDirection::Outgoing,
+        });
+        let trashed = trashed_projection_path(&ws, &receipt.receipt_id);
+        tokio::fs::create_dir_all(trashed.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&trashed, original).await.unwrap();
+        receipt.trashed_projection = trashed.display().to_string();
+        write_receipt(&ws, &receipt).await.unwrap();
+
+        let report = apply_restore_with_target(&ws, None, &receipt, None)
+            .await
+            .unwrap();
+        let restored = crate::artifact::store::resolve_artifact_path(&ws, "PRD-401")
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read_to_string(restored).await.unwrap(), original);
+        assert_eq!(report.relations_restored, 1);
+        assert!(report.relations_skipped.is_empty());
+        assert!(report.warnings.is_empty());
+        assert!(
+            super::super::read_receipt(&receipt_path(&ws, &receipt.receipt_id))
+                .await
+                .unwrap()
+                .consumed
+        );
+        assert!(!ws.join("lance/artifacts.lance").exists());
+    }
+
+    #[tokio::test]
+    async fn canonical_deleted_artifact_restore_applies_explicit_status() {
+        let tmp = TempDir::new().unwrap();
+        let ws = workspace::init_workspace(tmp.path(), "canonical-override").unwrap();
+        let mut receipt = build_receipt("PRD-402", DestructiveOp::Delete, "Original body.\n");
+        let trashed = trashed_projection_path(&ws, &receipt.receipt_id);
+        tokio::fs::create_dir_all(trashed.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &trashed,
+            "---\nid: PRD-402\nkind: prd\nstatus: active\ntitle: Title PRD-402\n---\n\nOriginal body.\n",
+        )
+        .await
+        .unwrap();
+        receipt.trashed_projection = trashed.display().to_string();
+        write_receipt(&ws, &receipt).await.unwrap();
+
+        let report = apply_restore_with_target(&ws, None, &receipt, Some(" draft "))
+            .await
+            .unwrap();
+        let restored = crate::artifact::store::resolve_artifact_path(&ws, "PRD-402")
+            .await
+            .unwrap();
+        let text = tokio::fs::read_to_string(restored).await.unwrap();
+        let (fm, body) = crate::artifact::frontmatter::parse_frontmatter(&text).unwrap();
+        assert_eq!(
+            fm.get("status").and_then(|value| value.as_str()),
+            Some("draft")
+        );
+        assert_eq!(body.trim(), "Original body.");
+        assert_eq!(report.restored_status, "draft");
+        assert!(!ws.join("lance/artifacts.lance").exists());
     }
 }

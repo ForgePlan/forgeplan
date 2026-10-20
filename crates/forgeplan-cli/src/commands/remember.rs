@@ -31,7 +31,7 @@ pub async fn run(
 }
 
 async fn run_remember(text: &str, category: &str) -> Result<()> {
-    let (workspace, _lock, store) = common::open_store_locked().await?;
+    let (workspace, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
     // Generate slug from first 50 chars
     let slug_source: String = text.chars().take(50).collect();
@@ -85,11 +85,22 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
         tags: Vec::new(),
     };
     // PRD-073 file-first: helper writes file first, then syncs to LanceDB.
+    // On a constellation-migrated workspace the same helper is called with a
+    // `None` sink: the canonical markdown write IS the mutation and the
+    // reconcile pass below publishes the derived row.
     projection::create_artifact_with_projection(
-        &projection::MutationContext::new(&workspace, &store),
+        &projection::MutationContext::new(&workspace, &lock, store.as_ref()),
         &artifact,
     )
     .await?;
+
+    if store.is_none() {
+        common::note_constellation_owns_index();
+        // Lock must drop before reconcile — it re-acquires the same lock per
+        // storage commit, and a held guard would time the capture out.
+        drop(lock);
+        common::reconcile_after_file_mutation(&workspace).await;
+    }
 
     println!("  Remembered: {} — \"{}\"", style(&id).bold(), title);
 
@@ -186,21 +197,46 @@ async fn run_list() -> Result<()> {
 }
 
 async fn run_forget(id: &str) -> Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
-    // Verify it exists and is a memory
-    let record = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", id))?;
+    // Verify it exists and is a memory. On a migrated workspace the
+    // authoritative answer comes from the canonical markdown (what
+    // `resolve_artifact_path` binds) and a fresh capture of it, not from a
+    // legacy row.
+    let record = match &store {
+        Some(store) => store
+            .get_record(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", id))?,
+        None => {
+            let read = common::workspace_read(&ws).await?;
+            let canonical = read
+                .resolve_id(id)
+                .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", id))?;
+            read.get_record(&canonical)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", id))?
+        }
+    };
 
     if record.kind != "memory" {
         anyhow::bail!("'{}' is not a memory (kind: {})", id, record.kind);
     }
 
     // PRD-073 file-first: helper removes file first, then cascades DB.
-    projection::delete_artifact_with_projection(&projection::MutationContext::new(&ws, &store), id)
-        .await?;
+    // With a `None` sink the same helper removes the canonical markdown and
+    // stops there — reconcile drops the derived row.
+    projection::delete_artifact_with_projection(
+        &projection::MutationContext::new(&ws, &lock, store.as_ref()),
+        id,
+    )
+    .await?;
+
+    if store.is_none() {
+        common::note_constellation_owns_index();
+        drop(lock);
+        common::reconcile_after_file_mutation(&ws).await;
+    }
 
     println!("  Forgotten: {}", style(id).bold());
 

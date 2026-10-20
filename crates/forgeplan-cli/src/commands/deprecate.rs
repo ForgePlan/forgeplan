@@ -5,7 +5,16 @@ use forgeplan_core::projection;
 use crate::commands::common;
 
 pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    // `deprecate` displaces a terminal evidence pack and then lists its
+    // dependents — both need the relation graph, which on a migrated workspace
+    // is the canonical Markdown. So the transition, the `## Deprecation`
+    // section and the status flip are all file-first here; the store-backed
+    // cached-score rescore has no counterpart and is not faked.
+    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
+
+    let Some(store) = store else {
+        return run_file_first(ws, _lock, id, reason).await;
+    };
 
     // PROB-060 / SPEC-005 Phase 1.5b — slug-aware lookup.
     let id = store
@@ -101,5 +110,62 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     };
     print!("{}", hints::render_next_action_line(&hint_list));
 
+    Ok(())
+}
+
+/// File-first `deprecate` for a constellation-migrated workspace.
+///
+/// #478 is structurally satisfied here rather than worked around: the reason is
+/// appended to the canonical body by `update_body_with_projection`, which IS
+/// the file write, so the `## Deprecation` section cannot be dropped by a
+/// files-first renderer later. Dependents come from the same capture the
+/// transition check read.
+async fn run_file_first(
+    ws: std::path::PathBuf,
+    lock: forgeplan_core::workspace::lock::WorkspaceLock,
+    id: &str,
+    reason: &str,
+) -> anyhow::Result<()> {
+    let read = common::workspace_read(&ws).await?;
+    let canonical = read
+        .resolve_id(id)
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+
+    // Scoped so the context's borrow of the lock guard ends before the
+    // reconcile pass below — that pass re-acquires the same lock.
+    let dependents = {
+        let ctx = projection::MutationContext::new(&ws, &lock, None);
+        forgeplan_core::lifecycle::canonical::deprecate_captured(&ctx, &read, &canonical, reason)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
+    };
+
+    common::note_constellation_owns_index();
+    // Lock released before reconcile — see `common::reconcile_after_file_mutation`.
+    drop(lock);
+    let published = common::reconcile_after_file_mutation(&ws).await;
+
+    println!("  Deprecated {canonical}: {reason}");
+
+    if !dependents.is_empty() {
+        println!("\nDependents affected:");
+        for dep in &dependents {
+            println!("  ! {dep} depends on deprecated {canonical}");
+        }
+    }
+
+    let hint_list = if let Some(first_dep) = dependents.first() {
+        vec![
+            Hint::warning(format!("{first_dep} depends on deprecated {canonical}"))
+                .with_action(format!("forgeplan get {first_dep}")),
+        ]
+    } else {
+        vec![Hint::info("Verify workspace integrity").with_action("forgeplan health".to_string())]
+    };
+    print!("{}", hints::render_next_action_line(&hint_list));
+
+    if !published {
+        println!("  ! derived index not yet updated");
+    }
     Ok(())
 }

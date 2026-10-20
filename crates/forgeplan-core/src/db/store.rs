@@ -233,6 +233,48 @@ impl ArtifactRecord {
     }
 }
 
+/// #446 — [`ArtifactRecord::frontmatter_map`] plus the artifact's real
+/// outgoing edges merged in as a `links` sequence.
+///
+/// Extracted from [`LanceStore::frontmatter_map_with_links`] so the
+/// constellation read path ([`crate::constellation::workspace_read`]) builds
+/// the SAME map from its captured edges. Two builders here would be two
+/// answers to "what does validation see", and `body-links-drift` would fire on
+/// one layout and not the other.
+///
+/// `relations` is the edge list the caller's own read source observed —
+/// `LanceStore::get_relations` on a legacy layout, `WorkspaceRead::get_relations`
+/// on a migrated one. An empty list yields the link-less map, which is the
+/// documented degrade-not-refuse behaviour.
+pub fn frontmatter_map_with_links_from(
+    record: &ArtifactRecord,
+    relations: &[(String, String)],
+) -> BTreeMap<String, serde_yaml::Value> {
+    use serde_yaml::{Mapping, Value};
+
+    let mut map = record.frontmatter_map();
+    if relations.is_empty() {
+        return map;
+    }
+    let seq: Vec<Value> = relations
+        .iter()
+        .map(|(target, relation)| {
+            let mut entry = Mapping::new();
+            entry.insert(
+                Value::String("target".into()),
+                Value::String(target.clone()),
+            );
+            entry.insert(
+                Value::String("relation".into()),
+                Value::String(relation.clone()),
+            );
+            Value::Mapping(entry)
+        })
+        .collect();
+    map.insert("links".to_string(), Value::Sequence(seq));
+    map
+}
+
 /// Fingerprint of the exact text that feeds the embedding: title, then body.
 ///
 /// Title is included deliberately. `ArtifactRecord::embedding_text` embeds
@@ -1434,26 +1476,13 @@ impl LanceStore {
         &self,
         record: &ArtifactRecord,
     ) -> BTreeMap<String, serde_yaml::Value> {
-        use serde_yaml::{Mapping, Value};
-
-        let mut map = record.frontmatter_map();
-        let Ok(relations) = self.get_relations(&record.id).await else {
-            return map;
-        };
-        if relations.is_empty() {
-            return map;
+        match self.get_relations(&record.id).await {
+            Ok(relations) => frontmatter_map_with_links_from(record, &relations),
+            // Degrade to the link-less map rather than failing validation
+            // outright — that restores the pre-#446 behaviour for this one
+            // record instead of refusing to validate it.
+            Err(_) => record.frontmatter_map(),
         }
-        let seq: Vec<Value> = relations
-            .into_iter()
-            .map(|(target, relation)| {
-                let mut entry = Mapping::new();
-                entry.insert(Value::String("target".into()), Value::String(target));
-                entry.insert(Value::String("relation".into()), Value::String(relation));
-                Value::Mapping(entry)
-            })
-            .collect();
-        map.insert("links".to_string(), Value::Sequence(seq));
-        map
     }
 
     /// Get incoming relations where this artifact is the TARGET.
@@ -1767,11 +1796,11 @@ impl LanceStore {
     // stamped alongside it was then used as an "already embedded" test, which
     // cannot see a profile change.
     //
-    // After the migration to `constellation::facade::embed_with_publisher`, which
-    // publishes through the conditional `Binding::predicate` guard, they had zero
-    // production callers — only their own unit tests, which is not coverage but a
-    // reason for the function to survive. Per the cutover rule, old paths are
-    // deleted once every consumer has migrated.
+    // After the migration to `constellation::facade`, which publishes through
+    // `complete_embedding_batch` and its conditional `Binding::predicate` guard,
+    // they had zero production callers — only their own unit tests, which is not
+    // coverage but a reason for the function to survive. Per the cutover rule,
+    // old paths are deleted once every consumer has migrated.
     //
     // A vector is now written only by
     // `IndexTables::publish_embedding_into_artifacts`.
@@ -1969,102 +1998,37 @@ impl LanceStore {
     }
 
     // ── FPF Knowledge Base ───────────────────────────────────────────
+    //
+    // Thin delegations to the shared implementations in `db::auxiliary`. The
+    // bodies live there because `AuxiliaryStore` — which on a migrated
+    // workspace is the ONLY handle that can touch `fpf_spec` without opening
+    // the retired artifact tables — needs the exact same code. Two copies would
+    // drift, and a drifted ranking or embedding guard is invisible.
 
     /// Check if FPF knowledge base is loaded.
     pub fn has_fpf(&self) -> bool {
         self.fpf_spec.is_some()
     }
 
+    /// The table this workspace's FPF knowledge base lives in.
+    fn fpf_table(&self) -> anyhow::Result<&Table> {
+        self.fpf_spec.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`")
+        })
+    }
+
     /// Insert FPF chunks in batch, optionally with pre-computed embeddings
     /// (PRD-042). When `embeddings` is `Some`, the slice MUST have the same
     /// length as `chunks` and every vector MUST have length
-    /// `EMBEDDING_DIM` (1024). When `None`, the embedding column is filled
-    /// with typed nulls — pre-semantic workspaces and tests use this path.
+    /// `EMBEDDING_DIM` (1024) and be finite. When `None`, the embedding column
+    /// is filled with typed nulls — pre-semantic workspaces and tests use this
+    /// path.
     pub async fn insert_fpf_chunks(
         &self,
         chunks: &[FpfChunk],
         embeddings: Option<&[Vec<f32>]>,
     ) -> anyhow::Result<usize> {
-        let table = self.fpf_spec.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`")
-        })?;
-
-        let ids: Vec<&str> = chunks.iter().map(|c| c.id.as_str()).collect();
-        let section_ids: Vec<&str> = chunks.iter().map(|c| c.section_id.as_str()).collect();
-        let parent_sections: Vec<Option<&str>> =
-            chunks.iter().map(|c| c.parent_section.as_deref()).collect();
-        let titles: Vec<&str> = chunks.iter().map(|c| c.title.as_str()).collect();
-        let bodies: Vec<&str> = chunks.iter().map(|c| c.body.as_str()).collect();
-        let line_counts: Vec<i32> = chunks.iter().map(|c| c.line_count).collect();
-        let file_paths: Vec<&str> = chunks.iter().map(|c| c.file_path.as_str()).collect();
-        let created_ats: Vec<&str> = chunks.iter().map(|c| c.created_at.as_str()).collect();
-
-        let dim = schema::EMBEDDING_DIM as usize;
-        let embedding_col: Arc<dyn Array> = match embeddings {
-            None => convert::make_null_embedding_col(chunks.len()),
-            Some(vecs) => {
-                if vecs.len() != chunks.len() {
-                    anyhow::bail!(
-                        "embeddings length ({}) must match chunks length ({})",
-                        vecs.len(),
-                        chunks.len()
-                    );
-                }
-                for (i, v) in vecs.iter().enumerate() {
-                    if v.len() != dim {
-                        anyhow::bail!(
-                            "embedding[{}] has wrong dim: expected {}, got {}",
-                            i,
-                            dim,
-                            v.len()
-                        );
-                    }
-                    // Sprint 13.7 wave 2 C4.8: reject non-finite values at the
-                    // boundary. LanceDB's cosine distance on NaN/Inf is
-                    // undefined, so refuse to persist garbage.
-                    if let Some(pos) = v.iter().position(|f| !f.is_finite()) {
-                        anyhow::bail!(
-                            "embedding[{}] contains non-finite value at index {}",
-                            i,
-                            pos
-                        );
-                    }
-                }
-                use arrow_array::{FixedSizeListArray, Float32Array};
-                use arrow_schema::Field as ArrowField;
-                let total: Vec<f32> = vecs.iter().flatten().copied().collect();
-                let values = Arc::new(Float32Array::from(total));
-                let item_field = Arc::new(ArrowField::new(
-                    "item",
-                    arrow_schema::DataType::Float32,
-                    true,
-                ));
-                Arc::new(FixedSizeListArray::new(
-                    item_field,
-                    schema::EMBEDDING_DIM,
-                    values,
-                    None,
-                ))
-            }
-        };
-
-        let batch = RecordBatch::try_new(
-            schema::fpf_spec_schema(),
-            vec![
-                Arc::new(StringArray::from(ids)),
-                Arc::new(StringArray::from(section_ids)),
-                Arc::new(StringArray::from(parent_sections)),
-                Arc::new(StringArray::from(titles)),
-                Arc::new(arrow_array::LargeStringArray::from(bodies)),
-                Arc::new(Int32Array::from(line_counts)),
-                Arc::new(StringArray::from(file_paths)),
-                Arc::new(StringArray::from(created_ats)),
-                embedding_col,
-            ],
-        )?;
-
-        table.add(vec![batch]).execute().await?;
-        Ok(chunks.len())
+        crate::db::auxiliary::fpf_insert_chunks(self.fpf_table()?, chunks, embeddings).await
     }
 
     /// Vector similarity search over FPF chunks (PRD-042).
@@ -2079,9 +2043,6 @@ impl LanceStore {
     /// unused in keyword-only builds, but the code path remains compiled for
     /// testability.
     ///
-    /// Uses LanceDB's native `vector_search` with cosine distance — the same
-    /// path artifacts already use for semantic search.
-    ///
     /// # Behavior
     /// - errors when `query_vec.len() != EMBEDDING_DIM` (1024).
     /// - returns an empty Vec when the table has no rows or all embedding
@@ -2093,53 +2054,7 @@ impl LanceStore {
         query_vec: &[f32],
         limit: usize,
     ) -> anyhow::Result<Vec<FpfChunk>> {
-        let dim = schema::EMBEDDING_DIM as usize;
-        if query_vec.len() != dim {
-            anyhow::bail!(
-                "query vector has wrong dim: expected {}, got {}",
-                dim,
-                query_vec.len()
-            );
-        }
-
-        let table = self.fpf_spec.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`")
-        })?;
-
-        // LanceDB native vector search. On an empty/all-null column LanceDB
-        // may either return zero rows or error; we silently degrade to Ok([])
-        // as the documented contract, but log the underlying reason so
-        // debugging is possible.
-        let search_builder = match table.vector_search(query_vec) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("  [search_fpf_by_vector] vector search builder failed: {e}");
-                return Ok(Vec::new());
-            }
-        };
-        let stream = match search_builder
-            .distance_type(lancedb::DistanceType::Cosine)
-            .limit(limit)
-            .execute()
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("  [search_fpf_by_vector] vector search failed: {e}");
-                return Ok(Vec::new());
-            }
-        };
-
-        let batches = collect_batches(stream).await?;
-        let mut results = Vec::new();
-        for batch in &batches {
-            for row in 0..batch.num_rows() {
-                if let Some(chunk) = extract_fpf_chunk(batch, row) {
-                    results.push(chunk);
-                }
-            }
-        }
-        Ok(results)
+        crate::db::auxiliary::fpf_search_vector(self.fpf_table()?, query_vec, limit).await
     }
 
     /// Search FPF spec by keyword (case-insensitive substring match on title + body).
@@ -2148,151 +2063,37 @@ impl LanceStore {
     /// of the `fpf_spec` table (rare — only on FPF KB rebuild) doesn't
     /// surface as raw lance errors in the MCP daemon.
     pub async fn search_fpf(&self, query: &str, limit: usize) -> anyhow::Result<Vec<FpfChunk>> {
-        let trimmed = query.trim();
-        if trimmed.is_empty() {
+        if query.trim().is_empty() {
             anyhow::bail!("Search query cannot be empty");
         }
-
-        let table = self
-            .fpf_spec
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
-
-        let query_lower = trimmed.to_lowercase();
-        // Split query into words for per-word OR matching
-        let words: Vec<String> = query_lower
-            .split_whitespace()
-            .filter(|w| w.len() > 2)
-            .map(|w| w.replace('\'', "''"))
-            .collect();
-
-        let filter = if words.is_empty() {
-            let escaped = query_lower.replace('\'', "''");
-            format!(
-                "LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'",
-                escaped, escaped
-            )
-        } else {
-            words
-                .iter()
-                .map(|w| {
-                    format!(
-                        "(LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%')",
-                        w, w
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" OR ")
-        };
-
+        let table = self.fpf_table()?;
         self.with_retry_on_stale(|| async {
-            // Fetch ALL matching then rank (small dataset ~204 sections)
-            let batches =
-                collect_batches(table.query().only_if(filter.clone()).execute().await?).await?;
-
-            let mut scored: Vec<(FpfChunk, usize)> = Vec::new();
-            for batch in &batches {
-                for i in 0..batch.num_rows() {
-                    if let Some(chunk) = extract_fpf_chunk(batch, i) {
-                        let mut score = 0usize;
-                        let title_lower = chunk.title.to_lowercase();
-                        let body_lower = chunk.body.to_lowercase();
-
-                        for word in &words {
-                            if title_lower.contains(word.as_str()) {
-                                score += 50;
-                            }
-                            score += body_lower.matches(word.as_str()).count().min(20);
-                        }
-                        let all_in_title = words.len() > 1
-                            && words.iter().all(|w| title_lower.contains(w.as_str()));
-                        if all_in_title {
-                            score += 100;
-                        }
-                        if title_lower.contains(&query_lower) {
-                            score += 200;
-                        }
-
-                        scored.push((chunk, score));
-                    }
-                }
-            }
-
-            scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
-            let results: Vec<FpfChunk> = scored.into_iter().take(limit).map(|(c, _)| c).collect();
-            Ok(results)
+            crate::db::auxiliary::fpf_search_keyword(table, query, limit).await
         })
         .await
     }
 
     /// Get a specific FPF section by section_id.
     pub async fn get_fpf_section(&self, section_id: &str) -> anyhow::Result<Option<FpfChunk>> {
-        let table = self
-            .fpf_spec
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
-
-        let filter = format!("section_id = '{}'", section_id.replace('\'', "''"));
-        let batches =
-            collect_batches(table.query().only_if(filter).limit(1).execute().await?).await?;
-
-        for batch in &batches {
-            if batch.num_rows() > 0 {
-                return Ok(extract_fpf_chunk(batch, 0));
-            }
-        }
-        Ok(None)
+        crate::db::auxiliary::fpf_get_section(self.fpf_table()?, section_id).await
     }
 
     /// List all FPF sections (without body content for performance).
     pub async fn list_fpf_sections(&self) -> anyhow::Result<Vec<FpfChunkSummary>> {
-        let table = self
-            .fpf_spec
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
-
-        let batches = collect_batches(table.query().execute().await?).await?;
-
-        let mut results = Vec::new();
-        for batch in &batches {
-            let id_col = batch
-                .column_by_name("section_id")
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-            let title_col = batch
-                .column_by_name("title")
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-            let lines_col = batch
-                .column_by_name("line_count")
-                .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
-
-            if let (Some(ids), Some(titles), Some(lines)) = (id_col, title_col, lines_col) {
-                for i in 0..batch.num_rows() {
-                    if !ids.is_null(i) {
-                        results.push(FpfChunkSummary {
-                            section_id: ids.value(i).to_string(),
-                            title: titles.value(i).to_string(),
-                            line_count: lines.value(i),
-                        });
-                    }
-                }
-            }
-        }
-        Ok(results)
+        crate::db::auxiliary::fpf_list_sections(self.fpf_table()?).await
     }
 
     /// Delete all FPF chunks (for re-ingestion).
     pub async fn clear_fpf(&self) -> anyhow::Result<()> {
-        let table = self
-            .fpf_spec
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
-        table.delete("id IS NOT NULL").await?;
-        Ok(())
+        crate::db::auxiliary::fpf_clear(self.fpf_table()?).await
     }
 }
 
 /// Collect a stream of RecordBatches into a Vec.
-async fn collect_batches(
+///
+/// `pub(crate)`: shared with the auxiliary store, which reads the same
+/// `fpf_spec` table through its own handle.
+pub(crate) async fn collect_batches(
     stream: lancedb::arrow::SendableRecordBatchStream,
 ) -> anyhow::Result<Vec<RecordBatch>> {
     let mut batches = Vec::new();
@@ -2414,7 +2215,10 @@ fn get_f64(batch: &RecordBatch, col: &str, row: usize) -> Option<f64> {
 }
 
 /// Extract an FpfChunk from a RecordBatch row.
-fn extract_fpf_chunk(batch: &RecordBatch, row: usize) -> Option<FpfChunk> {
+///
+/// `pub(crate)`: the auxiliary store reads the same table and must decode rows
+/// with this one function, not a second copy of the column mapping.
+pub(crate) fn extract_fpf_chunk(batch: &RecordBatch, row: usize) -> Option<FpfChunk> {
     let id = get_string(batch, "id", row)?;
     let section_id = get_string(batch, "section_id", row)?;
     let parent_section = get_string(batch, "parent_section", row);
@@ -2537,6 +2341,12 @@ fn empty_change_log_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBat
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // commit_hash (nullable)
         ],
     )
+}
+
+/// The empty `fpf_spec` batch. Public so the auxiliary-only store can create
+/// the one table it owns without duplicating the schema layout.
+pub fn empty_fpf_batch_for(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {
+    empty_fpf_batch(schema)
 }
 
 fn empty_fpf_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {

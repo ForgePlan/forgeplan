@@ -14,7 +14,7 @@ use crate::commands::common;
 
 /// Run restore for a specific artifact ID.
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
     // Lazy TTL purge — best-effort, never fails the command. Mirrors
     // the MCP tool's defense against unbounded receipt accumulation.
@@ -66,7 +66,15 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         }
     };
 
-    let report = undo::restore::apply_restore(&ws, &store, &receipt).await?;
+    // The restore itself is the store-free sibling on a migrated workspace:
+    // the artifact comes back as canonical markdown, and the derived row is
+    // published by the reconcile pass below. Receipts are written by `delete`
+    // on BOTH layouts, so refusing here would make the recovery path `delete`
+    // prints a lie.
+    let report = match &store {
+        Some(store) => undo::restore::apply_restore(&ws, store, &receipt).await?,
+        None => undo::restore::apply_restore_file_first(&ws, &receipt).await?,
+    };
     let op_str = match report.op {
         undo::DestructiveOp::Delete => "delete",
         undo::DestructiveOp::Supersede => "supersede",
@@ -81,6 +89,21 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     ];
 
     if json {
+        // Reconciliation diagnostics use stderr; stdout remains one JSON value
+        // carrying whether the derived index now agrees with the restore.
+        let (index_pending, index_pending_reason) = if store.is_none() {
+            common::note_constellation_owns_index();
+            // Lock released before reconcile — it re-acquires the same lock
+            // per storage commit, and a held guard would time the capture out.
+            drop(lock);
+            let published = common::reconcile_after_file_mutation(&ws).await;
+            (
+                !published,
+                (!published).then(|| "derived index not yet updated".to_string()),
+            )
+        } else {
+            (false, None)
+        };
         let payload = serde_json::json!({
             "ok": true,
             "restored": report.artifact_id,
@@ -89,6 +112,8 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             "relations_skipped": report.relations_skipped,
             "projection_restored": report.projection_restored,
             "warnings": report.warnings,
+            "index_pending": index_pending,
+            "index_pending_reason": index_pending_reason,
             "_next_action": hints::primary_action(&next_hints),
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -117,6 +142,12 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         for w in &report.warnings {
             println!("  - {w}");
         }
+    }
+
+    if store.is_none() {
+        common::note_constellation_owns_index();
+        drop(lock);
+        common::reconcile_after_file_mutation(&ws).await;
     }
 
     print!("{}", hints::render_next_action_line(&next_hints));

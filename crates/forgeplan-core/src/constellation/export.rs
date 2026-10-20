@@ -164,21 +164,27 @@ async fn collect_live(spec: &SourceSpec) -> Result<(SourceRef, Vec<ExportRow>), 
                 path: spec.path.display().to_string(),
                 reason: format!("{e}"),
             })?;
-        let manifest =
-            super::storage::read_manifest(&index_root, &descriptor).map_err(|e| SourceFailure {
-                path: spec.path.display().to_string(),
-                reason: format!("{e}"),
+        // Pin the generation with a shared OS lock on its manifest file and
+        // hold it for the whole dump: no lease file, no TTL, and nothing under
+        // the index root is created or touched by a read-only export.
+        let pinned =
+            super::storage::pin_generation_read(&index_root, &descriptor).map_err(|e| {
+                SourceFailure {
+                    path: spec.path.display().to_string(),
+                    reason: format!("{e}"),
+                }
             })?;
+        let manifest = pinned.manifest();
         // The pinned read honours the descriptor's embedding head: the
         // manifest's version predates any drain that landed vectors, and
         // exporting it would ship `unavailable` rows that are already ready.
         let artifacts_version = descriptor
-            .effective_artifacts_version(&manifest)
+            .effective_artifacts_version(manifest)
             .map_err(|e| SourceFailure {
                 path: spec.path.display().to_string(),
                 reason: format!("{e}"),
             })?;
-        let docs = dump_pinned(&index_root, &manifest, artifacts_version)
+        let docs = dump_pinned(&index_root, manifest, artifacts_version)
             .await
             .map_err(|e| SourceFailure {
                 path: spec.path.display().to_string(),

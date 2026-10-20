@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use chrono::{NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::db::store::{ArtifactFilter, LanceStore};
+use crate::constellation::workspace_read::WorkspaceRead;
+use crate::db::store::{ArtifactFilter, ArtifactRecord, LanceStore};
 use crate::scoring::evidence::parse_evidence_from_record;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,7 +255,77 @@ fn score_evidence_full(e: &EvidenceItem) -> f64 {
     (base - penalty - type_mod).max(0.0)
 }
 
-/// Recursively compute R_eff for an artifact and its dependency chain.
+/// The artifact graph the recursive engine walks.
+///
+/// Both cases answer the same four questions — an id's outgoing edges, its
+/// incoming edges, one record, every evidence record — because both
+/// projections were built from the same canonical Markdown. Naming the two
+/// cases HERE is what keeps one engine rather than two: a separate scorer
+/// written for the captured view would be free to drift from this one, and
+/// the drift would only ever surface as a migrated workspace disagreeing
+/// with its own legacy answer.
+pub enum AssuranceSource<'a> {
+    /// The legacy Lance projection, for a workspace Constellation has not
+    /// claimed.
+    Store(&'a LanceStore),
+    /// One captured/pinned read view of the canonical Markdown, for a
+    /// workspace the constellation protocol owns.
+    Read(&'a WorkspaceRead),
+}
+
+impl AssuranceSource<'_> {
+    /// Outgoing `(target, relation)` edges of one artifact.
+    async fn outgoing(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        match self {
+            Self::Store(store) => store.get_relations(id).await,
+            Self::Read(read) => Ok(read.get_relations(id)),
+        }
+    }
+
+    /// Incoming `(source, relation)` edges of one artifact.
+    async fn incoming(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        match self {
+            Self::Store(store) => store.get_incoming_relations(id).await,
+            Self::Read(read) => Ok(read.get_incoming_relations(id)),
+        }
+    }
+
+    /// Every evidence record, in id order — the population both engines
+    /// intersect with the linked set.
+    async fn evidence_records(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
+        let filter = ArtifactFilter {
+            kind: Some("evidence".to_string()),
+            status: None,
+        };
+        match self {
+            Self::Store(store) => store.list_records(Some(&filter)).await,
+            Self::Read(read) => Ok(read.list_records(Some(&filter))),
+        }
+    }
+
+    /// One record by exact display id, or `None`.
+    ///
+    /// Never resolved: the engine asks "is this a real artifact with this
+    /// kind/status", and answering that from a slug-shaped guess would let an
+    /// unresolved edge masquerade as a Note exempt from evidence.
+    async fn record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
+        match self {
+            Self::Store(store) => store.get_record(id).await,
+            Self::Read(read) => Ok(read.get_record(id).cloned()),
+        }
+    }
+
+    /// Every edge in the graph, as `(source, target, relation)`.
+    async fn all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+        match self {
+            Self::Store(store) => store.get_all_relations().await,
+            Self::Read(read) => Ok(read.get_all_relations()),
+        }
+    }
+}
+
+/// Recursively compute R_eff for an artifact and its dependency chain over
+/// the legacy Lance projection.
 ///
 /// Implements the weakest-link principle across the artifact's own evidence
 /// and all transitive dependencies. Cycle detection prevents infinite
@@ -265,6 +336,90 @@ fn score_evidence_full(e: &EvidenceItem) -> f64 {
 pub async fn r_eff_recursive(
     artifact_id: &str,
     store: &LanceStore,
+    visited: &mut HashSet<String>,
+) -> anyhow::Result<AssuranceReport> {
+    assurance_recursive(artifact_id, &AssuranceSource::Store(store), visited).await
+}
+
+/// The same [`AssuranceReport`], computed over one captured/pinned read view
+/// of the canonical Markdown.
+///
+/// This is the migrated answer, not an approximation of the legacy one: it is
+/// the identical algorithm over the identical algorithm's inputs, so
+/// `weakest_link`, `factors`, `decay_penalty` and the leaf-evidence branch
+/// mean exactly what they mean on a legacy workspace. No `LanceStore` is
+/// opened, so no retired table is created and no schema migration runs.
+pub async fn r_eff_recursive_captured(
+    artifact_id: &str,
+    read: &WorkspaceRead,
+    visited: &mut HashSet<String>,
+) -> anyhow::Result<AssuranceReport> {
+    assurance_recursive(artifact_id, &AssuranceSource::Read(read), visited).await
+}
+
+/// [`r_eff_recursive_captured`] with a fresh visited set — the whole report
+/// for one artifact, no caller-owned cycle state.
+pub async fn assurance_report_captured(
+    artifact_id: &str,
+    read: &WorkspaceRead,
+) -> anyhow::Result<AssuranceReport> {
+    r_eff_recursive_captured(artifact_id, read, &mut HashSet::new()).await
+}
+
+/// The evidence packs linked to `target_id` in either direction, as scored
+/// items, in id order.
+///
+/// Shared by the CLI and MCP `score <id>` display paths so the breakdown a
+/// human reads and the rollup that produced the number above it are always
+/// computed from one population. A pack linked from either side counts: a
+/// canonical `EVID --informs--> PRD` is the common shape, and the outgoing
+/// half of the flat-display list never sees it.
+pub async fn linked_evidence_items(
+    source: &AssuranceSource<'_>,
+    target_id: &str,
+) -> anyhow::Result<Vec<EvidenceItem>> {
+    let outgoing = source.outgoing(target_id).await?;
+    let evidence_targets: Vec<String> = outgoing
+        .iter()
+        .filter(|(_, rel)| rel == "informs" || rel == "based_on" || rel == "refines")
+        .map(|(target, _)| target.clone())
+        .collect();
+
+    let mut items = Vec::new();
+    for record in source.evidence_records().await? {
+        let linked = evidence_targets
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(&record.id))
+            || source
+                .outgoing(&record.id)
+                .await?
+                .iter()
+                .any(|(target, _)| target.eq_ignore_ascii_case(target_id));
+        if linked {
+            items.push(parse_evidence_from_record(&record));
+        }
+    }
+    Ok(items)
+}
+
+/// How many edges touch `target_id` in either direction — the F-G-R
+/// reliability input's graph-density term.
+pub async fn relation_link_count(
+    source: &AssuranceSource<'_>,
+    target_id: &str,
+) -> anyhow::Result<usize> {
+    Ok(source
+        .all_relations()
+        .await?
+        .iter()
+        .filter(|(src, target, _)| src == target_id || target == target_id)
+        .count())
+}
+
+/// The recursive engine itself, over either graph.
+async fn assurance_recursive(
+    artifact_id: &str,
+    source: &AssuranceSource<'_>,
     visited: &mut HashSet<String>,
 ) -> anyhow::Result<AssuranceReport> {
     // Cycle detection: return neutral score to break the cycle.
@@ -287,13 +442,9 @@ pub async fn r_eff_recursive(
 
     // Collect evidence records that link to this artifact.
     // Check BOTH directions: outgoing (this → evidence) AND incoming (evidence → this).
-    let outgoing = store.get_relations(artifact_id).await?;
-    let incoming = store.get_incoming_relations(artifact_id).await?;
-    let evidence_filter = ArtifactFilter {
-        kind: Some("evidence".to_string()),
-        status: None,
-    };
-    let all_evidence = store.list_records(Some(&evidence_filter)).await?;
+    let outgoing = source.outgoing(artifact_id).await?;
+    let incoming = source.incoming(artifact_id).await?;
+    let all_evidence = source.evidence_records().await?;
 
     // Build set of evidence IDs linked in either direction.
     let mut linked_evidence_ids: HashSet<String> = outgoing
@@ -338,8 +489,8 @@ pub async fn r_eff_recursive(
     //
     // Packs that carry child evidence keep the normal path: an EVID built on
     // other EVIDs is a real chain and the weakest link still rules it.
-    let is_evidence_kind = store
-        .get_record(artifact_id)
+    let is_evidence_kind = source
+        .record(artifact_id)
         .await
         .ok()
         .flatten()
@@ -347,7 +498,7 @@ pub async fn r_eff_recursive(
         .unwrap_or(false);
 
     if is_evidence_kind && evidence_items.is_empty() && terminal_skips == 0 {
-        let own = store.get_record(artifact_id).await.ok().flatten();
+        let own = source.record(artifact_id).await.ok().flatten();
         if let Some(rec) = own {
             let item = parse_evidence_from_record(&rec);
             let intrinsic = score_evidence_full(&item);
@@ -423,7 +574,7 @@ pub async fn r_eff_recursive(
 
     for (dep_id, rel_type) in &deps {
         // Skip non-active dependencies — draft/deprecated/superseded should not drag down R_eff
-        if let Ok(Some(dep_record)) = store.get_record(dep_id).await {
+        if let Ok(Some(dep_record)) = source.record(dep_id).await {
             if matches!(
                 dep_record.status.as_str(),
                 "draft" | "deprecated" | "superseded"
@@ -452,7 +603,7 @@ pub async fn r_eff_recursive(
             }
         }
 
-        let dep_report = match Box::pin(r_eff_recursive(dep_id, store, visited)).await {
+        let dep_report = match Box::pin(assurance_recursive(dep_id, source, visited)).await {
             Ok(report) => report,
             Err(_) => {
                 factors.push(format!("Failed to compute R_eff for dependency {dep_id}"));

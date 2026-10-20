@@ -283,7 +283,7 @@ pub struct AllocatedArtifact {
 /// `NewArtifact` for a given allocated id. The callback is invoked
 /// AFTER the cross-worktree lock is held, and may be called multiple
 /// times if a post-write collision is detected (retry path).
-pub type BuildArtifactFn = dyn Fn(&str, u32) -> anyhow::Result<NewArtifact> + Send + Sync;
+pub type BuildArtifactFn<'a> = dyn Fn(&str, u32) -> anyhow::Result<NewArtifact> + Send + Sync + 'a;
 
 /// Allocate an id and write the projection file atomically with respect
 /// to other concurrent `forgeplan_new` invocations — even those running
@@ -304,14 +304,22 @@ pub type BuildArtifactFn = dyn Fn(&str, u32) -> anyhow::Result<NewArtifact> + Se
 /// fill template placeholders + augment frontmatter with `slug` /
 /// `predicted_number`. Re-running `build` for the retry case yields a
 /// fresh artifact with the bumped id — no stale-state bleed.
+///
+/// `guard` is the caller's already-held workspace lock. It is threaded
+/// into the [`MutationContext`] so the canonical write happens under the
+/// same serialization every other mutation uses. It is NOT the per-kind
+/// id-alloc lock this function takes internally — that one guards id
+/// computation across worktrees, and passing it as the mutation guard
+/// would serialize far less than the caller believes.
 pub async fn allocate_and_create_artifact(
     workspace: &Path,
+    guard: &WorkspaceLock,
     store: &LanceStore,
     kind: &ArtifactKind,
     digits: u32,
-    build: &BuildArtifactFn,
+    build: &BuildArtifactFn<'_>,
 ) -> anyhow::Result<AllocatedArtifact> {
-    allocate_and_create_impl(workspace, Some(store), kind, digits, build).await
+    allocate_and_create_impl(workspace, guard, Some(store), kind, digits, build).await
 }
 
 /// Constellation-migrated variant of [`allocate_and_create_artifact`]: on a
@@ -320,21 +328,26 @@ pub async fn allocate_and_create_artifact(
 /// mutation, and reconcile (`maintain_index` / `forgeplan index`) publishes
 /// the row afterwards. Identical cross-worktree lock, id computation,
 /// collision-retry and render discipline; only the index insert is absent.
+///
+/// `guard` is the caller's already-held workspace lock — see
+/// [`allocate_and_create_artifact`].
 pub async fn allocate_and_create_artifact_file_first(
     workspace: &Path,
+    guard: &WorkspaceLock,
     kind: &ArtifactKind,
     digits: u32,
-    build: &BuildArtifactFn,
+    build: &BuildArtifactFn<'_>,
 ) -> anyhow::Result<AllocatedArtifact> {
-    allocate_and_create_impl(workspace, None, kind, digits, build).await
+    allocate_and_create_impl(workspace, guard, None, kind, digits, build).await
 }
 
 async fn allocate_and_create_impl(
     workspace: &Path,
+    guard: &WorkspaceLock,
     store: Option<&LanceStore>,
     kind: &ArtifactKind,
     digits: u32,
-    build: &BuildArtifactFn,
+    build: &BuildArtifactFn<'_>,
 ) -> anyhow::Result<AllocatedArtifact> {
     let _lock = acquire_id_alloc_lock(workspace, kind)
         .await
@@ -368,39 +381,17 @@ async fn allocate_and_create_impl(
         }
         let rendered_body = artifact.body.clone();
 
-        let filepath = match store {
-            Some(store) => {
-                let ctx = MutationContext::new(workspace, store);
-                projection::create_artifact_with_projection(&ctx, &artifact)
-                    .await
-                    .with_context(|| format!("create projection for {id}"))?
-            }
-            None => {
-                // No store: file-first write is the whole mutation. Re-run
-                // the two validation guards `create_artifact_with_projection`
-                // applies so both branches enforce the same boundary.
-                crate::db::store::validate_artifact_id(&artifact.id)
-                    .with_context(|| format!("allocated id {:?} failed validation", artifact.id))?;
-                let _: ArtifactKind = artifact.kind.parse().with_context(|| {
-                    format!("invalid kind {:?} for {}", artifact.kind, artifact.id)
-                })?;
-                projection::render_projection_with_body(
-                    workspace,
-                    &artifact.id,
-                    &artifact.kind,
-                    &artifact.title,
-                    &artifact.status,
-                    &artifact.depth,
-                    artifact.author.as_deref(),
-                    artifact.parent_epic.as_deref(),
-                    artifact.valid_until.as_deref(),
-                    &artifact.body,
-                    &[],
-                )
-                .await
-                .with_context(|| format!("create projection for {id}"))?
-            }
-        };
+        // Both layouts go through the one helper: the same id/kind validation,
+        // the same forced-body render, and the same canonical write. The
+        // only difference is the derived step — `Some(store)` takes the
+        // LanceDB row, `None` leaves the markdown as the whole mutation for
+        // reconcile to publish. This used to be two hand-inlined branches;
+        // the `None` one re-implemented the validation guards by hand and
+        // had to be kept in sync with the helper by memory.
+        let ctx = MutationContext::new(workspace, guard, store);
+        let filepath = projection::create_artifact_with_projection(&ctx, &artifact)
+            .await
+            .with_context(|| format!("create projection for {id}"))?;
 
         // Post-write: re-confirm `{ID}-` prefix uniqueness. If a parallel
         // unlocked path slipped in between compute_next_id and projection,
@@ -589,44 +580,50 @@ mod tests {
         .unwrap();
     }
 
-    /// Regression: factoring `git_common_dir` out of id_alloc.rs into
-    /// `workspace::git` must not change the lock path semantics.
-    ///
-    /// The test verifies that `id_alloc_lock_path` still returns a path that:
-    /// 1. Is non-empty (has a meaningful parent + filename).
-    /// 2. Contains the kind prefix in the filename (per-kind granularity).
-    /// 3. Has the same structural properties before and after the refactor
-    ///    (indirectly: we call the function twice with the same inputs and
-    ///    assert idempotence).
-    ///
-    /// This is a lightweight guard; the behavioural invariant (same absolute
-    /// path for same workspace + kind) is the regression property.
     #[tokio::test]
-    async fn id_alloc_lock_path_is_stable_after_refactor() {
+    async fn borrowed_builder_allocates_distinct_canonical_artifacts_without_a_store() {
         let tmp = TempDir::new().unwrap();
         let ws = ws(&tmp);
-        // Call twice — must be identical (deterministic, no side-effects).
-        let path_a = id_alloc_lock_path(&ws, &ArtifactKind::EvidencePack);
-        let path_b = id_alloc_lock_path(&ws, &ArtifactKind::EvidencePack);
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let title = String::from("Borrowed request title");
+        let build = |id: &str, _: u32| -> anyhow::Result<NewArtifact> {
+            Ok(NewArtifact {
+                id: id.to_owned(),
+                kind: "prd".into(),
+                status: "draft".into(),
+                title: title.clone(),
+                body: "## Summary\n\nConsumer-visible request content.\n".into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: vec!["request-context".into(), "retain-on-promote".into()],
+            })
+        };
+        let first =
+            allocate_and_create_artifact_file_first(&ws, &guard, &ArtifactKind::Prd, 3, &build)
+                .await
+                .unwrap();
+        let first_bytes = tokio::fs::read(&first.filepath).await.unwrap();
+        let second =
+            allocate_and_create_artifact_file_first(&ws, &guard, &ArtifactKind::Prd, 3, &build)
+                .await
+                .unwrap();
+        assert_eq!(first.id, "PRD-001");
+        assert_eq!(second.id, "PRD-002");
+        assert_ne!(first.filepath, second.filepath);
+        assert_eq!(tokio::fs::read(&first.filepath).await.unwrap(), first_bytes);
+        let text = tokio::fs::read_to_string(&second.filepath).await.unwrap();
+        let (frontmatter, body) = crate::artifact::frontmatter::parse_frontmatter(&text).unwrap();
         assert_eq!(
-            path_a,
-            path_b,
-            "id_alloc_lock_path must be deterministic: {} vs {}",
-            path_a.display(),
-            path_b.display()
+            frontmatter.get("title").and_then(|v| v.as_str()),
+            Some(title.as_str())
         );
-        // filename must reference the kind prefix
-        let name = path_a.file_name().unwrap().to_string_lossy().to_lowercase();
-        assert!(
-            name.contains("evid"),
-            "lock filename must include kind prefix 'evid', got {}",
-            path_a.display()
+        assert_eq!(
+            frontmatter.get("tags"),
+            Some(&serde_yaml::to_value(["request-context", "retain-on-promote"]).unwrap())
         );
-        // Parent must exist or be create-able (i.e. must have a parent).
-        assert!(
-            path_a.parent().is_some(),
-            "lock path must have a parent directory: {}",
-            path_a.display()
-        );
+        assert!(body.contains("Consumer-visible request content."));
+        assert!(!ws.join("lance/artifacts.lance").exists());
     }
 }

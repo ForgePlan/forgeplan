@@ -6,9 +6,10 @@
 //! escape hatch to reap a crashed sub-agent's claim.
 
 use forgeplan_core::claim::{ClaimError, ClaimStore};
-use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
+
+use crate::commands::common;
 
 fn default_agent() -> String {
     format!("cli/{}", env!("CARGO_PKG_VERSION"))
@@ -16,31 +17,38 @@ fn default_agent() -> String {
 
 pub async fn run(id: &str, agent: Option<&str>, force: bool, json: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
+    workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
     // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    // Best-effort resolve: if the artifact isn't in LanceDB (e.g. claim
-    // outlived its underlying record), fall back to raw input so the
-    // operator can still drop the now-orphaned claim file.
-    let lance = LanceStore::open(&ws).await?;
-    let canonical = lance.resolve_id(id).await?;
-    let id_owned: String;
-    let id: &str = if let Some(c) = canonical {
-        id_owned = c;
-        id_owned.as_str()
+    // Resolve from the owning source: the legacy store before cutover, one
+    // captured canonical read after it. If an artifact was removed while its
+    // claim remains, preserve release's idempotent raw-input fallback.
+    let (ws, store) = common::open_store_tolerating_constellation().await?;
+    let (id_owned, ref_form) = if let Some(lance) = store.as_ref() {
+        let id = lance
+            .resolve_id(id)
+            .await?
+            .unwrap_or_else(|| id.to_string());
+        let ref_form = match lance.get_record(&id).await? {
+            Some(rec) => {
+                forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id)
+            }
+            None => id.clone(),
+        };
+        (id, ref_form)
     } else {
-        id
+        let read = common::workspace_read(&ws).await?;
+        let id = read.resolve_id(id).unwrap_or_else(|| id.to_string());
+        let ref_form = read
+            .get_record(&id)
+            .map(|rec| {
+                forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id)
+            })
+            .unwrap_or_else(|| id.clone());
+        (id, ref_form)
     };
-
-    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — derive ref_form for hint
-    // emission (slug pre-merge / display id post-merge). Falls back to the
-    // canonical id when the artifact is missing — release is idempotent and
-    // we still want a runnable suggestion.
-    let ref_form: String = match lance.get_record(id).await? {
-        Some(rec) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id),
-        None => id.to_string(),
-    };
+    let id = id_owned.as_str();
 
     // Match MCP semantics: explicit agent > default agent string. With
     // `--force` and no agent, the empty string is acceptable (the core

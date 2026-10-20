@@ -29,8 +29,41 @@ fn build_frontmatter(id: &str, kind: &str, status: &str, title: &str) -> Frontma
     fm
 }
 
+/// Build the record shape the import's "does it exist / what kind is it"
+/// checks need, straight from a canonical projection file.
+///
+/// Only the fields those two checks read are populated (`kind` for HIGH-6,
+/// `id` for the delete-then-create path). Everything else stays at its
+/// `Default`, which is honest: this is a projection of one file's
+/// frontmatter, not a store row, and inventing `r_eff_score` or timestamps
+/// would claim a derivation that never happened. `body` keeps the whole
+/// file so the HIGH-6 check and any later ref-form computation see the same
+/// bytes the store would have held.
+fn record_from_projection_file(
+    id: &str,
+    content: &str,
+) -> forgeplan_core::db::store::ArtifactRecord {
+    let (fm, _body) = forgeplan_core::artifact::frontmatter::parse_frontmatter(content)
+        .unwrap_or_else(|_| (Frontmatter::new(), String::new()));
+    let string = |key: &str| -> Option<String> {
+        fm.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    };
+    forgeplan_core::db::store::ArtifactRecord {
+        id: string("id").unwrap_or_else(|| id.to_string()),
+        kind: string("kind").unwrap_or_default(),
+        status: string("status").unwrap_or_default(),
+        title: string("title").unwrap_or_default(),
+        body: content.to_string(),
+        depth: string("depth").unwrap_or_default(),
+        author: string("author"),
+        valid_until: string("valid_until"),
+        tags: forgeplan_core::artifact::frontmatter::tags_from_frontmatter(&fm),
+        ..Default::default()
+    }
+}
+
 pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
     let cwd = std::env::current_dir()?;
 
     let full_path = if std::path::Path::new(path).is_absolute() {
@@ -94,16 +127,48 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         // display ids; resolve_id maps them onto the canonical DB form.
         // Resolver returning None just means the id is novel — fall back
         // to the raw input so the new artifact gets created as-is.
-        let canonical = store.resolve_id(raw_id).await?;
-        let id_owned: String;
-        let id: &str = if let Some(c) = canonical {
-            id_owned = c;
-            id_owned.as_str()
-        } else {
-            raw_id
+        //
+        // On a migrated workspace the same question is asked of the
+        // canonical markdown through the file-first resolver, and the
+        // "does it already exist / what kind is it" answer comes from the
+        // same file — never from re-opening the retired legacy store.
+        let resolved_id: Option<String>;
+        let existing: Option<forgeplan_core::db::store::ArtifactRecord> = match &store {
+            Some(store) => {
+                let canonical = store.resolve_id(raw_id).await?;
+                let id_owned: String;
+                let id: &str = if let Some(c) = canonical {
+                    id_owned = c;
+                    id_owned.as_str()
+                } else {
+                    raw_id
+                };
+                let existing = store.get_record(id).await?;
+                resolved_id = Some(id.to_string());
+                existing
+            }
+            None => match forgeplan_core::artifact::store::resolve_artifact_path(&ws, raw_id).await
+            {
+                Some(path) => {
+                    let content = tokio::fs::read_to_string(&path).await?;
+                    let (fm, _) =
+                        forgeplan_core::artifact::frontmatter::parse_frontmatter(&content)?;
+                    let canonical = fm
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(raw_id)
+                        .to_string();
+                    resolved_id = Some(canonical);
+                    Some(record_from_projection_file(raw_id, &content))
+                }
+                None => {
+                    resolved_id = None;
+                    None
+                }
+            },
         };
+        let id: &str = resolved_id.as_deref().unwrap_or(raw_id);
 
-        let existing = store.get_record(id).await?;
         if existing.is_some() && !force {
             skipped += 1;
             continue;
@@ -134,8 +199,10 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             // projection is removed in lockstep with the LanceDB row.
             // Fixes the previous bypass where re-import via `--force`
             // left the OLD file on disk while the OLD row was deleted.
+            // With a `None` sink the same helper removes the canonical file
+            // and stops — the derived row retires on reconcile.
             projection::delete_artifact_with_projection(
-                &projection::MutationContext::new(&ws, &store),
+                &projection::MutationContext::new(&ws, &lock, store.as_ref()),
                 id,
             )
             .await?;
@@ -222,8 +289,12 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         // call left every imported artifact in DB-only state with no
         // markdown file backing — breaking ADR-003 invariant the moment
         // import completed.
+        //
+        // With a `None` sink the same helper writes the canonical projection
+        // and stops; the whole bundle is published by the ONE reconcile pass
+        // at the end, not one per artifact.
         projection::create_artifact_with_projection(
-            &projection::MutationContext::new(&ws, &store),
+            &projection::MutationContext::new(&ws, &lock, store.as_ref()),
             &new_artifact,
         )
         .await?;
@@ -252,11 +323,19 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         .unwrap_or_default();
     let relations_attempted = link_triples.len();
     let relations_imported = projection::add_links_batch_with_projection(
-        &projection::MutationContext::new(&ws, &store),
+        &projection::MutationContext::new(&ws, &lock, store.as_ref()),
         &link_triples,
     )
     .await
     .unwrap_or(0);
+
+    if store.is_none() {
+        common::note_constellation_owns_index();
+        // Lock released before reconcile — it re-acquires the same lock per
+        // storage commit, and a held guard would time the capture out.
+        drop(lock);
+        common::reconcile_after_file_mutation(&ws).await;
+    }
 
     println!(
         "Imported {} artifacts ({} skipped, {} stubs downgraded to draft), {} of {} relations applied",

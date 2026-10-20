@@ -2,7 +2,7 @@
 depth: deep
 id: EPIC-010
 kind: epic
-last_modified_at: 2026-10-16T17:49:53.484341+00:00
+last_modified_at: 2026-10-19T10:09:44.677028+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
 - target: PRD-085
@@ -36,7 +36,7 @@ S4  7–9    ░░░░░░░░░░░░░░░░░░░░░░�
 TOTAL                                   0/4  (  0%)   истории НЕ приняты
 ```
 
-Реализовано **0 из 4** историй. Ни одна история не принята, потому что ни одна не начиналась: этот прогон — подготовка, не код.
+Принято **0 из 4** историй. Реализация ведётся в worktree `ForgePlan-Constellation-P0`; исходная формулировка «ни одна не начиналась» устарела. Наличие кода и успешный `cargo check` не закрывают приёмку S1–S4.
 
 ## Vision
 
@@ -134,7 +134,55 @@ Evidence units, обязательный обход, budget, continuation, recei
 
 ## Implementation Log
 
-_(нет — реализация не начиналась)_
+### 2026-10-19 — исходный объём и живая доска Orchestra сверены повторно
+
+**Предмет работы — Constellation внутри ForgePlan:** актуальность локального индекса и чтение нескольких самостоятельных `.forgeplan` с явными источниками, версиями и неполнотой. ContextPack входит в программу как этап 6, но не является отдельным исполняющим агентом, вторым продуктом или условием приёмки локальных 0А/0Б. Формулировка «сборщик контекста» не описывает всю программу.
+
+Основание: оригинальный `ForgePlan-Constellation-Architecture-2026-10-16.docx`, SHA256 `1c3c92fd6f1875f1a9be434d0e18f93c30c33c1ba08c9c851cda6d6f228551ec`; перечитан полностью. Его первая полезная поставка — 0А/0Б, затем этапы 1–2 дают федерацию. Полный согласованный объём 0А–9 не сокращён.
+
+Orchestra проверена через `orchestra-beta-forge-agent`: workspace `ForgePlan` (`kgYnhWodYw7kNbJMAK5q`), project `Development` (`ZB8WYUpwNskvAZdRK8Jh`), identity `Forge Agent` (`7eea6f7ad3fc4b3196385e9d3e3cb856`). Прочитаны ROOT и все 28 дочерних задач, поля, описания, чек-листы и доступная история; число детей сверено отдельным counts-запросом. Пропущенные `read_messages` системные события восстановлены `search_messages`: число уникальных сообщений совпало со счётчиками каждой из 28 задач. Вложенных документов у ROOT и четырёх историй, а также task attachments не найдено. Снимок чтений: `.local/constellation-verification/scope-reconciliation/orchestra-readback.json`, SHA256 `3ff007ad78e3ceffa3f2ba49cf1b9f264ad4f38c402361a3970af0ca30b8bccc`. Изменений Orchestra в этой сверке нет.
+
+| История | Исходный объём и приёмка | Что подтверждает живая доска |
+|---|---|---|
+| S1 | P1–P5, 0А/0Б; все L01–L16 | S1-A `it3ctaOPGmxCIXj4jgGv` — Review/Evidence, 10/10 static checklist; в описании записано принятие статического контракта координатором. S1-C `CAVAw0E2DCftle0W1A7m` — Doing/Code. S1-R/V/G — Backlog, приёмка истории не завершена |
+| S2 | P6–P8, этапы 1–5: разрешённые источники, registry, identity, snapshots, typed refs и native read MCP; F01–F07 | История `6DdOWEziOwxPlcuybDKO` и A/C/R/V/G — Backlog; старт зависит от предметного PASS S1-G |
+| S3 | P9, этап 6: точные цитаты и основания, обязательный обход, целые evidence units, итоговый budget, continuation/receipt; F08–F10 | История `3cTN4L8OfMry7lPRnzEb` и A/C/R/V/G — Backlog; зависит от PASS S2-G |
+| S4 | P10–P11, этапы 7–9: объяснимый impact, измеренный кэш, переносимость и настоящие adapters с происхождением; F09–F11 | История `J5iwbG72Pndqp0dBCX0l` и A/C/R/V/G — Backlog; зависит от PASS S3-G |
+
+Доска отстаёт от части фактически написанного и испытанного: в ветке уже есть элементы S2/S3/S4, а EVID-180 содержит реальные диагностические прогоны. Backlog и NOT_RUN в старых полях не доказывают отсутствия кода. Обратное также неверно: наличие кода, тестового файла или экспортного формата не означает принятую историю. Последовательность приёмки восстанавливается без удаления уже написанного и без отмены поздних поставок.
+
+**Остаток до заявленной готовности:**
+
+- **S1:** завершить проверку всех затронутых mutation/read callers, живого обновления serve/watch, восстановления owner/pending после сбоя и изоляции worktree. Выполнить полную L01–L16 и regression matrix на замороженных исходниках. `constellation_source_view` и `constellation_embedding_state` существуют, но не входили в итоговые 52 PASS EVID-180. Semantic feature прошёл прежний type-check; реальный положительный vector-channel CLI/MCP, корректность профиля модели и runtime/recovery matrix этим не подтверждены. Обязательный NOT RUN блокирует приёмку, но сам по себе не доказывает дефект реализации.
+- **S2:** закрепить отдельный контракт и завершить его приёмку. Уже испытаны lexical search трёх источников, ambiguity, qualified get, required/optional coverage, pinned Git get и запрет write dispatch. Наблюдаемые дефекты остаются: working handle читает новые bytes вместо captured bytes либо `snapshot_expired`; declared qualified cross-project edge остаётся unresolved. Нужны также полные F01–F07: identity/worktree cases, missing OID без fetch/HEAD, границы пути при гонках, readonly constructor и source-only link mutation, два настоящих MCP-клиента.
+- **S3:** устранить превышение окончательного сериализованного budget в CLI и MCP; принять обязательные основания, целостность evidence units, receipt/continuation и усечение без ложного отрицательного ответа. F10 — те же 30 задач в трёх режимах на тех же snapshots — ещё NOT RUN. Обычный успешный pack на трёх проектах не закрывает эту историю.
+- **S4:** провести отдельную приёмку impact/TTL, incremental == rebuild и export/import/adapter round trip. Наличие `export.rs`/SCIP-shaped output не подтверждает внешний adapter. Кэш включается лишь после измерений; при отсутствии выигрыша допустимо оставить его выключенным с записанными числами.
+
+Событийное G1–G4 сохранено задачей EVENT `0ZrqkBRXYjdXV7deNZPz` и **не входит в S1–S4**: доставка/replay/realtime требуют отдельного явного запроса. Network gateway/multi-tenant ACL — поздний отдельный инкремент, не условие начальной локальной федерации. Исполнение задач остаётся за внешними агентами/ForgeFarm; Contextee — дополнительный индекс/адаптер, не обязательная инфраструктура базового сценария.
+
+Существующие 52 Rust PASS и 20 PASS / 4 FAIL CLI/MCP остаются ровно теми наблюдениями, которые записаны в EVID-180; новых Rust/E2E запусков в этой сверке нет. Диагностический запуск с `CARGO_BUILD_JOBS=4` не выдаётся за формальную Sx-V: текущие задачи V требуют одного build owner, `CARGO_BUILD_JOBS=1`, `CARGO_INCREMENTAL=0`, test-threads=1 и раздельных no-feature/semantic доказательств. Активация, выпуск, замена установленного бинарника и ложные Done не выполнялись.
+
+### 2026-10-19 — настоящий трёхпроектный CLI/MCP прогон
+
+EVID-180: собран текущий CLI без semantic-search; бинарник и build manifest сохранены в `.local/constellation-verification/bin/no-semantic/`. Проверенный production source SHA256: `75eb9172fb38b034d6bbb2f0db0fdb7db2b31924e132b8178b85586c92977fa1`.
+
+- 52 Rust-регрессии PASS в четырёх test binaries: federation17, preservation24, pinned_search5, migrated MCP6. Первоначальный red preservation run 22/2 и исправление противоречивых тестовых ожиданий сохранены в evidence; production code ради этих assertions не менялся.
+- Реальный CLI и MCP SDK stdio: 20 PASS / 4 FAIL / 3 OBSERVED на hub/shared/billing. Подтверждены общий lexical search, различение одинаковых ID, qualified get, required/optional coverage после hit limit, Git snapshots и write refusal в отдельном read router. Финальные source bytes не изменились.
+- Приёмка остаётся красной: старый working scope возвращает новые bytes (F03); budget1 возвращает1603 CLI bytes и1602 MCP text bytes вместо cap4 (F08); declared cross-project based_on edge остаётся unresolved.
+- Один клиент может открыть несколько именованных федераций из реестра. Дополнительный реальный сценарий подтвердил: новые регистрации доступны будущим open без рестарта, удаление source не отзывает старый handle, отдельный HOME-реестр ограничивает видимые имена. Это локальный registry-level read, не per-agent ACL и не remote gateway.
+- Один проект может входить в несколько плоских наборов. Вложенные федерации не поддержаны; автоматическое выполнение задач и событийные G1–G4 не заявляются.
+- Диск больше не блокирует эту проверку: после явно разрешённого cargo clean удалено21.9GiB. После последнего test run осталось17,658,503,168 bytes. Общее правило >=10GiB перед полным запуском сохраняется.
+- Нельзя объявить готовыми S1–S4: полный L/F matrix, semantic/model/platform proofs и остальные исправления ещё не закрыты. Следующий функциональный барьер — F03/F08 и qualified graph resolution, не повторная проверка типов.
+
+
+### 2026-10-19 — сверка фактической реализации с исходным ТЗ
+
+- Программа остаётся федерацией двух и более самостоятельных `.forgeplan`, а не только обновлением локального индекса. Основание: исходный `ForgePlan-Constellation-Architecture-2026-10-16.docx`, PRD-081 G5/G6/G7 и критерии F01–F10. SPEC-008/RFC-015/ADR-029 описывают локальную основу S1; они не заменяют контракт всей федерации.
+- В изменённом worktree есть локальный reconciler/publisher, prepare/complete embedding jobs, kernel generation pins, WorkspaceRead и федеративные CLI/MCP пути. Состояние — реализация и исправления, не принятая поставка. EVID-176/177/178 сохраняют отрицательные результаты ревью.
+- EVID-179 фиксирует реальные успешные проверки типов core/CLI/MCP, включая semantic CLI и тестовые цели core. Выполнение тестов и реальный CLI/MCP E2E этой ревизии не подтверждены.
+- В федеративном поиске исправлен преждевременный выход после заполнения hit limit: последующие источники продолжают проверяться; retained hits ограничены limit+1 для признака truncation. Добавлены три поведенческих теста на поздний required/optional failure, охват здоровых источников и точную границу truncation. Пока подтверждена только компиляция: `.local/constellation-verification/compiler-recovery/15-federation-coverage-test-types.log`, exit 0. F02 ещё не помечен PASS.
+- Событийные G1–G4 не входят в эти заявления. Автоматическое выполнение агентов, push/merge и внешние адаптеры не объявлены готовыми.
+- Следующий приёмочный барьер: исполнение L01–L16 и F01–F10 с бинарником этой ревизии. Полная сборка требует не менее 10 GiB; разрешённое пользователем исключение ниже порога касается только узкого cargo check с остановкой при менее 3 GiB. Проверки 2026-10-19 не снимают этот барьер.
 
 ## Related
 

@@ -100,6 +100,115 @@ Two related traps, same family:
   disk-full trap above — the number is real, it is just measuring something
   else.
 
+## Быстрый цикл Rust: поиск, символы, адресные проверки
+
+Эти правила дополняют, а не заменяют полные проверки и ограничения диска выше.
+
+### Найти код без полной загрузки файлов
+
+1. Сначала ограничить область задачи файлами или модулем. Для известного текста
+   использовать Grep; для конструкции Rust — `ast-grep`:
+
+   ```sh
+   ast-grep outline crates/forgeplan-core/src/constellation/owner.rs --view signatures
+   ast-grep outline crates/forgeplan-core/src/constellation/owner.rs --view expanded
+   ast-grep run --lang rust --pattern '$EXPR.unwrap()' crates/forgeplan-core/src/constellation/owner.rs
+   ```
+
+   `outline --view signatures` показывает верхний уровень; для методов и членов
+   использовать `--view expanded`. Карта экспериментальная и не разрешает типы.
+   Совпадение `.unwrap()` само по себе не дефект: различать production, tests
+   и инварианты. Не выгружать AST или весь workspace в контекст.
+2. Определения, реализации и использования проверять через Serena/rust-analyzer
+   или LSP. Перед изменением публичной сигнатуры получить references и мигрировать
+   callers. AST-поиск не разрешает типы и не заменяет проверку символов.
+   Перед работой в отдельном worktree проверить, что Serena видит файл именно
+   этого дерева. `FileNotFound` при существующем файле — не повод искать или
+   редактировать одноимённый файл в другом checkout: проверить привязку сервера,
+   а до её исправления использовать LSP с абсолютным путём целевого worktree.
+3. Прочитать найденные реализации и соседний существующий образец. Отсутствие
+   LSP-диагностики не считать успешным `cargo check`: сервер может ещё индексировать
+   проект или не запускать Cargo-проверку.
+
+### Serena и Git worktrees
+
+- Запускать MCP из корня нужного checkout с `serena start-mcp-server --context ide
+  --project-from-cwd --transport stdio --enable-web-dashboard false`. Не закреплять
+  в общей настройке абсолютный `--project` основного checkout.
+- Корень Git worktree — отдельный проект Serena: свой процесс/активный root и
+  `.serena/cache`. Общий `.git` не означает общий индекс исходников. Не объединять
+  кэши ссылкой и не переключать один активный root между параллельными агентами.
+- Для первого полного прогрева выполнить `serena project index .` из нужного
+  checkout; затем символы запрашивать штатными tools. Кэш проверяется при обращении,
+  а не является обещанием постоянно обновляемого полного снимка всех файлов.
+  Не запускать полное индексирование после каждой правки, через Git hooks или
+  рекурсивно через `activation_command`.
+- `.mcp.json` и `.serena/` здесь gitignored: новый worktree не получает их через
+  Git автоматически. При подготовке проверить локальную конфигурацию и smoke
+  `get_symbols_overview` на файле именно этого дерева; не копировать чужие
+  credentials или registry целиком. Для одинакового `project_name` задать уникальное
+  имя через `.serena/project.local.yml`; активировать проект по пути, не по имени.
+- Навигационный rust-analyzer Serena работает с `checkOnSave: false` и
+  `cargo.buildScripts.enable: false`; проверку компилятора выполняет build-owner.
+  Это уменьшает фоновую диагностику и может ограничить сведения о generated code
+  и proc macros. Отсутствие ошибок Serena не заменяет проверку сборки.
+- Изменение MCP-конфига действует при новом подключении. Уже запущенный сервер
+  остаётся на прежнем root; переподключить его и повторить smoke, не заявлять
+  переключение только по факту изменения JSON.
+
+### Проверять связную правку, а не пересобирать весь workspace после каждой строки
+
+Только назначенный build-owner, после завершения правок и проверки диска:
+
+```sh
+# Типы и тестовые targets затронутого пакета, без финальной линковки приложения.
+cargo check -p forgeplan-core --all-targets
+
+# Небольшая выборка: обычный cargo test, без накладных расходов nextest.
+cargo test -p forgeplan-core --lib -- --test-threads=1
+cargo test -p forgeplan-core --features test-helpers --test constellation_embedding_preservation -- --test-threads=1
+
+# Nextest — ради возможностей runner или измеренного выигрыша на выбранном наборе.
+cargo nextest run -p forgeplan-core --lib --test-threads=1
+```
+
+Для CLI пакет называется `forgeplan`, для MCP — `forgeplan-mcp`.
+Использовать требуемые задачей features; группировать проверки с одинаковыми
+features последовательно в одном `target`, не переключать их без необходимости.
+`--test-threads=1` сохраняет изоляцию нынешних model/environment fixtures;
+параллельное исполнение тестов включать лишь для проверенно изолированного набора.
+Doctests запускать отдельно через `cargo test --workspace --doc`.
+Ни `cargo test --lib`, ни `nextest --lib` не запускают integration targets
+или doctests. Выбирать `--test <name>` для соответствующего сценария; запуск
+только unit-тестов не закрывает проверку CLI/MCP.
+
+Не обещать ускорение nextest по факту установки: на коротких тестах его
+накладные расходы могут быть выше. Изолированный опыт подтверждает рабочий
+подход, но не является benchmark ForgePlan и не обосновывает смену runner в CI.
+
+`cargo check` не доказывает codegen, линковку или поведение. После законченного
+изменения нужны соответствующие тесты и настоящий CLI/MCP smoke; при изменении
+FFI/native dependencies/linker — ранняя сборка. Перед сдачей выполнить всю
+обязательную матрицу задачи, включая no-feature/semantic и E2E, без её сокращения.
+
+### Не терять кэш и не дублировать работу
+
+- Не делать `cargo clean` после обычной ошибки. Очистка — отдельное согласованное
+  действие при нехватке места; чужие target/model caches не трогать.
+- Не менять toolchain, `RUSTFLAGS`, Cargo profiles или `CARGO_TARGET_DIR` ради
+  предполагаемого ускорения: это может инвалидировать кэш. `line-tables-only`
+  уже настроен. Не включать глобально sccache и не отключать incremental без
+  сравнения cold/warm времени; sccache не устраняет финальную линковку.
+- IDE/rust-analyzer check-on-save, Bacon и агенты не должны параллельно запускать
+  Cargo. Перед передачей build-owner согласовать фоновые проверки; не отключать
+  диагностику редактора молча.
+- Для подагента задавать ограниченный набор файлов, один контракт и формат
+  находки `file:line → условие → последствие`. Независимые срезы читать параллельно;
+  повторное ревью направлять на diff исправления и его callers, а не заново на
+  весь репозиторий. Неизменённые файлы подтверждать прежним отчётом и fingerprint.
+- Новые семантические индексы (CocoIndex/SCIP) и cargo-hakari вводить только после
+  замера конкретной задержки; их наличие не является условием обычной работы.
+
 ## Working mode: /smith first, then role-matched subagents
 
 Standing owner rule (2026-10): every **non-trivial** task goes through two

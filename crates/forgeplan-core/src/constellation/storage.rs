@@ -514,6 +514,322 @@ pub fn read_manifest(
     })
 }
 
+// ===========================================================================
+// Pinned reads — a shared OS lock on the manifest file itself
+//
+// The file a reader pins is the one immutable generation manifest named by
+// `CURRENT.json`. That file already exists, is never replaced, and is never
+// created by a reader, so the lock needs no lease directory, no heartbeat and
+// no TTL: the kernel drops the lock when the last descriptor closes, which
+// includes process death. A crashed reader therefore cannot leave protection
+// behind, and a live reader cannot be starved by a file nobody wrote.
+// ===========================================================================
+
+/// One generation pinned for the duration of one read.
+///
+/// # What the guard is
+///
+/// A **shared** (`LOCK_SH`) OS lock held on the manifest file itself, carried
+/// by the read-only [`std::fs::File`] inside this type. Dropping the pin
+/// closes the descriptor and the kernel releases the lock; there is no
+/// cleanup path that could fail and no state to expire.
+///
+/// # What the guard is not
+///
+/// * Not `Clone` and not `try_clone`-able. `flock` and `LockFileEx` are per
+///   open file description: a second descriptor would release the lock the
+///   first one believes it holds, which is the same footgun
+///   [`super::owner::OwnerGuard`] refuses.
+/// * Not a writer. The handle is opened `read(true)` only, with `create` and
+///   `truncate` off, so a pinned read cannot add, replace or shorten any file
+///   under the index root — including on a read-only mount.
+pub struct PinnedGeneration {
+    /// Held for its side effect: the shared lock lives on this descriptor.
+    /// Never read, never duplicated.
+    _file: std::fs::File,
+    manifest: std::sync::Arc<GenerationManifest>,
+    descriptor: CurrentDescriptor,
+}
+
+impl PinnedGeneration {
+    /// The verified manifest these pinned table versions come from.
+    pub fn manifest(&self) -> &GenerationManifest {
+        &self.manifest
+    }
+
+    /// The same verified manifest, shared.
+    ///
+    /// A read view holds the manifest *and* the pin, and they must be the same
+    /// manifest — a view that could name one generation and pin another would
+    /// be reporting a generation nobody verified. Handing out the same `Arc`
+    /// keeps that true by construction and keeps a read from copying a manifest
+    /// per question.
+    pub fn manifest_arc(&self) -> std::sync::Arc<GenerationManifest> {
+        std::sync::Arc::clone(&self.manifest)
+    }
+
+    /// The descriptor this generation was pinned against.
+    pub fn descriptor(&self) -> &CurrentDescriptor {
+        &self.descriptor
+    }
+
+    /// The pinned generation id, taken from the verified manifest rather
+    /// than from the descriptor's own claim about itself.
+    pub fn generation_id(&self) -> &str {
+        &self.manifest.generation_id
+    }
+
+    /// Test-only access to the held descriptor for physical-identity checks.
+    ///
+    /// Windows-only, and only because that is where the physical-identity
+    /// tests live. A `#[cfg(test)]`-only method on every platform is dead code
+    /// everywhere else, and the warning it produces is noise that hides a real
+    /// one later.
+    #[cfg(all(test, windows))]
+    fn handle(&self) -> &std::fs::File {
+        &self._file
+    }
+}
+
+impl std::fmt::Debug for PinnedGeneration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PinnedGeneration")
+            .field("generation_id", &self.manifest.generation_id)
+            .field("manifest_path", &self.descriptor.manifest_path)
+            .field("table_versions", &self.manifest.table_versions)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Whether the file this pin holds open is still the file `named_path` names.
+///
+/// One call into the durability seam, which owns the platform identity:
+/// `(device, inode)` on unix, NTFS `FILE_ID_INFO` on Windows. Neither is ever
+/// approximated with size + mtime — see
+/// [`crate::constellation::durability::PhysicalIdentity`] for why a length and
+/// a timestamp are not an identity.
+fn handle_still_named(
+    locked: &std::fs::File,
+    named_path: &Path,
+) -> Result<bool, ConstellationError> {
+    super::durability::same_physical_file(locked, named_path).map_err(|detail| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "cannot confirm the identity of {}: {detail}",
+                named_path.display()
+            ),
+        }
+    })
+}
+
+/// Open an immutable generation manifest for a pinned read.
+///
+/// On POSIX this is the plain `std` open and the kernel already refuses to let
+/// an unlinked file be reopened by name. On Windows `std` would request
+/// `FILE_SHARE_DELETE` and let GC unlink the manifest out from under a live
+/// reader, so the open goes through the platform module instead — see
+/// [`crate::constellation::durability::open_pinned_manifest`].
+pub(crate) fn open_pinned_manifest(path: &Path) -> Result<std::fs::File, ConstellationError> {
+    super::durability::open_pinned_manifest(path).map_err(|detail| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: format!("cannot pin manifest {}: {detail}", path.display()),
+        }
+    })
+}
+
+/// Resolve `descriptor.manifest_path` under `index_root`, refusing any path
+/// that could leave the index root.
+///
+/// A descriptor is durable data, not a capability: a `CURRENT.json` that names
+/// `../../etc/passwd` must not turn a pinned read into an arbitrary read, and
+/// an absolute path would silently read a different index than the one whose
+/// `CURRENT` was parsed.
+fn manifest_path_under(
+    index_root: &Path,
+    descriptor: &CurrentDescriptor,
+) -> Result<PathBuf, ConstellationError> {
+    let relative = Path::new(&descriptor.manifest_path);
+    let escapes = relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)));
+    if escapes {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "descriptor manifest_path `{}` is not a plain relative path inside the index root",
+                descriptor.manifest_path
+            ),
+        });
+    }
+    Ok(index_root.join(relative))
+}
+
+/// Pin `descriptor`'s generation for one read.
+///
+/// The whole pin, in order: open the named manifest **without creating or
+/// writing anything**, take a **non-blocking shared** lock on it, read and
+/// checksum the bytes through the locked descriptor, parse the manifest, check
+/// that it is the generation the descriptor claims to be, and re-check that the
+/// path still names the very file whose descriptor is locked.
+///
+/// Every failure is [`ConstellationError::IndexGenerationUnavailable`]:
+///
+/// * the manifest is missing, replaced, unreadable or does not parse;
+/// * its bytes do not match `manifest_sha256`;
+/// * its identity (`generation_id` / `index_epoch` / `checkout_id`) differs
+///   from the descriptor's;
+/// * the path no longer resolves to the locked file;
+/// * the lock is busy — GC holds it exclusively while it unlinks a
+///   generation, which is precisely the answer "do not start reading this
+///   one now".
+///
+/// There is **no fallback to the latest generation** and no second attempt on
+/// a different manifest under the same descriptor: a pin that has to guess is
+/// a pin that can serve a row set `CURRENT` never claimed.
+///
+/// # Platform note
+///
+/// POSIX `flock` on the manifest makes the lock disappear with the last open
+/// descriptor, and an unlinked file cannot be reopened by name — so the
+/// identity re-check is a defence in depth there.
+///
+/// Windows gets both halves explicitly, because `std` provides neither:
+///
+/// * the open goes through [`open_pinned_manifest`], a `CreateFileW` **without
+///   `FILE_SHARE_DELETE`**. A delete is only permitted while every open handle
+///   shares delete access, so while a pin is held the kernel refuses
+///   `DeleteFile` and `MoveFileExW(REPLACE_EXISTING)` on that manifest. GC's
+///   `remove_file` therefore fails rather than unlinking a generation a reader
+///   is serving, and `gc_generations` turns that into `protected`, not into a
+///   silent prune.
+/// * the identity re-check compares NTFS `FILE_ID_INFO` (volume serial +
+///   128-bit file id) of the locked handle against the same taken from a fresh
+///   open of the name. Size + mtime was the previous answer; it is a guess that
+///   a same-length rewrite or a checkout's preserved mtime defeats outright.
+///
+/// The Windows guarantees are asserted by `#[cfg(windows)]` tests in this
+/// module, which need a real NTFS volume; on any other host they do not run and
+/// the Windows claim stays NOT RUN rather than assumed.
+pub fn pin_generation_read(
+    index_root: &Path,
+    descriptor: &CurrentDescriptor,
+) -> Result<PinnedGeneration, ConstellationError> {
+    let path = manifest_path_under(index_root, descriptor)?;
+
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!(
+                    "manifest {} is a symlink; refusing to pin an alias",
+                    descriptor.manifest_path
+                ),
+            });
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!("manifest {} is unreadable: {e}", descriptor.manifest_path),
+            });
+        }
+    }
+
+    // Cannot create, cannot write, cannot truncate — on either platform, and
+    // unchanged on a read-only mount. On Windows it additionally does not share
+    // delete access; see [`open_pinned_manifest`].
+    let file = open_pinned_manifest(&path).map_err(|detail| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "cannot open manifest {}: {detail}",
+                descriptor.manifest_path
+            ),
+        }
+    })?;
+
+    // `fs2::FileExt::…` spelled out rather than `file.try_lock_shared()`:
+    // a bare method call silently switches to `std`'s inherent lock API when
+    // the toolchain has one, and the lock primitive this protocol is
+    // specified against must be the one that actually runs.
+    match fs2::FileExt::try_lock_shared(&file) {
+        Ok(()) => {}
+        Err(e) if super::owner::is_contended(&e) => {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!(
+                    "manifest {} is locked by a writer or by GC right now: {e}",
+                    descriptor.manifest_path
+                ),
+            });
+        }
+        Err(e) => {
+            return Err(ConstellationError::Io {
+                detail: format!("cannot lock manifest {}: {e}", descriptor.manifest_path),
+            });
+        }
+    }
+
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read as _;
+        (&file)
+            .read_to_end(&mut bytes)
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("cannot read manifest {}: {e}", descriptor.manifest_path),
+            })?;
+    }
+    let actual = sha256_hex(&bytes);
+    if actual != descriptor.manifest_sha256 {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "manifest {} checksum {} does not match the descriptor's {}",
+                descriptor.manifest_path, actual, descriptor.manifest_sha256
+            ),
+        });
+    }
+    let manifest: GenerationManifest = serde_json::from_slice(&bytes).map_err(|e| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: format!("manifest {} does not parse: {e}", descriptor.manifest_path),
+        }
+    })?;
+    if manifest.generation_id != descriptor.generation_id
+        || manifest.index_epoch != descriptor.index_epoch
+        || manifest.checkout_id != descriptor.checkout_id
+    {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "manifest {} describes generation `{}`/epoch {}/checkout `{}`, not the descriptor's \
+                 `{}`/epoch {}/checkout `{}`",
+                descriptor.manifest_path,
+                manifest.generation_id,
+                manifest.index_epoch,
+                manifest.checkout_id,
+                descriptor.generation_id,
+                descriptor.index_epoch,
+                descriptor.checkout_id
+            ),
+        });
+    }
+
+    // The lock says "nobody is replacing this file right now"; it does not
+    // say "this name still means this file". A descriptor written before a
+    // replace-by-rename, and any writer that got in between the lock and this
+    // check, both land here.
+    if !handle_still_named(&file, &path)? {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "manifest {} no longer names the file this read locked; the generation was \
+                 replaced or removed",
+                descriptor.manifest_path
+            ),
+        });
+    }
+
+    Ok(PinnedGeneration {
+        _file: file,
+        manifest: std::sync::Arc::new(manifest),
+        descriptor: descriptor.clone(),
+    })
+}
+
 /// Write an **immutable** generation manifest and return its checksum.
 ///
 /// Immutable means no replace: publishing the same `generationId` twice is a
@@ -560,12 +876,14 @@ pub fn descriptor_for(
     manifest: &GenerationManifest,
     owner_epoch: u64,
     manifest_sha256: &str,
+    profile_id: Option<&str>,
 ) -> CurrentDescriptor {
     CurrentDescriptor::for_manifest(
         manifest,
         owner_epoch,
         format!("{GENERATIONS_DIR}/{}.json", manifest.generation_id),
         manifest_sha256,
+        profile_id,
     )
 }
 
@@ -899,5 +1217,378 @@ mod tests {
     fn a_non_wrapped_uri_cannot_be_mapped_back() {
         assert!(physical_root("file:///tmp/x.lance").is_err());
         assert!(physical_root("/tmp/x.lance").is_err());
+    }
+
+    // ── pinned reads ────────────────────────────────────────────────────────
+
+    /// An index root holding one immutable manifest plus its descriptor.
+    fn pinned_fixture() -> (TempDir, PathBuf, CurrentDescriptor) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("lance");
+        std::fs::create_dir_all(root.join(GENERATIONS_DIR)).unwrap();
+        let bytes = serde_json::to_vec(&manifest_json("gen-7", 4, 4)).unwrap();
+        std::fs::write(root.join(GENERATIONS_DIR).join("gen-7.json"), &bytes).unwrap();
+        let descriptor: CurrentDescriptor = serde_json::from_value(serde_json::json!({
+            "format_version": 1,
+            "index_epoch": 3,
+            "checkout_id": "local-test",
+            "generation_id": "gen-7",
+            "owner_epoch": 9,
+            "source_set_digest": "d",
+            "config_digest": "c",
+            "profile_id": null,
+            "evaluated_at": "2026-01-01T00:00:00Z",
+            "manifest_path": "generations/gen-7.json",
+            "manifest_sha256": sha256_hex(&bytes),
+        }))
+        .unwrap();
+        (tmp, root, descriptor)
+    }
+
+    fn manifest_json(generation_id: &str, artifacts_v: u64, relations_v: u64) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "generation_id": generation_id,
+            "checkout_id": "local-test",
+            "index_epoch": 3,
+            "source_set_digest": "d",
+            "config_digest": "c",
+            "table_versions": {"artifacts": artifacts_v, "relations": relations_v},
+            "source_entries": [],
+            "tombstones": [],
+            "pending_jobs": {},
+            "coverage": {"expected":0,"read":0,"invalid":0,"unavailable":0,"excluded":0},
+            "diagnostics": [],
+            "evaluated_at": "2026-01-01T00:00:00Z",
+        })
+    }
+
+    fn is_unavailable(err: &ConstellationError) -> bool {
+        err.code() == crate::constellation::DiagnosticCode::IndexGenerationUnavailable
+    }
+
+    #[test]
+    fn a_pin_yields_the_verified_manifest_and_leaves_the_root_untouched() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let snapshot = || {
+            let mut files: Vec<(PathBuf, u64)> = walkdir::WalkDir::new(&root)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+                .map(|e| (e.path().to_path_buf(), e.metadata().unwrap().len()))
+                .collect();
+            files.sort();
+            files
+        };
+        let before = snapshot();
+
+        let pinned = pin_generation_read(&root, &descriptor).unwrap();
+        assert_eq!(pinned.generation_id(), "gen-7");
+        assert_eq!(pinned.manifest().table_versions.artifacts, 4);
+        assert_eq!(pinned.descriptor().generation_id, "gen-7");
+
+        assert_eq!(
+            before,
+            snapshot(),
+            "a pinned read must not create or rewrite anything under the index root"
+        );
+    }
+
+    /// Two readers of the same generation coexist — a shared lock that only
+    /// excluded same-kind holders would serialise every read behind every
+    /// other read.
+    #[test]
+    fn two_pins_of_one_generation_coexist() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let first = pin_generation_read(&root, &descriptor).unwrap();
+        let second = pin_generation_read(&root, &descriptor).unwrap();
+        assert_eq!(first.generation_id(), second.generation_id());
+    }
+
+    /// The busy-lock answer. While anything holds the manifest exclusively —
+    /// GC, between the exclusive lock and the unlink — a reader is told the
+    /// generation is unavailable. It is never handed a different generation
+    /// instead.
+    #[test]
+    fn an_exclusive_holder_makes_the_pin_unavailable() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let guard = std::fs::OpenOptions::new()
+            .read(true)
+            .write(false)
+            .create(false)
+            .truncate(false)
+            .open(root.join(GENERATIONS_DIR).join("gen-7.json"))
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&guard).unwrap();
+
+        let err = pin_generation_read(&root, &descriptor).unwrap_err();
+        assert!(
+            is_unavailable(&err),
+            "a busy manifest is an unavailable generation, not a fallback: {err}"
+        );
+
+        // Releasing the holder makes the very same descriptor pin again.
+        fs2::FileExt::unlock(&guard).unwrap();
+        assert!(pin_generation_read(&root, &descriptor).is_ok());
+    }
+
+    #[test]
+    fn a_missing_manifest_is_unavailable_and_creates_nothing() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        std::fs::remove_file(root.join(GENERATIONS_DIR).join("gen-7.json")).unwrap();
+        let err = pin_generation_read(&root, &descriptor).unwrap_err();
+        assert!(is_unavailable(&err), "{err}");
+        assert!(
+            !root.join(GENERATIONS_DIR).join("gen-7.json").exists(),
+            "a failed pin must not re-create the manifest it could not read"
+        );
+    }
+
+    #[test]
+    fn a_rewritten_manifest_fails_the_checksum_before_anything_else() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let path = root.join(GENERATIONS_DIR).join("gen-7.json");
+        let mut rewritten = std::fs::read(&path).unwrap();
+        rewritten.push(b' ');
+        std::fs::write(&path, rewritten).unwrap();
+
+        let err = pin_generation_read(&root, &descriptor).unwrap_err();
+        assert!(is_unavailable(&err), "{err}");
+        assert!(
+            err.to_string().contains("checksum"),
+            "the checksum is what caught it: {err}"
+        );
+    }
+
+    /// A descriptor that points at another generation's bytes is a torn
+    /// pointer. Serving it would answer with a generation `CURRENT` never
+    /// claimed.
+    #[test]
+    fn a_descriptor_that_names_another_generation_is_refused() {
+        let (_tmp, root, mut descriptor) = pinned_fixture();
+        descriptor.generation_id = "gen-8".to_string();
+        let err = pin_generation_read(&root, &descriptor).unwrap_err();
+        assert!(is_unavailable(&err), "{err}");
+        assert!(
+            err.to_string().contains("gen-8"),
+            "the mismatch must name both sides: {err}"
+        );
+    }
+
+    #[test]
+    fn a_descriptor_path_that_leaves_the_index_root_is_refused() {
+        let (_tmp, root, mut descriptor) = pinned_fixture();
+        for escape in ["../outside.json", "/etc/passwd", ""] {
+            descriptor.manifest_path = escape.to_string();
+            let err = pin_generation_read(&root, &descriptor).unwrap_err();
+            assert!(is_unavailable(&err), "`{escape}` must be refused: {err}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pin_survives_an_identical_rewrite_but_a_new_pin_of_a_removed_manifest_is_refused() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let path = root.join(GENERATIONS_DIR).join("gen-7.json");
+
+        let pinned = pin_generation_read(&root, &descriptor).unwrap();
+        // Same bytes, new inode — a generation is immutable, so this is the
+        // same generation and the live pin keeps serving it.
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(pinned.manifest().generation_id, "gen-7");
+        assert_eq!(pinned.manifest().table_versions.artifacts, 4);
+        assert!(pin_generation_read(&root, &descriptor).is_ok());
+
+        // Once the name is gone there is nothing a new reader may pin, and the
+        // answer must be "unavailable" rather than "here is another
+        // generation".
+        std::fs::remove_file(&path).unwrap();
+        let err = pin_generation_read(&root, &descriptor).unwrap_err();
+        assert!(is_unavailable(&err), "{err}");
+        // The pin taken before the unlink is unaffected.
+        assert_eq!(pinned.manifest().generation_id, "gen-7");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_manifest_is_refused() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let path = root.join(GENERATIONS_DIR).join("gen-7.json");
+        let elsewhere = root.join("elsewhere.json");
+        std::fs::write(&elsewhere, std::fs::read(&path).unwrap()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+        let err = pin_generation_read(&root, &descriptor).unwrap_err();
+        assert!(is_unavailable(&err), "{err}");
+        assert!(err.to_string().contains("symlink"), "{err}");
+    }
+
+    // ── Windows: physical identity, and a pin GC cannot unlink ────────────
+    //
+    // These are the POSIX twin's evidence on NTFS. They do not compile-check
+    // anything: they need a real volume, a real `FILE_ID_INFO`, and a real
+    // sharing violation. On any non-Windows host they do not run, and the
+    // Windows claim stays NOT RUN.
+
+    /// The pin's re-check sees a **different physical file**, not just
+    /// different bytes.
+    ///
+    /// A same-length replacement is exactly what the old size + mtime
+    /// comparison waved through: same byte count, and on a fast volume the same
+    /// mtime. NTFS gives the replacement a new 128-bit file id, so the identity
+    /// comparison says no — which is what makes the pin's re-check a proof
+    /// rather than a coincidence of sizes.
+    #[cfg(windows)]
+    #[test]
+    fn a_same_length_replacement_is_not_the_same_physical_file() {
+        use crate::constellation::durability::{physical_identity_of, physical_identity_of_path};
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let path = root.join(GENERATIONS_DIR).join("gen-7.json");
+        let original = std::fs::read(&path).unwrap();
+
+        let pinned = pin_generation_read(&root, &descriptor).unwrap();
+        let pinned_id = physical_identity_of(pinned.handle()).unwrap();
+
+        // Replace the *name* with a different file of exactly the same length.
+        let mut replacement = original.clone();
+        replacement[0] = if replacement[0] == b'{' { b'[' } else { b'{' };
+        assert_eq!(
+            replacement.len(),
+            original.len(),
+            "the fixture is only meaningful if the swap preserves length"
+        );
+        let staging = root.join(GENERATIONS_DIR).join("gen-7.staging");
+        std::fs::write(&staging, &replacement).unwrap();
+        std::fs::rename(&staging, &path).unwrap();
+
+        let named_id = physical_identity_of_path(&path).unwrap();
+        assert_ne!(
+            pinned_id, named_id,
+            "a same-length replacement must not keep the file id, or the \
+             identity check is still a size comparison with extra steps"
+        );
+
+        // The pin taken before the swap keeps serving exactly what it verified.
+        assert_eq!(pinned.generation_id(), "gen-7");
+        assert_eq!(pinned.manifest().table_versions.artifacts, 4);
+        // And a new pin of the same descriptor is refused: the bytes under
+        // that name no longer match `manifest_sha256`.
+        let err = pin_generation_read(&root, &descriptor).unwrap_err();
+        assert!(is_unavailable(&err), "{err}");
+    }
+
+    /// A live pin blocks the unlink GC depends on.
+    ///
+    /// The pin's open withholds `FILE_SHARE_DELETE`, so while the pin is held
+    /// the kernel refuses `DeleteFile` — a GC pass cannot unlink the manifest a
+    /// reader is serving and discover it afterwards. Dropping the pin releases
+    /// it, because the kernel drops the sharing state with the handle: a crashed
+    /// reader cannot leave protection behind.
+    #[cfg(windows)]
+    #[test]
+    fn a_live_pin_prevents_the_manifest_from_being_unlinked() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let path = root.join(GENERATIONS_DIR).join("gen-7.json");
+        let pinned = pin_generation_read(&root, &descriptor).unwrap();
+
+        let refused = std::fs::remove_file(&path);
+        assert!(
+            refused.is_err(),
+            "a pinned manifest must not be deletable — the pin holds it without \
+             FILE_SHARE_DELETE, which is what makes GC's unlink reach the reader"
+        );
+        assert_eq!(
+            refused.unwrap_err().raw_os_error(),
+            Some(32),
+            "the refusal must be ERROR_SHARING_VIOLATION, not some unrelated failure"
+        );
+        assert!(path.exists(), "the manifest must still be there");
+
+        drop(pinned);
+        std::fs::remove_file(&path).expect("an unpinned manifest is removable again");
+    }
+
+    /// A replace-by-rename is refused for the whole pin while it is held, not
+    /// only for a later reader — the same sharing rule as the unlink, applied
+    /// to the other way a generation gets swapped.
+    #[cfg(windows)]
+    #[test]
+    fn a_live_pin_prevents_the_manifest_from_being_replaced() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let path = root.join(GENERATIONS_DIR).join("gen-7.json");
+        let pinned = pin_generation_read(&root, &descriptor).unwrap();
+
+        let replacement = root.join(GENERATIONS_DIR).join("gen-7.replacement");
+        std::fs::write(&replacement, std::fs::read(&path).unwrap()).unwrap();
+        assert!(
+            std::fs::rename(&replacement, &path).is_err(),
+            "a pinned manifest must not be replaceable either"
+        );
+        assert_eq!(pinned.generation_id(), "gen-7");
+    }
+
+    /// Two pins of one generation still coexist and agree on one physical
+    /// file — the identity read is not exclusive and does not itself block the
+    /// second reader.
+    #[cfg(windows)]
+    #[test]
+    fn two_windows_pins_agree_on_one_physical_file() {
+        use crate::constellation::durability::same_physical_file;
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let path = root.join(GENERATIONS_DIR).join("gen-7.json");
+        let first = pin_generation_read(&root, &descriptor).unwrap();
+        let second = pin_generation_read(&root, &descriptor).unwrap();
+        assert_eq!(first.generation_id(), second.generation_id());
+        assert!(same_physical_file(first.handle(), &path).unwrap());
+        assert!(same_physical_file(second.handle(), &path).unwrap());
+    }
+
+    /// The NTFS file id really is read from the handle, and it really
+    /// distinguishes two files on one volume. If `FileIdInfo` were unavailable
+    /// or collapsed to zero this is where it would show up — which is why the
+    /// Windows evidence is a behavioural test and not a compile check.
+    #[cfg(windows)]
+    #[test]
+    fn the_ntfs_file_id_distinguishes_two_files_on_one_volume() {
+        use crate::constellation::durability::{physical_identity_of, physical_identity_of_path};
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let path = root.join(GENERATIONS_DIR).join("gen-7.json");
+        let pinned = pin_generation_read(&root, &descriptor).unwrap();
+
+        let from_handle = physical_identity_of(pinned.handle()).unwrap();
+        let from_name = physical_identity_of_path(&path).unwrap();
+        assert_eq!(
+            from_handle, from_name,
+            "the handle and the name must name one physical file"
+        );
+        assert_ne!(
+            from_handle.volume, 0,
+            "an unresolved volume serial would make the id meaningless"
+        );
+
+        let other = root.join(GENERATIONS_DIR).join("gen-8.json");
+        std::fs::write(&other, b"{}").unwrap();
+        assert_ne!(
+            from_handle,
+            physical_identity_of_path(&other).unwrap(),
+            "file ids must distinguish two files on one volume"
+        );
+    }
+
+    /// A reparse point at the manifest path is refused, not read through.
+    #[cfg(windows)]
+    #[test]
+    fn a_reparse_point_manifest_is_refused() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let path = root.join(GENERATIONS_DIR).join("gen-7.json");
+        let elsewhere = root.join("elsewhere.json");
+        std::fs::write(&elsewhere, std::fs::read(&path).unwrap()).unwrap();
+        std::fs::write(&path, b"{}").unwrap();
+        std::os::windows::fs::symlink_file(&elsewhere, &path).unwrap();
+
+        let err = pin_generation_read(&root, &descriptor).unwrap_err();
+        assert!(is_unavailable(&err), "{err}");
     }
 }

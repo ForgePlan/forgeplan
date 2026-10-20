@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.38.0"
+version = "0.39.0+constellation.s1.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ForgePlan/forgeplan"

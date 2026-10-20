@@ -17,6 +17,7 @@ use anyhow::Result;
 
 use forgeplan_core::constellation::capture::CaptureLimits;
 use forgeplan_core::constellation::facade::{self, MaintainCapability};
+use forgeplan_core::constellation::runtime::{MaintenanceHost, MaintenanceRunner, ReportSink};
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
 
@@ -51,7 +52,7 @@ pub async fn list(offset: usize) -> Result<()> {
 }
 
 /// The generation index: every published generation with its size and
-/// protection state — current, live-leased, keepable. Read-only.
+/// protection state — current, pinned by a live reader, keepable. Read-only.
 pub fn generations() -> Result<()> {
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
@@ -68,7 +69,7 @@ pub fn generations() -> Result<()> {
             flags.push("current".to_string());
         }
         if !g.leased_by.is_empty() {
-            flags.push(format!("leased:{}", g.leased_by.len()));
+            flags.push(format!("pinned:{}", g.leased_by.join(",")));
         }
         if !g.manifest_ok {
             flags.push("manifest-unreadable".to_string());
@@ -98,8 +99,9 @@ pub fn generations() -> Result<()> {
 }
 
 /// Manual GC — the only deletion path, and it is a verb the operator
-/// runs. Removes generations that are neither CURRENT, leased, nor among
-/// the newest `keep` deletable ones. Every verdict is printed.
+/// runs. Removes generations that are neither CURRENT, pinned by a live
+/// reader, nor among the newest `keep` deletable ones. Every verdict is
+/// printed.
 pub async fn gc(keep: usize) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
@@ -124,6 +126,9 @@ pub async fn gc(keep: usize) -> Result<()> {
                 prune.table, prune.versions_removed, prune.bytes_removed, prune.kept_after
             ),
         }
+    }
+    if let Some(why) = &report.physical_prune_skipped {
+        println!("prune  (all tables): skipped — {why}");
     }
     println!(
         "{} manifest(s) removed, {} protected (keep={})",
@@ -213,42 +218,91 @@ async fn drain(
     profile_id: &str,
     deadline: std::time::Instant,
 ) -> Result<()> {
-    use forgeplan_core::embed::Embedder;
+    // `ShutdownOutcome` is named below; `InferenceWorker::shutdown` returns
+    // it, so both come from the same feature-gated module.
+    #[cfg(feature = "semantic-search")]
+    use forgeplan_core::constellation::runtime::{InferenceWorker, ShutdownOutcome};
+    use forgeplan_core::constellation::{jobs, storage};
 
-    let config = crate::commands::common::config().unwrap_or_default();
-    let prefix = config
-        .embedding
-        .as_ref()
-        .map(|e| e.chunk_size)
-        .unwrap_or(2000);
+    // The `--embed-profile` argument is checked against the profile the
+    // **cached snapshot** actually resolves to, not used as a label. Labelling
+    // vectors with an arbitrary string is what made `--embed-profile` able to
+    // stamp BGE-M3 vectors into a space that was never BGE-M3's.
+    let expected = profile_id.to_string();
+    let cache_dir = forgeplan_core::embed::resolve_cache_dir();
+    let body_prefix_chars = forgeplan_core::workspace::load_config(capability.workspace())
+        .ok()
+        .and_then(|config| config.embedding.map(|embedding| embedding.chunk_size))
+        .unwrap_or(jobs::DEFAULT_BODY_PREFIX_CHARS);
+    let resolved = jobs::ResolvedProfile::open(
+        &cache_dir,
+        jobs::DEFAULT_MODEL_REPO,
+        facade::ENGINE_VERSION,
+        body_prefix_chars,
+    )?;
+    if resolved.profile.profile_id() != expected {
+        anyhow::bail!(
+            "--embed-profile {expected} does not match the profile the cached snapshot resolves \
+             to ({}). Re-run with that id, or point FORGEPLAN_MODEL_CACHE at the snapshot you \
+             mean.",
+            resolved.profile.profile_id()
+        );
+    }
+    let profile = resolved.profile.clone();
 
-    let mut embedder = Embedder::new()?;
+    // No published generation means nothing to drain onto; a maintain pass is
+    // what creates the rows, and `forgeplan index` has just run one.
+    if storage::read_current(capability.index_root())?.is_none() {
+        ui::warning("no published generation — nothing to drain");
+        return Ok(());
+    }
+
     ui::info(&format!("Draining embedding queue (profile {profile_id})…"));
+    // This command is the migration. Admission only ever works in the space
+    // `CURRENT` already serves, so pointing the index at the verified profile
+    // is what makes a model change take effect — and it is done here, by the
+    // one caller that resolved the profile from the cache on purpose. A
+    // background drain has no such authority and will be refused if the
+    // cached profile and the served profile disagree.
+    match facade::adopt_embedding_profile(capability, &profile, deadline).await {
+        Ok(true) => ui::info(&format!("Index now serves embedding space {profile_id}.")),
+        Ok(false) => {}
+        Err(e) => anyhow::bail!("could not point the index at profile {profile_id}: {e}"),
+    }
 
+    // One inference worker for this drain, opened from the **same snapshot the
+    // profile was resolved from**. `ResolvedProfile::open` already refused to
+    // continue without a cached snapshot, so `spawn()` here could only ever
+    // reload the same 2 GB a second time — and if `refs/main` moved between
+    // the two, the profile would be advertised against weights that were
+    // never embedded. The core holds the worker only between admission and
+    // completion — never across the model call.
+    let mut worker = InferenceWorker::spawn_resolved(jobs::DEFAULT_MODEL_NAME, &resolved)?;
     let outcome = facade::drain_embedding_queue(
         capability,
-        profile_id,
-        prefix,
-        |inputs| {
-            let texts: Vec<&str> = inputs.iter().map(|(_, t)| t.as_str()).collect();
-            embedder.embed_batch(&texts).map_err(|e| {
-                forgeplan_core::constellation::ConstellationError::ModelUnavailable {
-                    detail: format!("embedding failed: {e}"),
-                }
-            })
-        },
+        &profile,
+        &mut worker,
         deadline,
+        // `forgeplan index` is a one-shot command with no host loop, so no
+        // stop or control scan can interrupt it early; `deadline` is the bound.
+        &forgeplan_core::constellation::runtime::DrainControl::never(),
     )
-    .await
-    .map_err(|e| anyhow::anyhow!("embedding queue drain failed: {e}"))?;
+    .await;
+    // Stop admission without waiting indefinitely for a native model call.
+    let shutdown = worker.shutdown();
+    if matches!(&shutdown, Ok(ShutdownOutcome::Detached)) {
+        eprintln!("WARN: in-flight inference thread detached; native call has not finished");
+    }
+    let outcome = outcome.map_err(|e| anyhow::anyhow!("embedding queue drain failed: {e}"))?;
+    shutdown.map_err(|e| anyhow::anyhow!("inference worker shutdown failed: {e}"))?;
 
     let before_eligible = outcome.before.eligible_keys().len();
     let after_eligible = outcome.after.eligible_keys().len();
     let cannot_judge = outcome.after.cannot_judge().len();
 
     println!(
-        "  queue:       {} eligible before, {} embedded, {} stale completions",
-        before_eligible, outcome.embedded, outcome.stale_completions
+        "  queue:       {} eligible before, {} embedded, {} stale completions, {} recorded failed",
+        before_eligible, outcome.embedded, outcome.stale_completions, outcome.failed
     );
     println!(
         "  coverage:    {} still eligible after, {} cannot-judge",
@@ -270,154 +324,65 @@ async fn drain(
     anyhow::bail!("rebuild with --features semantic-search to drain the embedding queue")
 }
 
-/// Fire-and-forget maintenance for a long-running host (`forgeplan serve
-/// --auto-index`). Runs one `maintain_index` pass on a detached task, then —
-/// when a `semantic-search` build and a configured model exist — drains the
-/// embedding queue for that profile.
+/// Maintenance for a long-running host (`forgeplan serve --auto-index`).
 ///
-/// It never blocks the server: a failure is logged to stderr and the MCP
-/// surface keeps answering reads from whatever generation is published.
-/// Watch-style continuous upkeep stays with `forgeplan watch
-/// --constellation`; this is the "queue in serve" half of 0B.
-pub fn spawn_background(cwd: PathBuf) {
-    tokio::spawn(async move {
-        let Some(ws) = workspace::find_workspace(&cwd) else {
-            eprintln!(
-                "auto-index: no .forgeplan/ under {} — skipped",
-                cwd.display()
-            );
-            return;
-        };
-        let canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
-        let capability = MaintainCapability::for_strict_maintenance(canonical);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
-        match facade::maintain_index(&capability, CaptureLimits::default(), deadline).await {
-            Ok((view, outcome)) => eprintln!(
-                "auto-index: {} — {} commit(s)",
-                view.manifest.generation_id,
-                outcome.commits.len()
-            ),
-            Err(e) => eprintln!("auto-index: maintenance failed: {e}"),
-        }
-
-        drain_queue_if_configured(&capability, deadline, "auto-index").await;
-    });
-}
-
-/// Drain the pending embedding queue **only when** a model is configured and
-/// resolvable — the 0B "no manual `embed`" half for long-running hosts.
+/// Returns a **held** [`MaintenanceHost`], not a detached task. The old shape
+/// spawned a `tokio::spawn` that ran one pass and was then dropped: nothing
+/// could tell whether it was still running, nothing stopped it, and a save
+/// after that single pass stayed unindexed until the next process started. The
+/// host keeps watching, keeps the control scan running and can be shut down
+/// explicitly when the server stops.
 ///
-/// Feature-off or unconfigured is a silent no-op: the queue drains through
-/// binding-predicated publish, so a skipped drain means pending rows stay
-/// pending — visible in `constellation_status` coverage — never corrupted.
-/// `label` prefixes the stderr report so `watch` and `serve` log lines are
-/// distinguishable.
-#[cfg(feature = "semantic-search")]
-pub(crate) async fn drain_queue_if_configured(
-    capability: &MaintainCapability,
-    deadline: std::time::Instant,
-    label: &str,
-) {
-    drain_queue_with_config(capability, deadline, label, false).await;
-}
-
-/// Hook path: never download a model while Git is waiting for the hook.
-#[cfg(feature = "semantic-search")]
-pub(crate) async fn drain_queue_if_cached(
-    capability: &MaintainCapability,
-    deadline: std::time::Instant,
-    label: &str,
-) {
-    drain_queue_with_config(capability, deadline, label, true).await;
-}
-
-#[cfg(feature = "semantic-search")]
-async fn drain_queue_with_config(
-    capability: &MaintainCapability,
-    deadline: std::time::Instant,
-    label: &str,
-    cached_only: bool,
-) {
-    use forgeplan_core::embed::Embedder;
-
-    let config = crate::commands::common::config().unwrap_or_default();
-    let Some(model) = config.embedding.as_ref().map(|e| e.model.clone()) else {
-        return;
+/// # Which workspace
+///
+/// `explicit` is the `--workspace` argument, and it **wins over `cwd`**. That
+/// is the whole point of the parameter: a server started in X that is asked to
+/// maintain Y must maintain Y, and silently maintaining X would leave the
+/// request's own workspace stale while reporting that maintenance was running.
+///
+/// # Authority
+///
+/// A host is a publisher. It is started only for a workspace that is *supposed*
+/// to be maintained:
+///
+/// * an explicit `--auto-index` — the operator asked for it by name; or
+/// * a workspace that is already migrated to the constellation protocol, whose
+///   index therefore has no legacy writer to keep it current.
+///
+/// A workspace that is neither gets no host at all. That is not politeness: a
+/// legacy workspace still has `LanceStore` as its writer, and a constellation
+/// host racing it is precisely the split-brain the migration exists to end.
+/// A read-only or uninitialised `workspace=` target is likewise skipped rather
+/// than bootstrapped.
+///
+/// Returns `Ok(None)` when no workspace qualifies, which is a skip and not an
+/// error — stated rather than implied by a printed line.
+pub async fn spawn_background(
+    cwd: PathBuf,
+    explicit: Option<&std::path::Path>,
+) -> anyhow::Result<Option<MaintenanceRunner>> {
+    let start_from = explicit.map(std::path::Path::to_path_buf).unwrap_or(cwd);
+    let Some(ws) = workspace::find_workspace(&start_from) else {
+        eprintln!(
+            "auto-index: no .forgeplan/ under {} — skipped",
+            start_from.display()
+        );
+        return Ok(None);
     };
-    let prefix = config
-        .embedding
-        .as_ref()
-        .map(|e| e.chunk_size)
-        .unwrap_or(2000);
-    let Some(repo) = forgeplan_core::embed::resolve_repo(&model) else {
-        eprintln!("{label}: embedding model `{model}` unsupported — queue skipped");
-        return;
-    };
-    let cache_dir = forgeplan_core::embed::resolve_cache_dir();
-    let profile_id = match forgeplan_core::constellation::jobs::snapshot_checksums(&cache_dir, repo)
-        .and_then(|checksums| {
-            forgeplan_core::constellation::jobs::ResolvedProfile::open(
-                &cache_dir,
-                repo,
-                &checksums,
-                forgeplan_core::constellation::facade::ENGINE_VERSION,
-            )
-            .map(|resolved| resolved.profile.profile_id())
-        }) {
-        Ok(id) => id,
-        Err(e) => {
-            eprintln!("{label}: profile for `{model}` unresolved — queue skipped: {e}");
-            return;
-        }
-    };
-    let opened = if cached_only {
-        Embedder::with_cached_model(&model)
-    } else {
-        Embedder::with_model(&model)
-    };
-    let Ok(mut embedder) = opened else {
-        eprintln!("{label}: embedding model `{model}` unavailable — queue skipped");
-        return;
-    };
-    match facade::drain_embedding_queue(
-        capability,
-        &profile_id,
-        prefix,
-        |inputs| {
-            let texts: Vec<&str> = inputs.iter().map(|(_, t)| t.as_str()).collect();
-            embedder.embed_batch(&texts).map_err(|e| {
-                forgeplan_core::constellation::ConstellationError::ModelUnavailable {
-                    detail: format!("embedding failed: {e}"),
-                }
-            })
-        },
-        deadline,
-    )
-    .await
-    {
-        Ok(outcome) => eprintln!(
-            "{label}: queue drained — {} embedded, {} stale, {} still eligible",
-            outcome.embedded,
-            outcome.stale_completions,
-            outcome.after.eligible_keys().len()
-        ),
-        Err(e) => eprintln!("{label}: queue drain failed: {e}"),
+    if explicit.is_none() && !forgeplan_core::constellation::facade::workspace_is_migrated(&ws) {
+        eprintln!(
+            "auto-index: {} is not migrated and no explicit --auto-index scope was given — skipped",
+            ws.display()
+        );
+        return Ok(None);
     }
-}
-
-/// No-op without the `semantic-search` feature — same call sites compile.
-#[cfg(not(feature = "semantic-search"))]
-pub(crate) async fn drain_queue_if_configured(
-    _capability: &MaintainCapability,
-    _deadline: std::time::Instant,
-    _label: &str,
-) {
-}
-
-#[cfg(not(feature = "semantic-search"))]
-pub(crate) async fn drain_queue_if_cached(
-    _capability: &MaintainCapability,
-    _deadline: std::time::Instant,
-    _label: &str,
-) {
+    let canonical = ws.canonicalize().unwrap_or(ws);
+    let host = MaintenanceHost::start(
+        MaintainCapability::for_strict_maintenance(canonical),
+        ReportSink::Background {
+            label: "auto-index",
+        },
+    )
+    .await?;
+    Ok(Some(host.drive()))
 }

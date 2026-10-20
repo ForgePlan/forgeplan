@@ -209,6 +209,29 @@ pub fn sections_v1_schema() -> SchemaRef {
     ]))
 }
 
+/// The columns a semantic readback projects.
+///
+/// Everything a preserve decision needs and nothing it does not: the row's
+/// name, the identity tuple a stale completion is fenced by, the input the
+/// stored vector was computed from, and the semantic columns themselves. The
+/// rendered columns — `body`, `title`, `content`, `tags` — are deliberately
+/// absent, because a readback that loaded the corpus text would make every
+/// reconcile pay for the whole workspace twice.
+///
+/// Named once, here, so the two call sites (`artifact_semantics`,
+/// `section_semantics`) cannot drift and no caller can inject a column name.
+const SEMANTIC_READBACK_COLUMNS: &[&str] = &[
+    "canonical_key",
+    "index_epoch",
+    "checkout_id",
+    "incarnation",
+    "input_digest",
+    "profile_id",
+    "semantic_state",
+    "retry_after",
+    "embedding",
+];
+
 /// Arrow schema for `constellation_relations_v1`.
 ///
 /// `target` holds the **exact** bytes the canonical file declared. No
@@ -688,6 +711,166 @@ impl IndexTables {
         Ok(report)
     }
 
+    /// Read the stored semantic columns of every artifacts row, keyed by
+    /// `canonical_key`.
+    ///
+    /// This is the **baseline** half of
+    /// [`super::publisher::artifacts_batch`]: a reconcile's merge batch cannot
+    /// compute embeddings, so the values a row already carries have to be read
+    /// back and spliced in, or an unconditional `when_matched_update_all`
+    /// writes the batch's nulls over a live vector.
+    ///
+    /// A narrow projection, not a full scan: `body`, `title`, `tags` and
+    /// every other rendered column are excluded, so the cost is the identity
+    /// and vector columns and not the corpus text. The column list is a
+    /// module constant, never caller text.
+    ///
+    /// Reads the **open writer handle**, so it observes exactly the head the
+    /// caller's baseline names — after any restore, before the first commit
+    /// of this pass. That ordering is the caller's contract, stated here
+    /// because a read after a commit would splice the pass's own nulls back.
+    ///
+    /// # Errors
+    ///
+    /// [`ConstellationError::Io`] when the query cannot be planned/executed or
+    /// the stream cannot be collected. The two are mapped separately, matching
+    /// [`Self::artifacts_eligibility`], because they are different failures.
+    pub async fn artifact_semantics(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<String, super::publisher::SemanticColumns>,
+        ConstellationError,
+    > {
+        let batches = self
+            .semantics_batches(self.artifacts_table(), "artifacts")
+            .await?;
+        Ok(Self::semantic_map(&batches))
+    }
+
+    /// Read the stored semantic columns of every sections row, keyed by the
+    /// section's own `canonical_key` (`"{parent}#s{ordinal}"`).
+    ///
+    /// Same projection and same ordering contract as
+    /// [`Self::artifact_semantics`]. A section row carries its **parent's**
+    /// `incarnation`/epoch/checkout, so the returned tuple is the one
+    /// [`super::publisher::sections_batch`] judges the section's own
+    /// `input_digest` against.
+    pub async fn section_semantics(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<String, super::publisher::SemanticColumns>,
+        ConstellationError,
+    > {
+        let batches = self
+            .semantics_batches(self.sections_table(), "sections")
+            .await?;
+        Ok(Self::semantic_map(&batches))
+    }
+
+    /// Run the semantic-column projection over one active table.
+    ///
+    /// Split from [`Self::semantic_map`] so the query side and the decoding
+    /// side stay separately readable, and so the two callers differ only in
+    /// the table they name.
+    async fn semantics_batches(
+        &self,
+        table: &lancedb::Table,
+        role: &'static str,
+    ) -> Result<Vec<arrow_array::RecordBatch>, ConstellationError> {
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase, Select};
+
+        let stream = table
+            .query()
+            .select(Select::columns(SEMANTIC_READBACK_COLUMNS))
+            .execute()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("executing the {role} semantic readback failed: {e}"),
+            })?;
+        stream
+            .try_collect()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("reading the {role} semantic readback failed: {e}"),
+            })
+    }
+
+    /// Decode projected batches into the preserve map.
+    ///
+    /// A row with no `canonical_key` is skipped — there would be no way to
+    /// name it, and a map keyed by something else would be spliced onto the
+    /// wrong row. Every other column is read independently, so a row missing
+    /// one field simply lacks that field and fails the identity check,
+    /// rather than aborting the whole readback.
+    fn semantic_map(
+        batches: &[arrow_array::RecordBatch],
+    ) -> std::collections::BTreeMap<String, super::publisher::SemanticColumns> {
+        let mut map = std::collections::BTreeMap::new();
+        for batch in batches {
+            let row_count = batch.num_rows();
+            for row in 0..row_count {
+                let Some(key) = batch
+                    .column_by_name("canonical_key")
+                    .and_then(|column| Self::read_str_from(column, row))
+                else {
+                    continue;
+                };
+                let text = |name: &str| {
+                    batch
+                        .column_by_name(name)
+                        .and_then(|column| Self::read_str_from(column, row))
+                };
+                let number = |name: &str| {
+                    batch
+                        .column_by_name(name)
+                        .and_then(|column| Self::read_u64_from(column, row))
+                };
+                map.insert(
+                    key,
+                    super::publisher::SemanticColumns {
+                        index_epoch: number("index_epoch"),
+                        checkout_id: text("checkout_id"),
+                        incarnation: number("incarnation"),
+                        input_digest: text("input_digest"),
+                        embedding: batch
+                            .column_by_name("embedding")
+                            .and_then(|column| Self::read_vector_from(column, row)),
+                        profile_id: text("profile_id"),
+                        semantic_state: text("semantic_state"),
+                        retry_after: text("retry_after"),
+                    },
+                );
+            }
+        }
+        map
+    }
+
+    /// Decode one `FixedSizeList<Float32>` cell into an owned vector.
+    ///
+    /// Same shape as `db::convert::extract_embedding`, re-derived here
+    /// because this module must not reach into the legacy store's private
+    /// helper. A null cell, a non-list column, or a list whose declared width
+    /// is not [`EMBEDDING_DIM`] is `None`: a vector that cannot be spliced
+    /// back into a batch is not a vector this protocol can preserve.
+    fn read_vector_from(column: &arrow_array::ArrayRef, row: usize) -> Option<Vec<f32>> {
+        use arrow_array::Array;
+        if row >= column.len() || column.is_null(row) {
+            return None;
+        }
+        let list = column
+            .as_any()
+            .downcast_ref::<arrow_array::FixedSizeListArray>()?;
+        if list.value_length() != EMBEDDING_DIM {
+            return None;
+        }
+        let values = list.value(row);
+        let floats = values
+            .as_any()
+            .downcast_ref::<arrow_array::Float32Array>()?;
+        Some((0..floats.len()).map(|i| floats.value(i)).collect())
+    }
+
     /// Project one row's stored binding.
     ///
     /// Each field is read independently, so a row missing one column is
@@ -762,9 +945,17 @@ impl IndexTables {
     /// because the operation is an update, and it cannot revive, because
     /// reviving would require matching a row that is gone.
     ///
-    /// Note what the guard deliberately makes impossible: re-binding a row to
-    /// a *different* profile. A profile change means the row is not current,
-    /// and moving it into the new space is a merge on the publisher's
+    /// # The profile term is compared exactly, and admission is what makes it work
+    ///
+    /// The guard includes `profile_id = <binding.profile_id>` with no
+    /// `OR … IS NULL`. That is sound because
+    /// [`Self::admit_embedding_into_artifacts`] has already assigned the row
+    /// this exact profile, under the owner, before the compute began. A late
+    /// result from a superseded admission therefore matches nothing instead of
+    /// migrating the row backwards — which is the only thing the missing
+    /// disjunction used to permit.
+    ///
+    /// Moving a row into a new space is admission's job, on the publisher's
     /// schedule, never a late completion's privilege.
     ///
     /// # Pinned signatures, at the point of use
@@ -843,9 +1034,11 @@ impl IndexTables {
     ///
     /// Private: `only_if` takes an arbitrary predicate, and exposing it on a
     /// sealed handle would hand back the unguarded write this phase exists to
-    /// remove. The only public conditional write is
-    /// [`Self::publish_embedding_into_artifacts`], which builds its own guard
-    /// from a [`Binding`](super::jobs::Binding).
+    /// remove. Every public conditional write builds its own guard from a
+    /// [`Binding`](super::jobs::Binding) — the publish path with
+    /// [`Self::publish_embedding_into_artifacts`]'s exact-profile guard, the
+    /// admission path with [`Self::admit_embedding_into_artifacts`]'s
+    /// freshness-only one.
     async fn update_artifacts_columns_where(
         &self,
         predicate: &str,
@@ -901,6 +1094,164 @@ impl IndexTables {
             rows_updated: result.rows_updated,
             predicate: predicate.to_string(),
         })
+    }
+
+    /// Assign one row to the target profile and mark it pending — **admission**.
+    ///
+    /// This is the write that makes the rest of the protocol sound. It runs
+    /// under the owner, from the same capture the jobs are minted from, and it
+    /// puts the row's `profile_id` on the target **before** any compute exists.
+    /// Two things follow, and both are load-bearing:
+    ///
+    /// * A vector left over from another space stops being claimed. The row
+    ///   now names profile B, so a reader asking for profile A cannot be
+    ///   served B's bytes.
+    /// * [`Binding::predicate`](super::jobs::Binding::predicate) can compare
+    ///   `profile_id` exactly. It did not have to before, because nothing had
+    ///   ever assigned the profile first; the gap it left is the one a late
+    ///   result under the old profile walks through.
+    ///
+    /// # The guard is the freshness half, deliberately
+    ///
+    /// [`Binding::freshness_predicate`](super::jobs::Binding::freshness_predicate)
+    /// — the seven freshness comparisons with **no** profile term. A row bound
+    /// to an older space must be able to re-point, or a profile migration never
+    /// converges; the profile term is exactly the comparison that would refuse
+    /// it. This is the only caller of that form.
+    ///
+    /// # Updates only
+    ///
+    /// `update().only_if(..)` cannot insert. A key with no row matches nothing
+    /// and reports `rows_updated: 0`, which is the honest answer: there is no
+    /// row to admit, and the next reconcile creates one.
+    ///
+    /// # Not a vector write
+    ///
+    /// Nothing here touches `embedding`. The previous vector is left exactly as
+    /// it is; `semantic_state = 'pending'` is what stops a reader from serving
+    /// it, and a completion overwrites the column in one operation when it
+    /// lands.
+    ///
+    /// # Errors
+    ///
+    /// [`ConstellationError::Io`] when the update or the version read fails.
+    pub async fn admit_embedding_into_artifacts(
+        &self,
+        binding: &super::jobs::Binding,
+    ) -> Result<super::publisher::UpdateOutcome, ConstellationError> {
+        self.update_artifacts_columns_where(
+            &binding.freshness_predicate(),
+            &[
+                (
+                    "profile_id",
+                    super::publisher::escape_predicate_literal(&binding.profile_id),
+                ),
+                (
+                    "semantic_state",
+                    super::publisher::escape_predicate_literal(
+                        super::jobs::SemanticState::Pending.as_str(),
+                    ),
+                ),
+            ],
+        )
+        .await
+    }
+
+    /// The section-row half of [`Self::admit_embedding_into_artifacts`].
+    ///
+    /// Identical contract. `canonical_key` is the section's own key and the
+    /// freshness fields are the parent's, because a section row borrows its
+    /// parent's durable identity.
+    pub async fn admit_embedding_into_sections(
+        &self,
+        binding: &super::jobs::Binding,
+    ) -> Result<super::publisher::UpdateOutcome, ConstellationError> {
+        self.update_sections_columns_where(
+            &binding.freshness_predicate(),
+            &[
+                (
+                    "profile_id",
+                    super::publisher::escape_predicate_literal(&binding.profile_id),
+                ),
+                (
+                    "semantic_state",
+                    super::publisher::escape_predicate_literal(
+                        super::jobs::SemanticState::Pending.as_str(),
+                    ),
+                ),
+            ],
+        )
+        .await
+    }
+
+    /// Record that one attempt at this row's vector failed, and when it may
+    /// be attempted again.
+    ///
+    /// The same guarded contract as
+    /// [`Self::publish_embedding_into_artifacts`] — [`Binding::predicate`],
+    /// the exact eight comparisons — so a failure recorded for a row that has
+    /// since moved writes nothing. It also **never touches `embedding`**: a
+    /// failed recompute leaves the previous vector in place, and
+    /// `semantic_state = 'failed'` is what stops a reader from being served it.
+    /// That is the same rule admission follows.
+    ///
+    /// `diagnostics` carries the reason, so "this row failed" is answerable
+    /// from the index alone rather than from a log nobody kept.
+    ///
+    /// # Errors
+    ///
+    /// [`ConstellationError::Io`] on a failed update or version read.
+    pub async fn fail_embedding_into_artifacts(
+        &self,
+        binding: &super::jobs::Binding,
+        retry_after: &str,
+        diagnostics: &str,
+    ) -> Result<super::publisher::UpdateOutcome, ConstellationError> {
+        self.update_artifacts_columns_where(
+            &binding.predicate(),
+            &[
+                (
+                    "semantic_state",
+                    super::publisher::escape_predicate_literal(
+                        super::jobs::SemanticState::Failed.as_str(),
+                    ),
+                ),
+                (
+                    "retry_after",
+                    super::publisher::escape_predicate_literal(retry_after),
+                ),
+                (
+                    "diagnostics",
+                    super::publisher::escape_predicate_literal(diagnostics),
+                ),
+            ],
+        )
+        .await
+    }
+
+    /// The section-row half of [`Self::fail_embedding_into_artifacts`].
+    /// Sections store failure state and retry time, but have no diagnostics column.
+    pub async fn fail_embedding_into_sections(
+        &self,
+        binding: &super::jobs::Binding,
+        retry_after: &str,
+    ) -> Result<super::publisher::UpdateOutcome, ConstellationError> {
+        self.update_sections_columns_where(
+            &binding.predicate(),
+            &[
+                (
+                    "semantic_state",
+                    super::publisher::escape_predicate_literal(
+                        super::jobs::SemanticState::Failed.as_str(),
+                    ),
+                ),
+                (
+                    "retry_after",
+                    super::publisher::escape_predicate_literal(retry_after),
+                ),
+            ],
+        )
+        .await
     }
 
     /// Rewind the artifacts writer to the published baseline.
@@ -1295,6 +1646,101 @@ pub async fn open_active_tables(
     })
 }
 
+/// Open the active tables **without any writer store and without creating
+/// anything**.
+///
+/// [`open_active_tables`] is the writer's constructor, and it is the wrong one
+/// for a caller whose contract is "reads only, changes nothing": it hands the
+/// tables a `DurabilityTrackingStore` and, for the sections role, runs
+/// `NativeTable::create_empty` when the dataset is absent. That creation is
+/// correct for admission — it is the documented upgrade path, and it happens
+/// under an owner whose closure barrier will sync it — and wrong everywhere
+/// else, because a caller with no publisher in hand has no closure to take.
+/// The write would land and never be part of a synced set.
+///
+/// So this constructor opens each role with `write_store_wrapper: None`
+/// (the same unwrapped reader route [`open_table_at_version`] uses) and
+/// creates nothing. A missing dataset is
+/// [`ConstellationError::IndexGenerationUnavailable`], not a creation: a
+/// caller that wants the upgrade goes through admission.
+///
+/// The returned handle is the same [`IndexTables`] type, so the eligibility
+/// reads are shared. Callers of this function must not use its write
+/// operations — they would be unsynced writes, which is exactly what this
+/// constructor exists to make impossible to do by accident.
+pub async fn open_active_tables_readonly(
+    index_root: &std::path::Path,
+    marker: &super::manifest::ProtocolMarker,
+) -> Result<IndexTables, ConstellationError> {
+    let connection = open_wrapped_connection(index_root).await?;
+    let database = Arc::clone(connection.database());
+    let mut opened = Vec::with_capacity(super::storage::ACTIVE_TABLES.len());
+    for (role, table_name) in storage::ACTIVE_TABLES {
+        let uri = storage::resolve_table_uri(index_root, marker, role, table_name)?;
+        storage::assert_not_wrapped_route(&uri)?;
+        let native = lancedb::table::NativeTable::open_with_params(
+            &uri,
+            role,
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .map_err(|e| ConstellationError::IndexGenerationUnavailable {
+            detail: format!("cannot open the {role} table at {uri}: {e}"),
+        })?;
+        opened.push((role, native));
+    }
+
+    // `opened` is in `ACTIVE_TABLES` order: artifacts, relations, sections.
+    // The role string is carried only to keep the vector's shape equal to the
+    // writer constructor's; the handles below are taken positionally, exactly
+    // as `open_active_tables` does, because a wrong order here would pair a
+    // reader with the wrong schema.
+    let mut iter = opened.into_iter();
+    let artifacts = lancedb::table::Table::new(
+        Arc::new(
+            iter.next()
+                .ok_or_else(|| ConstellationError::Io {
+                    detail: "no artifacts table was opened".to_string(),
+                })?
+                .1,
+        ),
+        Arc::clone(&database),
+    );
+    let relations = lancedb::table::Table::new(
+        Arc::new(
+            iter.next()
+                .ok_or_else(|| ConstellationError::Io {
+                    detail: "no relations table was opened".to_string(),
+                })?
+                .1,
+        ),
+        Arc::clone(&database),
+    );
+    let sections = lancedb::table::Table::new(
+        Arc::new(
+            iter.next()
+                .ok_or_else(|| ConstellationError::Io {
+                    detail: "no sections table was opened".to_string(),
+                })?
+                .1,
+        ),
+        database,
+    );
+
+    Ok(IndexTables {
+        connection,
+        artifacts,
+        relations,
+        sections,
+    })
+}
+
 /// An opened table together with the connection that owns it.
 ///
 /// # Why this type exists instead of returning the `Table`
@@ -1567,6 +2013,79 @@ impl OpenedTable {
             .await
             .map_err(|e| ConstellationError::Io {
                 detail: format!("reading the filtered pinned stream failed: {e}"),
+            })
+    }
+
+    /// The `canonical_key` of every row matching `predicate`, at the pinned
+    /// version.
+    ///
+    /// Only the key column is projected, so a filter this wide (every row of
+    /// a kind, say) still costs one narrow column scan rather than the corpus
+    /// text. It exists for the one filter a row-level column cannot express:
+    /// a **section** row carries no `kind`/`status` of its own, so restricting
+    /// sections to the documents a filter admits needs their parents' keys.
+    ///
+    /// The predicate arrives already-escaped, as everywhere else here.
+    pub async fn keys_where(
+        &self,
+        predicate: &str,
+    ) -> Result<std::collections::BTreeSet<String>, ConstellationError> {
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase, Select};
+
+        let stream = self
+            .table
+            .query()
+            .select(Select::columns(&["canonical_key"]))
+            .only_if(predicate)
+            .execute()
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("executing the pinned key scan failed: {e}"),
+            })?;
+        let batches: Vec<arrow_array::RecordBatch> =
+            stream
+                .try_collect()
+                .await
+                .map_err(|e| ConstellationError::Io {
+                    detail: format!("reading the pinned key stream failed: {e}"),
+                })?;
+        let mut keys = std::collections::BTreeSet::new();
+        for batch in &batches {
+            let Some(column) = batch.column_by_name("canonical_key") else {
+                continue;
+            };
+            for row in 0..batch.num_rows() {
+                if let Some(key) = IndexTables::read_str_from(column, row) {
+                    keys.insert(key);
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    /// How many rows at the pinned version match `predicate` — with **no**
+    /// limit.
+    ///
+    /// `Table::count_rows`
+    /// (`lancedb-0.27.2/src/table.rs:565-568`) takes the same SQL filter
+    /// `only_if` takes and runs it as a `Dataset::count_rows` scan
+    /// (`table.rs:2212-2220`), so this counts at the version this handle
+    /// checked out and never at latest.
+    ///
+    /// This is the count a coverage question needs. Counting the rows an ANN
+    /// query *returned* answers a different question — "how many did the limit
+    /// admit" — and a caller that reports the second as the first will claim a
+    /// corpus is fully embedded while most of it never entered the ranking.
+    ///
+    /// The predicate arrives already-escaped, exactly as for
+    /// [`Self::query_batches_where`].
+    pub async fn count_rows_where(&self, predicate: &str) -> Result<usize, ConstellationError> {
+        self.table
+            .count_rows(Some(predicate.to_string()))
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("counting the pinned rows matching the filter failed: {e}"),
             })
     }
 
@@ -1905,5 +2424,181 @@ mod tests {
             ],
             "only the binding columns are shared between the two active tables"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Semantic readback decoding
+    // -------------------------------------------------------------------
+
+    /// A projection batch shaped exactly like the readback's: one row with a
+    /// real vector, one row with a null vector.
+    ///
+    /// Built with `try_new` against an explicit schema rather than
+    /// `try_from_iter`, so the column list is checked against the same
+    /// nullability the table declares.
+    fn semantic_batches() -> Vec<arrow_array::RecordBatch> {
+        use arrow_array::builder::{
+            FixedSizeListBuilder, Float32Builder, StringBuilder, UInt64Builder,
+        };
+
+        let mut keys = StringBuilder::new();
+        keys.append_value("PRD-001");
+        keys.append_value("PRD-002");
+
+        let mut epochs = UInt64Builder::new();
+        epochs.append_value(7);
+        epochs.append_value(7);
+
+        let mut checkouts = StringBuilder::new();
+        checkouts.append_value("local-x");
+        checkouts.append_value("local-x");
+
+        let mut incarnations = UInt64Builder::new();
+        incarnations.append_value(1);
+        incarnations.append_value(2);
+
+        let mut inputs = StringBuilder::new();
+        inputs.append_value("in-1");
+        inputs.append_value("in-2");
+
+        let mut profiles = StringBuilder::new();
+        profiles.append_value("p1");
+        profiles.append_null();
+
+        let mut states = StringBuilder::new();
+        states.append_value("ready");
+        states.append_value("unavailable");
+
+        let mut retries = StringBuilder::new();
+        retries.append_value("2026-10-20T00:00:00Z");
+        retries.append_null();
+
+        let dim = EMBEDDING_DIM as usize;
+        let mut vectors = FixedSizeListBuilder::new(Float32Builder::new(), EMBEDDING_DIM);
+        for value in 0..dim {
+            vectors.values().append_value(value as f32);
+        }
+        vectors.append(true);
+        vectors.values().append_nulls(dim);
+        vectors.append(false);
+
+        let embedding_type = DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            EMBEDDING_DIM,
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("canonical_key", DataType::Utf8, false),
+            Field::new("index_epoch", DataType::UInt64, false),
+            Field::new("checkout_id", DataType::Utf8, false),
+            Field::new("incarnation", DataType::UInt64, false),
+            Field::new("input_digest", DataType::Utf8, true),
+            Field::new("profile_id", DataType::Utf8, true),
+            Field::new("semantic_state", DataType::Utf8, false),
+            Field::new("retry_after", DataType::Utf8, true),
+            Field::new("embedding", embedding_type, true),
+        ]));
+        let columns: Vec<arrow_array::ArrayRef> = vec![
+            Arc::new(keys.finish()),
+            Arc::new(epochs.finish()),
+            Arc::new(checkouts.finish()),
+            Arc::new(incarnations.finish()),
+            Arc::new(inputs.finish()),
+            Arc::new(profiles.finish()),
+            Arc::new(states.finish()),
+            Arc::new(retries.finish()),
+            Arc::new(vectors.finish()),
+        ];
+        vec![
+            arrow_array::RecordBatch::try_new(schema, columns)
+                .expect("the projection batch is well formed"),
+        ]
+    }
+
+    #[test]
+    fn the_readback_decodes_identity_input_and_the_whole_semantic_tuple() {
+        let map = IndexTables::semantic_map(&semantic_batches());
+        assert_eq!(
+            map.keys().cloned().collect::<Vec<_>>(),
+            vec!["PRD-001".to_string(), "PRD-002".to_string()],
+            "rows are keyed by canonical_key, in the order the table returned them"
+        );
+
+        let ready = &map["PRD-001"];
+        assert_eq!(ready.index_epoch, Some(7));
+        assert_eq!(ready.checkout_id.as_deref(), Some("local-x"));
+        assert_eq!(ready.incarnation, Some(1));
+        assert_eq!(ready.input_digest.as_deref(), Some("in-1"));
+        assert_eq!(ready.profile_id.as_deref(), Some("p1"));
+        assert_eq!(ready.semantic_state.as_deref(), Some("ready"));
+        assert_eq!(ready.retry_after.as_deref(), Some("2026-10-20T00:00:00Z"));
+        let vector = ready
+            .embedding
+            .as_ref()
+            .expect("a non-null cell decodes to a vector");
+        assert_eq!(vector.len(), EMBEDDING_DIM as usize);
+        assert_eq!(vector[0], 0.0);
+        assert_eq!(vector[1], 1.0);
+        assert_eq!(
+            vector[EMBEDDING_DIM as usize - 1],
+            (EMBEDDING_DIM - 1) as f32
+        );
+    }
+
+    #[test]
+    fn a_null_vector_reads_back_as_absent_rather_than_a_zero_fill() {
+        let map = IndexTables::semantic_map(&semantic_batches());
+        let bare = &map["PRD-002"];
+        assert_eq!(
+            bare.embedding, None,
+            "a zero vector here would be spliced back as a real one"
+        );
+        assert_eq!(bare.profile_id, None);
+        assert_eq!(bare.retry_after, None);
+        assert_eq!(bare.semantic_state.as_deref(), Some("unavailable"));
+        // The identity is still read: this row is judged, then cleared — not
+        // skipped.
+        assert_eq!(bare.incarnation, Some(2));
+    }
+
+    #[test]
+    fn a_row_with_no_key_is_skipped_rather_than_mapped() {
+        // The map's key is the merge key. A row whose key cannot be read has
+        // no name to be spliced under, and inventing one would attach a
+        // vector to whatever row happened to sort next.
+        let batch = arrow_array::RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "canonical_key",
+                DataType::Utf8,
+                true,
+            )])),
+            vec![
+                Arc::new(arrow_array::builder::StringBuilder::new().finish())
+                    as arrow_array::ArrayRef,
+            ],
+        )
+        .expect("a one-column null batch");
+        assert!(IndexTables::semantic_map(&[batch]).is_empty());
+    }
+
+    #[test]
+    fn the_readback_projects_no_rendered_column() {
+        // The projection is what keeps a reconcile from loading the corpus
+        // text a second time. Asserted against the constant so a future
+        // "just add one column" edit fails here rather than in production.
+        assert!(!SEMANTIC_READBACK_COLUMNS.contains(&"body"));
+        assert!(!SEMANTIC_READBACK_COLUMNS.contains(&"content"));
+        assert!(!SEMANTIC_READBACK_COLUMNS.contains(&"title"));
+        assert!(!SEMANTIC_READBACK_COLUMNS.contains(&"tags"));
+
+        // Every projected column must exist on **both** tables, or the query
+        // fails at run time with a planning error instead of here.
+        for name in SEMANTIC_READBACK_COLUMNS {
+            for schema in [artifacts_v1_schema(), sections_v1_schema()] {
+                assert!(
+                    schema.column_with_name(name).is_some(),
+                    "`{name}` is projected but `{schema:?}` does not declare it"
+                );
+            }
+        }
     }
 }

@@ -847,7 +847,7 @@ enum Commands {
         #[arg(long, conflicts_with_all = ["embed_profile", "list"])]
         generations: bool,
         /// Garbage-collect generations: keep the newest N deletable ones
-        /// plus CURRENT and anything a live reader leases
+        /// plus CURRENT and anything a live reader holds pinned
         #[arg(long, conflicts_with_all = ["embed_profile", "list", "generations"],
                value_name = "KEEP")]
         gc: Option<usize>,
@@ -921,6 +921,17 @@ enum Commands {
         /// handle reads; no write tools, no raw paths accepted)
         #[arg(long, default_value = "full")]
         profile: String,
+        /// Workspace this process maintains, when it is not the one the server
+        /// was started in.
+        ///
+        /// Absent, the maintenance host follows the process's working directory.
+        /// Present, it follows **this** path — so `serve --auto-index
+        /// --workspace Y` in a checkout of X maintains Y and never X. Without
+        /// the flag, `forgeplan serve` started in X had no way to keep a second
+        /// workspace current at all, and any attempt to infer one from the
+        /// server's own default resolution would silently pick X again.
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<std::path::PathBuf>,
     },
     /// MCP integration helpers (install config for AI agent clients)
     Mcp {
@@ -971,7 +982,17 @@ enum Commands {
 #[derive(Subcommand)]
 enum McpAction {
     /// Start MCP server (alias for `forgeplan serve`)
-    Serve,
+    Serve {
+        /// Run a Constellation maintenance pass + embedding-queue drain in the
+        /// background while serving. Same meaning as `forgeplan serve
+        /// --auto-index`, and on an already-migrated workspace it is implied.
+        #[arg(long)]
+        auto_index: bool,
+        /// Workspace this process maintains, when it is not the one the server
+        /// was started in. Same meaning as `forgeplan serve --workspace`.
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<std::path::PathBuf>,
+    },
     /// Install forgeplan MCP config into a client (Claude / Cursor / Windsurf).
     ///
     /// Smart-merge: replaces command/args/transport, preserves existing `env`.
@@ -1571,23 +1592,28 @@ async fn main() -> anyhow::Result<()> {
         Commands::Serve {
             auto_index,
             profile,
+            workspace,
         } => match profile.as_str() {
             "constellation-read" => forgeplan_mcp::constellation_read::run_read_stdio().await,
             "full" => {
                 let cwd = std::env::current_dir()?;
-                if auto_index {
-                    commands::index::spawn_background(cwd.clone());
-                }
-                forgeplan_mcp::run_stdio(cwd).await
+                forgeplan_mcp::serve_with_maintenance(cwd, workspace.as_deref(), auto_index).await
             }
             other => {
                 anyhow::bail!("unknown serve profile {other:?} — `full` or `constellation-read`")
             }
         },
         Commands::Mcp { action } => match action {
-            McpAction::Serve => {
+            McpAction::Serve {
+                auto_index,
+                workspace,
+            } => {
                 let cwd = std::env::current_dir()?;
-                forgeplan_mcp::run_stdio(cwd).await
+                // `forgeplan mcp serve` is an alias for `forgeplan serve`, so
+                // it takes the same `--workspace` scoping for maintenance: an
+                // alias that silently ignored the flag would be a second way to
+                // maintain the wrong workspace.
+                forgeplan_mcp::serve_with_maintenance(cwd, workspace.as_deref(), auto_index).await
             }
             McpAction::Install {
                 client,

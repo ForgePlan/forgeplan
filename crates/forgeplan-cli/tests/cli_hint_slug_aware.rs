@@ -962,3 +962,28 @@ fn import_next_action_is_workspace_health_not_artifact_id() {
         "import Next: must NOT leak any display id of imported artifact, got: {next}"
     );
 }
+
+#[test]
+fn review_slug_input_keeps_the_resolved_prd_identity_in_hints() {
+    let (dir, _) = workspace_with_one_prd("Review Slug Resolution");
+    let slug = slug_for(dir.path(), "PRD-001");
+
+    let output = forgeplan()
+        .args(["review", &slug])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+
+    assert!(
+        stdout.contains("Fill: Problem, Goals, Non-Goals, Target Users, FR"),
+        "review must retain the resolved PRD kind, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("forgeplan link EVID-NNN PRD-001 --relation informs"),
+        "review hints must use the resolved artifact's canonical reference, got:\n{stdout}"
+    );
+}

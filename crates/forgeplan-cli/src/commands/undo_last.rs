@@ -15,7 +15,7 @@ use crate::commands::common;
 /// Run undo-last across the workspace. Mirrors `UndoLastParams`:
 /// - `within_hours` clamped 1..=720 (default 24).
 pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
     let within = within_hours.clamp(1, 720);
     let receipts = undo::list_receipts(&ws).await?;
@@ -66,7 +66,12 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
         }
     };
 
-    let report = undo::restore::apply_restore(&ws, &store, &receipt).await?;
+    // Store-free sibling on a migrated workspace — same reasoning as
+    // `restore`: receipts exist on both layouts, so the reverse path must too.
+    let report = match &store {
+        Some(store) => undo::restore::apply_restore(&ws, store, &receipt).await?,
+        None => undo::restore::apply_restore_file_first(&ws, &receipt).await?,
+    };
     let op_str = match report.op {
         undo::DestructiveOp::Delete => "delete",
         undo::DestructiveOp::Supersede => "supersede",
@@ -80,6 +85,19 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
     ];
 
     if json {
+        // Match restore: reconcile normally, expose its outcome in JSON,
+        // and leave all status diagnostics on stderr.
+        let (index_pending, index_pending_reason) = if store.is_none() {
+            common::note_constellation_owns_index();
+            drop(lock);
+            let published = common::reconcile_after_file_mutation(&ws).await;
+            (
+                !published,
+                (!published).then(|| "derived index not yet updated".to_string()),
+            )
+        } else {
+            (false, None)
+        };
         let payload = serde_json::json!({
             "ok": true,
             "restored": report.artifact_id,
@@ -89,6 +107,8 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
             "relations_skipped": report.relations_skipped,
             "projection_restored": report.projection_restored,
             "warnings": report.warnings,
+            "index_pending": index_pending,
+            "index_pending_reason": index_pending_reason,
             "_next_action": hints::primary_action(&next_hints),
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -119,6 +139,13 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
             println!("  - {w}");
         }
     }
+
+    if store.is_none() {
+        common::note_constellation_owns_index();
+        drop(lock);
+        common::reconcile_after_file_mutation(&ws).await;
+    }
+
     print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())

@@ -16,16 +16,18 @@ pub async fn open_store() -> anyhow::Result<(PathBuf, LanceStore)> {
     // This ensures IntegrityConfig::validate() runs for all code paths
     // (new, score, list, etc. — not just commands that explicitly load config).
     let _config = workspace::load_config(&ws)?;
+    // Refuse BEFORE opening. A migrated workspace's legacy store is retired
+    // on purpose, so the refusal must not be produced by whatever LanceDB
+    // happens to say about a dataset that is gone — and the legacy open
+    // must never be attempted at all here, because `LanceStore::open` runs
+    // schema migrations against a live connection (its own docs call it a
+    // second writer, not a read).
+    if index_migrated(&ws) {
+        return Err(constellation_managed_read_error());
+    }
     let store = LanceStore::open(&ws).await.map_err(|e| {
         if index_migrated(&ws) {
-            anyhow::anyhow!(
-                "This workspace's index moved to the constellation protocol \
-                 (.forgeplan/lance/CURRENT.json is set; the legacy artifacts.lance \
-                 is retired). This command still reads the legacy store.\n\
-                 Fix: use `forgeplan constellation search|get`, `forgeplan index --list`, \
-                 or `forgeplan get`/`forgeplan search` (they route to the pinned index \
-                 on this layout). Underlying error: {e}"
-            )
+            constellation_managed_read_error()
         } else {
             e
         }
@@ -52,14 +54,29 @@ pub async fn store() -> anyhow::Result<LanceStore> {
     Ok(store)
 }
 
-/// Whether the workspace's index has moved to the constellation protocol:
-/// bootstrap renamed `artifacts.lance`/`relations.lance` aside (single live
-/// writer per logical index) and `CURRENT.json` names the owner. A bare
-/// `LanceStore::open` failure on that layout is not corruption — the legacy
-/// store is retired on purpose.
+/// Protocol ownership includes interrupted migrations and retired-table backups.
+/// A leftover legacy table cannot reclaim a protocol-owned index.
 pub fn index_migrated(workspace: &Path) -> bool {
-    let lance = workspace.join("lance");
-    lance.join("CURRENT.json").exists() && !lance.join("artifacts.lance").exists()
+    forgeplan_core::constellation::facade::workspace_is_migrated(workspace)
+}
+
+/// Read-side counterpart of [`constellation_managed_error`]: the refusal a
+/// command that only READS the legacy store gets on a migrated workspace.
+///
+/// Same reasoning as the mutation-side message, with the read-side remedies
+/// instead of the file-first writers. It exists as its own function because
+/// [`open_store`] refuses BEFORE opening — there is no underlying LanceDB
+/// error to interpolate at that point, and inventing one would imply the
+/// store was consulted when it deliberately was not.
+fn constellation_managed_read_error() -> anyhow::Error {
+    anyhow::anyhow!(
+        "this workspace's index is managed by Constellation \
+         (.forgeplan/lance/CURRENT.json is set; the legacy artifacts.lance \
+         is retired), so the legacy store is not a valid read source here.\n\
+         Fix: use `forgeplan constellation search|get`, `forgeplan index --list`, \
+         or `forgeplan get`/`forgeplan search` — they route to the pinned \
+         index on this layout."
+    )
 }
 
 /// Error message for commands that still need the legacy store on a
@@ -141,9 +158,15 @@ pub async fn open_store_locked() -> anyhow::Result<(PathBuf, WorkspaceLock, Lanc
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-    // Acquire the lock BEFORE opening LanceStore so each process snapshots
-    // the table state under exclusive access (avoids stale-view reads).
     let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws).await?;
+    // Refuse BEFORE opening: same reasoning as `open_store`. The legacy
+    // store is retired on this layout, so there is nothing legitimate for
+    // `LanceStore::open` to connect to.
+    if index_migrated(&ws) {
+        return Err(constellation_managed_error(anyhow::anyhow!(
+            "the legacy store was not opened"
+        )));
+    }
     let _config = workspace::load_config(&ws)?;
     let store = LanceStore::open(&ws).await.map_err(|e| {
         if index_migrated(&ws) {
@@ -170,10 +193,20 @@ pub async fn open_store_locked_tolerating_constellation()
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    // Decide the index owner BEFORE opening. `LanceStore::open` runs schema
+    // migrations against a live connection, so "try to open, notice it is
+    // retired afterwards" is not a safe way to ask whether this workspace
+    // still has a legacy store — the question has to be answered from the
+    // filesystem, which is also the only source that cannot be half-true.
     let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws).await?;
+    let migrated = index_migrated(&ws);
     let _config = workspace::load_config(&ws)?;
+    if migrated {
+        return Ok((ws, lock, None));
+    }
     match LanceStore::open(&ws).await {
         Ok(store) => Ok((ws, lock, Some(store))),
+        // Ownership evidence still takes precedence over a legacy-open failure.
         Err(_) if index_migrated(&ws) => Ok((ws, lock, None)),
         Err(e) => Err(e),
     }
@@ -189,17 +222,45 @@ pub fn note_constellation_owns_index() {
     );
 }
 
+/// The read source a constellation-migrated workspace answers from: one
+/// captured/pinned [`WorkspaceRead`] over `.forgeplan/`, never a
+/// `LanceStore`.
+///
+/// This is the read-after-write answer too. A mutation that then re-opens the
+/// legacy store to recount what it just wrote is reading a snapshot that
+/// predates the write, and on a migrated workspace it also resurrects a
+/// retired table. One capture per question is the whole point, so callers
+/// build a fresh view rather than caching one across a mutation.
+///
+/// No owner, no `WorkspaceLock`, no index writes, no model download.
+pub async fn workspace_read(
+    ws: &Path,
+) -> anyhow::Result<forgeplan_core::constellation::workspace_read::WorkspaceRead> {
+    forgeplan_core::constellation::facade::open_workspace_read(
+        ws,
+        None,
+        forgeplan_core::constellation::capture::CaptureLimits::default(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 /// Run one constellation `maintain_index` pass after a file-first mutation
 /// so the change lands in the `constellation_*_v1` tables immediately — the
 /// same generation pipeline a `forgeplan watch` file edit triggers.
 ///
 /// Best-effort: the markdown write already stands, so a failure is a stderr
-/// warning + `forgeplan index` hint, not a command failure.
+/// warning + `forgeplan index` hint, not a command failure. **Returns
+/// whether the derived index now carries the change**, and prints the
+/// `index_pending` contract either way: a caller whose own success line
+/// ("Linked: …") was already emitted must not leave the operator believing
+/// the derived index agrees with it. `true` = published; `false` = the
+/// canonical write stands and the index is behind.
 ///
 /// CALLERS MUST have released the [`WorkspaceLock`] before invoking — the
 /// pass re-acquires it per storage commit via `capture_under_workspace_lock`,
 /// and a still-held guard turns the capture into a 30 s timeout.
-pub async fn reconcile_after_file_mutation(ws: &Path) {
+pub async fn reconcile_after_file_mutation(ws: &Path) -> bool {
     let canonical = ws.canonicalize().unwrap_or_else(|_| ws.to_path_buf());
     let capability =
         forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
@@ -214,17 +275,22 @@ pub async fn reconcile_after_file_mutation(ws: &Path) {
     .await
     {
         Ok((view, outcome)) => {
-            println!(
-                "  reconciled: generation {} ({} commit(s))",
+            eprintln!(
+                "  reconciled: generation {} ({} commit(s)); index_pending: false",
                 view.manifest.generation_id,
                 outcome.commits.len()
             );
+            true
         }
         Err(e) => {
             eprintln!(
                 "  warning: constellation reconcile failed ({e}) — the file change stands; \
                  run `forgeplan index` to publish it"
             );
+            // Status diagnostics stay on stderr; JSON callers expose the
+            // returned outcome in their single stdout document.
+            eprintln!("  index_pending: true — derived index not yet updated");
+            false
         }
     }
 }
@@ -284,12 +350,16 @@ pub async fn reconcile_and_drain(ws: &Path, label: &str) -> anyhow::Result<()> {
                     );
                 }
             }
-            crate::commands::index::drain_queue_if_cached(
+            forgeplan_core::constellation::runtime::drain_queue_if_configured(
                 &capability,
                 std::time::Instant::now() + std::time::Duration::from_secs(60),
                 label,
+                // A one-shot CLI drain has no host loop to serve, so nothing can
+                // interrupt it early; `deadline` is the whole bound.
+                &forgeplan_core::constellation::runtime::DrainControl::never(),
             )
-            .await;
+            .await
+            .map_err(|e| anyhow::anyhow!("{label}: embedding drain failed: {e}"))?;
         }
         Err(e) => {
             anyhow::bail!("{label}: Constellation reconcile failed: {e}");

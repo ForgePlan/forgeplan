@@ -172,6 +172,156 @@ use posix::root_is_own;
 #[cfg(windows)]
 use windows::root_is_own;
 
+// ── pinned-read identity ────────────────────────────────────────────────
+//
+// One seam, two implementations, and no size/mtime branch anywhere. The pin in
+// [`super::storage::pin_generation_read`] asks two questions through it:
+//
+// * does `name` still resolve to the file `locked` holds open?
+// * how do I open an immutable manifest so GC cannot unlink it while I read?
+
+/// The kernel's own statement of which physical object a file is.
+///
+/// One type for both platforms so the pin's re-check is written once:
+///
+/// * **Unix** — `volume` is `st_dev` and `id` carries `st_ino` big-endian.
+/// * **Windows** — `volume` is the NTFS volume serial and `id` is the full
+///   128-bit `FILE_ID_INFO.FileId`.
+///
+/// # Why not size + mtime
+///
+/// It was this module's Windows fallback and it decides the wrong answer on
+/// precisely the cases the protocol cares about: a same-length rewrite inside
+/// one mtime tick compares equal, and `git checkout`, `tar -x` and archive
+/// restores preserve mtime outright. A pinned reader that accepted that
+/// comparison would serve a generation whose manifest no longer exists under
+/// that name — the exact "torn pointer" the pin exists to refuse.
+///
+/// `volume` is part of the identity rather than decoration: file ids are unique
+/// only within one volume, and an index root is reachable through mount points
+/// and substituted directories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PhysicalIdentity {
+    pub(crate) volume: u64,
+    pub(crate) id: [u8; 16],
+}
+
+impl std::fmt::Display for PhysicalIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "vol={:016x} id=", self.volume)?;
+        for byte in &self.id {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Is the file `locked` holds open still the file `name` resolves to?
+///
+/// Unix compares `(device, inode)`; Windows compares NTFS `FILE_ID_INFO`
+/// (volume serial + 128-bit file id). Both are the kernel's own statement of
+/// which object a name and a descriptor refer to.
+///
+/// # Why size + mtime is not an answer
+///
+/// It was the fallback here for a long time and it decides the wrong answer on
+/// both platforms' failure modes: a same-length rewrite inside one mtime tick
+/// compares equal, and `git checkout`, `tar -x` and archive restores preserve
+/// mtime outright. A reader that accepted that comparison would serve a
+/// generation whose manifest no longer exists under that name.
+///
+/// # Errors
+///
+/// The platform could not produce an identity — an unopenable file, a handle
+/// whose `FileIdInfo` the kernel refused, a filesystem with no file id. The
+/// caller reports the generation unavailable; "we could not check" never
+/// degrades into "we checked".
+#[cfg(windows)]
+pub(crate) fn same_physical_file(locked: &std::fs::File, name: &Path) -> Result<bool, String> {
+    let locked_id = physical_identity_of(locked)?;
+    // A name that no longer resolves is not "same file": the file was unlinked,
+    // and the pin is now serving a generation with no name. That is reported as
+    // an error rather than as a match.
+    let named_id = physical_identity_of_path(name)
+        .map_err(|detail| format!("cannot resolve {name:?} for an identity re-check: {detail}"))?;
+    Ok(locked_id == named_id)
+}
+
+#[cfg(unix)]
+pub(crate) fn same_physical_file(locked: &std::fs::File, name: &Path) -> Result<bool, String> {
+    let locked_id = physical_identity_of(locked)?;
+    let named_id = physical_identity_of_path(name)
+        .map_err(|detail| format!("cannot resolve {name:?} for an identity re-check: {detail}"))?;
+    Ok(locked_id == named_id)
+}
+
+/// The physical identity of a file an open descriptor already holds.
+#[cfg(windows)]
+pub(crate) fn physical_identity_of(file: &std::fs::File) -> Result<PhysicalIdentity, String> {
+    use std::os::windows::io::AsRawHandle;
+    // `std`'s `RawHandle` and `HANDLE` are both `*mut core::ffi::c_void`.
+    windows::identity_from_handle(file.as_raw_handle(), "the locked manifest handle")
+}
+
+#[cfg(unix)]
+pub(crate) fn physical_identity_of(file: &std::fs::File) -> Result<PhysicalIdentity, String> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    Ok(unix_identity(meta.dev(), meta.ino()))
+}
+
+/// `(device, inode)` rendered into the shared identity shape.
+#[cfg(unix)]
+fn unix_identity(dev: u64, ino: u64) -> PhysicalIdentity {
+    let mut id = [0u8; 16];
+    id[..8].copy_from_slice(&ino.to_be_bytes());
+    PhysicalIdentity { volume: dev, id }
+}
+
+/// The physical identity of whatever `path` currently names.
+///
+/// Opened independently of any pin, with whatever sharing the platform needs to
+/// succeed while a writer holds the file — this is a re-check, not a guard.
+#[cfg(windows)]
+pub(crate) fn physical_identity_of_path(path: &Path) -> Result<PhysicalIdentity, String> {
+    windows::identity_of_path(path)
+}
+
+#[cfg(unix)]
+pub(crate) fn physical_identity_of_path(path: &Path) -> Result<PhysicalIdentity, String> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    Ok(unix_identity(meta.dev(), meta.ino()))
+}
+
+/// Open an immutable generation manifest for a pinned read.
+///
+/// Never creates, never writes, never truncates, and works on a read-only mount
+/// on both platforms. On Windows it additionally withholds `FILE_SHARE_DELETE`,
+/// so the kernel refuses to unlink or replace the manifest while the pin is
+/// alive — the guarantee POSIX gets from "an unlinked file cannot be reopened
+/// by name" plus `flock`.
+///
+/// # Errors
+///
+/// A platform detail naming the path and the Win32/POSIX error that stopped the
+/// open. `Pin` callers map this to `index_generation_unavailable`.
+#[cfg(windows)]
+pub(crate) fn open_pinned_manifest(path: &Path) -> Result<std::fs::File, String> {
+    windows::open_manifest_for_pinning(path)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn open_pinned_manifest(path: &Path) -> Result<std::fs::File, String> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(false)
+        .create(false)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| e.to_string())
+}
+
 /// The write barrier for one filesystem.
 ///
 /// P2c attaches `WindowsNtfsDurability` to this trait. The POSIX

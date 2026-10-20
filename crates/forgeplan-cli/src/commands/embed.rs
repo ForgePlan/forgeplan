@@ -1,14 +1,20 @@
 /// Generate embeddings for all indexable rows — artifacts (title + body
 /// prefix) and their sections (title + heading + content prefix).
+///
+/// Explicit `embed` is one of the three permitted model obtainers: it is the
+/// user's own command, so it may download. What it may **not** do is decide
+/// what to publish onto — that is admission's job, under the owner — which is
+/// why this command drives
+/// [`facade::prepare_embedding_batch`] → [`Embedder`] →
+/// [`facade::complete_embedding_batch`] rather than computing a map of
+/// vectors and handing it to a writer.
 #[cfg(feature = "semantic-search")]
 pub async fn run() -> anyhow::Result<()> {
     use crate::ui;
     use forgeplan_core::artifact::sanitize::sanitize_for_hint;
     use forgeplan_core::constellation::ConstellationError;
     use forgeplan_core::constellation::capture::CaptureLimits;
-    use forgeplan_core::constellation::facade::{
-        self, MaintainCapability, eligible_inputs, embed_with_publisher,
-    };
+    use forgeplan_core::constellation::facade::{self, MaintainCapability};
     use forgeplan_core::embed::Embedder;
     use forgeplan_core::hints::{self, Hint};
 
@@ -21,56 +27,52 @@ pub async fn run() -> anyhow::Result<()> {
     let ws = forgeplan_core::workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
     let ws = ws.canonicalize().unwrap_or_else(|_| ws.clone());
-
-    // 1. The work list, and the text for each key, from the **capture** —
-    //    not from the store. `body_hash` is deliberately not consulted: it is a
-    //    change-detection stamp on a derived row, it cannot see a profile
-    //    change, and as an "already embedded" test it would let a row whose
-    //    vector belongs to a different space claim to be current.
-    //
-    //    A key that cannot be judged does not appear here; `embed_with_publisher`
-    //    reports those separately, with reasons.
-    let inputs = eligible_inputs(&ws).await.map_err(|e| match e {
-        ConstellationError::ModelUnavailable { detail } => {
-            anyhow::anyhow!("{detail}\nFix: forgeplan setup --warm-model")
-        }
-        other => anyhow::anyhow!("{}", other),
-    })?;
-
-    if inputs.is_empty() {
-        ui::info("No artifacts or sections to embed.");
-        let hint_list = vec![
-            Hint::info("Create your first artifact")
-                .with_action("forgeplan new prd \"<title>\"".to_string()),
-        ];
-        print!("{}", hints::render_next_action_line(&hint_list));
-        return Ok(());
-    }
+    let capability = MaintainCapability::for_strict_maintenance(ws.clone());
+    let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
 
     // A workspace with no published generation cannot hold a vector — the
     // table the binding predicate would match does not exist, and paying for
     // the model before discovering that is the failure this step removes.
-    // Bootstrap the index the same way `forgeplan index` does; the rows it
-    // publishes are the rows the vectors below bind to.
-    let capability = MaintainCapability::for_strict_maintenance(ws.clone());
     if forgeplan_core::constellation::storage::read_current(capability.index_root())?.is_none() {
-        let (view, _) = facade::maintain_index(
-            &capability,
-            CaptureLimits::default(),
-            std::time::Instant::now() + std::time::Duration::from_secs(120),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("index bootstrap failed: {e}"))?;
+        let (view, _) = facade::maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .map_err(|e| anyhow::anyhow!("index bootstrap failed: {e}"))?;
         ui::info(&format!(
             "Index bootstrap: generation {}",
             view.manifest.generation_id
         ));
     }
 
-    // "Nothing to do" is a stored-binding answer, not a capture answer —
-    // `inputs` lists what exists. The precheck costs a scalar scan and no
-    // weights; when it abstains (no cached snapshot, a busy owner) the model
-    // path proceeds and the real publish rejudges the same eligibility.
+    // The profile comes from the **cached** snapshot. An explicit `embed` may
+    // download the weights below, but the profile it publishes against is
+    // only ever the one whose checksums were read off disk — never a repo name
+    // or a caller-supplied string.
+    let cache_dir = forgeplan_core::embed::resolve_cache_dir();
+    // The profile is resolved once, from one snapshot, with this workspace's
+    // chunk size. Reading the checksums here and letting the caller re-resolve
+    // them inside `open` is what let two runs publish the same repo under
+    // different `refs/main` bytes.
+    let body_prefix_chars = forgeplan_core::workspace::load_config(&ws)
+        .ok()
+        .and_then(|config| config.embedding.map(|embedding| embedding.chunk_size))
+        .unwrap_or(forgeplan_core::constellation::jobs::DEFAULT_BODY_PREFIX_CHARS);
+    let profile = forgeplan_core::constellation::jobs::ResolvedProfile::open(
+        &cache_dir,
+        forgeplan_core::constellation::jobs::DEFAULT_MODEL_REPO,
+        facade::ENGINE_VERSION,
+        body_prefix_chars,
+    )
+    .map_err(|e| match e {
+        ConstellationError::ModelUnavailable { detail } => {
+            anyhow::anyhow!("{detail}\nFix: forgeplan setup --warm-model")
+        }
+        other => anyhow::anyhow!("{}", other),
+    })?
+    .profile;
+
+    // "Nothing to do" is a stored-binding answer. The precheck costs a scalar
+    // scan and no weights; when it abstains (no cached snapshot, a busy owner)
+    // the model path proceeds and admission rejudges the same eligibility.
     if let Some(precheck) = facade::embedding_precheck(&ws).await?
         && precheck.eligible == 0
     {
@@ -104,76 +106,151 @@ pub async fn run() -> anyhow::Result<()> {
         ui::info(&notice);
     }
 
+    // `embed` is an explicit, operator-invoked command and it resolved the
+    // profile from the cached snapshot itself, one line above — so it is
+    // allowed to say which space the index serves. Admission admits only in
+    // the space `CURRENT` names, and without this the command could not
+    // effect a model change at all: the drain would be refused as a stale
+    // caller holding the previous space.
+    facade::adopt_embedding_profile(&capability, &profile, deadline())
+        .await
+        .map_err(|e| anyhow::anyhow!("could not point the index at the resolved profile: {e}"))?;
+
     ui::info("Loading embedding model...");
     let mut embedder = Embedder::new()?;
 
-    println!(
-        "Embedding {} row(s) — artifacts and their sections...\n",
-        inputs.len()
-    );
+    let mut embedded = 0usize;
+    let mut stale = 0usize;
+    let mut failed = 0usize;
+    let mut recorded_failed_total = 0usize;
+    let mut cannot_judge: Vec<(String, String)> = Vec::new();
 
-    // 2. The caller **computes** — explicit `embed` is a permitted model
-    //    obtainer — and does not write. Every vector leaves through the
-    //    publisher, which applies the conditional `Binding` guard.
-    let mut vectors = std::collections::BTreeMap::new();
-    let mut ok = 0usize;
-    let mut err = 0usize;
-    for (key, text) in &inputs {
-        match embedder.embed(text) {
-            Ok(vector) => {
-                // SEC-H1 (CWE-117 / CWE-150): ids come from frontmatter and are
-                // attacker-controllable; sanitise before any TTY emission.
-                println!(
-                    "  {} \"{}\"",
-                    sanitize_for_hint(key),
-                    sanitize_for_hint(key)
-                );
-                vectors.insert(key.clone(), vector);
-                ok += 1;
+    // Each iteration is one admission → compute → completion cycle. A cycle
+    // that admits nothing ends the loop; the durable pending set is what makes
+    // the next `forgeplan embed` or queue drain pick up what did not fit.
+    loop {
+        let prepared = facade::prepare_embedding_batch(&capability, &profile, deadline())
+            .await
+            .map_err(|e| anyhow::anyhow!("embedding admission failed: {e}"))?;
+        if prepared.inputs.is_empty() {
+            break;
+        }
+        println!(
+            "Embedding {} row(s) — artifacts and their sections...\n",
+            prepared.inputs.len()
+        );
+
+        // The caller **computes** — explicit `embed` is a permitted model
+        // obtainer — and does not write. Every vector leaves through the
+        // guarded completion, carrying the job it was computed for.
+        let mut results = Vec::with_capacity(prepared.inputs.len());
+        let mut encode_failures: Vec<forgeplan_core::constellation::jobs::EmbeddingJob> =
+            Vec::new();
+        let mut failure_detail: Option<String> = None;
+        for input in &prepared.inputs {
+            let key = input.job.canonical_key.as_str();
+            match embedder.embed(&input.input_text) {
+                Ok(vector) => {
+                    // SEC-H1 (CWE-117 / CWE-150): ids come from frontmatter and
+                    // are attacker-controllable; sanitise before any emission.
+                    println!("  {}", sanitize_for_hint(key));
+                    results.push(forgeplan_core::constellation::jobs::ComputedEmbedding {
+                        job: input.job.clone(),
+                        vector,
+                    });
+                }
+                Err(e) => {
+                    eprintln!("  FAIL {} — {}", sanitize_for_hint(key), e);
+                    failed += 1;
+                    encode_failures.push(input.job.clone());
+                    failure_detail.get_or_insert_with(|| e.to_string());
+                }
             }
-            Err(e) => {
-                eprintln!("  FAIL {} — {}", sanitize_for_hint(key), e);
-                err += 1;
-            }
+        }
+
+        // A failed encode is recorded, not merely counted: the row goes to
+        // `failed` with an advanced attempt and a retry delay, so the next run
+        // backs off instead of re-spending the same failing inference — and so
+        // "this key does not embed" is answerable from the index rather than
+        // from this command's output.
+        let mut recorded_failed = 0usize;
+        if !encode_failures.is_empty() {
+            let record_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let outcome = facade::fail_embedding_batch(
+                &capability,
+                &prepared,
+                &encode_failures,
+                failure_detail
+                    .as_deref()
+                    .unwrap_or("the model could not embed this input"),
+                record_deadline,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("embedding failure record failed: {e}"))?;
+            recorded_failed = outcome.failed.len();
+        }
+        recorded_failed_total += recorded_failed;
+
+        if results.is_empty() {
+            // Every input failed to encode. Their jobs are recorded failed and
+            // stay pending behind a retry delay; looping again in this run would
+            // re-run the same failing inference immediately.
+            break;
+        }
+
+        // Publish, conditionally. A result whose job is not this batch's is
+        // refused before the first write, and a stale one is reported as
+        // stale — which is an answer, not a failure.
+        let outcome =
+            facade::complete_embedding_batch(&capability, &prepared, &results, deadline())
+                .await
+                .map_err(|e| anyhow::anyhow!("embedding completion failed: {e}"))?;
+        embedded += outcome.published.len();
+        stale += outcome.stale.len();
+        for (key, reason) in outcome.cannot_judge {
+            eprintln!("  cannot judge {} — {}", sanitize_for_hint(&key), reason);
+            cannot_judge.push((key, reason));
+        }
+        for key in &outcome.stale {
+            // Stale covers two facts: the row moved, or a newer admission
+            // re-pointed this key. Neither wrote anything, and neither is an
+            // error — the next pass picks the key up under its current job.
+            eprintln!(
+                "  stale {} — this vector no longer matches the row; nothing written",
+                sanitize_for_hint(key)
+            );
         }
     }
 
-    // 3. Publish, conditionally. A key absent from the capture is refused
-    //    inside `publish_embeddings`, and a stale one is reported as stale —
-    //    which is an answer, not a failure.
-    let outcome = embed_with_publisher(&ws, &vectors)
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    for (key, reason) in &outcome.cannot_judge {
-        eprintln!("  cannot judge {} — {}", sanitize_for_hint(key), reason);
-    }
-    for key in &outcome.stale {
-        eprintln!(
-            "  stale {} — the row moved; nothing written",
-            sanitize_for_hint(key)
-        );
+    if embedded == 0 && stale == 0 && cannot_judge.is_empty() && failed == 0 {
+        ui::info("No artifacts or sections to embed.");
+        let hint_list = vec![
+            Hint::info("Create your first artifact")
+                .with_action("forgeplan new prd \"<title>\"".to_string()),
+        ];
+        print!("{}", hints::render_next_action_line(&hint_list));
+        return Ok(());
     }
 
     println!(
-        "\nDone: {} embedded, {} stale, {} could not be judged, {} failed.",
-        outcome.published.len(),
-        outcome.stale.len(),
-        outcome.cannot_judge.len(),
-        err
+        "\nDone: {} embedded, {} stale, {} could not be judged, {} failed ({} recorded for retry).",
+        embedded,
+        stale,
+        cannot_judge.len(),
+        failed,
+        recorded_failed_total
     );
-    if !outcome.is_complete() {
+    if !cannot_judge.is_empty() {
         println!(
             "Partial: {} row(s) could not be judged, so this run's coverage is incomplete.",
-            outcome.cannot_judge.len()
+            cannot_judge.len()
         );
     }
-    let _ = ok;
-    let hint_list = if err > 0 || !outcome.is_complete() {
+    let hint_list = if failed > 0 || !cannot_judge.is_empty() {
         vec![
             Hint::warning(format!(
                 "{} failed and/or could not be judged",
-                err + outcome.cannot_judge.len()
+                failed + cannot_judge.len()
             ))
             .with_action("forgeplan health".to_string()),
         ]

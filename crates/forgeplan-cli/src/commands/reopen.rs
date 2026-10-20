@@ -5,7 +5,18 @@ use forgeplan_core::projection;
 use crate::commands::common;
 
 pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    // `reopen` creates a new artifact, links it `based_on` the old, and only
+    // then deprecates the old one (audit C3's ordering). Every one of those
+    // three writes is a canonical Markdown write on a migrated workspace, and
+    // the precondition checks read the artifact's own frontmatter — so the
+    // whole flow is file-first here. The old artifact is never left
+    // half-retired: the deprecation is the last step and runs only after the
+    // successor exists.
+    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
+
+    let Some(store) = store else {
+        return run_file_first(ws, _lock, id, reason).await;
+    };
 
     // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
     let id = store
@@ -131,5 +142,69 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     ];
     print!("{}", hints::render_next_action_line(&next_hints));
 
+    Ok(())
+}
+
+/// File-first `reopen` for a constellation-migrated workspace.
+///
+/// The successor id is allocated from the canonical Markdown on disk
+/// (`artifact::store::next_id`) rather than a store counter, and
+/// `reopen_captured` keeps the audit-C3 order: create → link → deprecate.
+/// A failure before the last step leaves the old artifact active and the new
+/// draft orphaned rather than retiring something with no successor.
+async fn run_file_first(
+    ws: std::path::PathBuf,
+    lock: forgeplan_core::workspace::lock::WorkspaceLock,
+    id: &str,
+    reason: &str,
+) -> anyhow::Result<()> {
+    let read = common::workspace_read(&ws).await?;
+    let canonical = read
+        .resolve_id(id)
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let record = read
+        .get_record(&canonical)
+        .ok_or_else(|| anyhow::anyhow!("Artifact not found: {canonical}\nFix: forgeplan list"))?;
+    let kind: forgeplan_core::artifact::types::ArtifactKind =
+        record.kind.parse().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Auto-generate new ID: same prefix, next sequence on disk.
+    let new_id = forgeplan_core::artifact::store::next_id(&ws, &kind, 3).await?;
+
+    // Scoped so the context's borrow of the lock guard ends before the
+    // reconcile pass below — that pass re-acquires the same lock.
+    let result = {
+        let ctx = projection::MutationContext::new(&ws, &lock, None);
+        forgeplan_core::lifecycle::canonical::reopen_captured(
+            &ctx, &read, &canonical, reason, &new_id,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
+    };
+
+    common::note_constellation_owns_index();
+    // Lock released before reconcile — see `common::reconcile_after_file_mutation`.
+    drop(lock);
+    let published = common::reconcile_after_file_mutation(&ws).await;
+
+    println!("  Reopened {canonical} → deprecated");
+    println!(
+        "  Created {} ({}, draft) with lineage from {canonical}",
+        result.new_id, result.new_kind
+    );
+    println!("  Link: {} --based_on--> {canonical}", result.new_id);
+
+    let next_hints: Vec<Hint> = vec![
+        Hint::info(format!(
+            "New draft {} created — fill MUST sections",
+            result.new_id
+        ))
+        .with_action(format!("forgeplan validate {}", result.new_id)),
+    ];
+    print!("{}", hints::render_next_action_line(&next_hints));
+
+    if !published {
+        println!("  ! derived index not yet updated");
+    }
     Ok(())
 }

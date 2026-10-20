@@ -27,7 +27,7 @@
 //! publish it, and the second would silently overwrite the first's work while
 //! both reported success.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -362,14 +362,61 @@ impl IndexPublisher {
     /// next reconcile treats it as the baseline instead of rewinding the
     /// vectors as divergence. The manifest itself stays immutable.
     ///
+    /// # This runs the same barrier `publish` runs
+    ///
+    /// The order is the module's ordering invariant, not a convenience:
+    ///
+    /// ```text
+    /// finish_writes → sync_written_set → CURRENT replacement
+    /// ```
+    ///
+    /// Before this, the republish reached straight for
+    /// [`storage::publish_current`], so the drain's Lance writes were tracked
+    /// but never fsynced before the pointer named a head they produced. A
+    /// crash there left a visible `CURRENT` whose versions the tables did not
+    /// yet hold — the C04 hole.
+    ///
+    /// The barrier runs over **this publisher's** [`Self::tracker`], the same
+    /// instance both tables' wrappers write into, so it sees the drain's whole
+    /// closure. A second tracker here would see an empty set and ACK nothing.
+    ///
+    /// There is no manifest step: the manifest is immutable and was made
+    /// durable by the `publish` that created it, and the descriptor this
+    /// republish installs already names that verified file. Rewriting it
+    /// would be a second publication of one generation id, which
+    /// [`storage::write_generation_manifest`] refuses by design.
+    ///
     /// Safe to call only while this publisher is held — the write assumes no
     /// other writer can move the head between the caller's read and this
     /// republish, which is exactly what the owner lock guarantees.
+    ///
+    /// # Errors
+    ///
+    /// [`ConstellationError::DurabilityUnavailable`] when the closure barrier
+    /// fails. Nothing is visible yet, so the previously published `CURRENT`
+    /// is left exactly as it was and the tracked set stays on record.
+    /// [`ConstellationError::PublicationUncertain`] when the pointer became
+    /// visible and its directory entry was not acknowledged — from
+    /// [`storage::publish_current`], unchanged. Neither a rollback nor a
+    /// success.
     pub(crate) fn republish_current(
         &self,
         descriptor: &super::manifest::CurrentDescriptor,
     ) -> Result<(), ConstellationError> {
-        storage::publish_current(self.index_root(), descriptor, self.platform.as_ref())
+        let index_root = self.index_root();
+
+        // 1. Closure barrier over the shared tracker. `finish_writes` refuses
+        //    while a write is in flight, a destination is unresolved, or the
+        //    stage is poisoned, so a barrier can only run over a joined
+        //    closure.
+        let write_set = self.tracker.finish_writes()?;
+        self.tracker
+            .sync_written_set(&write_set, index_root, self.platform.as_ref())?;
+
+        // 2. Visibility point, then the durable ACK — both inside
+        //    `publish_current`, which is what makes a failure after the
+        //    rename `PublicationUncertain` rather than a plain error.
+        storage::publish_current(index_root, descriptor, self.platform.as_ref())
     }
 
     /// Write the bootstrap marker announcing an in-progress build.
@@ -406,6 +453,20 @@ impl IndexPublisher {
     /// otherwise. The closure barrier precedes the manifest, which precedes the
     /// pointer, which precedes the ACK.
     ///
+    /// # `profile_id` is an input, never an inference
+    ///
+    /// The descriptor's claimed space is whatever this argument says. It was
+    /// previously read off `manifest.pending_jobs`' first value, which made
+    /// the space a function of whichever job happened to sort first — and of
+    /// nothing at all once `pending_jobs` was empty, which is the state
+    /// production actually publishes. A reconcile that dropped the profile
+    /// would unpublish the space pinned semantic reads query in.
+    ///
+    /// So each caller states it: `None` on a first bootstrap (no space has
+    /// been claimed yet), the currently published descriptor's profile on an
+    /// ordinary reconcile (carry it forward), and the verified profile on an
+    /// admission/completion that establishes one.
+    ///
     /// # Errors
     ///
     /// [`ConstellationError::DurabilityUnavailable`] when the closure barrier
@@ -416,6 +477,7 @@ impl IndexPublisher {
     pub fn publish(
         &self,
         manifest: &GenerationManifest,
+        profile_id: Option<&str>,
     ) -> Result<CurrentDescriptor, ConstellationError> {
         let index_root = self.index_root();
 
@@ -429,8 +491,12 @@ impl IndexPublisher {
         let manifest_sha256 =
             storage::write_generation_manifest(index_root, manifest, self.platform.as_ref())?;
 
-        // 3 + 4. Visibility point, then the durable ACK.
-        let descriptor = storage::descriptor_for(manifest, self.owner.epoch(), &manifest_sha256);
+        // 3 + 4. Visibility point, then the durable ACK. The profile is placed
+        //      on the descriptor **before** the single `publish_current`: an
+        //      intermediate pointer without it would be a generation whose
+        //      semantic reads have no space to query.
+        let descriptor =
+            storage::descriptor_for(manifest, self.owner.epoch(), &manifest_sha256, profile_id);
         storage::publish_current(index_root, &descriptor, self.platform.as_ref())?;
 
         Ok(descriptor)
@@ -684,12 +750,21 @@ pub async fn bootstrap_or_recover(
         });
     }
 
+    // Serialize the ownership handoff with canonical writers. A mutator that
+    // waited for this guard must observe the initializing marker before it
+    // decides whether the legacy projection is still writable.
+    let workspace_guard = crate::workspace::acquire_workspace_lock(workspace)
+        .await
+        .map_err(|error| ConstellationError::Io {
+            detail: format!("cannot take the workspace lock for migration: {error}"),
+        })?;
     // Legacy first, so there is never a moment with two live paths.
     backup_legacy_tables(&index_root)?;
 
     // The marker is written BEFORE the tables exist.
     let mut marker =
         publisher.announce_bootstrap(identity.checkout_id(), first_index_epoch()?, 1)?;
+    drop(workspace_guard);
 
     // Create, or adopt what a previous attempt left behind.
     let (tables, created) = match super::lance_tables::create_active_tables(
@@ -719,7 +794,13 @@ pub async fn bootstrap_or_recover(
     };
 
     // A complete capture, under the workspace lock, released before any write.
-    let captured = capture_under_workspace_lock(workspace, capture_limits).await?;
+    //
+    // No identity baseline, and that is not an oversight: this branch runs
+    // only when no generation has ever been published (`FinishActivation`
+    // returned above), so there is no published row to continue from. Every
+    // artifact is genuinely observed for the first time, which is exactly
+    // what `incarnation = 1` says.
+    let captured = capture_under_workspace_lock(workspace, capture_limits, None).await?;
 
     // Write the rows the manifest is about to claim. The generation must
     // never name rows that do not exist — publishing a manifest over an
@@ -727,11 +808,21 @@ pub async fn bootstrap_or_recover(
     // to prevent. On a restart the adopted tables may hold a torn prefix;
     // `full_source_batch` attaches the source-delete so the first generation
     // also reclaims whatever the interrupted attempt left behind.
+    //
+    // There is **no baseline to preserve here**, and the empty maps say so
+    // rather than leaving it to a default: this branch runs only when no
+    // generation has ever been published (`FinishActivation` returned above),
+    // so there is no published head whose semantic columns could be spliced.
+    // An adopted table holds an interrupted attempt's torn prefix, which was
+    // never a published state and is rebuilt wholesale below.
+    let preserved_artifacts = BTreeMap::new();
+    let preserved_sections = BTreeMap::new();
     if captured.is_complete() && !captured.artifacts.is_empty() {
         let artifacts = artifacts_batch(
             &captured.artifacts,
             captured.index_epoch,
             &captured.checkout_id,
+            &preserved_artifacts,
         )?;
         tables.merge_into_artifacts(artifacts, true).await?;
         let relations = relations_batch(&captured.artifacts)?;
@@ -742,7 +833,7 @@ pub async fn bootstrap_or_recover(
         // always yields at least one section, so a non-empty capture has a
         // non-empty batch, and the clause reclaims rows a torn earlier
         // attempt left behind exactly as it does for artifacts.
-        let sections = sections_batch(&captured)?;
+        let sections = sections_batch(&captured, &preserved_sections)?;
         if sections.num_rows() > 0 {
             tables.merge_into_sections(sections, true).await?;
         }
@@ -764,7 +855,11 @@ pub async fn bootstrap_or_recover(
     // `publish` runs finish_writes → sync_written_set → write_generation_manifest
     // → descriptor_for → publish_current, with the real owner epoch from the
     // guard. Only after that ACK is the marker flipped.
-    publisher.publish(&manifest)?;
+    //
+    // `None`: a first generation claims no embedding space. Nothing can be
+    // embedded before a generation is published — a drain writes onto rows —
+    // so a profile here would be a claim no row backs.
+    publisher.publish(&manifest, None)?;
     drop(tables);
     publisher.mark_active(&mut marker)?;
 
@@ -810,19 +905,64 @@ fn backup_legacy_tables(index_root: &Path) -> Result<(), ConstellationError> {
 ///
 /// The guard is bound to a named variable so its scope is the read, and it is
 /// dropped explicitly so nothing downstream can inherit it.
+///
+/// # `previous` — the identity baseline is not optional here
+///
+/// Every production call site passes the manifest `CURRENT` names. A capture
+/// with no baseline re-observes the corpus from nothing: `incarnation` and
+/// `row_revision` come back as `1` on every pass, so
+///
+/// * a delete followed by a recreate with **byte-identical** content at the
+///   same path reproduces the deleted row's `(incarnation, row_revision)`
+///   exactly, and `SemanticColumns::is_preserved_for` — which compares
+///   exactly those fields plus the input digest — preserves the deleted
+///   document's vector onto its replacement; and
+/// * an outstanding `EmbeddingJob`, whose binding carries the same tuple,
+///   still matches the recreated row, so a stale completion is applied rather
+///   than reported stale.
+///
+/// Only `bootstrap_or_recover` passes `None`, and that is correct there: it
+/// runs before any generation has ever been published, so there is no baseline
+/// to carry and nothing that could have inherited from one.
 pub(crate) async fn capture_under_workspace_lock(
     workspace: &Path,
     limits: super::capture::CaptureLimits,
+    previous: Option<std::sync::Arc<super::manifest::GenerationManifest>>,
 ) -> Result<std::sync::Arc<super::capture::CapturedSourceView>, ConstellationError> {
     let guard = crate::workspace::acquire_workspace_lock(workspace)
         .await
         .map_err(|e| ConstellationError::Io {
             detail: format!("cannot take the workspace lock for capture: {e}"),
         })?;
-    let captured =
-        super::capture::capture_source(&super::capture::CaptureRequest::new(workspace), limits)
-            .await?;
+    let captured = capture_while_locked(workspace, limits, previous).await?;
     drop(guard);
+    Ok(captured)
+}
+
+/// The capture half of [`capture_under_workspace_lock`], for a caller that
+/// **already holds** the workspace lock.
+///
+/// This exists because "take the lock, look at the source, then decide" cannot
+/// be built out of a helper that takes and releases the lock itself. When
+/// [`crate::constellation::facade::maintain_index`] validated the source and
+/// then published through a second lock acquisition, anything that changed the
+/// workspace in between was not observed by either — the pointer could move to
+/// a generation describing bytes that no longer exist. One lock, held across
+/// the recheck **and** the pointer switch, closes that window; the lock is not
+/// reentrant, so nesting two acquisitions would deadlock rather than widen it.
+///
+/// Nothing else moves under this lock: the caller does its planning and
+/// publication with no other workspace I/O in between.
+pub(crate) async fn capture_while_locked(
+    workspace: &Path,
+    limits: super::capture::CaptureLimits,
+    previous: Option<std::sync::Arc<super::manifest::GenerationManifest>>,
+) -> Result<std::sync::Arc<super::capture::CapturedSourceView>, ConstellationError> {
+    let mut request = super::capture::CaptureRequest::new(workspace);
+    if let Some(previous) = previous {
+        request = request.with_published_manifest(previous);
+    }
+    let captured = super::capture::capture_source(&request, limits).await?;
     Ok(std::sync::Arc::new(captured))
 }
 
@@ -909,72 +1049,70 @@ pub fn binding_for_section(
     })
 }
 
-/// Publish a batch of vectors the caller computed, against the capture.
+/// Publish a batch of **computed** results, each carrying the job it was
+/// computed for.
+///
+/// The signature is the contract: it takes
+/// [`jobs::ComputedEmbedding`], not `(captured, profile, vectors)`. There is
+/// no longer any route by which a caller hands this function a canonical key
+/// and a float vector and lets it work out the binding — that is what let a
+/// vector computed from superseded bytes be rebind onto the capture taken
+/// after the compute. The binding comes from the job, and the job came from
+/// admission under the owner.
 ///
 /// The caller does the **encoding** — explicit `embed` is one of the three
 /// permitted model obtainers — and this does the **writing**, which is where
 /// the binding actually matters.
 ///
-/// It re-decides nothing. The guard is [`jobs::Binding::predicate`], the
-/// version rule is the one from P2, and the stale semantics are
-/// [`jobs::EmbeddingPublish::stale`]. All three already exist and are tested.
+/// The guard is [`jobs::Binding::predicate`], the version rule is the one from
+/// P2, and the stale semantics are [`jobs::EmbeddingPublish::stale`]. All three
+/// already exist and are tested.
 ///
-/// # Keys that are not in the capture
+/// # Which table a result lands on
 ///
-/// A vector whose key has no [`SourceEntry`] and no [`CapturedSection`] is
-/// **refused**, not written. `vectors` is keyed by canonical key — the
-/// artifact key or the section key — precisely so this can be checked;
-/// without the capture a key would be unbindable and publishing it would be
-/// the bypass in another name. Artifact keys win lookup order: a section
-/// key (`"X#s0"`) can never collide with a real artifact entry because
-/// capture only mints it for a section that exists.
+/// [`jobs::EmbeddingJob::row_role`], from the key's shape. Not from a
+/// capture: a completion must not re-derive what it is publishing onto, and the
+/// two key namespaces are disjoint by construction — `section_key` is the only
+/// producer of a `"{parent}#s{ordinal}"` key.
+///
+/// # Results that name the same key twice
+///
+/// Refused. Two vectors for one key is either a worker that answered twice or
+/// a caller that meant to publish two different rows; neither may be resolved
+/// by picking one, and the update is the only thing that could.
 pub async fn publish_embeddings(
     tables: &super::lance_tables::IndexTables,
-    captured: &CapturedSourceView,
-    profile_id: &str,
-    vectors: &BTreeMap<String, Vec<f32>>,
+    results: &[jobs::ComputedEmbedding],
 ) -> Result<Vec<jobs::EmbeddingPublish>, ConstellationError> {
-    let mut published = Vec::with_capacity(vectors.len());
-    for (canonical_key, vector) in vectors {
-        if let Some(entry) = captured
-            .entries
-            .iter()
-            .find(|entry| &entry.canonical_key == canonical_key)
-        {
-            let binding = binding_for(entry, profile_id)?;
-            published.push(
-                tables
-                    .publish_embedding_into_artifacts(&binding, vector)
-                    .await?,
-            );
-            continue;
+    let mut seen = BTreeSet::new();
+    for result in results {
+        let key = result.job.canonical_key.as_str();
+        if !seen.insert(key.to_string()) {
+            return Err(ConstellationError::Io {
+                detail: format!(
+                    "refusing to publish `{key}`: two results name the same row, and choosing \
+                     one would discard the other's vector"
+                ),
+            });
         }
-        if let Some(section) = captured.section(canonical_key) {
-            let parent = captured
-                .entries
-                .iter()
-                .find(|entry| entry.canonical_key == section.parent_key)
-                .ok_or_else(|| ConstellationError::Io {
-                    detail: format!(
-                        "refusing to publish `{canonical_key}`: its parent `{}` is not in the \
-                         capture, so it has no binding",
-                        section.parent_key
-                    ),
-                })?;
-            let binding = binding_for_section(section, parent, profile_id)?;
-            published.push(
+    }
+
+    let mut published = Vec::with_capacity(results.len());
+    for result in results {
+        let binding = result.binding();
+        let outcome = match result.row_role() {
+            jobs::EmbeddingRowRole::Artifact => {
                 tables
-                    .publish_embedding_into_sections(&binding, vector)
-                    .await?,
-            );
-            continue;
-        }
-        return Err(ConstellationError::Io {
-            detail: format!(
-                "refusing to publish `{canonical_key}`: it is not in the capture, so it has \
-                 no binding"
-            ),
-        });
+                    .publish_embedding_into_artifacts(&binding, &result.vector)
+                    .await?
+            }
+            jobs::EmbeddingRowRole::Section => {
+                tables
+                    .publish_embedding_into_sections(&binding, &result.vector)
+                    .await?
+            }
+        };
+        published.push(outcome);
     }
     Ok(published)
 }
@@ -1171,10 +1309,18 @@ pub struct SectionsPlan {
 /// That is the only time [`CommitOp::DeleteByPredicate`] is emitted, and it
 /// is safe there — an empty capture contains no renamed row that could
 /// collide.
+///
+/// `retired_keys` are canonical keys a *re-keyed Update* vacated in place —
+/// the same path now claims a different key. They are not tombstones (the
+/// file is not absent) and they are not counted in `commit.deletes`, so
+/// they need their own emitter. The caller filters out any key this capture
+/// re-claims under a different path: deleting one of those would kill the
+/// row the merge just wrote.
 pub fn stage_sequence(
     commit: &CommitPlan,
     merge_rows: usize,
     delete_keys: Vec<String>,
+    retired_keys: Vec<String>,
     relations: &RelationsPlan,
     sections: &SectionsPlan,
 ) -> CommitSequence {
@@ -1193,6 +1339,15 @@ pub fn stage_sequence(
         && !delete_keys.is_empty()
     {
         ops.push(CommitOp::DeleteByPredicate { keys: delete_keys });
+    }
+    // A vacated key is proven by the re-keyed Update itself — observed, not
+    // inferred — so retiring its row is bounded exactly like a tombstone
+    // delete. Under a full source batch the merge's own
+    // `when_not_matched_by_source_delete` has already removed it (the old key
+    // is not in the batch), and the op is emitted only for the partial shape
+    // that clause cannot serve.
+    if !commit.full_source_batch && !retired_keys.is_empty() {
+        ops.push(CommitOp::DeleteByPredicate { keys: retired_keys });
     }
     // Relations come after the artifact ops: an edge must never be written
     // for a row that does not exist yet, and the delete half must run before
@@ -1233,6 +1388,72 @@ pub fn stage_sequence(
     CommitSequence { ops }
 }
 
+/// The semantic columns a published row already carries.
+///
+/// A reconcile's merge batch cannot produce them — the capture does not
+/// compute embeddings — so an unconditional `when_matched_update_all` would
+/// write the batch's nulls over a live vector: one edited file would
+/// invalidate the whole corpus. Splicing the stored values into the batch
+/// for rows whose content did not move is the preserve half; the capture's
+/// nulls remain the invalidate half for rows it cannot prove unchanged.
+///
+/// Read from the published table at the baseline head, keyed by
+/// `canonical_key` — see [`super::lance_tables::IndexTables::artifact_semantics`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SemanticColumns {
+    /// The generation identity the stored row was published under. A rebind
+    /// that bumps the epoch, or an index that moved to another checkout,
+    /// retires every pending vector job — the same tuple fences the guarded
+    /// update, so it fences the splice.
+    pub index_epoch: Option<u64>,
+    pub checkout_id: Option<String>,
+    /// Incarnation: it changes only on a path change or a delete/recreate.
+    /// That is exactly the event after which a stored vector describes a
+    /// document that no longer exists under this name.
+    pub incarnation: Option<u64>,
+    /// The digest of the bytes the stored vector was computed from. This is
+    /// the freshness a vector answers to.
+    ///
+    /// The stored row's `source_digest` and `row_revision` are deliberately
+    /// **not** part of this struct and **not** part of the decision: both move
+    /// on any byte change, including a status, tag or `valid_until` edit,
+    /// while `input_digest` covers only what the tokenizer receives. Reading
+    /// them here would invalidate the whole corpus on the first frontmatter
+    /// edit.
+    pub input_digest: Option<String>,
+    pub embedding: Option<Vec<f32>>,
+    pub profile_id: Option<String>,
+    pub semantic_state: Option<String>,
+    pub retry_after: Option<String>,
+}
+
+impl SemanticColumns {
+    /// Whether the stored semantic tuple answers to exactly this identity and
+    /// input.
+    ///
+    /// The canonical key is the map key, so it is not repeated. What remains
+    /// is the tuple a stale completion is fenced by — `(index_epoch,
+    /// checkout_id, incarnation)` — plus the input digest.
+    ///
+    /// An artifact passes its own identity and `input_digest`; a section
+    /// passes its **parent's** identity (the section row stores the parent's
+    /// `incarnation`/epoch/checkout) and the section's own `input_digest`,
+    /// because a parent's unrelated edit does not invalidate a section whose
+    /// text did not move.
+    fn is_preserved_for(
+        &self,
+        index_epoch: u64,
+        checkout_id: &str,
+        incarnation: u64,
+        input_digest: &str,
+    ) -> bool {
+        self.index_epoch == Some(index_epoch)
+            && self.checkout_id.as_deref() == Some(checkout_id)
+            && self.incarnation == Some(incarnation)
+            && self.input_digest.as_deref() == Some(input_digest)
+    }
+}
+
 /// Build the artifacts `RecordBatch` for a capture.
 ///
 /// The column list is **derived from** [`artifacts_v1_schema`] by iterating
@@ -1240,16 +1461,36 @@ pub fn stage_sequence(
 /// drift apart, and `merge_insert` rejects a batch whose columns do not match
 /// the table.
 ///
+/// `preserved` is the semantic column splice, read back from the published
+/// head by [`super::lance_tables::IndexTables::artifact_semantics`]. A row
+/// whose stored `(index_epoch, checkout_id, incarnation)` and `input_digest`
+/// still match the capture carries its stored `embedding`, `profile_id`,
+/// `semantic_state` and `retry_after` into the batch, so the merge writes them
+/// back unchanged instead of the capture's nulls.
+///
+/// An absent key, a different generation, a new incarnation or a changed
+/// input digest gets the reset: no vector, no profile, no retry, and
+/// `semantic_state = "unavailable"`. That is written explicitly rather than
+/// defaulted from the capture, so a row can never keep a profile or a `ready`
+/// claim while its vector is gone.
+///
+/// A metadata-only edit — `status`, `tags`, `valid_until` — moves
+/// `source_digest` and `row_revision` but not `input_digest`, so it
+/// **preserves**. Requiring the source digest here would invalidate the entire
+/// corpus the first time anyone touched a frontmatter line.
+///
 /// # The three null rules
 ///
 /// 1. A field the capture does not declare becomes a **null**. Absence stays
 ///    absence on the way to storage: substituting `now` for a missing
 ///    `created_at` would make every capture look like an edit.
-/// 2. `embedding` is null unless a vector is genuinely present. There is no
-///    zero-vector, because a zero-filled `FixedSizeListArray` is
+/// 2. `embedding` is null unless a vector is genuinely present — either the
+///    drain's stored one, spliced back for an unchanged row, or none. There
+///    is no zero-vector, because a zero-filled `FixedSizeListArray` is
 ///    indistinguishable from a real vector to every downstream reader.
-/// 3. `semantic_state` carries `unavailable` until P3 supplies a profile. Not
-///    `ready`, not `failed`.
+/// 3. `semantic_state` is `unavailable` unless a preserved tuple says
+///    otherwise. Not `ready`, not `failed` — a row that carries no vector has
+///    no business claiming it is embedded.
 ///
 /// Zero rows is legal and produces an empty batch with the right schema.
 ///
@@ -1262,6 +1503,7 @@ pub fn artifacts_batch(
     captured: &[Arc<super::capture::ParsedArtifact>],
     index_epoch: u64,
     checkout_id: &str,
+    preserved: &BTreeMap<String, SemanticColumns>,
 ) -> Result<Arc<arrow_array::RecordBatch>, ConstellationError> {
     let schema = super::lance_tables::artifacts_v1_schema();
     let row_count = captured.len();
@@ -1294,8 +1536,28 @@ pub fn artifacts_batch(
     let mut index_epoch_builder = arrow_array::builder::UInt64Builder::new();
     let mut checkout_id_builder = arrow_array::builder::StringBuilder::new();
     let mut r_eff_score = arrow_array::builder::Float64Builder::new();
+    // Rule 2's builder half: each slot is either the stored vector spliced
+    // back for a proven-unchanged row or a null — never a zero fill.
+    let mut embedding_builder = arrow_array::builder::FixedSizeListBuilder::new(
+        arrow_array::builder::Float32Builder::new(),
+        super::lance_tables::EMBEDDING_DIM,
+    );
 
     for artifact in captured {
+        // The stored semantic tuple is a unit: a row whose identity and input
+        // the table still proves keeps all of it, a row it cannot prove keeps
+        // none of it. Note what is *not* compared — `source_digest` and
+        // `row_revision`. Both move on a metadata-only edit, and neither
+        // changes what the tokenizer receives, so requiring them would throw
+        // away every vector the first time someone edited a `status:` line.
+        let preserved_columns = preserved.get(&artifact.canonical_key).filter(|columns| {
+            columns.is_preserved_for(
+                index_epoch,
+                checkout_id,
+                artifact.incarnation,
+                artifact.input_digest.as_str(),
+            )
+        });
         id.append_value(artifact.display_id.as_str());
         kind.append_value(artifact.kind.as_str());
         status.append_value(artifact.status.as_str());
@@ -1316,9 +1578,35 @@ pub fn artifacts_batch(
         relative_path.append_value(artifact.relative_path.as_str());
         source_digest.append_value(artifact.source_digest.as_str());
         input_digest.append_value(artifact.input_digest.as_str());
-        profile_id.append_option(artifact.profile_id.as_deref());
-        semantic_state.append_value(artifact.semantic_state.as_str());
-        retry_after.append_null();
+        // Invalidation is written as an explicit reset, not as a fallback to
+        // whatever capture happens to carry. Capture declares no profile and
+        // `unavailable` today, so both spellings agree — but a row that lost
+        // its vector must not inherit a profile or a `ready` claim from the
+        // capture path if that ever changes. The whole tuple goes: no vector,
+        // no profile, no retry, and the honest state.
+        profile_id
+            .append_option(preserved_columns.and_then(|columns| columns.profile_id.as_deref()));
+        semantic_state.append_value(
+            preserved_columns
+                .and_then(|columns| columns.semantic_state.as_deref())
+                .unwrap_or(super::jobs::SemanticState::Unavailable.as_str()),
+        );
+        retry_after
+            .append_option(preserved_columns.and_then(|columns| columns.retry_after.as_deref()));
+        match preserved_columns.and_then(|columns| columns.embedding.as_ref()) {
+            Some(vector) => {
+                for value in vector {
+                    embedding_builder.values().append_value(*value);
+                }
+                embedding_builder.append(true);
+            }
+            None => {
+                embedding_builder
+                    .values()
+                    .append_nulls(super::lance_tables::EMBEDDING_DIM as usize);
+                embedding_builder.append(false);
+            }
+        }
         // Bound first: a temporary would be dropped while borrowed.
         let codes = join_diagnostic_codes(&artifact.diagnostics);
         diagnostics.append_option(if codes.is_empty() {
@@ -1342,10 +1630,6 @@ pub fn artifacts_batch(
     let tags_field = schema
         .field_with_name("tags")
         .map_err(|e| unknown_column("tags", e))?
-        .clone();
-    let embedding_field = schema
-        .field_with_name("embedding")
-        .map_err(|e| unknown_column("embedding", e))?
         .clone();
 
     // Rule 2: no vector is present until P3, so the column is all-null. Tags
@@ -1371,25 +1655,11 @@ pub fn artifacts_batch(
     };
     let tags: arrow_array::ArrayRef =
         Arc::new(arrow_array::ListArray::new_null(tags_item_field, row_count));
-    // `FixedSizeListArray::new_null` takes the *child* field plus the list
-    // length — passing the outer `embedding` field here wraps it a second
-    // time and yields `FixedSizeList(1024 x FixedSizeList(1024 x Float32))`,
-    // which the schema check rightly rejects. Unpack the item field out of
-    // the declared embedding type instead.
-    let embedding_item_field = match embedding_field.data_type() {
-        arrow_schema::DataType::FixedSizeList(child, _) => child.clone(),
-        other => {
-            return Err(unknown_column(
-                "embedding",
-                format!("expected FixedSizeList item type, found {other}"),
-            ));
-        }
-    };
-    let embedding: arrow_array::ArrayRef = Arc::new(arrow_array::FixedSizeListArray::new_null(
-        embedding_item_field,
-        super::lance_tables::EMBEDDING_DIM,
-        row_count,
-    ));
+    // The child field is `item: Float32`, which is exactly what
+    // `FixedSizeListBuilder` produces — the builder above already holds each
+    // row's spliced vector or null slot, so there is no array-level null
+    // trick left to explain.
+    let embedding: arrow_array::ArrayRef = Arc::new(embedding_builder.finish());
 
     // Built with an explicit loop rather than `collect`, because the
     // unknown-column arm must return an error from inside the iteration —
@@ -1506,8 +1776,12 @@ pub fn relations_batch(
 /// `incarnation`, `row_revision`, epoch, checkout) and carries its own
 /// `canonical_key`, `parent_key`, `ordinal`, `heading`, and `input_digest`.
 /// `embedding`/`profile_id`/`semantic_state` follow the same null rules as
-/// [`artifacts_batch`]: absent is null, and an unembedded section starts
-/// `unavailable`.
+/// [`artifacts_batch`]. `preserved` is the same stored-column splice, read
+/// back by [`super::lance_tables::IndexTables::section_semantics`] and judged
+/// against the **parent's** `(index_epoch, checkout_id, incarnation)` plus the
+/// section's own `input_digest`. A section whose *text* did not move keeps its
+/// vector even when the parent's `source_digest` and `row_revision` did; a
+/// parent that was recreated at a new path retires every one of its sections.
 ///
 /// Columns are derived from [`super::lance_tables::sections_v1_schema`] — the
 /// same discipline as the other two builders — so a schema drift fails loudly
@@ -1519,10 +1793,9 @@ pub fn relations_batch(
 /// column this builder does not produce.
 pub fn sections_batch(
     captured: &super::capture::CapturedSourceView,
+    preserved: &BTreeMap<String, SemanticColumns>,
 ) -> Result<Arc<arrow_array::RecordBatch>, ConstellationError> {
     let schema = super::lance_tables::sections_v1_schema();
-    let row_count = captured.sections.len();
-
     let mut canonical_key = arrow_array::builder::StringBuilder::new();
     let mut parent_key = arrow_array::builder::StringBuilder::new();
     let mut parent_display_id = arrow_array::builder::StringBuilder::new();
@@ -1540,6 +1813,10 @@ pub fn sections_batch(
     let mut checkout_id = arrow_array::builder::StringBuilder::new();
     let mut semantic_state = arrow_array::builder::StringBuilder::new();
     let mut retry_after = arrow_array::builder::StringBuilder::new();
+    let mut embedding_builder = arrow_array::builder::FixedSizeListBuilder::new(
+        arrow_array::builder::Float32Builder::new(),
+        super::lance_tables::EMBEDDING_DIM,
+    );
 
     for section in &captured.sections {
         // The display half comes from the parsed parent (title, kind,
@@ -1567,6 +1844,20 @@ pub fn sections_batch(
                 ),
             })?;
 
+        // The section's own `input_digest` plus its parent's identity is the
+        // whole freshness question for its vector: the parent's durable
+        // columns are rewritten below, but a vector only describes this text.
+        // A parent's metadata edit moves `source_digest` and `row_revision`
+        // without moving this section's bytes, so neither is compared.
+        let preserved_columns = preserved.get(&section.canonical_key).filter(|columns| {
+            columns.is_preserved_for(
+                entry.index_epoch,
+                entry.checkout_id.as_str(),
+                entry.incarnation,
+                section.input_digest.as_str(),
+            )
+        });
+
         canonical_key.append_value(section.canonical_key.as_str());
         parent_key.append_value(section.parent_key.as_str());
         parent_display_id.append_value(artifact.display_id.as_str());
@@ -1579,36 +1870,44 @@ pub fn sections_batch(
         // whenever the parent's bytes move.
         source_digest.append_value(entry.source_digest.as_str());
         input_digest.append_value(section.input_digest.as_str());
-        profile_id.append_option(entry.profile_id.as_deref());
+        // Explicit reset, same law as `artifacts_batch`: a section whose text
+        // moved keeps no profile, no retry and no vector, and says
+        // `unavailable`. Never the parent's state — the parent may be `ready`
+        // on the body prefix, which would falsely claim section coverage.
+        profile_id
+            .append_option(preserved_columns.and_then(|columns| columns.profile_id.as_deref()));
         incarnation.append_value(entry.incarnation);
         row_revision.append_value(entry.row_revision);
         index_epoch.append_value(entry.index_epoch);
         checkout_id.append_value(entry.checkout_id.as_str());
         // The section's own embedding has not been computed at capture time,
         // so `unavailable` — not the parent's state, which may be `ready` on
-        // the prefix and would falsely claim section coverage.
-        semantic_state.append_value("unavailable");
-        retry_after.append_null();
+        // the prefix and would falsely claim section coverage. A preserved
+        // row keeps whatever the table already claimed.
+        semantic_state.append_value(
+            preserved_columns
+                .and_then(|columns| columns.semantic_state.as_deref())
+                .unwrap_or(super::jobs::SemanticState::Unavailable.as_str()),
+        );
+        retry_after
+            .append_option(preserved_columns.and_then(|columns| columns.retry_after.as_deref()));
+        match preserved_columns.and_then(|columns| columns.embedding.as_ref()) {
+            Some(vector) => {
+                for value in vector {
+                    embedding_builder.values().append_value(*value);
+                }
+                embedding_builder.append(true);
+            }
+            None => {
+                embedding_builder
+                    .values()
+                    .append_nulls(super::lance_tables::EMBEDDING_DIM as usize);
+                embedding_builder.append(false);
+            }
+        }
     }
 
-    let embedding_field = schema
-        .field_with_name("embedding")
-        .map_err(|e| unknown_column("embedding", e))?
-        .clone();
-    let embedding_item_field = match embedding_field.data_type() {
-        arrow_schema::DataType::FixedSizeList(child, _) => child.clone(),
-        other => {
-            return Err(unknown_column(
-                "embedding",
-                format!("expected FixedSizeList item type, found {other}"),
-            ));
-        }
-    };
-    let embedding: arrow_array::ArrayRef = Arc::new(arrow_array::FixedSizeListArray::new_null(
-        embedding_item_field,
-        super::lance_tables::EMBEDDING_DIM,
-        row_count,
-    ));
+    let embedding: arrow_array::ArrayRef = Arc::new(embedding_builder.finish());
 
     let mut columns: Vec<arrow_array::ArrayRef> = Vec::with_capacity(schema.fields().len());
     for field in schema.fields() {
@@ -2863,6 +3162,7 @@ mod tests {
             evaluated_at: "2026-10-17T00:00:00.000Z".to_string(),
             source_set_digest: "ss".to_string(),
             config_digest: "cd".to_string(),
+            body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
             sections: Vec::new(),
             coverage: Coverage {
@@ -3038,6 +3338,40 @@ mod tests {
     // First generation
     // -------------------------------------------------------------------
 
+    /// A capture that runs under a lock the caller already holds.
+    ///
+    /// `maintain_index` holds the workspace lock across its final source
+    /// validation and the pointer switch, and the recheck that validates has
+    /// to run inside that same lock — a lock is not reentrant, so a helper
+    /// that acquired its own would block until the timeout and fail. This
+    /// test holds the lock and calls the seam directly: it passes only while
+    /// the seam does not take a second acquisition.
+    #[tokio::test]
+    async fn a_capture_runs_under_a_workspace_lock_the_caller_already_holds() {
+        let tmp = TempDir::new().unwrap();
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        std::fs::write(
+            tmp.path().join("prds").join("PRD-001-auth.md"),
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        let guard = crate::workspace::acquire_workspace_lock(tmp.path())
+            .await
+            .expect("the test must hold the lock");
+        let captured = capture_while_locked(tmp.path(), CaptureLimits::default(), None)
+            .await
+            .expect("a capture under an already-held lock must not try to take it again");
+        assert_eq!(
+            captured.entries.len(),
+            1,
+            "the capture must actually observe the workspace, not return an empty view"
+        );
+        drop(guard);
+    }
+
     #[tokio::test]
     async fn a_complete_capture_publishes_a_first_generation() {
         let tmp = TempDir::new().unwrap();
@@ -3171,6 +3505,7 @@ mod tests {
             &commit_plan(true, 0, 0, 1),
             0,
             vec!["PRD-002".to_string(), "PRD-003".to_string()],
+            vec![],
             &no_relations(),
             &no_sections(),
         );
@@ -3191,6 +3526,7 @@ mod tests {
         let sequence = stage_sequence(
             &commit_plan(true, 1, 1, 0),
             2,
+            vec![],
             vec![],
             &no_relations(),
             &no_sections(),
@@ -3218,6 +3554,7 @@ mod tests {
             &commit_plan(true, 1, 0, 1),
             2,
             vec!["PRD-002".into()],
+            vec![],
             &no_relations(),
             &no_sections(),
         );
@@ -3238,6 +3575,7 @@ mod tests {
             &commit_plan(true, 1, 0, 1),
             2,
             vec!["PRD-002".into()],
+            vec![],
             &RelationsPlan {
                 delete_keys: vec!["PRD-001".into(), "PRD-002".into()],
                 merge_rows: 3,
@@ -3271,6 +3609,7 @@ mod tests {
             &commit_plan(true, 1, 0, 1),
             2,
             vec!["PRD-002".into()],
+            vec![],
             &RelationsPlan {
                 delete_keys: vec!["PRD-001".into()],
                 merge_rows: 3,
@@ -3316,6 +3655,7 @@ mod tests {
             &commit_plan(true, 0, 0, 0),
             0,
             vec![],
+            vec![],
             &no_relations(),
             &SectionsPlan {
                 parent_delete_keys: vec![],
@@ -3335,6 +3675,7 @@ mod tests {
         let same_without_bootstrap = stage_sequence(
             &commit_plan(true, 0, 0, 0),
             0,
+            vec![],
             vec![],
             &no_relations(),
             &SectionsPlan {
@@ -3359,6 +3700,7 @@ mod tests {
             &commit_plan(true, 0, 0, 1),
             0,
             vec!["PRD-009".into()],
+            vec![],
             &no_relations(),
             &SectionsPlan {
                 parent_delete_keys: vec!["PRD-009".into()],
@@ -3390,6 +3732,7 @@ mod tests {
             &commit_plan(false, 1, 0, 0),
             1,
             vec![],
+            vec![],
             &no_relations(),
             &SectionsPlan {
                 parent_delete_keys: vec![],
@@ -3419,6 +3762,7 @@ mod tests {
             &commit_plan(false, 1, 0, 0),
             1,
             vec![],
+            vec![],
             &no_relations(),
             &no_sections(),
         );
@@ -3434,10 +3778,58 @@ mod tests {
     }
 
     #[test]
+    fn a_retired_key_is_deleted_only_when_the_merge_cannot_cover_it() {
+        // A re-keyed Update leaves the old key's row behind. Under a full
+        // source batch the merge's source-delete removes it — no extra op.
+        let full = stage_sequence(
+            &commit_plan(true, 0, 1, 0),
+            2,
+            vec![],
+            vec!["prd-alpha".into()],
+            &no_relations(),
+            &no_sections(),
+        );
+        assert_eq!(
+            full.ops,
+            vec![CommitOp::MergeUpsert {
+                rows: 2,
+                full_source_batch: true
+            }],
+            "the merge's source-delete already retires the vacated row"
+        );
+
+        // Under a partial scan that clause is absent, so the vacated row
+        // gets its own bounded delete — the retire is proven by the update
+        // delta, not by the `deletes` count (which is zero here).
+        let partial = stage_sequence(
+            &commit_plan(false, 0, 1, 0),
+            2,
+            vec![],
+            vec!["prd-alpha".into()],
+            &no_relations(),
+            &no_sections(),
+        );
+        assert_eq!(
+            partial.ops,
+            vec![
+                CommitOp::MergeUpsert {
+                    rows: 2,
+                    full_source_batch: false
+                },
+                CommitOp::DeleteByPredicate {
+                    keys: vec!["prd-alpha".to_string()]
+                },
+            ],
+            "a vacated key with no merge coverage would survive forever"
+        );
+    }
+
+    #[test]
     fn a_stage_that_changes_nothing_emits_no_commits() {
         let sequence = stage_sequence(
             &commit_plan(true, 0, 0, 0),
             0,
+            vec![],
             vec![],
             &no_relations(),
             &no_sections(),
@@ -3500,7 +3892,7 @@ mod tests {
     #[test]
     fn a_source_with_no_created_at_produces_a_null_not_a_timestamp() {
         let captured = vec![fixture_artifact(None, None, None)];
-        let batch = artifacts_batch(&captured, 1, "local-test").unwrap();
+        let batch = artifacts_batch(&captured, 1, "local-test", &BTreeMap::new()).unwrap();
         let column = batch
             .column_by_name("created_at")
             .expect("created_at column");
@@ -3519,7 +3911,7 @@ mod tests {
             None,
             None,
         )];
-        let batch = artifacts_batch(&captured, 1, "local-test").unwrap();
+        let batch = artifacts_batch(&captured, 1, "local-test", &BTreeMap::new()).unwrap();
         let column = batch
             .column_by_name("created_at")
             .expect("created_at column")
@@ -3537,7 +3929,7 @@ mod tests {
             None,
             None,
         )];
-        let batch = artifacts_batch(&captured, 1, "local-test").unwrap();
+        let batch = artifacts_batch(&captured, 1, "local-test", &BTreeMap::new()).unwrap();
         for name in ["valid_until", "updated_at"] {
             assert_eq!(
                 batch.column_by_name(name).unwrap().null_count(),
@@ -3550,7 +3942,7 @@ mod tests {
     #[test]
     fn embedding_is_null_and_semantic_state_is_unavailable_for_a_fresh_capture() {
         let captured = vec![fixture_artifact(None, None, None)];
-        let batch = artifacts_batch(&captured, 1, "local-test").unwrap();
+        let batch = artifacts_batch(&captured, 1, "local-test", &BTreeMap::new()).unwrap();
 
         let embedding = batch.column_by_name("embedding").expect("embedding column");
         assert_eq!(
@@ -3576,8 +3968,13 @@ mod tests {
 
     #[test]
     fn the_batch_schema_equals_the_active_artifacts_schema() {
-        let batch =
-            artifacts_batch(&[fixture_artifact(None, None, None)], 1, "local-test").unwrap();
+        let batch = artifacts_batch(
+            &[fixture_artifact(None, None, None)],
+            1,
+            "local-test",
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let expected = super::super::lance_tables::artifacts_v1_schema();
 
         let batch_schema = batch.schema();
@@ -3601,7 +3998,7 @@ mod tests {
 
     #[test]
     fn zero_rows_produces_an_empty_batch_with_the_right_schema() {
-        let batch = artifacts_batch(&[], 1, "local-test").unwrap();
+        let batch = artifacts_batch(&[], 1, "local-test", &BTreeMap::new()).unwrap();
         assert_eq!(batch.num_rows(), 0);
         assert_eq!(
             batch.num_columns(),
@@ -3624,7 +4021,7 @@ mod tests {
             super::super::SourceDiagnostic::new(DiagnosticCode::InvalidLinks, None, "a"),
             super::super::SourceDiagnostic::new(DiagnosticCode::UnreadableSource, None, "b"),
         ];
-        let batch = artifacts_batch(&[artifact], 1, "local-test").unwrap();
+        let batch = artifacts_batch(&[artifact], 1, "local-test", &BTreeMap::new()).unwrap();
         let column = batch
             .column_by_name("diagnostics")
             .expect("diagnostics column")
@@ -3632,6 +4029,312 @@ mod tests {
             .downcast_ref::<arrow_array::StringArray>()
             .expect("diagnostics is a string column");
         assert_eq!(column.value(0), "invalid_links,unreadable_source");
+    }
+
+    // -------------------------------------------------------------------
+    // Semantic preservation — what a reconcile splices and what it clears
+    // -------------------------------------------------------------------
+
+    /// A stored tuple as `artifact_semantics` would have read it back: the
+    /// row is `ready` under profile `p1`, with a real vector and a retry the
+    /// batch must carry forward verbatim.
+    fn stored_ready() -> SemanticColumns {
+        SemanticColumns {
+            index_epoch: Some(7),
+            checkout_id: Some("local-x".to_string()),
+            incarnation: Some(1),
+            input_digest: Some("id".to_string()),
+            embedding: Some(vec![
+                0.25;
+                super::super::lance_tables::EMBEDDING_DIM as usize
+            ]),
+            profile_id: Some("p1".to_string()),
+            semantic_state: Some("ready".to_string()),
+            retry_after: Some("2026-10-20T00:00:00Z".to_string()),
+        }
+    }
+
+    fn preserved_for(
+        artifact: &super::super::capture::ParsedArtifact,
+        columns: SemanticColumns,
+    ) -> BTreeMap<String, SemanticColumns> {
+        let mut map = BTreeMap::new();
+        map.insert(artifact.canonical_key.clone(), columns);
+        map
+    }
+
+    fn embedding_of(batch: &arrow_array::RecordBatch, row: usize) -> Option<Vec<f32>> {
+        let column = batch.column_by_name("embedding").expect("embedding column");
+        if column.is_null(row) {
+            return None;
+        }
+        let list = column
+            .as_any()
+            .downcast_ref::<arrow_array::FixedSizeListArray>()
+            .expect("embedding is a fixed-size list");
+        let values = list.value(row);
+        let floats = values
+            .as_any()
+            .downcast_ref::<arrow_array::Float32Array>()
+            .expect("list items are f32");
+        Some((0..floats.len()).map(|i| floats.value(i)).collect())
+    }
+
+    fn text_of(batch: &arrow_array::RecordBatch, name: &str, row: usize) -> Option<String> {
+        let column = batch.column_by_name(name).expect(name);
+        if column.is_null(row) {
+            return None;
+        }
+        Some(
+            column
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .expect("a string column")
+                .value(row)
+                .to_string(),
+        )
+    }
+
+    /// The load-bearing Wave 2 case: a metadata-only edit moves
+    /// `source_digest` and `row_revision` but not the input, so the stored
+    /// tuple must survive while the durable columns take the capture's new
+    /// values.
+    #[test]
+    fn a_metadata_only_edit_keeps_the_stored_tuple_and_takes_the_new_source_digest() {
+        let artifact = fixture_artifact(None, None, None);
+        let stored = stored_ready();
+
+        // A frontmatter edit: new bytes, new revision — same path, so the same
+        // incarnation, and the same title+body, so the same input digest.
+        let mut edited = (*artifact).clone();
+        edited.status = "active".to_string();
+        edited.source_digest = "sd-after-edit".to_string();
+        edited.row_revision = 2;
+
+        let batch = artifacts_batch(
+            &[Arc::new(edited)],
+            7,
+            "local-x",
+            &preserved_for(&artifact, stored.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            embedding_of(&batch, 0),
+            stored.embedding,
+            "an unchanged input must keep the exact vector, not a fresh null or a zero fill"
+        );
+        assert_eq!(text_of(&batch, "profile_id", 0).as_deref(), Some("p1"));
+        assert_eq!(
+            text_of(&batch, "semantic_state", 0).as_deref(),
+            Some("ready")
+        );
+        assert_eq!(
+            text_of(&batch, "retry_after", 0).as_deref(),
+            Some("2026-10-20T00:00:00Z"),
+            "the retry schedule is part of the tuple and survives too"
+        );
+        assert_eq!(
+            text_of(&batch, "source_digest", 0).as_deref(),
+            Some("sd-after-edit"),
+            "the durable source binding comes from the capture, never from the stored row"
+        );
+        assert_eq!(
+            text_of(&batch, "input_digest", 0).as_deref(),
+            Some("id"),
+            "the input the vector was bound to is unchanged, and is written as captured"
+        );
+    }
+
+    /// A recreate bumps the incarnation. The vector described a document that
+    /// no longer exists under this name, so the whole tuple goes — and the
+    /// row must say `unavailable` rather than inherit the capture's own
+    /// value, which is what makes the invalidation explicit.
+    #[test]
+    fn a_new_incarnation_clears_the_whole_tuple() {
+        let artifact = fixture_artifact(None, None, None);
+        let stored = stored_ready();
+
+        let mut recreated = (*artifact).clone();
+        recreated.incarnation = 2;
+        recreated.row_revision = 1;
+        recreated.source_digest = "sd-recreated".to_string();
+
+        let batch = artifacts_batch(
+            &[Arc::new(recreated)],
+            7,
+            "local-x",
+            &preserved_for(&artifact, stored),
+        )
+        .unwrap();
+
+        assert_eq!(
+            embedding_of(&batch, 0),
+            None,
+            "a recreated document keeps no vector — and never a zero vector"
+        );
+        assert_eq!(text_of(&batch, "profile_id", 0), None);
+        assert_eq!(text_of(&batch, "retry_after", 0), None);
+        assert_eq!(
+            text_of(&batch, "semantic_state", 0).as_deref(),
+            Some("unavailable"),
+            "a cleared row says unavailable, not ready"
+        );
+        assert_eq!(
+            text_of(&batch, "source_digest", 0).as_deref(),
+            Some("sd-recreated"),
+            "the new bytes are recorded even though the vector was dropped"
+        );
+    }
+
+    /// The body moved, so the tokenizer input moved with it.
+    #[test]
+    fn a_changed_input_digest_clears_the_whole_tuple() {
+        let artifact = fixture_artifact(None, None, None);
+        let mut edited = (*artifact).clone();
+        edited.input_digest = "id-after-edit".to_string();
+        edited.source_digest = "sd-after-edit".to_string();
+
+        let batch = artifacts_batch(
+            &[Arc::new(edited)],
+            7,
+            "local-x",
+            &preserved_for(&artifact, stored_ready()),
+        )
+        .unwrap();
+
+        assert_eq!(embedding_of(&batch, 0), None);
+        assert_eq!(text_of(&batch, "profile_id", 0), None);
+        assert_eq!(
+            text_of(&batch, "semantic_state", 0).as_deref(),
+            Some("unavailable")
+        );
+    }
+
+    /// A rebind bumps the epoch, which retires every pending job. The same
+    /// tuple fences the guarded update, so it must fence the splice.
+    #[test]
+    fn a_bumped_epoch_or_a_moved_checkout_clears_the_whole_tuple() {
+        let artifact = fixture_artifact(None, None, None);
+
+        for (epoch, checkout) in [(8u64, "local-x"), (7u64, "local-y")] {
+            let batch = artifacts_batch(
+                &[Arc::clone(&artifact)],
+                epoch,
+                checkout,
+                &preserved_for(&artifact, stored_ready()),
+            )
+            .unwrap();
+            assert_eq!(
+                embedding_of(&batch, 0),
+                None,
+                "epoch {epoch} at checkout {checkout} is a different generation"
+            );
+            assert_eq!(text_of(&batch, "profile_id", 0), None);
+        }
+    }
+
+    /// A key the table does not hold gets no splice, even when the stored
+    /// tuple would otherwise match.
+    #[test]
+    fn an_absent_key_gets_nulls_rather_than_a_borrowed_tuple() {
+        let artifact = fixture_artifact(None, None, None);
+        let mut other = (*artifact).clone();
+        other.canonical_key = "PRD-002".to_string();
+
+        let batch = artifacts_batch(
+            &[Arc::new(other)],
+            7,
+            "local-x",
+            &preserved_for(&artifact, stored_ready()),
+        )
+        .unwrap();
+        assert_eq!(embedding_of(&batch, 0), None);
+        assert_eq!(text_of(&batch, "profile_id", 0), None);
+    }
+
+    /// The same law on the sections side: a section is judged by its own
+    /// input digest and its parent's identity, so a parent's metadata edit
+    /// leaves every section vector alone.
+    #[test]
+    fn a_section_keeps_its_vector_when_only_its_parent_metadata_moved() {
+        let mut captured = complete(vec![entry("PRD-001", "prds/PRD-001-a.md", "sd-before")]);
+        captured.artifacts = vec![fixture_artifact(None, None, None)];
+        captured.sections = vec![super::super::capture::CapturedSection {
+            canonical_key: "PRD-001#s0".to_string(),
+            parent_key: "PRD-001".to_string(),
+            ordinal: 0,
+            heading: None,
+            level: None,
+            content: Arc::from("Body.\n"),
+            input_digest: "section-in".to_string(),
+            parent_input_digest: "id".to_string(),
+        }];
+        // The capture's durable half now describes the edited bytes. The
+        // section's own input digest is untouched.
+        captured.entries[0].source_digest = "sd-after".to_string();
+        captured.entries[0].row_revision = 2;
+
+        let mut stored = stored_ready();
+        // A section row carries its **parent's** epoch/checkout/incarnation,
+        // and the `entry` fixture publishes under epoch 1 / `local-x`.
+        stored.index_epoch = Some(1);
+        stored.input_digest = Some("section-in".to_string());
+        let mut preserved = BTreeMap::new();
+        preserved.insert("PRD-001#s0".to_string(), stored.clone());
+
+        let batch = sections_batch(&captured, &preserved).unwrap();
+
+        assert_eq!(
+            embedding_of(&batch, 0),
+            stored.embedding,
+            "the section's text did not move, so its vector stands"
+        );
+        assert_eq!(text_of(&batch, "profile_id", 0).as_deref(), Some("p1"));
+        assert_eq!(
+            text_of(&batch, "semantic_state", 0).as_deref(),
+            Some("ready")
+        );
+        assert_eq!(
+            text_of(&batch, "source_digest", 0).as_deref(),
+            Some("sd-after"),
+            "the section row takes its parent's new source digest wholesale"
+        );
+    }
+
+    /// The parent's identity moving — a recreate — retires the section's
+    /// vector too, because the section row is bound to its parent.
+    #[test]
+    fn a_new_parent_incarnation_clears_the_section_tuple() {
+        let mut captured = complete(vec![entry("PRD-001", "prds/PRD-001-a.md", "sd")]);
+        captured.entries[0].incarnation = 2;
+        captured.artifacts = vec![fixture_artifact(None, None, None)];
+        captured.sections = vec![super::super::capture::CapturedSection {
+            canonical_key: "PRD-001#s0".to_string(),
+            parent_key: "PRD-001".to_string(),
+            ordinal: 0,
+            heading: None,
+            level: None,
+            content: Arc::from("Body.\n"),
+            input_digest: "section-in".to_string(),
+            parent_input_digest: "id".to_string(),
+        }];
+
+        let mut stored = stored_ready();
+        stored.index_epoch = Some(1);
+        stored.input_digest = Some("section-in".to_string());
+        let mut preserved = BTreeMap::new();
+        preserved.insert("PRD-001#s0".to_string(), stored);
+
+        let batch = sections_batch(&captured, &preserved).unwrap();
+        assert_eq!(embedding_of(&batch, 0), None);
+        assert_eq!(text_of(&batch, "profile_id", 0), None);
+        assert_eq!(
+            text_of(&batch, "semantic_state", 0).as_deref(),
+            Some("unavailable"),
+            "a section never inherits its parent's state; the parent may be ready \
+             on the body prefix and that says nothing about this section"
+        );
     }
 
     fn fixture_artifact(
@@ -3979,6 +4682,421 @@ mod tests {
             binding.predicate().matches("'PRD-001#s1'").count(),
             1,
             "the predicate binds the section key so a stale parent move still refuses the write"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // republish_current durability barrier (C04)
+    // -------------------------------------------------------------------
+
+    /// A recording barrier: delegates the real fsyncs to the POSIX adapter
+    /// and keeps the call order, optionally refusing one file's sync or the
+    /// directory ACK that follows the `CURRENT` rename. The order log is the
+    /// assertion — a republish that moves `CURRENT` before the tracked
+    /// writes are durable is visible as a `replace` earlier than the
+    /// `sync_file`.
+    #[derive(Debug, Default)]
+    struct SpyDurability {
+        calls: std::sync::Mutex<Vec<String>>,
+        fail_sync_on: std::sync::Mutex<Option<String>>,
+        /// Refuse every `sync_dir` issued **after** `CURRENT.json` has been
+        /// renamed into place.
+        ///
+        /// Gated on the rename rather than on a path so it lands on exactly
+        /// one call: the closure barrier's own `sync_dir(index_root)` runs
+        /// before the visibility point and must still succeed, and a spy
+        /// that failed every `sync_dir` would abort before the rename and
+        /// prove nothing about the ACK. This is the "the pointer is visible
+        /// but its directory entry was never acknowledged" case.
+        fail_dir_sync_after_current: bool,
+    }
+
+    impl SpyDurability {
+        fn calls(&self) -> Vec<String> {
+            self.log().clone()
+        }
+
+        /// The recorded call order.
+        ///
+        /// Takes the guard by value so no `lock().unwrap()` sits here: a
+        /// poisoned test-only log must not turn a durability assertion into
+        /// an unrelated panic.
+        fn log(&self) -> std::sync::MutexGuard<'_, Vec<String>> {
+            self.calls.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        fn record(&self, what: &str, path: &std::path::Path) {
+            self.log().push(format!("{what}:{}", path.display()));
+        }
+
+        /// Arm a file-sync refusal, after any publication that must succeed
+        /// first. Construction-time arming cannot express "publish the old
+        /// generation, then fail", which is the state the barrier has to
+        /// preserve.
+        fn fail_sync_of(&self, needle: &str) {
+            let mut armed = self.fail_sync_on.lock().unwrap_or_else(|e| e.into_inner());
+            *armed = Some(needle.to_string());
+        }
+
+        fn refuses(&self, path: &std::path::Path) -> bool {
+            self.fail_sync_on
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_deref()
+                .is_some_and(|needle| path.display().to_string().contains(needle))
+        }
+
+        fn current_is_renamed(&self) -> bool {
+            self.current_renames() > 0
+        }
+
+        /// How many times `CURRENT.json` has been renamed into place.
+        ///
+        /// A count rather than a flag: "the failed republish left the pointer
+        /// alone" is only meaningful against the one rename the *successful*
+        /// publication already made, and a boolean cannot tell those apart.
+        fn current_renames(&self) -> usize {
+            self.log()
+                .iter()
+                .filter(|call| {
+                    call.starts_with("replace:") && call.contains(storage::CURRENT_FILE_NAME)
+                })
+                .count()
+        }
+    }
+
+    impl super::super::durability::PlatformDurability for SpyDurability {
+        fn adapter_name(&self) -> &'static str {
+            "spy-durability"
+        }
+
+        fn sync_file(&self, path: &std::path::Path) -> Result<(), ConstellationError> {
+            self.record("sync_file", path);
+            if self.refuses(path) {
+                return Err(ConstellationError::DurabilityUnavailable {
+                    detail: format!("spy refused the sync of {}", path.display()),
+                });
+            }
+            super::super::durability::PosixDurability.sync_file(path)
+        }
+
+        fn sync_dir(&self, path: &std::path::Path) -> Result<(), ConstellationError> {
+            self.record("sync_dir", path);
+            if self.fail_dir_sync_after_current && self.current_is_renamed() {
+                return Err(ConstellationError::DurabilityUnavailable {
+                    detail: format!(
+                        "spy refused the directory ACK of {} after CURRENT became visible",
+                        path.display()
+                    ),
+                });
+            }
+            super::super::durability::PosixDurability.sync_dir(path)
+        }
+
+        fn ensure_dir(&self, dir: &std::path::Path) -> Result<(), ConstellationError> {
+            self.record("ensure_dir", dir);
+            super::super::durability::PosixDurability.ensure_dir(dir)
+        }
+
+        fn replace_atomically(
+            &self,
+            src: &std::path::Path,
+            dest: &std::path::Path,
+        ) -> Result<(), ConstellationError> {
+            self.record("replace", dest);
+            super::super::durability::PosixDurability.replace_atomically(src, dest)
+        }
+    }
+
+    fn spy_publisher(index_root: &std::path::Path, spy: &Arc<SpyDurability>) -> IndexPublisher {
+        let mut publisher =
+            IndexPublisher::acquire(index_root, Arc::new(object_store::memory::InMemory::new()))
+                .unwrap();
+        publisher.platform =
+            Arc::clone(spy) as Arc<dyn super::super::durability::PlatformDurability>;
+        publisher
+    }
+
+    /// C04: `republish_current` must run the same closure barrier `publish`
+    /// runs — finish the tracked writes, sync that exact set, and only then
+    /// move `CURRENT`. Before the fix the drain's Lance writes were tracked
+    /// but never fsynced before the pointer moved.
+    #[test]
+    fn republish_current_syncs_the_write_closure_before_moving_the_pointer() {
+        let tmp = TempDir::new().unwrap();
+        // Canonicalise before the publisher sees the path: on macOS a temp dir
+        // is reached through `/var/...`, which resolves to `/private/var/...`,
+        // and the publisher refuses a symlinked component by design — a
+        // symlinked alias would create a second physical owner. The refusal is
+        // correct; handing it an alias from a fixture is not.
+        let index_root = tmp.path().canonicalize().unwrap().join("lance");
+        // A file the stage pretends a table commit wrote, at a path inside
+        // the index root so the closure barrier may sync it.
+        let touched = index_root.join("constellation_artifacts_v1.lance/data/0.bin");
+        std::fs::create_dir_all(touched.parent().unwrap()).unwrap();
+        std::fs::write(&touched, b"payload").unwrap();
+
+        let spy = Arc::new(SpyDurability::default());
+        let publisher = spy_publisher(&index_root, &spy);
+
+        // Tracked keys are filesystem-root-relative: the object store
+        // strips the leading `/` from the absolute path it was opened
+        // against.
+        let key = touched
+            .to_str()
+            .unwrap()
+            .trim_start_matches('/')
+            .to_string();
+        publisher.tracker().register_intent(&key);
+        publisher.tracker().record_write(&key);
+
+        publisher
+            .republish_current(&descriptor_for("gen-1"))
+            .unwrap();
+
+        let calls = spy.calls();
+        let synced = calls
+            .iter()
+            .position(|call| call.starts_with("sync_file:") && call.contains("0.bin"))
+            .expect(
+                "the tracked table write must be fsynced before the pointer \
+                 moves: a republish that skips the closure is the C04 hole",
+            );
+        let renamed = calls
+            .iter()
+            .position(|call| call.starts_with("replace:") && call.contains("CURRENT.json"))
+            .expect("the CURRENT rename is the visibility point");
+        assert!(
+            synced < renamed,
+            "the write closure must be durable before CURRENT moves: {calls:?}"
+        );
+        assert!(
+            index_root.join("CURRENT.json").exists(),
+            "the republish itself must still land"
+        );
+    }
+
+    /// The other half of the barrier: when the closure sync fails, the
+    /// pointer must not move — and the **previously published** pointer, not
+    /// merely the absence of one, is what must survive. The barrier sits in
+    /// front of an index that already serves a generation, so "no CURRENT"
+    /// would be the wrong assertion: a drain's failed republish must leave
+    /// the previous generation readable, byte for byte.
+    #[test]
+    fn a_failed_closure_sync_preserves_the_previously_published_pointer() {
+        let tmp = TempDir::new().unwrap();
+        // Canonicalise before the publisher sees the path: on macOS a temp dir
+        // is reached through `/var/...`, which resolves to `/private/var/...`,
+        // and the publisher refuses a symlinked component by design — a
+        // symlinked alias would create a second physical owner. The refusal is
+        // correct; handing it an alias from a fixture is not.
+        let index_root = tmp.path().canonicalize().unwrap().join("lance");
+        let touched = index_root.join("constellation_artifacts_v1.lance/data/0.bin");
+        std::fs::create_dir_all(touched.parent().unwrap()).unwrap();
+        std::fs::write(&touched, b"payload").unwrap();
+
+        let spy = Arc::new(SpyDurability::default());
+        let publisher = spy_publisher(&index_root, &spy);
+
+        // The generation that was already serving reads, published through
+        // the same publisher so its bytes are what a reader would have seen.
+        publisher
+            .republish_current(&descriptor_for("gen-1"))
+            .unwrap();
+        let published_bytes = std::fs::read(index_root.join(storage::CURRENT_FILE_NAME)).unwrap();
+        assert!(
+            !published_bytes.is_empty(),
+            "the precondition is a published pointer, not an empty index"
+        );
+
+        let key = touched
+            .to_str()
+            .unwrap()
+            .trim_start_matches('/')
+            .to_string();
+        publisher.tracker().register_intent(&key);
+        publisher.tracker().record_write(&key);
+
+        // Now arm the failure. The previous pointer is the state under test,
+        // so the refusal has to be settable after that publication — a spy
+        // that refused from construction could never reach it.
+        spy.fail_sync_of("0.bin");
+
+        let err = publisher
+            .republish_current(&descriptor_for("gen-2"))
+            .unwrap_err();
+        assert!(
+            matches!(err, ConstellationError::DurabilityUnavailable { .. }),
+            "a failed barrier must surface as durability_unavailable: {err:?}"
+        );
+        assert_eq!(
+            std::fs::read(index_root.join(storage::CURRENT_FILE_NAME)).unwrap(),
+            published_bytes,
+            "a failed closure must leave the old CURRENT byte-identical: a \
+             partially rewritten pointer, or a deletion, would strand readers"
+        );
+        assert_eq!(
+            spy.current_renames(),
+            1,
+            "the failed republish must not attempt a second rename: {:?}",
+            spy.calls()
+        );
+
+        let set = publisher.tracker().finish_writes().unwrap();
+        assert!(
+            set.files.iter().any(|file| file.contains("0.bin")),
+            "the tracked write must still be on record after the failed sync"
+        );
+    }
+
+    /// A failure *after* the rename is a different fact from a failure
+    /// before it: the new pointer is already visible, so the generation is
+    /// neither confirmed nor rolled back. That distinction is the whole
+    /// reason `PublicationUncertain` exists, and a republish must not
+    /// collapse it into a plain durability error or, worse, into success.
+    #[test]
+    fn a_lost_directory_ack_after_the_rename_is_publication_uncertain() {
+        let tmp = TempDir::new().unwrap();
+        // Canonicalise before the publisher sees the path: on macOS a temp dir
+        // is reached through `/var/...`, which resolves to `/private/var/...`,
+        // and the publisher refuses a symlinked component by design — a
+        // symlinked alias would create a second physical owner. The refusal is
+        // correct; handing it an alias from a fixture is not.
+        let index_root = tmp.path().canonicalize().unwrap().join("lance");
+        let touched = index_root.join("constellation_artifacts_v1.lance/data/0.bin");
+        std::fs::create_dir_all(touched.parent().unwrap()).unwrap();
+        std::fs::write(&touched, b"payload").unwrap();
+
+        let spy = Arc::new(SpyDurability {
+            fail_dir_sync_after_current: true,
+            ..SpyDurability::default()
+        });
+        let publisher = spy_publisher(&index_root, &spy);
+
+        let key = touched
+            .to_str()
+            .unwrap()
+            .trim_start_matches('/')
+            .to_string();
+        publisher.tracker().register_intent(&key);
+        publisher.tracker().record_write(&key);
+
+        let err = publisher
+            .republish_current(&descriptor_for("gen-1"))
+            .unwrap_err();
+        assert!(
+            matches!(err, ConstellationError::PublicationUncertain { .. }),
+            "a lost ACK after the visibility point is publication_uncertain, \
+             not durability_unavailable: {err:?}"
+        );
+        assert!(
+            spy.current_is_renamed(),
+            "the refusal must land after the rename, or this proves nothing \
+             about the ACK: {:?}",
+            spy.calls()
+        );
+
+        // The new pointer is on disk and readable: the state the caller has
+        // to treat as neither confirmed nor rolled back. A reader that sees
+        // it must be able to name the generation the caller cannot confirm.
+        let visible = storage::read_current(&index_root)
+            .unwrap()
+            .expect("the renamed pointer is visible");
+        assert_eq!(
+            visible.generation_id, "gen-1",
+            "the visible pointer names the generation whose ACK was lost"
+        );
+    }
+
+    /// A barrier that fails loudly is only half the contract; the successful
+    /// republish has to leave a pointer a reader actually resolves versions
+    /// from. This asserts the reader's own path — read the pointer off disk,
+    /// then ask the descriptor which table version it claims — rather than
+    /// that the writer's in-memory descriptor still says so.
+    #[test]
+    fn a_republished_head_is_the_version_a_reader_resolves() {
+        let tmp = TempDir::new().unwrap();
+        // Canonicalise before the publisher sees the path: on macOS a temp dir
+        // is reached through `/var/...`, which resolves to `/private/var/...`,
+        // and the publisher refuses a symlinked component by design — a
+        // symlinked alias would create a second physical owner. The refusal is
+        // correct; handing it an alias from a fixture is not.
+        let index_root = tmp.path().canonicalize().unwrap().join("lance");
+        let touched = index_root.join("constellation_artifacts_v1.lance/data/0.bin");
+        std::fs::create_dir_all(touched.parent().unwrap()).unwrap();
+        std::fs::write(&touched, b"payload").unwrap();
+
+        let spy = Arc::new(SpyDurability::default());
+        let publisher = spy_publisher(&index_root, &spy);
+
+        // The manifest pin the first publication recorded, then the head a
+        // later drain moved the artifacts table to. The head must win, and
+        // only because the pointer says so — the manifest is immutable and
+        // still names the older version.
+        let manifest = manifest_with_versions(3, 2);
+        publisher
+            .republish_current(&descriptor_for("gen-1"))
+            .unwrap();
+        assert_eq!(
+            storage::read_current(&index_root)
+                .unwrap()
+                .expect("a published pointer")
+                .effective_artifacts_version(&manifest)
+                .unwrap(),
+            3,
+            "before the drain republish, the reader resolves the manifest's pin"
+        );
+
+        let mut moved = descriptor_for("gen-1");
+        moved.embedding_artifacts_head = Some(7);
+        moved.profile_id = Some("profile-a".to_string());
+
+        // The tracked write the drain's completion produced: the barrier has
+        // to sync it before the pointer may name the head it created.
+        let key = touched
+            .to_str()
+            .unwrap()
+            .trim_start_matches('/')
+            .to_string();
+        publisher.tracker().register_intent(&key);
+        publisher.tracker().record_write(&key);
+
+        publisher.republish_current(&moved).unwrap();
+
+        // Read the pointer the way a reader does — off disk, not from the
+        // writer's copy.
+        let visible = storage::read_current(&index_root)
+            .unwrap()
+            .expect("a published pointer");
+        assert_eq!(
+            visible.effective_artifacts_version(&manifest).unwrap(),
+            7,
+            "a reader must resolve the head the republish recorded, not the \
+             older pin the immutable manifest still carries"
+        );
+        assert_eq!(
+            visible.profile_id.as_deref(),
+            Some("profile-a"),
+            "the claimed embedding space travels with the pointer, so pinned \
+             semantic reads query a space that exists"
+        );
+
+        // And the closure was durable before that pointer became visible —
+        // the same ordering, now observed on the path that moved the head.
+        let calls = spy.calls();
+        let synced = calls
+            .iter()
+            .position(|call| call.starts_with("sync_file:") && call.contains("0.bin"))
+            .expect("the drain's tracked write is synced");
+        let renamed = calls
+            .iter()
+            .rposition(|call| {
+                call.starts_with("replace:") && call.contains(storage::CURRENT_FILE_NAME)
+            })
+            .expect("the republish renames CURRENT");
+        assert!(
+            synced < renamed,
+            "the head the pointer names must be durable first: {calls:?}"
         );
     }
 }

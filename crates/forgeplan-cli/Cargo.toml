@@ -18,8 +18,8 @@ name = "forgeplan"
 path = "src/main.rs"
 
 [dependencies]
-forgeplan-core = { path = "../forgeplan-core", version = "0.38.0" }
-forgeplan-mcp = { path = "../forgeplan-mcp", version = "0.38.0" }
+forgeplan-core = { path = "../forgeplan-core", version = "0.39.0" }
+forgeplan-mcp = { path = "../forgeplan-mcp", version = "0.39.0" }
 clap = { version = "4", features = ["derive"] }
 anyhow.workspace = true
 chrono.workspace = true
@@ -41,7 +41,7 @@ dotenvy.workspace = true
 tempfile = "3"
 
 [features]
-semantic-search = ["forgeplan-core/semantic-search"]
+semantic-search = ["forgeplan-core/semantic-search", "forgeplan-mcp/semantic-search"]
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -84,6 +84,22 @@ pub struct Tombstone {
     pub canonical_key: String,
     pub relative_path: String,
     pub source_digest: String,
+    /// The `incarnation` the deleted row carried.
+    ///
+    /// This is what makes a recreate a **new** incarnation rather than a
+    /// restoration of the retired one. A file deleted and recreated with
+    /// byte-identical content at the same path has the same `source_digest`
+    /// and the same `relative_path`; without the retired number recorded
+    /// here, the next capture would find no tombstone to skip past and would
+    /// mint `1` again — reproducing the identity of a row that no longer
+    /// exists, and letting its vector be preserved onto the replacement.
+    ///
+    /// `default` keeps a manifest written before this field readable. Such a
+    /// tombstone reads as `0`, so a recreate skips past `1` rather than
+    /// colliding with the pre-delete `1`; that is one wasted increment, never
+    /// a reused identity.
+    #[serde(default)]
+    pub incarnation: u64,
     pub observed_at: String,
 }
 
@@ -376,11 +392,19 @@ impl CurrentDescriptor {
     ///
     /// `manifest_sha256` is the checksum of the manifest file's bytes; a
     /// reader verifies it before trusting the versions inside.
+    ///
+    /// `profile_id` is the claimed embedding space, supplied by the caller
+    /// that knows it. It is deliberately **not** inferred from
+    /// `pending_jobs`: that made the descriptor's space a function of whichever
+    /// job sorted first, and of nothing at all when the map was empty — which
+    /// is the state production publishes. A reconcile that passed `None` would
+    /// silently unpublish the space pinned semantic reads query in.
     pub fn for_manifest(
         manifest: &GenerationManifest,
         owner_epoch: u64,
         manifest_path: impl Into<String>,
         manifest_sha256: impl Into<String>,
+        profile_id: Option<&str>,
     ) -> Self {
         Self {
             format_version: FORMAT_VERSION,
@@ -390,11 +414,7 @@ impl CurrentDescriptor {
             owner_epoch,
             source_set_digest: manifest.source_set_digest.clone(),
             config_digest: manifest.config_digest.clone(),
-            profile_id: manifest
-                .pending_jobs
-                .values()
-                .next()
-                .map(|job| job.profile_id.clone()),
+            profile_id: profile_id.map(str::to_string),
             evaluated_at: manifest.evaluated_at.clone(),
             manifest_path: manifest_path.into(),
             manifest_sha256: manifest_sha256.into(),
@@ -495,6 +515,7 @@ mod tests {
             evaluated_at: "2026-10-17T00:00:00.000Z".to_string(),
             source_set_digest: "srcset".to_string(),
             config_digest: "cfg".to_string(),
+            body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: vec![Arc::new(ParsedArtifact {
                 canonical_key: "PRD-001".to_string(),
                 display_id: "PRD-001".to_string(),
@@ -572,6 +593,29 @@ mod tests {
         );
     }
 
+    /// A manifest written before `Tombstone::incarnation` existed must still
+    /// parse. It cannot know what the delete retired, so it reads as `0` and a
+    /// recreate skips past `1` — one wasted increment, never a reused identity.
+    /// Refusing the manifest instead would strand every index published by an
+    /// older build.
+    #[test]
+    fn a_tombstone_written_before_the_incarnation_field_still_parses() {
+        let legacy = r#"{
+            "canonical_key": "PRD-002",
+            "relative_path": "prds/PRD-002-b.md",
+            "source_digest": "sd",
+            "observed_at": "2026-10-17T00:00:00.000Z"
+        }"#;
+        let tombstone: Tombstone = serde_json::from_str(legacy).unwrap();
+        assert_eq!(tombstone.canonical_key, "PRD-002");
+        assert_eq!(tombstone.incarnation, 0);
+
+        // And it round-trips, so a republished generation stays readable.
+        let json = serde_json::to_string(&tombstone).unwrap();
+        let again: Tombstone = serde_json::from_str(&json).unwrap();
+        assert_eq!(again, tombstone);
+    }
+
     #[test]
     fn publication_validation_rejects_a_partial_capture() {
         let mut view = captured();
@@ -609,6 +653,7 @@ mod tests {
             9,
             CurrentDescriptor::manifest_relative_path("gen-1"),
             "abc123",
+            None,
         );
         assert_eq!(descriptor.format_version, FORMAT_VERSION);
         assert_eq!(descriptor.generation_id, "gen-1");
@@ -623,7 +668,32 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_reports_the_profile_of_a_pending_job() {
+    fn the_claimed_space_survives_a_publish_with_no_pending_jobs() {
+        // The state production actually publishes: no pending job exists, so
+        // nothing in the manifest names a space. The descriptor must still
+        // carry the one the caller states, or pinned semantic reads lose the
+        // space their vectors were built in.
+        let manifest =
+            GenerationManifest::from_capture(&captured(), "gen-1", TableVersions::new(1, 1));
+        assert!(
+            manifest.pending_jobs.is_empty(),
+            "this test is about the empty case; a populated map would not prove it"
+        );
+        let descriptor = CurrentDescriptor::for_manifest(
+            &manifest,
+            1,
+            CurrentDescriptor::manifest_relative_path("gen-1"),
+            "abc123",
+            Some("profile-xyz"),
+        );
+        assert_eq!(descriptor.profile_id.as_deref(), Some("profile-xyz"));
+    }
+
+    #[test]
+    fn a_pending_job_does_not_choose_the_claimed_space() {
+        // A pending job is work still to do; it is not the space the published
+        // rows live in. Reading the space off it made the descriptor depend on
+        // whichever job sorted first.
         let mut manifest =
             GenerationManifest::from_capture(&captured(), "gen-1", TableVersions::new(1, 1));
         manifest.pending_jobs.insert(
@@ -636,19 +706,35 @@ mod tests {
                 row_revision: 1,
                 source_digest: "sd".to_string(),
                 input_digest: "id".to_string(),
-                profile_id: "profile-xyz".to_string(),
+                profile_id: "profile-queued".to_string(),
                 captured_input_ref: "prds/PRD-001-auth.md".to_string(),
                 attempt: 0,
                 retry_after: None,
             },
         );
-        let descriptor = CurrentDescriptor::for_manifest(
+        let claimed = CurrentDescriptor::for_manifest(
             &manifest,
             1,
             CurrentDescriptor::manifest_relative_path("gen-1"),
             "abc123",
+            Some("profile-current"),
         );
-        assert_eq!(descriptor.profile_id.as_deref(), Some("profile-xyz"));
+        assert_eq!(
+            claimed.profile_id.as_deref(),
+            Some("profile-current"),
+            "the caller's space wins; a queued job cannot republish the descriptor"
+        );
+
+        // And a first bootstrap, which genuinely claims no space, publishes
+        // none — rather than inheriting the queued job's.
+        let first = CurrentDescriptor::for_manifest(
+            &manifest,
+            1,
+            CurrentDescriptor::manifest_relative_path("gen-1"),
+            "abc123",
+            None,
+        );
+        assert_eq!(first.profile_id, None);
     }
 
     #[test]
@@ -682,6 +768,7 @@ mod tests {
             1,
             CurrentDescriptor::manifest_relative_path("gen-1"),
             "abc123",
+            None,
         );
 
         // A pre-sections manifest with no drain head: `None`, and reads keep

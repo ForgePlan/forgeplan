@@ -90,7 +90,13 @@ async fn bench_create_roundtrip_components() {
     }
 
     // ── full roundtrip (validate + render + file write + lance write) ─────
-    let ctx = MutationContext::new(&ws, &store);
+    // The context carries the workspace lock, which production holds for
+    // the whole mutation. Acquiring it here keeps the bench honest about
+    // the same call shape every real mutator uses.
+    let guard = forgeplan_core::workspace::acquire_workspace_lock(&ws)
+        .await
+        .expect("acquire workspace lock");
+    let ctx = MutationContext::new(&ws, &guard, Some(&store));
     let mut full = Vec::with_capacity(n);
     for i in 2000..2000 + n {
         let t = Instant::now();

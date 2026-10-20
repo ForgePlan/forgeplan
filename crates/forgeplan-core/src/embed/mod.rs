@@ -205,6 +205,9 @@ fn compose_first_run_notice(cache: &Path, legacy: Option<PathBuf>) -> String {
 #[cfg(feature = "tract-engine")]
 mod inner {
     use super::tract_engine::{TractEmbedder, ensure_model};
+    // A `use` in the parent module is not in scope here, and `CachedSnapshot`
+    // names `PathBuf` in its own fields.
+    use std::path::{Path, PathBuf};
 
     /// Which HuggingFace repo backs a configured model name.
     ///
@@ -280,8 +283,15 @@ mod inner {
             let cache = super::resolve_cache_dir();
             let snapshot = super::tract_engine::find_snapshot(&cache, repo)
                 .ok_or_else(|| anyhow::anyhow!("no cached snapshot for {repo}"))?;
+            Self::from_snapshot(&snapshot, model_name)
+        }
+        /// Open a model from an already-resolved snapshot directory.
+        ///
+        /// This is the cache-only constructor for callers that have pinned and
+        /// verified a specific snapshot before opening the engine.
+        pub fn from_snapshot(snapshot: &Path, model_name: &str) -> anyhow::Result<Self> {
             let engine =
-                TractEmbedder::from_snapshot(&snapshot, model_name, embedding_dim(model_name))?;
+                TractEmbedder::from_snapshot(snapshot, model_name, embedding_dim(model_name))?;
             Ok(Self {
                 engine,
                 model_name: model_name.to_string(),
@@ -357,6 +367,89 @@ mod inner {
             self.engine.embed_batch(texts)
         }
     }
+
+    /// An engine opened from a snapshot that is **already cached and complete**.
+    ///
+    /// # Why this is not `with_cached_model`
+    ///
+    /// [`Embedder::with_cached_model`] resolves through
+    /// [`tract_engine::find_snapshot`], which accepts any snapshot directory
+    /// containing `tokenizer.json` — including one left by an interrupted
+    /// fetch, missing the graph and its 2.1 GB of weights. Constructing an
+    /// engine from that fails, or worse, succeeds against whatever partial
+    /// files are present. This type checks every file
+    /// [`tract_engine::REQUIRED_FILES`] names **before** an engine exists, so
+    /// "cached" means whole.
+    ///
+    /// # What it never does
+    ///
+    /// It never downloads. Every caller that must not fetch weights — a query,
+    /// a watch pass, a git hook — uses this or
+    /// [`crate::constellation::jobs::open_cached_query_engine`]; obtaining
+    /// weights stays with `with_model` behind `forgeplan setup --warm-model`,
+    /// `forgeplan embed` and FPF ingest.
+    pub struct CachedSnapshot {
+        pub embedder: Embedder,
+        /// The HF repo the snapshot belongs to.
+        pub model_repo: String,
+        /// The snapshot directory's own name — the resolved revision in the
+        /// HF cache layout. Callers that resolve a profile compare this with
+        /// that profile's `weights_revision`, because a profile resolved from
+        /// `refs/main` and an engine opened from another directory would
+        /// otherwise describe two different revisions without noticing.
+        pub snapshot_id: String,
+        pub snapshot_root: PathBuf,
+    }
+
+    impl CachedSnapshot {
+        /// Open the cached snapshot for `model_name`, or explain why the
+        /// semantic channel is unavailable. **Never downloads.**
+        pub fn open(model_name: &str) -> anyhow::Result<Self> {
+            Self::open_in(&super::resolve_cache_dir(), model_name)
+        }
+
+        /// [`Self::open`] against an explicit cache directory.
+        ///
+        /// Split out so the completeness rule is testable against a fixture
+        /// cache: the resolved cache comes from the process environment, and
+        /// mutating an env var in a test races every other thread's reads of
+        /// any variable — the reason `resolve_cache_dir_from` takes its inputs
+        /// as arguments for exactly the same reason.
+        pub fn open_in(cache: &Path, model_name: &str) -> anyhow::Result<Self> {
+            let repo = resolve_repo(model_name)
+                .ok_or_else(|| anyhow::anyhow!("unsupported embedding model: {model_name}"))?;
+            let cache = cache.to_path_buf();
+            let snapshot = super::tract_engine::find_snapshot(&cache, repo).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no cached snapshot for `{repo}` under {} — a query never downloads. \
+                     Fix: forgeplan setup --warm-model",
+                    cache.display()
+                )
+            })?;
+            let missing: Vec<&str> = super::tract_engine::REQUIRED_FILES
+                .iter()
+                .copied()
+                .filter(|relative| !snapshot.join(relative).exists())
+                .collect();
+            if !missing.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "the cached snapshot for `{repo}` is incomplete — missing {missing:?}. \
+                     A partially fetched snapshot is not a usable model, and nothing is \
+                     re-fetched here. Fix: forgeplan setup --warm-model"
+                ));
+            }
+            let embedder = Embedder::from_snapshot(&snapshot, model_name)?;
+            Ok(Self {
+                embedder,
+                model_repo: repo.to_string(),
+                snapshot_id: snapshot
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                snapshot_root: snapshot,
+            })
+        }
+    }
 }
 
 #[cfg(feature = "tract-engine")]
@@ -364,12 +457,73 @@ pub use inner::*;
 
 #[cfg(all(test, feature = "tract-engine"))]
 mod cached_model_tests {
+    use super::CachedSnapshot;
+
     #[test]
     fn cached_only_rejects_unsupported_models_before_any_cache_or_network_access() {
         let error = super::Embedder::with_cached_model("not-a-real-model")
             .err()
             .expect("unsupported model must not load");
         assert!(error.to_string().contains("unsupported embedding model"));
+    }
+
+    /// A snapshot directory holding only `tokenizer.json` — exactly what an
+    /// interrupted fetch leaves, and exactly what `find_snapshot` accepts.
+    ///
+    /// The engine must refuse it and **name the missing files**, because the
+    /// refusal a query prints is the only thing standing between a half model
+    /// and vectors nobody can identify. Breaks if the check is dropped, or if
+    /// it degrades to the opaque `find_snapshot` miss ("no cached snapshot")
+    /// that hides the difference between absent and incomplete.
+    #[test]
+    fn an_incomplete_cached_snapshot_is_refused_with_its_missing_files_named() {
+        let cache = tempfile::TempDir::new().expect("temp cache");
+        let snapshot = cache
+            .path()
+            .join("models--BAAI--bge-m3")
+            .join("snapshots")
+            .join("rev0");
+        std::fs::create_dir_all(snapshot.join("onnx")).expect("create partial snapshot");
+        std::fs::write(snapshot.join("tokenizer.json"), "{}").expect("write tokenizer");
+
+        let error = CachedSnapshot::open_in(cache.path(), "bge-m3")
+            .err()
+            .expect("a partial snapshot must not open");
+
+        let detail = error.to_string();
+        assert!(
+            detail.contains("incomplete"),
+            "the refusal must say the snapshot is incomplete, was: {detail}"
+        );
+        assert!(
+            detail.contains("onnx/model.onnx_data"),
+            "the refusal must name what is missing, was: {detail}"
+        );
+        assert!(
+            !detail.contains("no cached snapshot"),
+            "an incomplete snapshot is present, not absent — the two must not \
+             read alike: {detail}"
+        );
+    }
+
+    /// No cache at all is `unavailable`, not an attempt to fetch.
+    ///
+    /// Breaks if an empty cache directory starts resolving to the network.
+    #[test]
+    fn an_empty_cache_reports_absence_and_never_offers_a_download() {
+        let cache = tempfile::TempDir::new().expect("temp cache");
+        let error = CachedSnapshot::open_in(cache.path(), "bge-m3")
+            .err()
+            .expect("an empty cache must not open an engine");
+        let detail = error.to_string();
+        assert!(
+            detail.contains("no cached snapshot"),
+            "absence must be reported as absence, was: {detail}"
+        );
+        assert!(
+            !detail.contains("Downloading"),
+            "a cache-only open must never start a download: {detail}"
+        );
     }
 }
 

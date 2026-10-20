@@ -4,38 +4,43 @@ use crate::commands::common;
 use crate::ui;
 
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    // Constellation-owned workspaces have no legacy store: read the pinned
-    // generation instead.
     let cwd = std::env::current_dir()?;
-    if let Some(ws) = forgeplan_core::workspace::find_workspace(&cwd)
-        && common::index_migrated(&ws)
+    let workspace = forgeplan_core::workspace::find_workspace(&cwd);
+    let (record, relations, incoming, view_metadata) = if let Some(ws) =
+        workspace.filter(|ws| common::index_migrated(ws))
     {
-        return run_constellation(&ws, id, json).await;
-    }
-    let store = common::store().await?;
-    // PROB-060 / SPEC-005 Phase 1.5 — `forgeplan get` accepts both display
-    // id (`PRD-074`, `prd-074`, `Prd-74`) and slug form (`prd-auth-system`).
-    // Resolver maps either form → canonical DB id; None means no match by
-    // any path. Audit Phase 1.5 H1: removed redundant `unwrap_or_else(id)`
-    // fallback — resolver already covers all legitimate paths.
-    // ADR-012 invariants I-3 + I-4 enforcement.
-    let record = match store.resolve_id(id).await? {
-        Some(canonical) => store.get_record(&canonical).await?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Artifact resolved to '{canonical}' but get_record missed (race?)\nFix: forgeplan list"
-            )
-        })?,
-        None => anyhow::bail!("Artifact '{id}' not found\nFix: forgeplan list"),
+        let read = common::workspace_read(&ws).await?;
+        let canonical = read
+            .resolve_id(id)
+            .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+        let record = read
+            .get_record(&canonical)
+            .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' missing from the captured view"))?
+            .clone();
+        let relations = read.get_relations(&canonical);
+        let incoming = read.get_incoming_relations(&canonical);
+        let metadata = serde_json::json!({
+            "index": "constellation",
+            "generation_id": read.view().descriptor().map(|descriptor| &descriptor.generation_id),
+            "snapshot_id": read.snapshot_id(),
+            "source_set_digest": read.source_set_digest(),
+            "persisted": read.is_persisted(),
+        });
+        (record, relations, incoming, Some(metadata))
+    } else {
+        let store = common::store().await?;
+        let canonical = store
+            .resolve_id(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+        let record = store
+            .get_record(&canonical)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' missing after resolution"))?;
+        let relations = store.get_relations(&record.id).await?;
+        let incoming = store.get_incoming_relations(&record.id).await?;
+        (record, relations, incoming, None)
     };
-
-    // Contextual hints — compute up front so both text and JSON paths emit them.
-    // Use canonical id everywhere downstream so relation lookups also work
-    // when caller passed slug.
-    let relations = store.get_relations(&record.id).await.unwrap_or_default();
-    let incoming = store
-        .get_incoming_relations(&record.id)
-        .await
-        .unwrap_or_default();
     let has_links = !relations.is_empty() || !incoming.is_empty();
 
     // #447 — both edge sets were already fetched above and then collapsed
@@ -100,7 +105,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     }
 
     if json {
-        let json_data = serde_json::json!({
+        let mut json_data = serde_json::json!({
             "id": record.id,
             "slug": slug_for_json,
             "kind": record.kind,
@@ -110,6 +115,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             "author": record.author,
             "parent_epic": record.parent_epic,
             "valid_until": record.valid_until,
+            "tags": record.tags,
             "r_eff": record.r_eff_score,
             "created_at": record.created_at,
             "updated_at": record.updated_at,
@@ -117,6 +123,12 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             "links": links_json,
             "_next_action": hints::primary_action(&hints_vec),
         });
+        if let Some(serde_json::Value::Object(metadata)) = view_metadata {
+            json_data
+                .as_object_mut()
+                .expect("get payload is an object")
+                .extend(metadata);
+        }
         println!("{}", serde_json::to_string_pretty(&json_data)?);
         return Ok(());
     }
@@ -163,134 +175,6 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     }
     println!();
     println!("{}", record.body);
-
-    if !hints_vec.is_empty() {
-        print!("{}", hints::format_hints(&hints_vec));
-    }
-    print!("{}", hints::render_next_action_line(&hints_vec));
-
-    Ok(())
-}
-
-/// The constellation-pinned `get`: one row at the published generation plus
-/// the pinned graph's edges for links.
-///
-/// The pinned row carries no depth/author/dates/R_eff — those fields are
-/// `null` in JSON and skipped in text rather than fabricated. Relations come
-/// from `list_pinned_graph`, where the stored `target` is whatever the
-/// source wrote — matched against both the canonical key and the display id.
-async fn run_constellation(ws: &std::path::Path, id: &str, json: bool) -> anyhow::Result<()> {
-    use forgeplan_core::constellation::facade;
-    let index_root = ws.join("lance");
-
-    let Some((artifact, generation, _version)) =
-        facade::get_pinned_artifact(&index_root, id).await?
-    else {
-        anyhow::bail!(
-            "Artifact '{id}' not found in the pinned generation\n\
-             Fix: forgeplan index --list"
-        );
-    };
-
-    let edges = facade::list_pinned_graph(&index_root)
-        .await
-        .map(|g| g.edges)
-        .unwrap_or_default();
-    let matches_target = |target: &String| {
-        target == &artifact.canonical_key || Some(target.as_str()) == artifact.display_id.as_deref()
-    };
-    let outbound: Vec<_> = edges
-        .iter()
-        .filter(|(from, target, _)| from == &artifact.canonical_key && !matches_target(target))
-        .cloned()
-        .collect();
-    let inbound: Vec<_> = edges
-        .iter()
-        .filter(|(from, target, _)| matches_target(target) && from != &artifact.canonical_key)
-        .cloned()
-        .collect();
-    let has_links = !outbound.is_empty() || !inbound.is_empty();
-
-    let status = artifact.status.as_deref().unwrap_or("draft");
-    let mut hints_vec: Vec<Hint> = Vec::new();
-    if status == "draft" {
-        hints_vec.push(
-            Hint::suggestion("Validate after filling MUST sections").with_action(format!(
-                "forgeplan validate {}",
-                artifact
-                    .display_id
-                    .as_deref()
-                    .unwrap_or(&artifact.canonical_key)
-            )),
-        );
-    }
-
-    if json {
-        let json_data = serde_json::json!({
-            "id": artifact.display_id.clone().unwrap_or_else(|| artifact.canonical_key.clone()),
-            "canonical_key": artifact.canonical_key,
-            "slug": artifact.source_path,
-            "kind": artifact.kind,
-            "status": artifact.status,
-            "title": artifact.title,
-            "depth": null,
-            "author": null,
-            "parent_epic": null,
-            "valid_until": null,
-            "r_eff": null,
-            "created_at": null,
-            "updated_at": null,
-            "semantic_state": artifact.semantic_state,
-            "generation_id": generation,
-            "body": artifact.body,
-            "links": {
-                "outbound": outbound.iter().map(|(_, t, r)| serde_json::json!({"target": t, "relation": r})).collect::<Vec<_>>(),
-                "inbound": inbound.iter().map(|(f, _, r)| serde_json::json!({"source": f, "relation": r})).collect::<Vec<_>>(),
-            },
-            "index": "constellation",
-            "_next_action": hints::primary_action(&hints_vec),
-        });
-        println!("{}", serde_json::to_string_pretty(&json_data)?);
-        return Ok(());
-    }
-
-    let shown_id = artifact
-        .display_id
-        .clone()
-        .unwrap_or_else(|| artifact.canonical_key.clone());
-    ui::header(&shown_id, &artifact.title);
-    if let Some(kind) = &artifact.kind {
-        ui::kv("Kind", kind);
-    }
-    if let Some(s) = &artifact.status {
-        ui::kv("Status", &ui::styled_status(s));
-    }
-    if let Some(state) = &artifact.semantic_state {
-        ui::kv("Semantic", state);
-    }
-    ui::kv("Generation", &generation);
-    if !has_links {
-        ui::kv("Links", "none");
-    } else {
-        if !outbound.is_empty() {
-            let out: Vec<String> = outbound
-                .iter()
-                .map(|(_, t, r)| format!("{t} ({r})"))
-                .collect();
-            ui::kv("Links out", &out.join(", "));
-        }
-        if !inbound.is_empty() {
-            let inc: Vec<String> = inbound
-                .iter()
-                .map(|(f, _, r)| format!("{f} ({r})"))
-                .collect();
-            ui::kv("Links in", &inc.join(", "));
-        }
-    }
-    println!();
-    if let Some(body) = &artifact.body {
-        println!("{body}");
-    }
 
     if !hints_vec.is_empty() {
         print!("{}", hints::format_hints(&hints_vec));

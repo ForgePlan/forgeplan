@@ -1,5 +1,5 @@
 use forgeplan_core::artifact::sanitize::sanitize_for_hint;
-use forgeplan_core::db::store::NewArtifact;
+use forgeplan_core::db::store::{LanceStore, NewArtifact};
 use forgeplan_core::fpf::contexts;
 use forgeplan_core::fpf::core::adi::AdiRecord;
 use forgeplan_core::hints::{self, Hint};
@@ -18,6 +18,26 @@ Architecture: forgeplan-core (shared library) + forgeplan-cli + forgeplan-mcp. \
 Driver traits: StorageDriver, EmbedDriver, MemoryDriver, LlmDriver. \
 Embedding: local BGE-M3 via fastembed (no API needed). \
 Files in .forgeplan/ are authoritative, LanceDB syncs from them.";
+
+/// FPF sections for the ADI prompt, from whichever knowledge source this
+/// workspace has.
+///
+/// The FPF corpus lives in the legacy `fpf_spec` table, which a
+/// constellation-migrated workspace has retired. Rather than reopen a retired
+/// table to enrich one prompt, the migrated path answers "no context" — the
+/// ADI run proceeds with strictly less input, which the caller's
+/// `ctx.is_some()` branch already reports honestly ("No FPF sections
+/// found").
+async fn fpf_context_for(
+    store: &Option<LanceStore>,
+    title: &str,
+    body: &str,
+) -> anyhow::Result<Option<String>> {
+    match store {
+        Some(store) => reason::build_fpf_context(store, title, body).await,
+        None => Ok(None),
+    }
+}
 
 /// Load architecture hint: .forgeplan/prompts/architecture.md if exists, else default.
 fn load_architecture_hint() -> String {
@@ -39,7 +59,15 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
     // only for the brief save block. Otherwise every concurrent CLI
     // mutation in a multi-agent workspace would time out at the 30 s
     // default lock timeout.
-    let (_ws, store) = common::open_store().await?;
+    //
+    // On a constellation-migrated workspace there is no legacy store to
+    // open lock-free: the read source is a fresh capture, and the write
+    // block below re-acquires the workspace lock through the tolerant
+    // helper like every other mutator.
+    let (ws, lock_free_store) = match common::open_store_tolerating_constellation().await? {
+        (ws, Some(store)) => (ws, Some(store)),
+        (ws, None) => (ws, None),
+    };
 
     // PRD-071 hint contract + PRD-077 FR-008: when LLM is unavailable, emit a
     // structured `Fix:` line so the agent has a deterministic next step.
@@ -61,36 +89,84 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         }
     };
     // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    let id = store
-        .resolve_id(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
-    let id = id.as_str();
-    let record = store.get_record(id).await?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Artifact '{}' not found\n\
-             Fix: forgeplan list",
-            id
-        )
-    })?;
+    //
+    // The record and relation set are resolved through
+    // whichever read source this workspace has: the legacy store, or a fresh
+    // capture on a migrated workspace. The record shape is identical either
+    // way (`ArtifactRecord`), so nothing downstream branches on layout.
+    let (record, raw_relations) = match &lock_free_store {
+        Some(store) => {
+            let id = store
+                .resolve_id(id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+            let record = store.get_record(&id).await?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Artifact '{}' not found\n\
+                     Fix: forgeplan list",
+                    id
+                )
+            })?;
+            let relations = store.get_relations(&record.id).await.unwrap_or_default();
+            (record, relations)
+        }
+        None => {
+            let read = common::workspace_read(&ws).await?;
+            let canonical = read
+                .resolve_id(id)
+                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+            let record = read.get_record(&canonical).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Artifact '{}' not found\n\
+                     Fix: forgeplan list",
+                    canonical
+                )
+            })?;
+            let relations = read.get_relations(&record.id);
+            (record, relations)
+        }
+    };
 
-    // Build artifact context from store metadata, enriching relations with titles
-    let raw_relations = store.get_relations(&record.id).await.unwrap_or_default();
+    // Build artifact context from store metadata, enriching relations with titles.
+    //
+    // ONE capture for the whole loop: `workspace_read` walks the entire
+    // workspace, so re-capturing per relation would make the prompt cost
+    // scale with the edge count and could answer from different bytes at
+    // different moments.
+    let migrated_read = if lock_free_store.is_none() {
+        Some(common::workspace_read(&ws).await?)
+    } else {
+        None
+    };
     let mut relations = Vec::with_capacity(raw_relations.len());
     for (target_id, rel_type) in &raw_relations {
-        let title = store
-            .get_record(target_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|r| r.title)
-            .unwrap_or_default();
+        let title = match (&lock_free_store, &migrated_read) {
+            (Some(store), _) => store
+                .get_record(target_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|r| r.title)
+                .unwrap_or_default(),
+            (None, Some(read)) => read
+                .get_record(target_id)
+                .map(|r| r.title.clone())
+                .unwrap_or_default(),
+            (None, None) => String::new(),
+        };
         relations.push((target_id.clone(), rel_type.clone(), title));
     }
     // Detect bounded context for this artifact
-    let bounded_context = contexts::detect_for_artifact(&store, &record.id)
-        .await
-        .unwrap_or(None);
+    let bounded_context = match &lock_free_store {
+        Some(store) => contexts::detect_for_artifact(store, &record.id)
+            .await
+            .unwrap_or(None),
+        // Bounded-context detection walks the legacy relation table; on a
+        // migrated workspace that table is retired, so the ADI prompt runs
+        // without that extra context rather than reopening a retired
+        // projection to compute it.
+        None => None,
+    };
 
     let artifact_context = ArtifactContext {
         status: record.status.clone(),
@@ -103,7 +179,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
 
     // Build FPF context if requested
     let fpf_context = if fpf {
-        match reason::build_fpf_context(&store, &record.title, &record.body).await {
+        match fpf_context_for(&lock_free_store, &record.title, &record.body).await {
             Ok(ctx) => {
                 if ctx.is_some() {
                     println!("  FPF context injected into ADI prompt");
@@ -300,74 +376,113 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         // Re-open under the workspace lock for the brief write phase.
         // Drops the lock-free `store` first, then acquires the locked
         // store + lock guard scoped to this block only.
-        drop(store);
-        let (ws, _lock, store) = common::open_store_locked().await?;
-        let note_id = store.next_id("NOTE").await?;
+        //
+        // On a migrated workspace the tolerant helper returns `None` for the
+        // store and the note id is allocated from the canonical markdown,
+        // so neither half of this write touches the retired index.
+        drop(lock_free_store);
+        let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
-        // Convert LLM output to structured AdiRecord
-        let adi_record = if adi_output.raw_markdown.is_none() {
-            let model_name = format!("{}/{}", llm_config.provider, llm_config.model);
-            Some(AdiRecord::from_adi_output(
-                note_id.clone(),
-                record.id.clone(),
-                model_name,
-                &adi_output,
-            ))
-        } else {
-            None
+        // Convert LLM output to structured AdiRecord. The closure owns its
+        // inputs because the id-alloc path may invoke it more than once.
+        let adi_source = adi_output.clone();
+        let target_id = record.id.clone();
+        let kind_label = record.kind.clone();
+        let raw_analysis = analysis.clone();
+        let model_name = format!("{}/{}", llm_config.provider, llm_config.model);
+        let build = move |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
+            let adi_record = if adi_source.raw_markdown.is_none() {
+                Some(AdiRecord::from_adi_output(
+                    id.to_string(),
+                    target_id.clone(),
+                    model_name.clone(),
+                    &adi_source,
+                ))
+            } else {
+                None
+            };
+
+            let note_title = format!("ADI analysis of {}", target_id);
+            let note_body = if let Some(adi_rec) = &adi_record {
+                // Structured: AdiRecord JSON + readable summary
+                format!(
+                    "# ADI Record: {}\n\n\
+                     **Artifact**: {} ({})\n\
+                     **Model**: {}\n\
+                     **Hypotheses**: {}\n\
+                     **Confidence**: {}\n\
+                     **Recommendation**: {}\n\n\
+                     ## Structured Data\n\n\
+                     ```json\n{}\n```",
+                    adi_rec.id,
+                    adi_rec.artifact_id,
+                    kind_label,
+                    adi_rec.model,
+                    adi_rec.hypotheses.len(),
+                    adi_rec.confidence,
+                    adi_rec.recommendation,
+                    adi_rec.to_json_body(),
+                )
+            } else {
+                // Fallback: raw markdown
+                raw_analysis.clone()
+            };
+
+            Ok(NewArtifact {
+                id: id.to_string(),
+                kind: "note".to_string(),
+                status: "draft".to_string(),
+                title: note_title,
+                body: note_body,
+                depth: "tactical".to_string(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                // C1: ADI reasoning notes are untagged; the `informs` link
+                // carries provenance.
+                tags: Vec::new(),
+            })
         };
 
-        let note_title = format!("ADI analysis of {}", record.id);
-        let note_body = if let Some(ref adi_rec) = adi_record {
-            // Structured: AdiRecord JSON + readable summary
-            let summary = format!(
-                "# ADI Record: {}\n\n\
-                 **Artifact**: {} ({})\n\
-                 **Model**: {}\n\
-                 **Hypotheses**: {}\n\
-                 **Confidence**: {}\n\
-                 **Recommendation**: {}\n\n\
-                 ## Structured Data\n\n\
-                 ```json\n{}\n```",
-                adi_rec.id,
-                adi_rec.artifact_id,
-                record.kind,
-                adi_rec.model,
-                adi_rec.hypotheses.len(),
-                adi_rec.confidence,
-                adi_rec.recommendation,
-                adi_rec.to_json_body(),
-            );
-            summary
-        } else {
-            // Fallback: raw markdown
-            analysis.clone()
+        let note_id = match &store {
+            Some(store) => {
+                let note_id = store.next_id("NOTE").await?;
+                let artifact = build(&note_id, 0)?;
+                // PRD-073 file-first: helpers handle projection writes for
+                // both the new note and the bidirectional link rendering.
+                let ctx = projection::MutationContext::new(&ws, &lock, Some(store));
+                projection::create_artifact_with_projection(&ctx, &artifact).await?;
+                note_id
+            }
+            None => {
+                let allocated =
+                    forgeplan_core::artifact::id_alloc::allocate_and_create_artifact_file_first(
+                        &ws,
+                        &lock,
+                        &forgeplan_core::artifact::types::ArtifactKind::Note,
+                        3,
+                        &build,
+                    )
+                    .await?;
+                allocated.id
+            }
         };
 
-        let new_artifact = NewArtifact {
-            id: note_id.clone(),
-            kind: "note".to_string(),
-            status: "draft".to_string(),
-            title: note_title,
-            body: note_body,
-            depth: "tactical".to_string(),
-            author: None,
-            parent_epic: None,
-            valid_until: None,
-            // C1: ADI reasoning notes are untagged; the `informs` link carries provenance.
-            tags: Vec::new(),
-        };
-
-        // PRD-073 file-first: helpers handle projection writes for both
-        // the new note and the bidirectional link rendering.
-        let ctx = projection::MutationContext::new(&ws, &store);
-        projection::create_artifact_with_projection(&ctx, &new_artifact).await?;
+        // The link is written in both layouts through the same helper; a
+        // `None` sink writes it into the note file's `links:` block.
+        let ctx = projection::MutationContext::new(&ws, &lock, store.as_ref());
         projection::add_link_with_projection(&ctx, &note_id, &record.id, "informs").await?;
+
+        if store.is_none() {
+            common::note_constellation_owns_index();
+            drop(lock);
+            common::reconcile_after_file_mutation(&ws).await;
+        }
+
         // SEC-C3 defence-in-depth: `record.id` is the canonical id resolved
-        // from the store but originally sourced from on-disk frontmatter —
-        // sanitize before agent-visible stdout. `note_id` comes from
-        // `store.next_id` (system-generated) but uniform-treatment keeps
-        // the contract simple.
+        // from the workspace but originally sourced from on-disk frontmatter —
+        // sanitize before agent-visible stdout. `note_id` is
+        // system-generated but uniform-treatment keeps the contract simple.
         println!(
             "  Saved as {} -> linked to {}",
             sanitize_for_hint(&note_id),

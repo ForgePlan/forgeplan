@@ -64,6 +64,7 @@ pub mod runtime;
 pub mod snapshot;
 pub mod storage;
 pub mod view;
+pub mod workspace_read;
 
 mod durability;
 mod owner;

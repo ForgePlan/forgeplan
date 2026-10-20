@@ -3,6 +3,7 @@
 //! Draft → Active → Superseded/Deprecated
 //! Each transition has validation gates.
 
+pub mod canonical;
 pub mod transitions;
 
 use crate::db::store::LanceStore;
@@ -146,14 +147,35 @@ pub async fn collect_activation_gates(
     store: &LanceStore,
     record: &crate::db::store::ArtifactRecord,
 ) -> anyhow::Result<GatesReport> {
+    let outgoing = store.get_relations(&record.id).await.unwrap_or_default();
+    let incoming = store
+        .get_incoming_relations(&record.id)
+        .await
+        .unwrap_or_default();
+    Ok(activation_gates_from(record, &outgoing, &incoming))
+}
+
+/// The gate evaluation itself, over edges the CALLER already observed.
+///
+/// Deliberately not taking a store: the rule set (length / evidence / stub)
+/// must be one implementation whether the edges came from `artifacts.lance` or
+/// from a constellation capture. Two copies of these three rules is how
+/// `review` and `activate` drift apart — and how a gate silently stops firing
+/// on whichever layout nobody tested. See
+/// [`crate::lifecycle::canonical::collect_activation_gates_captured`].
+pub fn activation_gates_from(
+    record: &crate::db::store::ArtifactRecord,
+    outgoing: &[(String, String)],
+    incoming: &[(String, String)],
+) -> GatesReport {
     // Lightweight kinds skip gates entirely.
     if !supports_lifecycle(&record.kind) {
-        return Ok(GatesReport {
+        return GatesReport {
             length_ok: true,
             evidence_ok: true,
             stub_ok: true,
             ..Default::default()
-        });
+        };
     }
 
     // 1. Length gate — body too short = MUST sections not filled.
@@ -168,12 +190,7 @@ pub async fn collect_activation_gates(
     };
 
     // 2. Evidence gate — no evidence linked = blind spot.
-    let relations = store.get_relations(&record.id).await.unwrap_or_default();
-    let incoming = store
-        .get_incoming_relations(&record.id)
-        .await
-        .unwrap_or_default();
-    let has_evidence = relations
+    let has_evidence = outgoing
         .iter()
         .any(|(_, r)| r == "informs" || r == "supports")
         || incoming
@@ -210,14 +227,14 @@ pub async fn collect_activation_gates(
         )
     });
 
-    Ok(GatesReport {
+    GatesReport {
         length_ok,
         length_msg,
         evidence_ok,
         evidence_msg,
         stub_ok,
         stub_msg,
-    })
+    }
 }
 
 /// Review an artifact: run validation and check lifecycle warnings.
@@ -272,7 +289,7 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
     }
 
     Ok(ReviewResult {
-        artifact_id: artifact_id.to_string(),
+        artifact_id: record.id.clone(),
         can_activate: must_findings.is_empty() && gates.all_pass(),
         must_findings,
         should_findings,
@@ -340,34 +357,14 @@ pub async fn activate(
     // collect_activation_gates runs length, evidence, and stub checks (incl. PRD-043 FR-003).
     let gates = collect_activation_gates(store, &record).await?;
     if !gates.all_pass() && !force {
-        let errs = gates.errors();
-        let mut msg = format!("Cannot activate {artifact_id}: methodology gates failed:");
-        for e in &errs {
-            msg.push_str(&format!("\n  - {e}"));
-        }
-
-        // Issue #294: teach the canonical fix order in the error message
-        // itself so operators don't reach for --force as a shortcut. The
-        // "no evidence" case has a well-known 5-step recipe; surface it
-        // verbatim when that gate failed. Other gate failures still get
-        // the generic --force hint (they're per-artifact problems with
-        // no universal recipe — short body, stub markers, etc.).
-        let evidence_gate_failed = errs.iter().any(|e| e.contains("No evidence linked"));
-        if evidence_gate_failed {
-            msg.push_str(&format!(
-                "\n\nCanonical fix order (no evidence yet):\n  \
-                 1. forgeplan_new(kind=\"evidence\", title=\"<verification title>\")\n  \
-                 2. forgeplan_update(id=<EVID-ID>, body=\"<verdict + congruence_level + evidence_type>\")\n  \
-                 3. forgeplan_link(source=<EVID-ID>, target={artifact_id}, relation=\"informs\")\n  \
-                 4. forgeplan_activate(id=<EVID-ID>)\n  \
-                 5. forgeplan_activate(id={artifact_id})  # now succeeds\n\
-                 \n\
-                 Or use --force to bypass (not recommended — leaves R_eff=0)."
-            ));
-        } else {
-            msg.push_str("\n\nUse --force to override (not recommended).");
-        }
-        anyhow::bail!("{msg}");
+        // Issue #294: the refusal itself teaches the canonical fix order, so
+        // operators don't reach for --force as a shortcut. Shared with the
+        // canonical (file-first) path via `canonical::activation_gate_message`
+        // — one recipe, whichever layout the operator is on.
+        anyhow::bail!(
+            "{}",
+            canonical::activation_gate_message(artifact_id, &gates.errors())
+        );
     }
 
     // Must pass validation before activation (unless --force).
@@ -523,12 +520,18 @@ pub struct RenewResult {
 }
 
 /// Sanitize user-provided reason: strip newlines (prevent markdown injection), limit length.
-fn sanitize_reason(reason: &str) -> String {
+///
+/// `pub(super)` so canonical `renew` and `reopen` reuse this rule. The
+/// `deprecate` handlers currently write the supplied reason unchanged.
+pub(super) fn sanitize_reason(reason: &str) -> String {
     reason.trim().replace('\n', " ").chars().take(500).collect()
 }
 
 /// Validate date format (YYYY-MM-DD). Returns parsed date or error.
-fn validate_date(date_str: &str) -> anyhow::Result<chrono::NaiveDate> {
+///
+/// `pub(super)` for the same reason as [`sanitize_reason`] — `renew` must not
+/// accept a date on one layout that the other layout rejects.
+pub(super) fn validate_date(date_str: &str) -> anyhow::Result<chrono::NaiveDate> {
     chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
         .map_err(|_| anyhow::anyhow!("Invalid date format: '{}'. Expected YYYY-MM-DD", date_str))
 }

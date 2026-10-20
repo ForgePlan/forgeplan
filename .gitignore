@@ -157,3 +157,7 @@ log_*.md
 
 # tgrep trigram index + server state — generated locally, never committed.
 .tgrep/
+
+# Python bytecode from the eval harness.
+__pycache__/
+*.pyc

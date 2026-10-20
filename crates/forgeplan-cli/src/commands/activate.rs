@@ -7,7 +7,17 @@ use forgeplan_core::workspace;
 use crate::commands::common;
 
 pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    // The activation gates need the artifact's relation graph. On a migrated
+    // workspace that graph lives in the canonical Markdown (each artifact's
+    // `links:` block), captured by `WorkspaceRead` — so the gates run over
+    // exactly the bytes that are the source of truth, and the status flip is
+    // a file-first write. Nothing here opens a retired table; `open_store_locked_tolerating_constellation`
+    // decides the index owner BEFORE any store open, from the filesystem.
+    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
+
+    let Some(store) = store else {
+        return run_file_first(ws, _lock, id, force).await;
+    };
 
     // PROB-060 / SPEC-005 Phase 1.5b — accept slug or display id.
     // Resolve once at the top; propagate canonical id throughout so
@@ -153,5 +163,105 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     // Session: reset to Idle after successful activation
     common::advance_session(forgeplan_core::session::Phase::Idle, None);
 
+    Ok(())
+}
+
+/// File-first `activate` for a constellation-migrated workspace.
+///
+/// Same transition, same gates, same `--force` escape as the store path —
+/// `lifecycle::canonical::activate_captured` runs the shared rule set over the
+/// captured graph and commits the status flip through the canonical Markdown.
+/// The store-backed extras (cached-R_eff recompute, change_log row) have no
+/// counterpart here and are named rather than faked.
+async fn run_file_first(
+    ws: std::path::PathBuf,
+    lock: forgeplan_core::workspace::lock::WorkspaceLock,
+    id: &str,
+    force: bool,
+) -> anyhow::Result<()> {
+    let read = common::workspace_read(&ws).await?;
+    let canonical = read
+        .resolve_id(id)
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+
+    // Capture the pre-transition status from the same view the gates read, so
+    // the reported `draft → active` cannot disagree with what was validated.
+    let old_status = read
+        .get_record(&canonical)
+        .map(|r| r.status.clone())
+        .unwrap_or_else(|| "draft".to_string());
+
+    // #360 / PRD-082: the provenance gate is a pure body+workspace check —
+    // no store involved — so it runs identically on both layouts. `force`
+    // bypasses it, exactly as the store path does.
+    if !force && let Some(record) = read.get_record(&canonical) {
+        let mode = workspace::load_config(&ws)
+            .map(|c| GateMode::from_config(&c.integrity.evidence_provenance_gate))
+            .unwrap_or(GateMode::Warn);
+        match provenance::evaluate_provenance_gate(&record.body, &ws, mode) {
+            GateDecision::Pass => {}
+            GateDecision::Warn(msg) => eprintln!("  ⚠ {msg}"),
+            GateDecision::Block(msg) => {
+                return Err(anyhow::anyhow!(
+                    "{msg}\nFix: correct the claim (base_sha/result_sha/changed_paths) \
+                     or activate with --force to override the provenance gate"
+                ));
+            }
+        }
+    }
+
+    // Scoped so the context's borrow of the lock guard ends before the
+    // reconcile pass below — that pass re-acquires the same lock.
+    let result = {
+        let ctx = projection::MutationContext::new(&ws, &lock, None);
+        forgeplan_core::lifecycle::canonical::activate_captured(&ctx, &read, &canonical, force)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
+    };
+
+    let ref_form = forgeplan_core::lifecycle::canonical::refs_form(&read, &canonical);
+    let has_evidence = read
+        .get_relations(&canonical)
+        .iter()
+        .chain(read.get_incoming_relations(&canonical).iter())
+        .any(|(t, _)| t.to_uppercase().starts_with("EVID-"));
+    let kind: forgeplan_core::artifact::types::ArtifactKind = read
+        .get_record(&canonical)
+        .and_then(|r| r.kind.parse().ok())
+        .unwrap_or(forgeplan_core::artifact::types::ArtifactKind::Note);
+
+    common::note_constellation_owns_index();
+    // Lock released before reconcile — see `common::reconcile_after_file_mutation`.
+    drop(lock);
+    let published = common::reconcile_after_file_mutation(&ws).await;
+
+    println!("  Activated {canonical} ({old_status} → active)");
+    if result.forced {
+        println!(
+            "  Warning: Activated with {} validation error{}",
+            result.must_errors.len(),
+            if result.must_errors.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
+    }
+
+    let emitted = forgeplan_core::hints::activate_hints(&ref_form, true, has_evidence, &kind);
+    if !emitted.is_empty() {
+        print!("{}", forgeplan_core::hints::format_hints(&emitted));
+    }
+    let next_hints: Vec<Hint> = match hints::primary_action(&emitted) {
+        Some(action) => vec![Hint::info("activation hint").with_action(action)],
+        None => vec![hints::reconcile_parents_hint()],
+    };
+    print!("{}", hints::render_next_action_line(&next_hints));
+
+    if !published {
+        println!("  ! derived index not yet updated");
+    }
+
+    common::advance_session(forgeplan_core::session::Phase::Idle, None);
     Ok(())
 }

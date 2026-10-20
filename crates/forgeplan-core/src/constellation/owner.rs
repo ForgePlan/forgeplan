@@ -376,7 +376,12 @@ pub(crate) fn acquire_owner(
 /// `flock` reports `EWOULDBLOCK` on unix and `LockFileEx` reports sharing
 /// violations on Windows; both are "somebody else has it", never "this index
 /// is broken". Anything else is a genuine I/O failure.
-fn is_contended(error: &std::io::Error) -> bool {
+///
+/// `pub(crate)` because a pinned reader and GC classify lock failures with
+/// the same rule — see [`super::storage::pin_generation_read`]. Two copies of
+/// this predicate would be two chances to disagree about whether a busy lock
+/// is contention or corruption.
+pub(crate) fn is_contended(error: &std::io::Error) -> bool {
     if error.kind() == std::io::ErrorKind::WouldBlock {
         return true;
     }

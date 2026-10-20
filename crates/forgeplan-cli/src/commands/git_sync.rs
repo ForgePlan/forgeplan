@@ -5,6 +5,22 @@ use forgeplan_core::projection;
 
 use crate::commands::common;
 
+/// Run the reconcile pass only on a workspace the constellation protocol
+/// already owns.
+///
+/// `git-sync` is an ordinary maintenance command that runs after `git pull`.
+/// Calling [`common::reconcile_and_drain`] unconditionally would migrate a
+/// legacy workspace as a side effect of a pull: it renames the legacy tables
+/// to `*.legacy-backup.lance` and publishes a generation. That is a one-way
+/// door the operator never asked for, and it cannot be undone from the CLI.
+/// Migration stays where it was asked for by name — `forgeplan index`.
+async fn reconcile_if_constellation_owned(ws: &std::path::Path) -> anyhow::Result<()> {
+    if common::index_migrated(ws) {
+        common::reconcile_and_drain(ws, "git-sync").await?;
+    }
+    Ok(())
+}
+
 /// `forgeplan git-sync [--since <ref>]` — sync artifact changes from git operations.
 ///
 /// Detects .forgeplan/ files changed since a git ref (default: ORIG_HEAD from last pull/merge)
@@ -51,8 +67,11 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
             "  No .forgeplan/ files changed since {}.",
             since_ref.chars().take(10).collect::<String>()
         );
-        // The diff can be empty while a previous run left pending vectors.
-        common::reconcile_and_drain(&ws, "git-sync").await?;
+        // An empty diff can still leave pending vectors behind — but only on a
+        // workspace the protocol already owns. Reconciling a legacy workspace
+        // here would migrate it as a side effect of an ordinary `git pull`,
+        // which is not what the operator asked for.
+        reconcile_if_constellation_owned(&ws).await?;
         println!("\nDone.");
         return Ok(());
     }
@@ -77,6 +96,13 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
     let mut deleted = 0usize;
     let mut errors = 0usize;
 
+    // The per-file writes below mutate the derived index, so they run under
+    // the workspace lock. The guard is scoped to the loop and released
+    // before `reconcile_and_drain` below, because that pass re-acquires the
+    // same lock per storage commit and a still-held guard would deadlock it
+    // for the full 30 s timeout.
+    let _lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await?;
+
     for file in &changed {
         let full_path = repo_root.join(&file.path);
 
@@ -87,7 +113,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                     && store.get_record(&id).await?.is_some()
                 {
                     projection::delete_orphan_artifact(
-                        &projection::MutationContext::new(&ws, &store),
+                        &projection::MutationContext::new(&ws, &_lock, Some(&store)),
                         &id,
                     )
                     .await?;
@@ -141,7 +167,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                         // Existing artifact — update body if changed
                         if record.body.trim() != body.trim() {
                             projection::sync_body_from_file(
-                                &projection::MutationContext::new(&ws, &store),
+                                &projection::MutationContext::new(&ws, &_lock, Some(&store)),
                                 &id,
                                 &record.kind,
                                 &record.title,
@@ -153,7 +179,11 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                                 let status_lower = status.to_lowercase();
                                 if record.status != status_lower {
                                     projection::sync_metadata_from_file(
-                                        &projection::MutationContext::new(&ws, &store),
+                                        &projection::MutationContext::new(
+                                            &ws,
+                                            &_lock,
+                                            Some(&store),
+                                        ),
                                         &id,
                                         Some(&status_lower),
                                         None,
@@ -196,7 +226,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                         };
 
                         projection::sync_artifact_from_file(
-                            &projection::MutationContext::new(&ws, &store),
+                            &projection::MutationContext::new(&ws, &_lock, Some(&store)),
                             &artifact,
                         )
                         .await?;
@@ -216,7 +246,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                             && !existing.iter().any(|(et, er)| et == t && er == r)
                         {
                             let _ = projection::sync_relation_from_file(
-                                &projection::MutationContext::new(&ws, &store),
+                                &projection::MutationContext::new(&ws, &_lock, Some(&store)),
                                 &id,
                                 t,
                                 r,
@@ -260,7 +290,9 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
 
     // One reconcile for the whole sync, not one per changed file. The capture
     // reads the entire workspace, so batching is what keeps N files in one
-    // commit from becoming N publications.
+    // commit from becoming N publications. The workspace lock taken for the
+    // per-file writes above is released first — `reconcile_and_drain`
+    // re-acquires it per storage commit.
     //
     // Signatures:
     //   `MaintainCapability::for_strict_maintenance(impl Into<PathBuf>)`
@@ -272,7 +304,11 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
     // The capability takes the **canonical** workspace path: identity is
     // scheme-independent, and a non-canonical path would be a different
     // physical index and a different owner lock.
-    common::reconcile_and_drain(&ws, "git-sync").await?;
+    drop(_lock);
+    // Legacy workspaces keep their legacy writer: an ordinary `git pull` must
+    // not migrate the index as a side effect. Only a workspace the protocol
+    // already owns gets a reconcile pass here.
+    reconcile_if_constellation_owned(&ws).await?;
 
     println!(
         "\nGit sync complete: {} synced, {} deleted, {} errors (commit {})",

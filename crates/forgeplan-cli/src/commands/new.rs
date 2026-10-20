@@ -214,10 +214,15 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
             tags: Vec::new(),
         })
     };
+    // `_lock` is the workspace lock this command already holds for the whole
+    // mutation. It is threaded into id_alloc so the canonical markdown
+    // write happens under that same serialization — NOT the per-kind
+    // id-alloc lock id_alloc takes internally, which guards a different
+    // thing on a different lock file.
     let allocated = match &store {
         Some(store) => {
             forgeplan_core::artifact::id_alloc::allocate_and_create_artifact(
-                &workspace, store, &kind, 3, &build,
+                &workspace, &_lock, store, &kind, 3, &build,
             )
             .await
         }
@@ -225,7 +230,7 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         // Reconcile (right below) publishes the derived row immediately.
         None => {
             forgeplan_core::artifact::id_alloc::allocate_and_create_artifact_file_first(
-                &workspace, &kind, 3, &build,
+                &workspace, &_lock, &kind, 3, &build,
             )
             .await
         }

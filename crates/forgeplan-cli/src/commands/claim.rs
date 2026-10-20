@@ -8,9 +8,10 @@
 
 use chrono::Duration;
 use forgeplan_core::claim::{self, ClaimError, ClaimStore, DEFAULT_TTL};
-use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::workspace;
+
+use crate::commands::common;
 
 const MAX_TTL_MINUTES: u32 = 1440; // 24 h — matches claim::MAX_TTL.
 
@@ -35,33 +36,39 @@ pub async fn run(
     json: bool,
 ) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
+    workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
     // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id so
-    // operators / agents can claim with whichever form they have on hand
-    // (e.g. fresh slug pre-merge, display number post-merge). Resolver is
-    // best-effort: if the artifact isn't in LanceDB yet (cross-PR
-    // forward-reference), fall back to raw input mirroring `link`.
-    let lance = LanceStore::open(&ws).await?;
-    let canonical = lance.resolve_id(id).await?;
-    let id_owned: String;
-    let id: &str = if let Some(c) = canonical {
-        id_owned = c;
-        id_owned.as_str()
+    // operators / agents can claim with whichever form they have on hand.
+    // Resolve from the owning source: the legacy store before cutover, one
+    // captured canonical read after it. An unknown forward-reference remains
+    // claimable under its raw input in either layout.
+    let (ws, store) = common::open_store_tolerating_constellation().await?;
+    let (id_owned, ref_form) = if let Some(lance) = store.as_ref() {
+        let id = lance
+            .resolve_id(id)
+            .await?
+            .unwrap_or_else(|| id.to_string());
+        let ref_form = match lance.get_record(&id).await? {
+            Some(rec) => {
+                forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id)
+            }
+            None => id.clone(),
+        };
+        (id, ref_form)
     } else {
-        id
+        let read = common::workspace_read(&ws).await?;
+        let id = read.resolve_id(id).unwrap_or_else(|| id.to_string());
+        let ref_form = read
+            .get_record(&id)
+            .map(|rec| {
+                forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id)
+            })
+            .unwrap_or_else(|| id.clone());
+        (id, ref_form)
     };
-
-    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — pre-compute ref_form
-    // (slug pre-merge / display id post-merge) so every hint emitted from
-    // this command carries the canonical reference for commit `Refs:`.
-    // If the artifact isn't in LanceDB yet (cross-PR forward-reference),
-    // fall back to the raw `id`.
-    let ref_form: String = match lance.get_record(id).await? {
-        Some(rec) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id),
-        None => id.to_string(),
-    };
+    let id = id_owned.as_str();
 
     let agent_str = match agent.map(str::trim).filter(|a| !a.is_empty()) {
         Some(a) => a.to_string(),

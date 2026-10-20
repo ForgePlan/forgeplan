@@ -2,6 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 use console::style;
+use forgeplan_core::db::auxiliary::AuxiliaryStore;
 use forgeplan_core::db::store::{FpfChunk, LanceStore};
 use forgeplan_core::fpf;
 use forgeplan_core::fpf::ext::rules::Rule;
@@ -58,8 +59,11 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
     let chunks = knowledge::ingest_fpf_directory(&fpf_path).await?;
     println!("  Parsed {} sections", chunks.len());
 
-    // Use init() to ensure fpf_spec table exists
-    let store = LanceStore::init(&ws).await?;
+    // Only the `fpf_spec` table is this command's to create. `LanceStore::init`
+    // would also create `artifacts`/`evidence`/`relations`, which the
+    // constellation protocol retired on this workspace — recreating them puts a
+    // shadow index beside the real one that no later step can remove.
+    let store = AuxiliaryStore::open_or_create(&ws).await?;
 
     // Clear existing FPF data and re-ingest
     if store.has_fpf() {
@@ -156,7 +160,7 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
 /// so tests can assert on which failure mode was hit.
 #[cfg_attr(not(feature = "semantic-search"), allow(dead_code))]
 pub async fn try_semantic_search<F>(
-    store: &LanceStore,
+    store: &AuxiliaryStore,
     query: &str,
     limit: usize,
     encoder: F,
@@ -190,9 +194,9 @@ pub async fn run_search(query: &str, limit: usize, semantic: bool) -> anyhow::Re
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    let store = LanceStore::open(&ws).await?;
-
-    // PRD-042 FR-003: Semantic search with graceful fallback to keyword.
+    // Read-only: never create the table. A workspace that never ingested has
+    // to answer "nothing found", not gain an empty KB as a side effect.
+    let store = AuxiliaryStore::open_existing(&ws).await?;
     // Sprint 13.7 wave 2 C2: match MCP parity — ANY runtime failure in the
     // semantic path (embedder init, encode, vector search) degrades to
     // keyword search with a warning on stderr instead of bubbling up.
@@ -200,9 +204,15 @@ pub async fn run_search(query: &str, limit: usize, semantic: bool) -> anyhow::Re
         #[cfg(feature = "semantic-search")]
         {
             let encoder = |q: &str| -> anyhow::Result<Vec<f32>> {
-                let mut embedder = forgeplan_core::embed::Embedder::new()
-                    .map_err(|e| anyhow::anyhow!("failed to initialize embedder: {e}"))?;
-                embedder
+                // Cached-only, verified snapshot: a search must never be the
+                // thing that starts a 2.1 GB download. Ingest is where weights
+                // are obtained; a query reads what ingest left behind.
+                let mut model = forgeplan_core::embed::CachedSnapshot::open(
+                    forgeplan_core::constellation::jobs::DEFAULT_MODEL_NAME,
+                )
+                .map_err(|e| anyhow::anyhow!("failed to open the cached model: {e}"))?;
+                model
+                    .embedder
                     .embed(q)
                     .map_err(|e| anyhow::anyhow!("failed to encode query: {e}"))
             };
@@ -280,7 +290,7 @@ pub async fn run_section(id: &str, summary: bool) -> anyhow::Result<()> {
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    let store = LanceStore::open(&ws).await?;
+    let store = AuxiliaryStore::open_existing(&ws).await?;
     let chunk = store
         .get_fpf_section(id)
         .await?
@@ -343,7 +353,7 @@ pub async fn run_status() -> anyhow::Result<()> {
     }
 
     // Check ingested
-    let store = LanceStore::open(&ws).await?;
+    let store = AuxiliaryStore::open_existing(&ws).await?;
     let mut hints_vec: Vec<Hint> = Vec::new();
     if store.has_fpf() {
         let sections = store.list_fpf_sections().await?;
@@ -815,10 +825,12 @@ mod tests {
 
     // ── Sprint 13.7 wave 2 C3: fallback helper tests ────────────
 
-    async fn make_fpf_store() -> (tempfile::TempDir, LanceStore) {
+    /// The knowledge base this command owns — no legacy store, so these tests
+    /// exercise the same path a migrated workspace takes.
+    async fn make_fpf_store() -> (tempfile::TempDir, AuxiliaryStore) {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let store = AuxiliaryStore::open_or_create(&ws).await.unwrap();
         (tmp, store)
     }
 

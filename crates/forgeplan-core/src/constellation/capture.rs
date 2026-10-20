@@ -49,7 +49,7 @@ use super::jobs::{
     DEFAULT_BODY_PREFIX_CHARS, SemanticState, embedding_input_digest, embedding_input_text,
     section_input_digest, section_input_text, section_key,
 };
-use super::manifest::{GenerationManifest, TableVersions};
+use super::manifest::{GenerationManifest, TableVersions, Tombstone};
 use super::owner::{IndexIdentity, IndexLocation};
 use super::{
     ConstellationError, DiagnosticCode, DigestBuilder, SNAPSHOT_DOMAIN, SOURCE_SET_DOMAIN,
@@ -398,6 +398,8 @@ pub struct CapturedSourceView {
     /// length-prefixed sorted `(relativePath, sourceDigest)` pair.
     pub source_set_digest: String,
     pub config_digest: String,
+    /// Prefix budget read from the same confirmed configuration bytes.
+    pub body_prefix_chars: usize,
     /// Parsed artifacts, sorted by canonical key, sharing their bytes by
     /// `Arc`.
     pub artifacts: Vec<Arc<ParsedArtifact>>,
@@ -491,15 +493,63 @@ impl CapturedSourceView {
     }
 }
 
+/// What a capture continues its durable identity from.
+///
+/// Two carriers, one meaning: the **identity records** of the previous
+/// observation. Both spellings answer the same two questions — what did the
+/// last row for this key look like, and was it retired by a confirmed delete?
+///
+/// The distinction is *who holds the record*, not what it means. A read-side
+/// caller keeps the whole previous view in memory. Production has no such
+/// view: the bytes are gone and only the published manifest survives, so its
+/// `source_entries` and `tombstones` are the baseline. Reusing one derivation
+/// for both is the point — two carriers must never become two identity
+/// schemes.
+#[derive(Debug, Clone)]
+pub enum PreviousObservation {
+    /// A previous confirmed capture, held whole.
+    Capture(Arc<CapturedSourceView>),
+    /// The generation manifest `CURRENT` selects.
+    Manifest(Arc<GenerationManifest>),
+}
+
+impl PreviousObservation {
+    /// The rows the previous observation published, by canonical key.
+    pub fn entries(&self) -> &[SourceEntry] {
+        match self {
+            Self::Capture(view) => &view.entries,
+            Self::Manifest(manifest) => &manifest.source_entries,
+        }
+    }
+
+    /// The incarnations a confirmed delete retired, as `(canonical key,
+    /// incarnation)` pairs.
+    ///
+    /// A capture view carries no tombstones of its own: absence is only ever
+    /// *confirmed* by a reconcile that compared two published sets, and the
+    /// manifest is where that verdict is durable. Empty for a view, by
+    /// construction rather than by a default nobody set.
+    pub fn retired(&self) -> impl Iterator<Item = (&str, u64)> {
+        const NONE: &[Tombstone] = &[];
+        let tombstones = match self {
+            Self::Capture(_) => NONE,
+            Self::Manifest(manifest) => manifest.tombstones.as_slice(),
+        };
+        tombstones
+            .iter()
+            .map(|tombstone| (tombstone.canonical_key.as_str(), tombstone.incarnation))
+    }
+}
+
 /// Request for one capture.
 #[derive(Debug, Clone)]
 pub struct CaptureRequest {
     /// The `.forgeplan` directory of the workspace to read.
     pub workspace: PathBuf,
-    /// Previous confirmed capture, used to derive `incarnation` and
+    /// Previous durable observation, used to derive `incarnation` and
     /// `row_revision`. Without it every artifact is observed for the first
     /// time.
-    pub previous: Option<Arc<CapturedSourceView>>,
+    pub previous: Option<PreviousObservation>,
 }
 
 impl CaptureRequest {
@@ -512,7 +562,19 @@ impl CaptureRequest {
 
     /// Attach the previous confirmed capture as the incarnation baseline.
     pub fn with_previous(mut self, previous: Arc<CapturedSourceView>) -> Self {
-        self.previous = Some(previous);
+        self.previous = Some(PreviousObservation::Capture(previous));
+        self
+    }
+
+    /// Attach the published manifest as the incarnation baseline.
+    ///
+    /// This is what production capture uses. Without it every production pass
+    /// re-observed the corpus from nothing: `incarnation` and `row_revision`
+    /// came back as `1` on every run, so a delete followed by a recreate with
+    /// identical bytes reproduced the retired row's identity exactly and the
+    /// splice preserved a vector bound to a document that had been deleted.
+    pub fn with_published_manifest(mut self, manifest: Arc<GenerationManifest>) -> Self {
+        self.previous = Some(PreviousObservation::Manifest(manifest));
         self
     }
 }
@@ -1073,10 +1135,19 @@ fn build_view(
 
     let previous: BTreeMap<&str, &SourceEntry> = match &request.previous {
         Some(prev) => prev
-            .entries
+            .entries()
             .iter()
             .map(|e| (e.canonical_key.as_str(), e))
             .collect(),
+        None => BTreeMap::new(),
+    };
+
+    // What a confirmed delete retired, by canonical key. Only present when a
+    // published manifest is the baseline — a capture view cannot record a
+    // confirmed absence, because absence is a verdict two published sets
+    // produce, not one scan.
+    let retired: BTreeMap<&str, u64> = match &request.previous {
+        Some(prev) => prev.retired().collect(),
         None => BTreeMap::new(),
     };
 
@@ -1107,9 +1178,29 @@ fn build_view(
         // Incarnation changes on a confirmed delete/recreate or a change of
         // path; rowRevision grows when the bytes change. Neither is invented
         // when there is no previous observation to compare against.
+        //
+        // A live previous entry is authoritative: it means the recreate has
+        // already been published, carrying an incarnation that is above
+        // whatever the tombstone retired. Honouring the tombstone then would
+        // bump the identity again on *every* pass and nothing would ever
+        // converge.
+        //
+        // The tombstone is consulted only when the key has no live entry —
+        // which is exactly the state a confirmed delete leaves behind, and
+        // exactly the state in which a byte-identical recreate at the same
+        // path would otherwise reproduce the retired row's
+        // `(incarnation, row_revision)`. `SemanticColumns::is_preserved_for`
+        // compares those very fields, so reproducing them preserves the
+        // deleted document's vector and satisfies its outstanding job. Skipping
+        // past the retired incarnation is what makes the fence real.
         match previous.get(parsed.canonical_key.as_str()) {
             None => {
-                parsed.incarnation = 1;
+                parsed.incarnation = match retired.get(parsed.canonical_key.as_str()) {
+                    Some(retired_incarnation) => {
+                        checked_increment("incarnation", *retired_incarnation)?
+                    }
+                    None => 1,
+                };
                 parsed.row_revision = 1;
             }
             Some(prev) => {
@@ -1216,6 +1307,7 @@ fn build_view(
         evaluated_at,
         source_set_digest,
         config_digest: pass.config_digest,
+        body_prefix_chars: pass.body_prefix_chars,
         artifacts,
         sections,
         entries,
@@ -1297,6 +1389,16 @@ mod tests {
         capture_source(&CaptureRequest::new(root), CaptureLimits::default())
             .await
             .unwrap()
+    }
+
+    /// The generation manifest a capture of this workspace would publish.
+    ///
+    /// This is the shape production capture continues from, so tests that
+    /// exercise the identity baseline build one rather than holding a view —
+    /// holding a view would test the `PreviousObservation::Capture` arm and
+    /// leave the arm every production call site uses unexercised.
+    fn published(captured: &CapturedSourceView) -> GenerationManifest {
+        GenerationManifest::from_capture(captured, "gen-test", TableVersions::new(1, 1))
     }
 
     #[tokio::test]
@@ -1461,6 +1563,192 @@ mod tests {
         .unwrap();
         assert_eq!(after.entries[0].incarnation, 2);
         assert_eq!(after.entries[0].row_revision, 1);
+    }
+
+    /// The published manifest is what production capture continues from, and
+    /// it must carry identity forward exactly as a held capture view does.
+    ///
+    /// Without it every production pass re-derived `incarnation`/`row_revision`
+    /// as `1`, so no edit ever moved `row_revision` and no rename ever moved
+    /// `incarnation` — the two fences the semantic splice and the guarded
+    /// completion both depend on.
+    #[tokio::test]
+    async fn a_published_manifest_baseline_carries_identity_forward() {
+        let tmp = workspace();
+        write_artifact(tmp.path(), "prds", "PRD-001-auth.md", PRD);
+        let first = capture(tmp.path()).await;
+        let manifest = published(&first);
+
+        // An unchanged source reproduces the published identity exactly.
+        let again = capture_source(
+            &CaptureRequest::new(tmp.path()).with_published_manifest(Arc::new(manifest)),
+            CaptureLimits::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(again.entries[0].incarnation, 1);
+        assert_eq!(again.entries[0].row_revision, 1);
+
+        // A byte change moves `row_revision` and holds `incarnation` — the
+        // metadata-only shape whose vector must survive.
+        write_artifact(
+            tmp.path(),
+            "prds",
+            "PRD-001-auth.md",
+            &PRD.replace("status: draft", "status: active"),
+        );
+        let edited = capture_source(
+            &CaptureRequest::new(tmp.path()).with_published_manifest(Arc::new(published(&again))),
+            CaptureLimits::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            edited.entries[0].row_revision, 2,
+            "the bytes moved, so the row revision must too"
+        );
+        assert_eq!(
+            edited.entries[0].incarnation, 1,
+            "a metadata edit is the same document, not a new incarnation"
+        );
+        assert_eq!(
+            edited.entries[0].input_digest, first.entries[0].input_digest,
+            "this is what makes the edit preservable: the tokenizer's input \
+             did not move"
+        );
+
+        // A rename moves `incarnation`, because the row is now at a path the
+        // published generation never described.
+        std::fs::rename(
+            tmp.path().join("prds").join("PRD-001-auth.md"),
+            tmp.path().join("prds").join("PRD-001-moved.md"),
+        )
+        .unwrap();
+        let renamed = capture_source(
+            &CaptureRequest::new(tmp.path()).with_published_manifest(Arc::new(published(&edited))),
+            CaptureLimits::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(renamed.entries[0].incarnation, 2);
+        assert_eq!(renamed.entries[0].row_revision, 1);
+    }
+
+    /// The confirmed-delete/recreate fence: byte-identical content recreated
+    /// at the same path must NOT reproduce the deleted row's identity.
+    ///
+    /// This is the case the missing manifest baseline left open. Without a
+    /// baseline the capture minted `1` for everything, so the recreated
+    /// document came back as `(incarnation 1, row_revision 1)` — the exact
+    /// tuple `SemanticColumns::is_preserved_for` compares, and the exact tuple
+    /// an outstanding `EmbeddingJob` binding carries. The deleted document's
+    /// vector was therefore preserved onto its replacement and its stale
+    /// completion was admitted.
+    #[tokio::test]
+    async fn a_byte_identical_recreate_after_a_confirmed_delete_gets_a_new_incarnation() {
+        let tmp = workspace();
+        write_artifact(tmp.path(), "prds", "PRD-001-auth.md", PRD);
+        let first = capture(tmp.path()).await;
+
+        // The delete is confirmed: the complete capture no longer enumerates
+        // the path, so the reconciler records a tombstone naming the retired
+        // incarnation. That verdict is what the manifest carries forward.
+        std::fs::remove_file(tmp.path().join("prds").join("PRD-001-auth.md")).unwrap();
+        let absent = capture(tmp.path()).await;
+        assert!(
+            absent.entries.is_empty(),
+            "the delete must actually be observed as an absence"
+        );
+        let deleted_generation = {
+            let mut manifest = published(&first);
+            manifest.source_entries = Vec::new();
+            manifest.tombstones = vec![Tombstone {
+                canonical_key: "PRD-001".to_string(),
+                relative_path: "prds/PRD-001-auth.md".to_string(),
+                source_digest: first.entries[0].source_digest.clone(),
+                incarnation: first.entries[0].incarnation,
+                observed_at: absent.evaluated_at.clone(),
+            }];
+            manifest
+        };
+
+        // Byte-identical content, same path, same key. Nothing observable
+        // distinguishes it from the deleted document — only the tombstone.
+        write_artifact(tmp.path(), "prds", "PRD-001-auth.md", PRD);
+        let recreated = capture_source(
+            &CaptureRequest::new(tmp.path()).with_published_manifest(Arc::new(deleted_generation)),
+            CaptureLimits::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(recreated.entries.len(), 1);
+        let entry = &recreated.entries[0];
+        assert_eq!(
+            entry.source_digest, first.entries[0].source_digest,
+            "this test only means something if the bytes are identical"
+        );
+        assert_eq!(
+            entry.incarnation, 2,
+            "the recreate must skip past the incarnation the delete retired"
+        );
+        assert_eq!(
+            entry.row_revision, 1,
+            "a new incarnation starts at its first revision"
+        );
+    }
+
+    /// A key that is still present must not be treated as retired, or every
+    /// edit would be read as a delete/recreate.
+    #[tokio::test]
+    async fn a_live_key_ignores_a_tombstone_that_a_previous_generation_carried() {
+        let tmp = workspace();
+        write_artifact(tmp.path(), "prds", "PRD-001-auth.md", PRD);
+        let first = capture(tmp.path()).await;
+
+        // A manifest that still publishes the row AND carries a tombstone for
+        // it — the state a generation is briefly in after the recreate is
+        // published but before the tombstone is pruned. The live entry is the
+        // truth; the tombstone must not resurrect a second bump.
+        let carried = Tombstone {
+            canonical_key: "PRD-001".to_string(),
+            relative_path: "prds/PRD-001-auth.md".to_string(),
+            source_digest: "an-older-digest".to_string(),
+            incarnation: 1,
+            observed_at: first.evaluated_at.clone(),
+        };
+        let mut manifest = published(&first);
+        manifest.tombstones = vec![carried.clone()];
+
+        let next = capture_source(
+            &CaptureRequest::new(tmp.path()).with_published_manifest(Arc::new(manifest)),
+            CaptureLimits::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            next.entries[0].incarnation, 1,
+            "an unchanged, still-published row keeps the identity it has"
+        );
+
+        // And the reason that matters: once the recreate itself is published,
+        // a *further* pass must not bump it again. A tombstone that keeps
+        // winning over the live entry would make identity climb forever and
+        // the index would never converge.
+        let mut republished = published(&next);
+        republished.tombstones = vec![carried];
+        let stable = capture_source(
+            &CaptureRequest::new(tmp.path()).with_published_manifest(Arc::new(republished)),
+            CaptureLimits::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stable.entries[0].incarnation, 1,
+            "the published entry is authoritative once the recreate is \
+             published; a surviving tombstone must not keep bumping it"
+        );
+        assert_eq!(stable.entries[0].row_revision, 1);
     }
 
     #[tokio::test]

@@ -243,7 +243,13 @@ pub fn find_snapshot(cache_dir: &Path, repo: &str) -> Option<PathBuf> {
 /// parsing. Fetching the graph without the weights produces a directory that
 /// looks present and fails at load, so the list is explicit rather than
 /// discovered.
-const REQUIRED_FILES: &[&str] = &[
+///
+/// `pub` because it is also **the** verification list for cache-only
+/// constructors: [`find_snapshot`] accepts a directory holding
+/// `tokenizer.json` and nothing else, so a half-fetched snapshot from an
+/// interrupted run would otherwise be opened as if it were whole. Every
+/// cached-only open checks this list before constructing an engine.
+pub const REQUIRED_FILES: &[&str] = &[
     "onnx/model.onnx",
     "onnx/model.onnx_data",
     "tokenizer.json",

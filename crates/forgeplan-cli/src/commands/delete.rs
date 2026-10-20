@@ -1,3 +1,4 @@
+use forgeplan_core::db::store::ArtifactRecord;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 use forgeplan_core::undo;
@@ -5,25 +6,47 @@ use forgeplan_core::undo;
 use crate::commands::common;
 
 pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
     // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    let id = store
-        .resolve_id(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
-    let id = id.as_str();
-
-    let record = store.get_record(id).await?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Artifact '{}' not found
+    //
+    // The migrated branch resolves through a fresh capture rather than the
+    // legacy store: the canonical markdown is the source of truth there, and
+    // the derived row is whatever the last reconcile published — which is
+    // behind the bytes by definition after any hand edit.
+    let (record, all_relations) = match &store {
+        Some(store) => {
+            let id = store
+                .resolve_id(id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+            let record = store.get_record(&id).await?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Artifact '{}' not found
 Fix: forgeplan list",
-            id
-        )
-    })?;
+                    id
+                )
+            })?;
+            (record, store.get_all_relations().await?)
+        }
+        None => {
+            let read = common::workspace_read(&ws).await?;
+            let canonical = read
+                .resolve_id(id)
+                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+            let record = read.get_record(&canonical).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Artifact '{}' not found
+Fix: forgeplan list",
+                    canonical
+                )
+            })?;
+            (record, read.get_all_relations())
+        }
+    };
+    let id = record.id.as_str();
 
     // Check for dependents (other artifacts linking TO this one)
-    let all_relations = store.get_all_relations().await?;
     let dependents: Vec<_> = all_relations
         .iter()
         .filter(|(_, target, _)| target.eq_ignore_ascii_case(id))
@@ -60,26 +83,53 @@ Fix: forgeplan list",
         .count();
 
     // PRD-055 + audit follow-up 2026-05-01: capture soft-delete receipt
-    // BEFORE mutating store. Brings CLI into parity with MCP
+    // BEFORE mutating the store. Brings CLI into parity with MCP
     // `forgeplan_delete` which has had soft-delete since release.
     // Receipt holds full snapshot + relations so `forgeplan undo-last`
     // and `forgeplan restore <id>` recover the artifact end-to-end.
-    let receipt_id = undo::soft_delete_capture(
-        &ws,
-        &store,
-        &record,
-        undo::DestructiveOp::Delete,
-        None,
-        None,
-    )
-    .await?;
+    //
+    // The relations come from whichever read source produced `record`, so a
+    // migrated workspace (where `artifacts.lance` is retired and must not be
+    // opened) gets byte-identical receipts instead of no receipts at all.
+    let captured_relations = capture_relations(&record, &all_relations);
+    let receipt_id = match &store {
+        Some(store) => {
+            undo::soft_delete_capture(&ws, store, &record, undo::DestructiveOp::Delete, None, None)
+                .await?
+        }
+        None => {
+            undo::soft_delete_capture_with_relations(
+                &ws,
+                &record,
+                captured_relations,
+                undo::DestructiveOp::Delete,
+                None,
+                None,
+            )
+            .await?
+        }
+    };
 
     // PRD-073 file-first: helper removes the projection file (likely no-op
     // because soft_delete_capture already moved it to trash) then cascades
     // relations and the LanceDB row. Failure mid-flow is recoverable via
     // `forgeplan restore <id>` from the receipt above.
-    projection::delete_artifact_with_projection(&projection::MutationContext::new(&ws, &store), id)
-        .await?;
+    //
+    // With a `None` sink the same helper removes the canonical file and
+    // stops there — the derived row retires on the reconcile pass below.
+    projection::delete_artifact_with_projection(
+        &projection::MutationContext::new(&ws, &lock, store.as_ref()),
+        id,
+    )
+    .await?;
+
+    if store.is_none() {
+        common::note_constellation_owns_index();
+        // Lock released before reconcile — the pass re-acquires it per storage
+        // commit, and a held guard would turn the capture into a 30 s timeout.
+        drop(lock);
+        common::reconcile_after_file_mutation(&ws).await;
+    }
 
     if relation_count > 0 {
         eprintln!("  Removed {} relation(s) involving {}", relation_count, id);
@@ -105,4 +155,38 @@ Fix: forgeplan list",
     print!("{}", hints::render_next_action_line(&hint_list));
 
     Ok(())
+}
+
+/// Edges touching `record`, in the shape the soft-delete receipt stores.
+///
+/// Built from the triple set the caller already holds, so both layouts
+/// capture exactly the same relations — the receipt is a recovery artifact,
+/// and a receipt that silently omitted half the edges would restore an
+/// artifact that no longer knows what it was linked to.
+fn capture_relations(
+    record: &ArtifactRecord,
+    all_relations: &[(String, String, String)],
+) -> Vec<undo::CapturedRelation> {
+    use undo::{CapturedRelation, RelationDirection};
+
+    let mut captured = Vec::new();
+    for (source, target, relation) in all_relations {
+        if source.eq_ignore_ascii_case(&record.id) {
+            captured.push(CapturedRelation {
+                from: record.id.clone(),
+                to: target.clone(),
+                relation: relation.clone(),
+                direction: RelationDirection::Outgoing,
+            });
+        }
+        if target.eq_ignore_ascii_case(&record.id) {
+            captured.push(CapturedRelation {
+                from: source.clone(),
+                to: record.id.clone(),
+                relation: relation.clone(),
+                direction: RelationDirection::Incoming,
+            });
+        }
+    }
+    captured
 }

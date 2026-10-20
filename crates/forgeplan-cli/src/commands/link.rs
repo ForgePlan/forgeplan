@@ -16,7 +16,16 @@ pub async fn run(
 
     let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
     let Some(store) = store else {
-        return run_file_first(ws, _lock, source_id, target_id, &relation, replace).await;
+        return run_file_first(
+            ws,
+            _lock,
+            source_id,
+            target_id,
+            &relation,
+            replace,
+            auto_activate_complete,
+        )
+        .await;
     };
 
     // PROB-060 / SPEC-005 Phase 1.5b — accept slug or display id for both ends.
@@ -102,7 +111,7 @@ Fix: forgeplan list",
     // any pre-existing edge between (source, target) onto the requested
     // relation. Without the flag we use the strict additive helper that
     // rejects duplicates and parallel-different-relation edges.
-    let ctx = forgeplan_core::projection::MutationContext::new(&ws, &store);
+    let ctx = forgeplan_core::projection::MutationContext::new(&ws, &_lock, Some(&store));
     let outcome = if replace {
         Some(
             forgeplan_core::projection::replace_link_with_projection(
@@ -189,9 +198,12 @@ Fix: forgeplan list",
 
 /// File-first `link` for constellation-migrated workspaces: no `LanceStore`
 /// exists, so the edge is written into the source file's `links:` frontmatter
-/// and one reconcile pass publishes it to `constellation_*_v1`. Store-backed
-/// extras (changelog row, R_eff recompute, auto-activate, projection
-/// re-render) are skipped — the note names the owner instead of faking them.
+/// and one reconcile pass publishes it to `constellation_*_v1`.
+/// Markdown remains authoritative and the derived index is reconciled after
+/// mutations. `--auto-activate-complete` is handled against the captured
+/// canonical workspace.
+/// It does not write Lance-backed change-log entries or a score cache;
+/// scores are computed from canonical links when requested.
 ///
 /// Semantics preserved from the store path: slug/display-id source
 /// resolution (via the file scan), the qualified `KEY@qualifier` registry
@@ -204,6 +216,7 @@ async fn run_file_first(
     target_id: &str,
     relation: &str,
     replace: bool,
+    auto_activate_complete: bool,
 ) -> anyhow::Result<()> {
     use forgeplan_core::artifact::store::resolve_artifact_path;
 
@@ -318,11 +331,46 @@ async fn run_file_first(
     }
 
     common::note_constellation_owns_index();
+    let link_changed = outcome != Some(forgeplan_core::projection::LinkUpsertOutcome::Unchanged);
+    let mut auto_activated = false;
+    if auto_activate_complete {
+        match common::workspace_read(&ws).await {
+            Ok(read) => {
+                if let Some(src_record) = read.get_record(source_id)
+                    && src_record.kind.eq_ignore_ascii_case("evidence")
+                    && src_record.status.eq_ignore_ascii_case("draft")
+                    && forgeplan_core::scoring::evidence::is_evidence_complete(&src_record.body)
+                {
+                    let activation = {
+                        let ctx =
+                            forgeplan_core::projection::MutationContext::new(&ws, &lock, None);
+                        forgeplan_core::lifecycle::canonical::activate_captured(
+                            &ctx, &read, source_id, false,
+                        )
+                        .await
+                    };
+                    match activation {
+                        Ok(_) => {
+                            auto_activated = true;
+                            println!("Auto-activated: {source_id} (draft → active)");
+                        }
+                        Err(e) => eprintln!(
+                            "Warning: auto-activate of {source_id} failed: {e}\n\
+                             Fix: forgeplan activate {source_id}"
+                        ),
+                    }
+                }
+            }
+            Err(e) => eprintln!(
+                "Warning: link succeeded, but auto-activation could not read the canonical \
+                 workspace: {e}\nFix: forgeplan activate {source_id}"
+            ),
+        }
+    }
     // Release the workspace lock BEFORE reconcile — the pass re-acquires it
     // per storage commit and would deadlock on a held guard (30 s timeout).
-    // Skip the pass entirely on Unchanged: no bytes moved, nothing to publish.
     drop(lock);
-    if outcome != Some(forgeplan_core::projection::LinkUpsertOutcome::Unchanged) {
+    if link_changed || auto_activated {
         common::reconcile_after_file_mutation(&ws).await;
     }
 
@@ -355,7 +403,7 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
 
     // PRD-073 FR-005: bidirectional render via helper.
     forgeplan_core::projection::delete_link_with_projection(
-        &forgeplan_core::projection::MutationContext::new(&ws, &store),
+        &forgeplan_core::projection::MutationContext::new(&ws, &_lock, Some(&store)),
         source_id,
         target_id,
         &relation,

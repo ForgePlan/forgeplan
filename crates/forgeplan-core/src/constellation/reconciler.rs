@@ -17,6 +17,7 @@
 //! `EACCES` destroys a row that was fine a second earlier.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 use super::capture::{CapturedSourceView, Coverage};
 // Defined at the `constellation` root; `capture`'s import of it is private.
@@ -48,6 +49,18 @@ pub enum DeltaAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactDelta {
     pub canonical_key: Option<String>,
+    /// The canonical key the **published** row at this path carried, when it
+    /// differs from the captured one — an Update that is also a re-key (a
+    /// slug or display-id edit, not a move). `None` on every other delta
+    /// shape, including an Update whose key survived.
+    ///
+    /// Deltas match by `relative_path`, so this is the only place the
+    /// outgoing key is still visible: the merge batch and the changed-keys
+    /// set both name the *new* key, and without it the old key's row and its
+    /// outgoing edges survive the pass — the leak that made a re-keyed
+    /// artifact fail post-commit verification forever.
+    #[serde(default)]
+    pub old_canonical_key: Option<String>,
     pub relative_path: String,
     pub action: DeltaAction,
     pub source_digest: Option<String>,
@@ -112,6 +125,7 @@ pub fn plan_reconcile(
         }
         deltas.push(ArtifactDelta {
             canonical_key: unusable.canonical_key.clone(),
+            old_canonical_key: None,
             relative_path: unusable.relative_path.clone(),
             action: DeltaAction::Exclude,
             source_digest: None,
@@ -133,11 +147,25 @@ pub fn plan_reconcile(
             .find(|e| e.relative_path == entry.relative_path);
         let action = match previous_entry {
             None => DeltaAction::Create,
-            Some(prev) if prev.source_digest == entry.source_digest => DeltaAction::Unchanged,
+            Some(prev)
+                if prev.source_digest == entry.source_digest
+                    && prev.input_digest == entry.input_digest
+                    && prev.canonical_key == entry.canonical_key =>
+            {
+                DeltaAction::Unchanged
+            }
             Some(_) => DeltaAction::Update,
         };
         deltas.push(ArtifactDelta {
             canonical_key: Some(entry.canonical_key.clone()),
+            // The key the row at this path answered to before the edit. A
+            // re-key is only observable here — downstream, the batch row and
+            // the changed-keys set both name the new key — so the outgoing
+            // key's relations and sections can only be deleted by carrying
+            // it forward on the delta.
+            old_canonical_key: previous_entry
+                .filter(|prev| prev.canonical_key != entry.canonical_key)
+                .map(|prev| prev.canonical_key.clone()),
             relative_path: entry.relative_path.clone(),
             action,
             source_digest: Some(entry.source_digest.clone()),
@@ -165,6 +193,7 @@ pub fn plan_reconcile(
             // invalid or colliding. Keeping it is the only safe answer.
             deltas.push(ArtifactDelta {
                 canonical_key: Some(prev.canonical_key.clone()),
+                old_canonical_key: None,
                 relative_path: prev.relative_path.clone(),
                 action: DeltaAction::Retain,
                 source_digest: Some(prev.source_digest.clone()),
@@ -187,6 +216,7 @@ pub fn plan_reconcile(
             // partial observation.
             deltas.push(ArtifactDelta {
                 canonical_key: Some(prev.canonical_key.clone()),
+                old_canonical_key: None,
                 relative_path: prev.relative_path.clone(),
                 action: DeltaAction::Retain,
                 source_digest: Some(prev.source_digest.clone()),
@@ -201,6 +231,7 @@ pub fn plan_reconcile(
         }
         deltas.push(ArtifactDelta {
             canonical_key: Some(prev.canonical_key.clone()),
+            old_canonical_key: None,
             relative_path: prev.relative_path.clone(),
             action: DeltaAction::Delete,
             source_digest: Some(prev.source_digest.clone()),
@@ -215,8 +246,52 @@ pub fn plan_reconcile(
             canonical_key: prev.canonical_key.clone(),
             relative_path: prev.relative_path.clone(),
             source_digest: prev.source_digest.clone(),
+            // The retired row's own incarnation. A recreate that reuses it
+            // would be indistinguishable from the row that was deleted.
+            incarnation: prev.incarnation,
             observed_at: captured.evaluated_at.clone(),
         });
+    }
+
+    // Tombstone retention. A confirmed delete is not a one-generation fact:
+    // the key may stay absent for many passes, and the recreate that finally
+    // happens must still skip past the incarnation it retired. So a tombstone
+    // survives every pass in which its key remains absent, and is dropped only
+    // when the key is **back and usable** — at which point capture has already
+    // minted an incarnation above it, so the record has done its job.
+    //
+    // "Usable" is the load-bearing word, and the set is built from
+    // `captured.entries` alone. An **unusable** source still names a canonical
+    // key, and counting that as presence retired the tombstone for a document
+    // that had not come back: a file restored to disk with malformed
+    // frontmatter, or colliding with another file's id, kept its key visible
+    // while carrying no row at all. The next pass — the one where the file is
+    // repaired — then found no tombstone, minted `incarnation: 1` from nothing,
+    // and reproduced the retired document's identity exactly: its vector would
+    // be preserved onto the replacement and its outstanding job would be
+    // satisfied by a row that describes different bytes.
+    //
+    // Retaining through an unusable pass costs nothing and is the conservative
+    // direction: one wasted incarnation increment on the repair, against a
+    // reused identity if the tombstone were dropped.
+    //
+    // A partial capture retires nothing (`tombstones` is empty above) but must
+    // not *lose* what was already retired either: absence it could not prove
+    // is not evidence that the delete was undone.
+    let present: BTreeSet<&str> = captured
+        .entries
+        .iter()
+        .map(|entry| entry.canonical_key.as_str())
+        .collect();
+    if let Some(previous) = previous {
+        let mut carried: Vec<Tombstone> = previous
+            .tombstones
+            .iter()
+            .filter(|tombstone| !present.contains(tombstone.canonical_key.as_str()))
+            .cloned()
+            .collect();
+        carried.append(&mut tombstones);
+        tombstones = carried;
     }
 
     deltas.sort_by(|a, b| a.relative_path.as_bytes().cmp(b.relative_path.as_bytes()));
@@ -237,7 +312,6 @@ mod tests {
     use crate::constellation::capture::SourceEntry;
     use crate::constellation::jobs::SemanticState;
     use crate::constellation::manifest::TableVersions;
-    use std::collections::BTreeSet;
     use std::path::PathBuf;
 
     fn view(
@@ -258,6 +332,7 @@ mod tests {
             evaluated_at: "2026-10-17T00:00:00.000Z".to_string(),
             source_set_digest: "srcset".to_string(),
             config_digest: "cfg".to_string(),
+            body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
             sections: Vec::new(),
             coverage: Coverage {
@@ -405,6 +480,32 @@ mod tests {
     }
 
     #[test]
+    fn a_rekey_at_the_same_path_carries_the_outgoing_key() {
+        let previous = manifest(vec![entry("prd-alpha", "prds/prd-alpha.md", "d1")]);
+        let captured = complete(vec![entry("prd-alpha-v2", "prds/prd-alpha.md", "d2")]);
+        let plan = plan_reconcile(&captured, Some(&previous));
+        let delta = plan
+            .for_path("prds/prd-alpha.md")
+            .expect("the path produced a row, so it must have a delta");
+        assert_eq!(delta.action, DeltaAction::Update);
+        assert_eq!(
+            delta.old_canonical_key.as_deref(),
+            Some("prd-alpha"),
+            "the old key's row, edges and sections are unreachable unless \
+             the delta names it"
+        );
+
+        // A same-key update has no outgoing key to name.
+        let same_key = complete(vec![entry("prd-alpha", "prds/prd-alpha.md", "d2")]);
+        let delta = plan_reconcile(&same_key, Some(&previous))
+            .for_path("prds/prd-alpha.md")
+            .unwrap()
+            .clone();
+        assert_eq!(delta.action, DeltaAction::Update);
+        assert_eq!(delta.old_canonical_key, None);
+    }
+
+    #[test]
     fn a_renamed_path_is_a_new_row_plus_a_confirmed_absence() {
         let previous = manifest(vec![entry("PRD-001", "prds/PRD-001-a.md", "d1")]);
         let captured = complete(vec![entry("PRD-001", "prds/PRD-001-renamed.md", "d1")]);
@@ -416,5 +517,152 @@ mod tests {
             "a renamed path is never merged into the old row"
         );
         assert_eq!(plan.tombstones.len(), 1);
+    }
+
+    #[test]
+    fn a_confirmed_delete_records_the_incarnation_it_retired() {
+        let mut deleted = entry("PRD-001", "prds/PRD-001-a.md", "d1");
+        deleted.incarnation = 4;
+        let previous = manifest(vec![deleted]);
+
+        let captured = complete(vec![]);
+        let plan = plan_reconcile(&captured, Some(&previous));
+        assert_eq!(plan.tombstones.len(), 1);
+        assert_eq!(
+            plan.tombstones[0].incarnation, 4,
+            "the tombstone must name the incarnation the delete retired, so a \
+             recreate skips past it instead of reproducing it"
+        );
+    }
+
+    #[test]
+    fn a_tombstone_survives_passes_in_which_its_key_stays_absent() {
+        let previous = manifest(vec![entry("PRD-001", "prds/PRD-001-a.md", "d1")]);
+
+        // Pass one confirms the delete.
+        let first = plan_reconcile(&complete(vec![]), Some(&previous));
+        assert_eq!(first.tombstones.len(), 1);
+
+        // Pass two: the key is still absent, so nothing new is retired, but
+        // the record must survive — the recreate may come much later.
+        let mut generation = previous.clone();
+        generation.source_entries = Vec::new();
+        generation.tombstones = first.tombstones.clone();
+        let second = plan_reconcile(&complete(vec![]), Some(&generation));
+        assert_eq!(
+            second.tombstones.len(),
+            1,
+            "a confirmed delete is not a one-generation fact"
+        );
+        assert_eq!(
+            second.tombstones[0].incarnation, first.tombstones[0].incarnation,
+            "the retired incarnation is carried forward verbatim"
+        );
+    }
+    /// A file that is present but **unusable** is not a recreation.
+    ///
+    /// The sequence is a confirmed delete, then the same path back on disk with
+    /// malformed frontmatter, then repaired. The middle pass names the canonical
+    /// key (an unusable source carries one) without producing a row, so a
+    /// tombstone keyed on mere presence was retired there — and the repair pass
+    /// then minted `incarnation: 1`, reproducing the retired document's identity
+    /// exactly. That identity is what `SemanticColumns::is_preserved_for` and an
+    /// outstanding job's binding compare, so the recycled identity would carry the
+    /// deleted document's vector onto the replacement.
+    ///
+    /// Breaks if the tombstone set is rebuilt from `unusable` as well as `entries`.
+    #[test]
+    fn an_unusable_source_does_not_retire_a_tombstone_it_never_recreated() {
+        let mut deleted_row = entry("PRD-001", "prds/PRD-001-a.md", "d1");
+        deleted_row.incarnation = 3;
+        let previous = manifest(vec![deleted_row]);
+
+        // Pass one: the file is gone, so the delete is confirmed.
+        let first = plan_reconcile(&complete(vec![]), Some(&previous));
+        assert_eq!(first.tombstones.len(), 1);
+        assert_eq!(first.tombstones[0].incarnation, 3);
+
+        let mut generation = previous.clone();
+        generation.source_entries = Vec::new();
+        generation.tombstones = first.tombstones.clone();
+
+        // Pass two: the path is back, unreadable, and still exposes its
+        // canonical key. Nothing has come back, so the tombstone must survive.
+        let mut broken = view(vec![], &["prds/PRD-001-a.md"], 1);
+        broken.unusable[0].canonical_key = Some("PRD-001".to_string());
+        let second = plan_reconcile(&broken, Some(&generation));
+        assert_eq!(
+            second.tombstones.len(),
+            1,
+            "a file that is present but unusable has not recreated the document"
+        );
+        assert_eq!(second.tombstones[0].incarnation, 3);
+
+        // Pass three: the file is repaired and usable again. The tombstone has
+        // done its job and is retired — and capture, consulting it, has already
+        // minted an incarnation above 3.
+        let repaired = complete(vec![entry("PRD-001", "prds/PRD-001-a.md", "d2")]);
+        let third = plan_reconcile(&repaired, Some(&generation));
+        assert!(
+            third.tombstones.is_empty(),
+            "a confirmed usable recreation retires the tombstone"
+        );
+    }
+
+    #[test]
+    fn a_recreated_key_retires_its_tombstone() {
+        let previous = manifest(vec![entry("PRD-001", "prds/PRD-001-a.md", "d1")]);
+        let mut generation = previous.clone();
+        generation.source_entries = Vec::new();
+        generation.tombstones = vec![Tombstone {
+            canonical_key: "PRD-001".to_string(),
+            relative_path: "prds/PRD-001-a.md".to_string(),
+            source_digest: "d1".to_string(),
+            incarnation: 1,
+            observed_at: "2026-10-17T00:00:00.000Z".to_string(),
+        }];
+
+        let captured = complete(vec![entry("PRD-001", "prds/PRD-001-a.md", "d1")]);
+        let plan = plan_reconcile(&captured, Some(&generation));
+        assert!(
+            plan.tombstones.is_empty(),
+            "the key is back and has an incarnation above the retired one; \
+             keeping the tombstone would bump it again on every later pass"
+        );
+    }
+
+    #[test]
+    fn a_partial_capture_neither_retires_nor_forgets() {
+        let mut previous = manifest(vec![
+            entry("PRD-001", "prds/PRD-001-a.md", "d1"),
+            entry("PRD-002", "prds/PRD-002-b.md", "d2"),
+        ]);
+        previous
+            .source_entries
+            .retain(|e| e.canonical_key == "PRD-001");
+        previous.tombstones = vec![Tombstone {
+            canonical_key: "PRD-002".to_string(),
+            relative_path: "prds/PRD-002-b.md".to_string(),
+            source_digest: "d2".to_string(),
+            incarnation: 2,
+            observed_at: "2026-10-17T00:00:00.000Z".to_string(),
+        }];
+
+        // PRD-002 is enumerated but unreadable: the capture cannot prove
+        // absence, so it retires nothing — and must not forget the delete it
+        // confirmed on an earlier pass either.
+        let captured = view(
+            vec![entry("PRD-001", "prds/PRD-001-a.md", "d1")],
+            &["prds/PRD-002-b.md"],
+            1,
+        );
+        let plan = plan_reconcile(&captured, Some(&previous));
+        assert_eq!(plan.count(DeltaAction::Delete), 0);
+        assert_eq!(
+            plan.tombstones.len(),
+            1,
+            "an unreadable path is not evidence the delete was undone"
+        );
+        assert_eq!(plan.tombstones[0].incarnation, 2);
     }
 }

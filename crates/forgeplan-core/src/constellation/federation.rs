@@ -342,7 +342,9 @@ async fn read_pinned(
     limit: usize,
 ) -> Result<(SourceRef, Vec<FederatedHit>), ConstellationError> {
     let index_root = canonical.join("lance");
-    let outcome = super::facade::search_pinned_lexical(&index_root, query, limit).await?;
+    let outcome =
+        super::facade::search_pinned_lexical(&index_root, query, limit, &Default::default())
+            .await?;
     let source = SourceRef {
         source_id: source_id_for(canonical),
         path: canonical.display().to_string(),
@@ -446,6 +448,9 @@ pub async fn federated_search(
         });
     }
     let mut sources = Vec::new();
+    // Retain one extra hit to detect truncation without retaining every
+    // source's results. The hit budget never limits source coverage.
+    let candidate_limit = limit.saturating_add(1);
     let mut failures = Vec::new();
     let mut hits = Vec::new();
     for spec in specs {
@@ -459,21 +464,20 @@ pub async fn federated_search(
                 continue;
             }
         };
+        let source_limit = candidate_limit.saturating_sub(hits.len()).max(1);
         // A present-but-broken index is a failure the caller sees, not a
         // silent downgrade to the markdown channel: reporting markdown
         // hits under a "pinned" banner would hide that the index rotted.
         let result = if has_published_index(&canonical) {
-            read_pinned(&canonical, query, limit).await
+            read_pinned(&canonical, query, source_limit).await
         } else {
-            read_markdown(&canonical, query, limit).await
+            read_markdown(&canonical, query, source_limit).await
         };
         match result {
             Ok((source, source_hits)) => {
                 sources.push(source);
-                hits.extend(source_hits);
-                if hits.len() >= limit {
-                    break;
-                }
+                let remaining = candidate_limit.saturating_sub(hits.len());
+                hits.extend(source_hits.into_iter().take(remaining));
             }
             Err(e) => {
                 let failure = SourceFailure {
@@ -759,6 +763,105 @@ mod tests {
         assert_eq!(outcome.failures.len(), 1);
         assert_eq!(outcome.hits.len(), 1);
         assert_eq!(outcome.hits[0].canonical_key, "SPEC-001");
+    }
+
+    #[tokio::test]
+    async fn the_hit_limit_does_not_hide_a_later_source_failure() {
+        let good = workspace_with(&[(
+            "adrs",
+            "ADR-001-a.md",
+            &artifact("ADR-001", "adr", "First decision", "needle"),
+        )]);
+        let missing = good.path().join("missing-workspace");
+        for (role, mode, fatal) in [
+            (SourceRole::Required, QueryMode::Strict, true),
+            (SourceRole::Optional, QueryMode::Strict, false),
+            (SourceRole::Required, QueryMode::AllowPartial, false),
+        ] {
+            let result = federated_search(
+                &[
+                    SourceSpec::new(good.path()),
+                    SourceSpec::new(&missing).with_role(role),
+                ],
+                "needle",
+                1,
+                mode,
+            )
+            .await;
+            if fatal {
+                assert!(
+                    matches!(result, Err(ConstellationError::SourceUnavailable { .. })),
+                    "a later required source must fail strict search even after the hit limit: {result:?}"
+                );
+            } else {
+                let outcome = result.unwrap();
+                assert!(outcome.partial);
+                assert_eq!(outcome.failures.len(), 1);
+                assert_eq!(outcome.failures[0].path, missing.display().to_string());
+                assert_eq!(outcome.hits.len(), 1);
+                assert_eq!(outcome.hits[0].canonical_key, "ADR-001");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_full_hit_budget_still_reports_later_healthy_sources() {
+        let first = workspace_with(&[(
+            "adrs",
+            "ADR-001-a.md",
+            &artifact("ADR-001", "adr", "First decision", "needle"),
+        )]);
+        let later = workspace_with(&[(
+            "adrs",
+            "ADR-002-b.md",
+            &artifact("ADR-002", "adr", "Later decision", "needle"),
+        )]);
+        let outcome = federated_search(
+            &[SourceSpec::new(first.path()), SourceSpec::new(later.path())],
+            "needle",
+            1,
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+        assert!(!outcome.partial);
+        assert!(outcome.failures.is_empty());
+        let source_paths: Vec<_> = outcome.sources.iter().map(|s| s.path.as_str()).collect();
+        let first_path = first.path().canonicalize().unwrap().display().to_string();
+        let later_path = later.path().canonicalize().unwrap().display().to_string();
+        assert_eq!(source_paths, [first_path.as_str(), later_path.as_str()]);
+        assert_eq!(outcome.hits.len(), 1);
+        assert_eq!(outcome.hits[0].canonical_key, "ADR-001");
+        assert!(outcome.truncated, "the later match exceeds the hit budget");
+    }
+
+    #[tokio::test]
+    async fn truncation_distinguishes_an_exact_limit_from_an_extra_match() {
+        for (second_body, truncated) in [("other text", false), ("needle", true)] {
+            let source = workspace_with(&[
+                (
+                    "adrs",
+                    "ADR-001-a.md",
+                    &artifact("ADR-001", "adr", "First decision", "needle"),
+                ),
+                (
+                    "adrs",
+                    "ADR-002-b.md",
+                    &artifact("ADR-002", "adr", "Later decision", second_body),
+                ),
+            ]);
+            let outcome = federated_search(
+                &[SourceSpec::new(source.path())],
+                "needle",
+                1,
+                QueryMode::Strict,
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome.hits.len(), 1);
+            assert_eq!(outcome.hits[0].canonical_key, "ADR-001");
+            assert_eq!(outcome.truncated, truncated);
+        }
     }
 
     #[tokio::test]

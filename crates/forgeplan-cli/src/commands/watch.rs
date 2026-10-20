@@ -9,11 +9,20 @@ use crate::commands::common;
 
 /// Watch .forgeplan/ markdown files and sync changes to LanceDB in real time.
 ///
-/// `constellation` additionally runs a bounded [`maintain_index`] pass after
-/// every debounced batch: the legacy sync keeps existing commands reading,
-/// while the corrected 0A/0B index picks up the same change atomically —
-/// creates, updates, deletes and renames land in one published generation,
-/// which is exactly what the per-file legacy path cannot express.
+/// `constellation` additionally runs a
+/// [`forgeplan_core::constellation::runtime::MaintenanceHost`]: the legacy sync
+/// keeps existing commands reading, while the corrected 0A/0B index picks up
+/// the same change atomically — creates, updates, deletes and renames land in
+/// one published generation, which is exactly what the per-file legacy path
+/// cannot express.
+///
+/// # Two ways a change is noticed, and why both are there
+///
+/// The host signals its supervisor through a filesystem event, and the signal
+/// coalesces: a burst of atomic saves is one pass. Events are only a *hint* —
+/// an overflow, a lost notification or a sleep/resume can hide one — so the
+/// host also re-captures on its own control-scan clock, which is what bounds
+/// how long a missed event can hide a change.
 pub async fn run(constellation: bool) -> anyhow::Result<()> {
     // The legacy store and the constellation index cannot coexist as live
     // tables — bootstrap renames `artifacts.lance`/`relations.lance` aside so
@@ -34,27 +43,57 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
     }
 
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut debouncer = new_debouncer(Duration::from_millis(500), tx)?;
+    // The runtime's own debounce bound, not an arbitrary one: `DEBOUNCE_MS` is
+    // the constant the maintenance protocol defines for folding a burst of
+    // atomic saves into one capture.
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(forgeplan_core::constellation::runtime::DEBOUNCE_MS),
+        tx,
+    )?;
 
-    // Watch all artifact directories
-    let mut watched = 0usize;
-    for dir_name in forgeplan_core::workspace::ARTIFACT_DIRS {
-        let dir = ws.join(dir_name);
-        if dir.exists() {
-            debouncer
-                .watcher()
-                .watch(&dir, RecursiveMode::NonRecursive)?;
-            watched += 1;
-        }
-    }
+    // The constellation index is kept current by a maintenance **host**, not by
+    // this loop. The host owns the recursive watcher, the coalesced dirty bit,
+    // the 30-second control scan and the registered supervisor; driving them
+    // from here as well is how the two halves came to disagree about debounce
+    // and about what a pass reports.
+    //
+    // Only `--constellation` gets one. A legacy watch has no maintenance protocol
+    // to serve, and registering a runtime would make a short-lived legacy
+    // watcher reachable by `mark_dirty` for upkeep it never performs.
+    let host = if constellation {
+        // The capability is minted here, at the command that was explicitly
+        // asked to maintain this workspace — `watch --constellation`. The host
+        // takes it as a parameter and never constructs one itself, so no other
+        // path can reach maintenance without saying why.
+        let capability =
+            forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
+                ws.canonicalize().unwrap_or_else(|_| ws.clone()),
+            );
+        Some(
+            forgeplan_core::constellation::runtime::MaintenanceHost::start(
+                capability,
+                forgeplan_core::constellation::runtime::ReportSink::Foreground,
+            )
+            .await?
+            .drive(),
+        )
+    } else {
+        None
+    };
 
-    if watched == 0 {
+    // Watch all artifact directories — for the **legacy** per-file projection
+    // only. The host has its own watcher for the constellation index; this one
+    // exists because `sync_single_file` needs a path per event.
+    let mut watched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    watch_artifact_dirs(&ws, debouncer.watcher(), &mut watched)?;
+
+    if watched.is_empty() {
         anyhow::bail!("No artifact directories found in .forgeplan/. Run `forgeplan init` first.");
     }
 
     println!(
         "Watching .forgeplan/ for changes ({} dirs){}... (Ctrl+C to stop)",
-        watched,
+        watched.len(),
         if constellation {
             ", constellation index on"
         } else {
@@ -153,44 +192,16 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
                     }
                 }
 
-                // One maintenance pass per debounced batch, never per file:
-                // the pass itself captures the whole workspace, so batching
-                // is what keeps N rapid saves from becoming N publishes.
-                if constellation && batch_had_change {
-                    let canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
-                    let capability =
-                        forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(canonical);
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-                    match forgeplan_core::constellation::facade::maintain_index(
-                        &capability,
-                        forgeplan_core::constellation::capture::CaptureLimits::default(),
-                        deadline,
-                    )
-                    .await
-                    {
-                        Ok((view, outcome)) => {
-                            println!(
-                                "INDEX {} — {} commit(s)",
-                                view.manifest.generation_id,
-                                outcome.commits.len()
-                            );
-                            // 0B: a configured model means the queue drains
-                            // here too — normal operation needs no manual
-                            // `forgeplan embed`. Unconfigured is a no-op.
-                            crate::commands::index::drain_queue_if_configured(
-                                &capability,
-                                std::time::Instant::now() + std::time::Duration::from_secs(300),
-                                "watch",
-                            )
-                            .await;
-                        }
-                        Err(e) => {
-                            // A failed pass leaves the published generation
-                            // untouched — the index degrades to stale, never
-                            // to torn. Report and keep watching.
-                            eprintln!("ERROR constellation maintenance: {e}");
-                        }
-                    }
+                // One signal per debounced batch, never per file. The
+                // supervisor coalesces: N rapid saves of one artifact are one
+                // signalled pass, and the pass itself captures the whole
+                // workspace.
+                if batch_had_change {
+                    // Through the registry, not through a handle, so this is
+                    // the same call any other in-process writer would make —
+                    // and its `false` is the honest report that nobody is
+                    // listening, which the full-scan clock below covers.
+                    forgeplan_core::constellation::runtime::mark_dirty(&ws);
                 }
             }
             Ok(Err(e)) => {
@@ -203,8 +214,49 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
                 break;
             }
         }
+
+        // Every tick, whether or not an event arrived, a new artifact
+        // directory may have been created. The host widens its own watch set on
+        // its own clock; this one only needs it for the legacy per-file
+        // projection, which is told about a path at a time.
+        watch_artifact_dirs(&ws, debouncer.watcher(), &mut watched)?;
     }
 
+    // Stop the host: admission closes, the watcher goes, and a native call
+    // still in flight is detached rather than waited on.
+    if let Some(runner) = host {
+        runner.stop().await;
+    }
+
+    Ok(())
+}
+
+/// Watch every artifact directory that exists, and add one for any that
+/// appears later.
+///
+/// A watcher that only enumerates at startup never sees a directory created
+/// after it — `forgeplan init` in a second worktree, or an artifact kind
+/// added by a newer build — and the files written into it would sit
+/// unindexed until a restart. The set is what makes this incremental: an
+/// already-watched directory is not re-watched.
+fn watch_artifact_dirs(
+    workspace: &std::path::Path,
+    watcher: &mut dyn notify::Watcher,
+    watched: &mut std::collections::BTreeSet<String>,
+) -> anyhow::Result<()> {
+    // Recursive, for the same reason the maintenance host's watcher is: an
+    // artifact file below a grouping directory (`prds/PRD-074/…`) is a real
+    // layout, and a non-recursive watch would only ever see the directory.
+    for dir_name in forgeplan_core::workspace::ARTIFACT_DIRS {
+        if watched.contains(*dir_name) {
+            continue;
+        }
+        let dir = workspace.join(dir_name);
+        if dir.is_dir() {
+            watcher.watch(&dir, RecursiveMode::Recursive)?;
+            watched.insert((*dir_name).to_string());
+        }
+    }
     Ok(())
 }
 
@@ -267,8 +319,13 @@ async fn sync_single_file(
                 tags: Vec::new(),
             };
 
+            // The watcher writes derived rows, so this sync runs under the workspace
+            // lock. Acquired here, per file, and released when this function
+            // returns — the watcher loop must never hold it across a debounce
+            // sleep, or every other mutator would block for the full timeout.
+            let guard = forgeplan_core::workspace::acquire_workspace_lock(workspace).await?;
             projection::sync_artifact_from_file(
-                &projection::MutationContext::new(workspace, store),
+                &projection::MutationContext::new(workspace, &guard, Some(store)),
                 &artifact,
             )
             .await?;

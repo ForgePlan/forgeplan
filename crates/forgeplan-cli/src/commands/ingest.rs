@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use console::style;
+use forgeplan_core::workspace::lock::WorkspaceLock;
 use serde_json::json;
 
 // =====================================================================
@@ -112,7 +113,7 @@ fn read_source_with_limits(path: &Path) -> Result<String> {
 }
 
 use forgeplan_core::artifact::types::ArtifactKind;
-use forgeplan_core::db::store::{ArtifactFilter, ArtifactRecord, LanceStore, NewArtifact};
+use forgeplan_core::db::store::{ArtifactFilter, LanceStore, NewArtifact};
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::ingest::{
     ArtifactTargetKind, DraftLink, IfExists, IngestArtifactDraft, IngestEngine, IngestOptions,
@@ -226,15 +227,27 @@ pub async fn run(
     }
 
     // ── 6. Write drafts to workspace ───────────────────────────────────────
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
     let mut written: Vec<WrittenArtifact> = Vec::new();
     let mut skipped_existing: Vec<String> = Vec::new();
     let mut write_errors: Vec<String> = Vec::new();
+    let mut wrote_anything = false;
 
     for draft in &report.drafts {
-        match write_draft(&ws, &store, draft, update).await {
-            Ok(WriteOutcome::Created(id)) | Ok(WriteOutcome::Updated(id)) => {
+        match write_draft(&ws, &lock, store.as_ref(), draft, update).await {
+            Ok(WriteOutcome::Created(id)) => {
+                wrote_anything = true;
+                written.push(WrittenArtifact {
+                    id,
+                    kind: kind_label(&draft.kind),
+                    title: draft.title.clone(),
+                    rule_id: draft.rule_id.clone(),
+                    source_path: draft.source_path.clone(),
+                });
+            }
+            Ok(WriteOutcome::Updated(id)) => {
+                wrote_anything = true;
                 written.push(WrittenArtifact {
                     id,
                     kind: kind_label(&draft.kind),
@@ -246,6 +259,17 @@ pub async fn run(
             Ok(WriteOutcome::Skipped(reason)) => skipped_existing.push(reason),
             Err(e) => write_errors.push(format!("{}: {}", draft.title, e)),
         }
+    }
+
+    // One reconcile for the whole run, not one per draft — the capture reads
+    // the entire workspace, so batching is what keeps an N-draft ingest from
+    // becoming N publications. The lock is released first: the pass
+    // re-acquires it per storage commit and a held guard would deadlock it
+    // for the full 30 s timeout.
+    if store.is_none() && wrote_anything {
+        common::note_constellation_owns_index();
+        drop(lock);
+        common::reconcile_after_file_mutation(&ws).await;
     }
 
     // ── 7. Emit report ─────────────────────────────────────────────────────
@@ -499,9 +523,15 @@ enum WriteOutcome {
 
 /// Write a single draft to LanceDB + markdown projection. Honours
 /// idempotency (`source_hash`) and `--update` flag (PRD-066 AC-3).
+///
+/// `store` is `None` on a constellation-migrated workspace: there the
+/// canonical markdown is the whole mutation and the reconcile pass publishes
+/// the derived row, so no legacy store is opened — not to check idempotency,
+/// not to allocate an id, not to log a changelog row.
 async fn write_draft(
     ws: &Path,
-    store: &LanceStore,
+    guard: &WorkspaceLock,
+    store: Option<&LanceStore>,
     draft: &IngestArtifactDraft,
     allow_update: bool,
 ) -> Result<WriteOutcome> {
@@ -509,10 +539,13 @@ async fn write_draft(
     let template_key = kind.template_key();
 
     // Compare against any existing artifact of the same kind+title (idempotency).
-    if let Some(existing_id) = find_existing_by_title(store, template_key, &draft.title).await?
-        && let Some(record) = store.get_record(&existing_id).await?
+    // The existing artifact's body is read from whichever source owns it —
+    // the legacy row, or the canonical markdown on a migrated workspace —
+    // so `source_hash` compares like with like.
+    if let Some(existing_id) = find_existing_by_title(ws, store, template_key, &draft.title).await?
+        && let Some(existing_body) = existing_body(ws, store, &existing_id).await?
     {
-        let existing_hash = extract_existing_source_hash(&record.body);
+        let existing_hash = extract_existing_source_hash(&existing_body);
         let decision = artifact_needs_update(existing_hash.as_deref(), &draft.source_hash);
         match decision {
             UpdateDecision::Skip => {
@@ -528,8 +561,8 @@ async fn write_draft(
                 )));
             }
             UpdateDecision::Update => {
-                update_existing(ws, store, &record, draft).await?;
-                add_links(ws, store, &existing_id, &draft.links).await;
+                update_existing(ws, guard, store, &existing_id, draft).await?;
+                add_links(ws, guard, store, &existing_id, &draft.links).await;
                 return Ok(WriteOutcome::Updated(existing_id));
             }
             UpdateDecision::Create => {
@@ -543,8 +576,7 @@ async fn write_draft(
         }
     }
 
-    let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-    let id = store.next_id(&prefix).await?;
+    let id = allocate_ingest_id(ws, store, &kind).await?;
 
     let new = NewArtifact {
         id: id.clone(),
@@ -561,53 +593,99 @@ async fn write_draft(
     // PRD-073 Phase 3b: file-first helper writes the markdown projection
     // FIRST then syncs to LanceDB. Previous DB-first order would have
     // stranded the artifact in DB-only state on a crash between the two.
-    projection::create_artifact_with_projection(&projection::MutationContext::new(ws, store), &new)
-        .await
-        .with_context(|| format!("create_artifact_with_projection failed for {id}"))?;
+    projection::create_artifact_with_projection(
+        &projection::MutationContext::new(ws, guard, store),
+        &new,
+    )
+    .await
+    .with_context(|| format!("create_artifact_with_projection failed for {id}"))?;
 
-    common::log_change(store, &id, "ingest_create", "cli").await;
+    if let Some(store) = store {
+        common::log_change(store, &id, "ingest_create", "cli").await;
+    }
 
-    add_links(ws, store, &id, &draft.links).await;
+    add_links(ws, guard, store, &id, &draft.links).await;
 
     Ok(WriteOutcome::Created(id))
 }
 
+/// The next free id for `kind`.
+///
+/// Legacy layout: the store's counter, exactly as before. Migrated layout:
+/// the filesystem scan `artifact::store::next_id` performs, which is the
+/// same lower bound the id-alloc file-first path uses — derived from the
+/// canonical markdown rather than from a retired table.
+async fn allocate_ingest_id(
+    ws: &Path,
+    store: Option<&LanceStore>,
+    kind: &ArtifactKind,
+) -> Result<String> {
+    match store {
+        Some(store) => {
+            let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
+            Ok(store.next_id(&prefix).await?)
+        }
+        None => Ok(forgeplan_core::artifact::store::next_id(ws, kind, 3).await?),
+    }
+}
+
+/// The existing artifact's body, read from whichever source owns it.
+async fn existing_body(ws: &Path, store: Option<&LanceStore>, id: &str) -> Result<Option<String>> {
+    match store {
+        Some(store) => Ok(store.get_record(id).await?.map(|r| r.body)),
+        None => {
+            let Some(path) = forgeplan_core::artifact::store::resolve_artifact_path(ws, id).await
+            else {
+                return Ok(None);
+            };
+            Ok(Some(tokio::fs::read_to_string(&path).await?))
+        }
+    }
+}
+
 async fn update_existing(
     ws: &Path,
-    store: &LanceStore,
-    record: &ArtifactRecord,
+    guard: &WorkspaceLock,
+    store: Option<&LanceStore>,
+    id: &str,
     draft: &IngestArtifactDraft,
 ) -> Result<()> {
     // PRD-073 Phase 3b: file-first body update — helper writes file then DB.
+    // With no store the markdown body IS the row.
     projection::update_body_with_projection(
-        &projection::MutationContext::new(ws, store),
-        &record.id,
+        &projection::MutationContext::new(ws, guard, store),
+        id,
         &draft.body,
     )
     .await
-    .with_context(|| format!("update_body_with_projection failed for {}", record.id))?;
-    common::log_change(store, &record.id, "ingest_update", "cli").await;
+    .with_context(|| format!("update_body_with_projection failed for {id}"))?;
+    if let Some(store) = store {
+        common::log_change(store, id, "ingest_update", "cli").await;
+    }
     Ok(())
 }
 
 /// Add each draft link to the source artifact's projection. Honours the
 /// per-link [`IfExists`] policy and silently skips missing target IDs (the
 /// link target may itself be a draft from the same ingest run).
-async fn add_links(ws: &Path, store: &LanceStore, source_id: &str, links: &[DraftLink]) {
+async fn add_links(
+    ws: &Path,
+    guard: &WorkspaceLock,
+    store: Option<&LanceStore>,
+    source_id: &str,
+    links: &[DraftLink],
+) {
     if links.is_empty() {
         return;
     }
-    let record = match store.get_record(source_id).await {
-        Ok(Some(r)) => r,
-        _ => return,
+    // Resolve the source's canonical file. On a migrated workspace there is
+    // no row to derive `(kind, title)` from, and the file-first resolver
+    // binds exactly the file the index would have — which is also where the
+    // best-effort frontmatter mirror below has to write.
+    let path = match forgeplan_core::artifact::store::resolve_artifact_path(ws, source_id).await {
+        Some(path) => path,
+        None => return,
     };
-    let kind = record
-        .kind
-        .parse::<ArtifactKind>()
-        .unwrap_or(ArtifactKind::Note);
-    let dir = ws.join(kind.dir_name());
-    let slug = forgeplan_core::artifact::types::slugify(&record.title);
-    let path = dir.join(format!("{}-{}.md", record.id, slug));
 
     for lnk in links {
         let relation = match link::normalize_relation(&lnk.relation) {
@@ -616,7 +694,7 @@ async fn add_links(ws: &Path, store: &LanceStore, source_id: &str, links: &[Draf
         };
         // PRD-073 Phase 3b: file-first link helper handles bidirectional render.
         if let Err(e) = projection::add_link_with_projection(
-            &projection::MutationContext::new(ws, store),
+            &projection::MutationContext::new(ws, guard, store),
             source_id,
             &lnk.target,
             &relation,
@@ -649,27 +727,48 @@ async fn add_links(ws: &Path, store: &LanceStore, source_id: &str, links: &[Draf
             }
         }
         // Best-effort frontmatter mirror; ignore errors so we don't half-write.
-        if path.exists() {
+        //
+        // Store-backed layouts only: with a `None` sink
+        // `add_link_with_projection` has already written this exact edge
+        // into the file, and repeating it here would be a second writer
+        // touching the same bytes for no observable gain.
+        if store.is_some() && path.exists() {
             let _ = link::add_link(&path, &lnk.target, &relation).await;
         }
     }
 }
 
 /// Return the latest existing artifact ID with the same kind + title.
+///
+/// Legacy layout: the store's filtered artifact list. Migrated layout: the
+/// filesystem frontmatter scan (`artifact::store::list_artifacts`), which is
+/// the same list reconcile publishes from — so an idempotency check cannot
+/// disagree with what the index actually holds.
 async fn find_existing_by_title(
-    store: &LanceStore,
+    ws: &Path,
+    store: Option<&LanceStore>,
     kind: &str,
     title: &str,
 ) -> Result<Option<String>> {
-    let filter = ArtifactFilter {
-        kind: Some(kind.to_string()),
-        status: None,
-    };
-    let summaries = store.list_artifacts(Some(&filter)).await?;
-    Ok(summaries
-        .into_iter()
-        .find(|s| s.title.eq_ignore_ascii_case(title))
-        .map(|s| s.id))
+    match store {
+        Some(store) => {
+            let filter = ArtifactFilter {
+                kind: Some(kind.to_string()),
+                status: None,
+            };
+            let summaries = store.list_artifacts(Some(&filter)).await?;
+            Ok(summaries
+                .into_iter()
+                .find(|s| s.title.eq_ignore_ascii_case(title))
+                .map(|s| s.id))
+        }
+        None => Ok(forgeplan_core::artifact::store::list_artifacts(ws)
+            .await?
+            .into_iter()
+            .filter(|s| s.kind == kind && s.title.eq_ignore_ascii_case(title))
+            .map(|s| s.id)
+            .next()),
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

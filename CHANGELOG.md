@@ -11,6 +11,113 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Internal
+
+- Lifecycle-переходы (`review`, `activate`, `supersede`, `deprecate`, `renew`,
+  `reopen`) работают на мигрированных workspace. Раньше они отказывались:
+  гейты активации читают граф связей, который Constellation-протокол выводит
+  из обращения, а открывать вышедшую из строения `artifacts.lance`, чтобы
+  насытить предупреждение, нельзя. Новый `lifecycle::canonical` берёт рёбра из
+  того же capture, который публикует reconcile, и пишет переход
+  file-first через общие `projection::*_with_projection`; правила гейтов,
+  переходов и валидации остались одними и теми же (`activation_gates_from`,
+  `sanitize_reason`, `validate_date` выделены и переиспользуются, а не
+  продублированы). Зависимости предупреждений и build-on-draft читаются из
+  того же capture — предупреждение больше не открывает второе хранилище ради
+  ответа «а не устарел ли мой сосед?». Для `renew` добавлен отсутствовавший
+  файловый писатель `valid_until:`; без него ADR-005-путь восстановления
+  устаревших артефактов был недостижим на мигрированном workspace.
+  Порядок `reopen` (создать → связать `based_on` → только потом депрецировать
+  старый) сохранён: сбой до последнего шага оставляет старый артефакт
+  нетронутым. CLI-команды и MCP-инструменты переключаются по владельцу
+  индекса и не открывают вышедшую из строения таблицу ни на одной ветке.
+  `forgeplan score <id>` больше не отказывается: полный `AssuranceReport`
+  (`weakest_link`, факторы, рекурсивный обход, decay, leaf-evidence) теперь
+  считается из того же capture, который публикует reconcile, тем же
+  рекурсивным движком `reff::assurance_recursive` — он обобщён на
+  `reff::AssuranceSource::{Store, Read}`, а не продублирован для второго
+  источника. Отказ был честным, но опирался на неверное допущение: `score
+  <id>` нужен граф связей, а у мигрированного workspace он есть, только в
+  канонической Markdown. `LanceStore` на этой ветке не открывается, кешируемая
+  колонка `r_eff_score` не пишется (её и нет), F-G-R и плоский breakdown
+  считаются из того же снимка. Разбор пакетов и подсчёт связей вынесены в
+  `reff::linked_evidence_items` / `reff::relation_link_count`, чтобы CLI и MCP
+  брали одну и ту же популяцию. Legacy-ветка не тронута: тот же отчёт, та же
+  персистенция, те же числа.
+  `forgeplan score --all` отвечает по capture и работает.
+  Покрыто поведенческими тестами на обеих раскладках:
+  `forgeplan-core/tests/lifecycle_canonical.rs`,
+  `forgeplan-cli/tests/cli_migrated_write.rs` (полный отчёт по цепочке,
+  пропуск draft-зависимости, legacy-числа),
+  `forgeplan-mcp/tests/constellation_migrated_read.rs` (полный отчёт,
+  ADR-020 вытесненный пакет) и
+  `forgeplan-mcp/tests/constellation_migrated_write.rs`. Компиляция не
+  проверялась — свободного места ниже порога сборки.
+
+- `MutationContext` переведён на контракт из трёх зависимостей:
+  `new(workspace, guard: &WorkspaceLock, legacy_sink: Option<&LanceStore>)`.
+  Контекст хранит рабочую директорию, уже удерживаемый вызывающим guard и
+  опциональный сток legacy-индекса; обязательное поле `store` удалено.
+  Общие `projection::*_with_projection` остаются единственным mutation flow:
+  при `Some` работает прежняя связка «каноническая правка → derived index»,
+  при `None` каноническая Markdown-правка выполняется полностью (те же
+  валидации и тот же порядок ошибок), а пропускается только шаг записи в
+  производный индекс — открывать или имитировать `artifacts.lance` на
+  мигрированном workspace нельзя, это воскресило бы вышедшую из строения
+  таблицу.
+  Хелперы без канонической пары (prune orphan-строки, drop строки
+  после soft delete) возвращают новый `MutationError::NoLegacySink`, а не
+  сообщают об успешном derived-действии, которого не было. Ни один хелпер не
+  перезапрашивает `WorkspaceLock`, уже удерживаемый контекстом. Мигрированы
+  все вызывающие в core, CLI и MCP; `git-sync`, `reindex`, `watch` и MCP
+  `capture` / `generate` / `discover_finding` теперь удерживают guard, который
+  раньше не брали — это новая сериализация и 30-секундный таймаут при
+  конкуренции, а не только смена сигнатуры. Добавлен файловый
+  `update_tags_file_first` и поведенческие тесты на обеих раскладках.
+- Исправлены ошибки компиляции Constellation в core, CLI и новых тестах:
+  владение worker, передача worker в асинхронный обработчик, типы ключей и
+  вызовы LanceDB. `cargo check` прошёл для CLI с `semantic-search` и для
+  тестовых целей core с `semantic-search,test-helpers`. Это проверка типов,
+  не подтверждение выполнения тестов или готовности E2E (RFC-015, EVID-179).
+- Федеративный поиск больше не прекращает проверку источников при заполнении
+  лимита выдачи. Поздний недоступный required-источник не скрывается за ранними
+  совпадениями; optional-отказ остаётся явным partial. Для truncation хранится
+  не более limit+1 совпадений. Проверки прошли в 17 Rust federation tests и в
+  настоящих CLI/MCP сценариях на трёх проектах.
+- Записан реальный no-semantic прогон Constellation (EVID-180): 52 Rust tests
+  PASS; CLI/MCP E2E — 20 PASS и 4 FAIL. Подтверждены поиск, qualified get,
+  source failures, Git snapshots и отказ write-tools в read-профиле.
+  Immutable working handles, byte budget ContextPack и разрешение межпроектного
+  ребра графа остаются незакрытыми; финальная приёмка не объявлена.
+
+- Локальная сборка `0.39.0+constellation.s1.1` принята на macOS (EVID-182,
+  снимок `s1-local-v0394`). Это отменяет фразу выше только в части «приёмка не
+  объявлена»: она объявлена позже и только для этой машины — Windows не
+  проверялся, установленный бинарник не менялся. Закрыты четыре дефекта,
+  найденные независимыми ревью. (1) Свежий capture, разошедшийся с
+  опубликованным набором, больше не теряет семантику целиком: он сохраняет
+  проверенный векторный кэш и допускает только строки, чьи canonical key,
+  путь, `input_digest`, `incarnation` и `row_revision` совпадают с текущими
+  захваченными входами; фильтры kind/status применяются до top-K. (2) Счёт
+  семантики ключуется по display id **из capture**, а не из строки индекса:
+  переназначение `id` при неизменном slug/входе больше не переносит score на
+  чужой артефакт; бюджет ANN считает строки артефактов и секций, поэтому
+  секции одного документа не вытесняют другой. (3) `forgeplan search` на
+  мигрированном workspace использует общий `smart::smart_search` — BM25,
+  composite-фильтры (`--depth`, `--with-evidence`, `--no-evidence`, `--since`),
+  graph expansion и прежние поля ответа сохранены; принудительный `--semantic`
+  сообщает `eligible_rows`, `expected_rows` и `semantic_scope`, а не выдаёт
+  пустую выдачу за полный отрицательный ответ. (4) Три paramless
+  MCP-инструмента (`blindspots`, `decay`, `fpf_list`) разрешают workspace лениво
+  через `resolve_workspace_read` + `require_legacy_projection`, поэтому холодный
+  legacy-запуск работает, а env-selected workspace не подменяется
+  launch-каталогом. Матрица: оба feature-режима, 5675 исполненных кейсов.
+  Реальные CLI/MCP сценарии: 41 проверка (векторы модели, Git reset с
+  исключением устаревших векторов, readonly-профиль без записи на диск).
+  Процессные отказы: 28 проверок (POSIX owner lock, SIGKILL владельца, два
+  publisher-процесса, выживание после SIGKILL соседа, typed `source_unavailable`
+  на обоих surface).
+
 ## [0.38.0] - 2026-10-12
 
 Sprint headline: **Use the AI subscription you already have — without turning

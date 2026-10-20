@@ -1,9 +1,9 @@
 use std::env;
 
+use crate::commands::common;
 use forgeplan_core::coverage;
-use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::hints::{self, Hint};
-use forgeplan_core::workspace;
+use forgeplan_core::projection;
 
 /// `forgeplan scan [--path <dir>]` — scan codebase for modules
 pub async fn run_scan(path: Option<&str>) -> anyhow::Result<()> {
@@ -66,16 +66,17 @@ pub async fn run_scan(path: Option<&str>) -> anyhow::Result<()> {
 
 /// `forgeplan coverage` — show decision coverage per module
 pub async fn run_coverage() -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
+    let (ws, store) = common::open_store_tolerating_constellation().await?;
     let project_root = ws.parent().unwrap_or(&ws);
-    let store = LanceStore::open(&ws).await?;
 
     println!("  Scanning codebase...");
     let mut modules = coverage::scan_modules(project_root).await?;
-    let report = coverage::build_coverage(&mut modules, &store).await?;
+    let report = if let Some(store) = store {
+        coverage::build_coverage(&mut modules, &store).await?
+    } else {
+        let read = common::workspace_read(&ws).await?;
+        coverage::build_coverage_from_records(&mut modules, read.records())
+    };
 
     println!();
     println!(
@@ -132,12 +133,43 @@ pub async fn run_coverage() -> anyhow::Result<()> {
 
 /// `forgeplan coverage --backfill` — add "Affected Files" section to artifacts missing it
 pub async fn run_backfill() -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let migrated = store.is_none();
+    let updated = match store {
+        Some(store) => coverage::backfill_affected_files(&store).await?,
+        None => {
+            let read = common::workspace_read(&ws).await?;
+            let ctx = projection::MutationContext::new(&ws, &lock, None);
+            let mut updated = Vec::new();
 
-    let store = LanceStore::open(&ws).await?;
-    let updated = coverage::backfill_affected_files(&store).await?;
+            for record in read.records() {
+                if record.status != "active"
+                    || !matches!(record.kind.as_str(), "prd" | "rfc" | "adr")
+                {
+                    continue;
+                }
+                let body =
+                    match forgeplan_core::artifact::frontmatter::parse_frontmatter(&record.body) {
+                        Ok((_, body)) => body,
+                        Err(e) => {
+                            eprintln!("  Warning: backfill skipped for {}: {e}", record.id);
+                            continue;
+                        }
+                    };
+                let Some(new_body) = coverage::body_with_affected_file_backfill(&body) else {
+                    continue;
+                };
+                if let Err(e) =
+                    projection::update_body_with_projection(&ctx, &record.id, &new_body).await
+                {
+                    eprintln!("  Warning: backfill failed for {}: {e}", record.id);
+                    continue;
+                }
+                updated.push(record.id.clone());
+            }
+            updated
+        }
+    };
 
     let hint_list: Vec<Hint> = if updated.is_empty() {
         println!("  All active PRD/RFC/ADR already have 'Affected Files' section.");
@@ -156,6 +188,12 @@ pub async fn run_backfill() -> anyhow::Result<()> {
         ]
     };
     print!("{}", hints::render_next_action_line(&hint_list));
+
+    if migrated && !updated.is_empty() {
+        common::note_constellation_owns_index();
+        drop(lock);
+        common::reconcile_after_file_mutation(&ws).await;
+    }
 
     Ok(())
 }

@@ -83,6 +83,13 @@ semver.workspace = true
 tera.workspace = true
 walkdir.workspace = true
 globset.workspace = true
+# `constellation::runtime::MaintenanceHost` — the long-lived watcher +
+# control-scan loop that `serve`, `watch` and the full MCP server all run. It
+# lives here rather than in the CLI because the standalone `forgeplan-mcp`
+# binary needs the same host and depends on this crate, not the other way
+# round. Same versions the CLI already used; no new crates enter the lockfile.
+notify.workspace = true
+notify-debouncer-mini.workspace = true
 
 # Audit-r3 M4 closure — O_NOFOLLOW flag for the anomalies-journal
 # tempfile open so a pre-created symlink with workspace-write access
@@ -194,9 +201,22 @@ name = "scoring_cascade_test"
 path = "tests/scoring_cascade_test.rs"
 required-features = ["test-helpers"]
 
+# Canonical (Constellation) lifecycle transitions: review / activate /
+# supersede / deprecate / renew / reopen driven file-first against a real
+# published workspace.
+#
+# No `required-features` here: this target uses only the crate's public
+# surface (capture, `maintain_index`, `WorkspaceRead`, `MutationContext`), so
+# it must run on the DEFAULT `cargo test --workspace` baseline too. A test
+# that only exercises the feature-gated suite would leave the default build
+# claiming parity it never checked.
+[[test]]
+name = "lifecycle_canonical"
+path = "tests/lifecycle_canonical.rs"
+
 # These are `#[test]`-style latency probes (`Instant` + `#[ignore]`, no
-# criterion harness) that happen to carry "bench" in the name — declaring
-# them [[bench]] would demand a main() they do not have.
+# criterion harness) that happen to carry "bench" in the name — declaring them
+# [[bench]] would demand a main() they do not have.
 [[test]]
 name = "create_roundtrip_bench"
 path = "tests/create_roundtrip_bench.rs"
@@ -205,4 +225,16 @@ required-features = ["test-helpers"]
 [[test]]
 name = "health_bench"
 path = "tests/health_bench.rs"
+required-features = ["test-helpers"]
+
+# S1 runtime behaviour end to end: an empty body stays empty (L02), a
+# same-size/same-mtime rewrite is still detected (L05), a reader is served one
+# generation and a torn pointer is an explicit failure (L09), and the
+# maintenance host maintains the workspace its capability names.
+#
+# `required-features` for the same reason as the targets above: without it
+# `cargo test --workspace` (no flags) would fail rather than skip.
+[[test]]
+name = "constellation_runtime_e2e"
+path = "tests/constellation_runtime_e2e.rs"
 required-features = ["test-helpers"]
