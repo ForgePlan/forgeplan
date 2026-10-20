@@ -39,7 +39,11 @@ This file is the **entry point**. For full details, read the files it points to.
 
 6. **Write tests for every new `pub fn` immediately** — do not move to the next function without a test.
 
-7. **Markdown files in `.forgeplan/` are the source of truth** (per ADR-003). The LanceDB index in `.forgeplan/lance/` is derived — rebuild via `forgeplan scan-import` if needed.
+7. **Markdown files in `.forgeplan/` are the source of truth** (per ADR-003).
+   Индекс в `.forgeplan/lance/` — производный: для Constellation использовать
+   `forgeplan index`, для старого формата — соответствующий `forgeplan reindex`.
+   `forgeplan scan-import` импортирует внешние документы, а не восстанавливает
+   Constellation. Не воссоздавать удалённые legacy-таблицы ради совместимости.
 
 ## Parallel agents and the build directory
 
@@ -218,15 +222,81 @@ steps, in order:
    classifies the context against the routing matrix, and returns a Plan that
    names which specialist subagents to dispatch and in what order. Smith picks
    the route; it never writes code itself.
-2. **Role-matched dispatch** — each plan step goes to a subagent of the right
-   profile: `subagent_explore` for read-only research, `subagent_general` for
-   implementation. File-disjoint steps may run in parallel; **at most one
-   agent compiles at a time** (see "Parallel agents and the build directory" —
-   the disk rule above applies to every dispatch, no exceptions).
+2. **Role-matched dispatch** — `scout` для чтения и исследования, `coder` для
+   реализации, `code-reviewer` для независимого ревью, `tester` для проверок,
+   `guardian` для предметного gate, `task-runner` для Orchestra. Независимые срезы
+   могут идти параллельно в отдельных worktree; **единственной build lease
+   на машине владеет назначенный tester**. Cargo выполняет tester; исключение
+   только для обязательного commit hook координатора описано ниже.
+   Ограничения Rust/Serena/диска выше сохраняются.
 
 Exempt: single-line tactical fixes, conversational answers, and **stateful
 runs** (live processes, DB observation, interactive sessions) — a subagent has
 no long-lived process and no session memory, so those stay in the main thread.
+
+### Constellation: от плана до независимого gate
+
+Для программы ROOT `fdXN7kQgRQDqUnJRBRYu` утверждённый corrective plan и эти
+правила имеют приоритет над общими советами продолжать работу с отложенной
+синхронизацией в TODO.md. Контракт трекера —
+[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md), pin file —
+[`docs/agents/orchestra.json`](docs/agents/orchestra.json); канонический общий
+процесс — [`UNIFIED-WORKFLOW.ru.md`](docs/methodology/UNIFIED-WORKFLOW.ru.md).
+
+1. **План → задача Orchestra.** До source dispatch `task-runner` находит
+   существующий рабочий срез в ROOT и сохраняет его UID, зависимости и чек-листы;
+   создаёт только недостающий самостоятельный срез. Он — единственный писатель
+   задач, статусов, полей, чек-листов и разрешённых task-local отчётов.
+   Перед первой записью читать `task-cycle` и `orchestra-mcp`, выполнить verifier
+   и handshake по tracker-контракту; поля/options разрешать через `list_fields`
+   каждый запуск, не закреплять их UID. Недоступный трекер, identity mismatch
+   или access error блокируют новые source-задачи; допустимы только чтение
+   и диагностика, не запасной трекер и не выдуманная синхронизация.
+2. **Один владелец файлов → отдельная worktree.** В задании перечислить exact
+   owned/forbidden paths, ветку и проверенный integration base SHA. Существующую
+   ветку/копию сначала проверить, не перезаписывать. Автор пишет только свой срез,
+   не интеграционную копию. Координатор — единственный интегратор.
+   Автор готовит код и новые поведенческие проверки, но не запускает Cargo,
+   форматтеры, сборки или тесты и не коммитит.
+3. **Передача → независимое ревью.** Handoff обязательно содержит task UID,
+   base revision, exact owned paths, отдельный patch/diff с SHA-256, список новых
+   поведенческих проверок, явно НЕ выполненные проверки с NOT_RUN и все открытые
+   замечания. Координатор применяет только owned paths. Заморозить source/test/
+   harness fingerprints, Cargo.lock, base SHA и patch digest; `code-reviewer`
+   проверяет эту дельту и callers без Cargo. Изменение fingerprint отменяет PASS
+   прежнего дерева. По одному отчёту автора принимать работу запрещено.
+4. **Единственный tester → проверка координатором → guardian gate.** После
+   завершения правок tester получает единственную build lease на машине и
+   выполняет матрицу в интеграционной копии с её единственным `target`.
+   Координатор отдельно упражняет полученные бинарники через CLI и настоящий
+   MCP stdio без пересборки; `guardian` сверяет contract → review → test →
+   runtime → fingerprint. До PASS gate следующий предметный этап не стартует.
+   `task-runner` ставит Rust checks=PASSED только по актуальному отчёту tester,
+   Done — только после gate и доказательства всех acceptance lines; до прогона
+   сохраняет NOT_RUN. EVIDENCE записывает Profile B, не автор кода.
+
+`constellation-minimax-coder` — закреплённая в плане быстрая реализация роли
+Rust writer, а не отдельная роль и не глобальная модель для всех агентов.
+Указывать её в конкретном dispatch; не менять global model overrides.
+
+`chatWriting=true` разрешает только `task-runner` короткие отчёты при передаче
+и после независимой проверки в чатах соответствующих задач ROOT-дерева.
+Это не разрешение сообщений в каналах, группах, личных чатах, упоминаний людей
+или рассылки одинаковых отчётов родителям. Admin endpoint `orch` не используется
+для записей этой программы.
+
+Запрещены сборки в нескольких `target`/worktree, изменение source во время
+build lease, коммиты с отключёнными hooks, ослабление/подмена oracle ради
+зелёного результата и чтение одноимённого файла другого checkout через неверно
+привязанный LSP. Стандартные commit hooks остаются включены.
+Единственное исключение к tester-only Cargo: после завершённой проверки tester
+координатор может вызвать Cargo только через обязательный pre-commit hook
+своего checkpoint-коммита, последовательно под той же build lease tester,
+в той же интеграционной копии и с тем же `target`. Владельцем lease остаётся
+tester; параллельные Cargo-запуски и самостоятельные сборки/пересборки
+координатора запрещены. Нельзя отключать hooks ради обхода их Cargo-проверки.
+Не собирать чужие изменения через `git add -A`; до принятого checkpoint авторы
+передают только owned patch.
 
 ## Searching the tree: tgrep, not rg
 

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "servers": {
+    "default": {
+      "url": "http://127.0.0.1:28174/mcp",
+      "endpointVariant": "agent",
+      "auth": "bearer",
+      "tokenEnv": "ORCHESTRA_FORGE_AGENT_TOKEN",
+      "names": {
+        "omp": "orchestra-beta-forge-agent"
+      },
+      "spaceUid": "kgYnhWodYw7kNbJMAK5q",
+      "spaceName": "ForgePlan",
+      "userUid": "7eea6f7ad3fc4b3196385e9d3e3cb856",
+      "identity": "bot"
+    }
+  },
+  "chatWriting": true
+}
