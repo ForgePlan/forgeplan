@@ -3918,6 +3918,63 @@ fn captured_semantic_predicates(
     (combine(artifacts), combine(sections))
 }
 
+/// How many rows under `profile_id` are ready at the versions this view pins.
+///
+/// Cheap and model-free: it opens the pinned tables and counts the eligible
+/// predicate. A caller uses it to skip query inference when no vector could
+/// match — loading the model dominates a CLI invocation, and paying that to
+/// rank an empty eligible set is pure latency.
+pub async fn count_eligible_semantic(
+    index_root: &Path,
+    view: &ReadView,
+    profile_id: &str,
+) -> Result<usize, ConstellationError> {
+    let (descriptor, manifest, captured) = match view {
+        ReadView::Persisted {
+            descriptor,
+            manifest,
+            ..
+        } => (descriptor, &**manifest, None),
+        ReadView::Ephemeral { captured, .. } => match view.vector_cache() {
+            Some(pin) => (pin.descriptor(), pin.manifest(), Some(captured.as_ref())),
+            None => return Ok(0),
+        },
+    };
+    let artifacts_version = descriptor.effective_artifacts_version(manifest)?;
+    let marker = marker_for(manifest);
+    let ready = format!(
+        "semantic_state = 'ready' AND profile_id = {}",
+        super::publisher::escape_predicate_literal(profile_id)
+    );
+    // An ephemeral view must count with the same exact bindings the search
+    // will use: ready rows exist for the *old* inputs, so a coarse count
+    // would send the caller into a model load that can match nothing.
+    let (artifact_predicate, section_predicate) = match captured {
+        Some(captured) => {
+            let (artifacts, sections) =
+                captured_semantic_predicates(captured, manifest, &PinnedFilter::default(), &ready);
+            (artifacts, Some(sections))
+        }
+        None => (ready.clone(), None),
+    };
+    let table = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "artifacts",
+        artifacts_version,
+    )
+    .await?;
+    let mut count = table.count_rows_where(&artifact_predicate).await?;
+    if let Some(version) = descriptor.effective_sections_version(manifest)? {
+        let sections =
+            super::lance_tables::open_table_at_version(index_root, &marker, "sections", version)
+                .await?;
+        let predicate = section_predicate.unwrap_or_else(|| ready.clone());
+        count += sections.count_rows_where(&predicate).await?;
+    }
+    Ok(count)
+}
+
 /// The ranking itself, shared by both entry points above.
 ///
 /// Both published reads and captured vector reuse open the same pinned versions.

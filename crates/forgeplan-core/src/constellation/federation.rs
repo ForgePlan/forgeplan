@@ -271,6 +271,24 @@ pub(crate) fn source_id_for(canonical: &Path) -> String {
     )
 }
 
+/// Whether a `KEY@qualifier` names this source.
+///
+/// Three forms are accepted, because all three are what an operator
+/// actually writes: the stable `src:<hash>` id (exact or prefix), the
+/// trailing path component (`@shared`), or a full path suffix. Anything
+/// else simply does not match, and the caller reports the miss.
+pub fn qualifier_matches(source_id: &str, source_path: &str, qualifier: &str) -> bool {
+    if source_id == qualifier || source_id.starts_with(qualifier) {
+        return true;
+    }
+    if source_path.ends_with(qualifier) {
+        return true;
+    }
+    source_path
+        .split(std::path::MAIN_SEPARATOR)
+        .any(|segment| segment == qualifier)
+}
+
 /// The [`SourceRef::source_id`] a spec will report, if it resolves.
 ///
 /// CLI uses this to match a user qualifier (`@src:ab12…` or a path
@@ -403,6 +421,45 @@ async fn read_markdown(
         }
     }
     Ok((source, hits))
+}
+
+/// The version a live source currently answers at, without parsing its
+/// artifacts: the pinned generation's source-set digest when an index is
+/// published, the capture's digest otherwise.
+///
+/// A scope handle records this at open and compares it before every read, so
+/// a handle can never silently return bytes that differ from the ones it was
+/// opened on. Publishing a new generation over unchanged bytes keeps the
+/// digest equal; an edit changes it.
+pub async fn live_source_version(spec: &SourceSpec) -> Result<String, SourceFailure> {
+    let canonical = resolve_source(spec)?;
+    if has_published_index(&canonical) {
+        let index_root = canonical.join("lance");
+        let descriptor = super::storage::read_current(&index_root)
+            .map_err(|error| SourceFailure {
+                path: canonical.display().to_string(),
+                reason: error.to_string(),
+            })?
+            .ok_or_else(|| SourceFailure {
+                path: canonical.display().to_string(),
+                reason: "index exists without a published generation".to_string(),
+            })?;
+        let manifest =
+            super::storage::read_manifest(&index_root, &descriptor).map_err(|error| {
+                SourceFailure {
+                    path: canonical.display().to_string(),
+                    reason: error.to_string(),
+                }
+            })?;
+        return Ok(manifest.source_set_digest);
+    }
+    let captured = capture_source(&CaptureRequest::new(&canonical), CaptureLimits::default())
+        .await
+        .map_err(|error| SourceFailure {
+            path: canonical.display().to_string(),
+            reason: error.to_string(),
+        })?;
+    Ok(captured.source_set_digest)
 }
 
 /// Whether a source has a *published* generation to pin to. Three states:

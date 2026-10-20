@@ -515,6 +515,26 @@ pub async fn impact_live(
     bounds: ImpactBounds,
     mode: QueryMode,
 ) -> Result<ImpactReport, ConstellationError> {
+    // `KEY@qualifier` narrows the walk to the source the caller named, the
+    // same rule `constellation get` follows. Without this, a cross-project
+    // reference could never be answered: the bare key exists in several
+    // sources and there is no basis to pick one.
+    let (bare, qualifier) = super::federation::parse_qualified_ref(changed);
+    let selected: Vec<SourceSpec> = match qualifier {
+        Some(qualifier) => {
+            let matched: Vec<SourceSpec> = super::federation::specs_matching(specs, qualifier)
+                .into_iter()
+                .cloned()
+                .collect();
+            if matched.is_empty() {
+                return Err(ConstellationError::SourceUnavailable {
+                    detail: format!("qualifier @{qualifier} matches no source in this scope"),
+                });
+            }
+            matched
+        }
+        None => specs.to_vec(),
+    };
     let mut report = ImpactReport {
         changed: changed.to_string(),
         bounds: ImpactBoundsSerde {
@@ -528,11 +548,11 @@ pub async fn impact_live(
         failures: Vec::new(),
         sources: Vec::new(),
     };
-    for spec in specs {
+    for spec in &selected {
         match source_graph_live(spec).await {
             Ok(graph) => {
                 report.sources.push(graph.source.clone());
-                walk(&graph, changed, bounds, &mut report);
+                walk(&graph, bare, bounds, &mut report);
             }
             Err(f) => {
                 if failure_is_fatal(spec, mode) {
@@ -551,6 +571,27 @@ pub fn impact_snapshot(
     changed: &str,
     bounds: ImpactBounds,
 ) -> Result<ImpactReport, ConstellationError> {
+    let (bare, qualifier) = super::federation::parse_qualified_ref(changed);
+    let selected: Vec<&super::snapshot::SnapshotSourceEntry> = match qualifier {
+        Some(qualifier) => {
+            let matched: Vec<&super::snapshot::SnapshotSourceEntry> = snapshot
+                .sources
+                .iter()
+                .filter(|entry| {
+                    let id =
+                        super::federation::source_id_for(std::path::Path::new(&entry.source_path));
+                    id == qualifier || id.starts_with(qualifier)
+                })
+                .collect();
+            if matched.is_empty() {
+                return Err(ConstellationError::SourceUnavailable {
+                    detail: format!("qualifier @{qualifier} matches no source in this snapshot"),
+                });
+            }
+            matched
+        }
+        None => snapshot.sources.iter().collect(),
+    };
     let mut report = ImpactReport {
         changed: changed.to_string(),
         bounds: ImpactBoundsSerde {
@@ -571,11 +612,11 @@ pub fn impact_snapshot(
             .collect(),
         sources: Vec::new(),
     };
-    for entry in &snapshot.sources {
+    for entry in selected {
         match source_graph_snapshot(entry) {
             Ok(graph) => {
                 report.sources.push(graph.source.clone());
-                walk(&graph, changed, bounds, &mut report);
+                walk(&graph, bare, bounds, &mut report);
             }
             Err(reason) => report.failures.push(SourceFailure {
                 path: entry.source_path.clone(),
@@ -795,5 +836,52 @@ mod tests {
         .unwrap();
         assert_eq!(report.failures.len(), 1);
         assert!(!report.impacted.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_qualified_key_narrows_the_walk_to_the_named_source() {
+        let first = ws();
+        let second = ws();
+        let first_spec = SourceSpec::new(first.path().join(".forgeplan"));
+        let second_spec = SourceSpec::new(second.path().join(".forgeplan"));
+        let second_id =
+            super::super::federation::spec_source_id(&second_spec).expect("second source resolves");
+        let qualified = format!("ADR-100@{second_id}");
+
+        let report = impact_live(
+            &[first_spec.clone(), second_spec.clone()],
+            &qualified,
+            ImpactBounds::default(),
+            QueryMode::Strict,
+        )
+        .await
+        .expect("a qualified impact must answer");
+
+        assert_eq!(
+            report.changed, qualified,
+            "the receipt echoes what was asked"
+        );
+        assert_eq!(report.sources.len(), 1, "only the named source is walked");
+        assert_eq!(report.sources[0].source_id, second_id);
+        assert!(
+            report
+                .impacted
+                .iter()
+                .all(|node| node.source.source_id == second_id),
+            "no node from the other source may appear: {:?}",
+            report.impacted
+        );
+
+        let unknown = impact_live(
+            &[first_spec, second_spec],
+            "ADR-100@src:does-not-exist",
+            ImpactBounds::default(),
+            QueryMode::Strict,
+        )
+        .await;
+        assert!(
+            matches!(unknown, Err(ConstellationError::SourceUnavailable { .. })),
+            "an unmatched qualifier is a named refusal"
+        );
     }
 }

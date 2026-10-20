@@ -185,9 +185,8 @@ impl ParsedArtifact {
 ///
 /// Sections exist so semantic coverage is not capped at the body prefix:
 /// the artifact row keeps its `title + body-prefix` vector (one row per
-/// canonical key — unchanged), and each markdown section additionally gets
-/// its own row in `constellation_sections_v1`, keyed by
-/// `"{parent_key}#s{ordinal}"`.
+/// canonical key — unchanged), and the body additionally gets its own rows
+/// in `constellation_sections_v1`, keyed by `"{parent_key}#s{ordinal}"`.
 ///
 /// A section row borrows its parent's whole binding — `source_digest`,
 /// `incarnation`, `row_revision`, checkout and epoch are read from the
@@ -235,76 +234,121 @@ pub struct CapturedSection {
 ///   at ordinal 0 (heading `None`), with the heading sections shifted to
 ///   ordinals 1... Without this a long preamble would be the same
 ///   not-searchable tail the sections table exists to remove.
-/// * **Headed sections** — one row each, in `list_section_spans` order. The
-///   split is flat: every heading opens a new row, so a nested `###` is its
-///   own unit rather than content inside its parent's — otherwise one long
-///   `#` document would produce a single section whose tail hits the input
-///   cap and stays invisible, the very gap this table exists to close.
+/// * **Headed sections** — in `list_section_spans` order. The split is flat:
+///   every heading opens a new unit, so a nested `###` is its own unit rather
+///   than content inside its parent's. Each unit is then windowed by
+///   [`section_windows`], so a section longer than `body_prefix_chars`
+///   becomes several contiguous rows and none of its tail is invisible.
+///   Coverage is the whole body, not its prefix.
 ///
-/// Ordinal keys are positional on purpose: two sections that share a heading
-/// are still distinct rows, and reordering sections changes which content a
-/// key binds — `input_digest` detects that the way it does for any edit.
-pub fn sections_for(artifact: &ParsedArtifact, body_prefix_chars: usize) -> Vec<CapturedSection> {
-    let parsed = crate::artifact::sections::list_section_spans(&artifact.body);
-    if parsed.is_empty() {
-        return vec![CapturedSection {
-            canonical_key: section_key(&artifact.canonical_key, 0),
+/// Ordinal keys are positional on purpose: two units that share a heading are
+/// still distinct rows, and reordering the body changes which content a key
+/// binds — `input_digest` detects that the way it does for any edit.
+/// Split one section's content into contiguous windows of at most
+/// `body_prefix_chars` characters.
+///
+/// Every character of the body lands in exactly one window, so the section
+/// index covers the **whole** document rather than its first prefix. Windows
+/// are taken on character boundaries and are pure functions of the content
+/// and the limit, which keeps row keys positional and reproducible.
+fn section_windows(content: &str, limit: usize) -> Vec<&str> {
+    let limit = limit.max(1);
+    let mut windows = Vec::new();
+    let mut start = 0usize;
+    let mut taken = 0usize;
+    for (offset, _) in content.char_indices() {
+        if taken == limit {
+            windows.push(&content[start..offset]);
+            start = offset;
+            taken = 0;
+        }
+        taken += 1;
+    }
+    if start < content.len() {
+        windows.push(&content[start..]);
+    }
+    if windows.is_empty() {
+        windows.push("");
+    }
+    windows
+}
+
+/// Emit one row per window of `content`, continuing the shared ordinal.
+///
+/// The heading and level repeat on every window so a hit deep inside a long
+/// section still names the section it came from. `content` holds the window
+/// itself, which is what makes its `input_digest` describe exactly the bytes
+/// the tokenizer will see.
+fn push_section_rows(
+    out: &mut Vec<CapturedSection>,
+    ordinal: &mut u32,
+    artifact: &ParsedArtifact,
+    heading: Option<String>,
+    level: Option<u8>,
+    content: &str,
+    body_prefix_chars: usize,
+) {
+    for window in section_windows(content, body_prefix_chars) {
+        out.push(CapturedSection {
+            canonical_key: section_key(&artifact.canonical_key, *ordinal),
             parent_key: artifact.canonical_key.clone(),
-            ordinal: 0,
-            heading: None,
-            level: None,
-            content: Arc::from(artifact.body.as_ref()),
+            ordinal: *ordinal,
+            heading: heading.clone(),
+            level,
+            content: Arc::from(window),
             input_digest: section_input_digest(
                 &artifact.title,
-                None,
-                &artifact.body,
+                heading.as_deref(),
+                window,
                 body_prefix_chars,
             ),
             parent_input_digest: artifact.input_digest.clone(),
-        }];
+        });
+        *ordinal += 1;
+    }
+}
+
+pub fn sections_for(artifact: &ParsedArtifact, body_prefix_chars: usize) -> Vec<CapturedSection> {
+    let parsed = crate::artifact::sections::list_section_spans(&artifact.body);
+    let mut sections = Vec::new();
+    let mut ordinal = 0u32;
+    if parsed.is_empty() {
+        push_section_rows(
+            &mut sections,
+            &mut ordinal,
+            artifact,
+            None,
+            None,
+            &artifact.body,
+            body_prefix_chars,
+        );
+        return sections;
     }
 
     // A preamble section is emitted only for real prose before the first
     // heading — whitespace or an empty run gets no row.
-    let preamble = preamble_text(&artifact.body);
-    let shift = u32::from(preamble.is_some());
-    let mut sections = Vec::with_capacity(parsed.len() + shift as usize);
-    if let Some(preamble) = preamble {
-        let content: Arc<str> = Arc::from(preamble);
-        sections.push(CapturedSection {
-            canonical_key: section_key(&artifact.canonical_key, 0),
-            parent_key: artifact.canonical_key.clone(),
-            ordinal: 0,
-            heading: None,
-            level: None,
-            input_digest: section_input_digest(&artifact.title, None, &content, body_prefix_chars),
-            parent_input_digest: artifact.input_digest.clone(),
-            content,
-        });
+    if let Some(preamble) = preamble_text(&artifact.body) {
+        push_section_rows(
+            &mut sections,
+            &mut ordinal,
+            artifact,
+            None,
+            None,
+            preamble,
+            body_prefix_chars,
+        );
     }
-    for (ordinal, section) in parsed.iter().enumerate() {
-        let ordinal = ordinal as u32 + shift;
-        let heading = if section.heading.is_empty() {
-            None
-        } else {
-            Some(section.heading.clone())
-        };
-        let content: Arc<str> = Arc::from(section.content.as_str());
-        sections.push(CapturedSection {
-            canonical_key: section_key(&artifact.canonical_key, ordinal),
-            parent_key: artifact.canonical_key.clone(),
-            ordinal,
-            heading: heading.clone(),
-            level: Some(section.level),
-            input_digest: section_input_digest(
-                &artifact.title,
-                heading.as_deref(),
-                &content,
-                body_prefix_chars,
-            ),
-            parent_input_digest: artifact.input_digest.clone(),
-            content,
-        });
+    for section in &parsed {
+        let heading = (!section.heading.is_empty()).then(|| section.heading.clone());
+        push_section_rows(
+            &mut sections,
+            &mut ordinal,
+            artifact,
+            heading,
+            Some(section.level),
+            &section.content,
+            body_prefix_chars,
+        );
     }
     sections
 }
@@ -1917,11 +1961,19 @@ mod tests {
                 .contains(tail),
             "the artifact input must actually clip the tail for this test to prove anything"
         );
-        // s0 = "Intro." preamble, s1 = Overview, s2 = Appendix.
+        // A long section is windowed, so ordinals shift; find the Appendix
+        // row by what it says, not by where it landed.
         let appendix = view
-            .section("PRD-001#s2")
+            .sections_of("PRD-001")
+            .find(|row| row.heading.as_deref() == Some("Appendix"))
             .expect("the Appendix section exists");
-        assert_eq!(appendix.heading.as_deref(), Some("Appendix"));
+        assert!(
+            view.sections_of("PRD-001")
+                .filter(|row| row.heading.as_deref() == Some("Overview"))
+                .count()
+                > 1,
+            "the long Overview section must span several rows"
+        );
         assert!(
             view.section_input(appendix, DEFAULT_BODY_PREFIX_CHARS)
                 .contains(tail),
@@ -1945,6 +1997,39 @@ mod tests {
         assert!(
             view.sections.iter().all(|s| s.parent_key == "PRD-001"),
             "an artifact that was never parsed cannot mint section rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_section_longer_than_the_prefix_is_windowed_across_rows() {
+        let tmp = workspace();
+        let long = "x".repeat(DEFAULT_BODY_PREFIX_CHARS + 500);
+        let content = format!(
+            "---\nid: PRD-900\nkind: prd\nstatus: draft\ntitle: Long\n---\n\n## Body\n\n{long}\n"
+        );
+        write_artifact(tmp.path(), "prds", "PRD-900-long.md", &content);
+        let view = capture(tmp.path()).await;
+
+        let rows: Vec<_> = view.sections_of("PRD-900").collect();
+        assert!(
+            rows.len() >= 2,
+            "a section longer than the prefix must become several rows, got {rows:?}"
+        );
+        let joined: String = rows.iter().map(|row| row.content.as_ref()).collect();
+        assert_eq!(
+            joined.trim_end(),
+            long,
+            "the windows must cover every byte of the section exactly once"
+        );
+        assert!(
+            rows.iter()
+                .all(|row| row.content.chars().count() <= DEFAULT_BODY_PREFIX_CHARS),
+            "no window may exceed the tokenizer prefix"
+        );
+        assert!(
+            rows.windows(2)
+                .all(|pair| pair[0].input_digest != pair[1].input_digest),
+            "each window binds its own input"
         );
     }
 }

@@ -138,6 +138,10 @@ pub enum DiagnosticCode {
     MissingIdentity,
     /// A `required` federated source could not answer a strict query.
     SourceUnavailable,
+    /// The requested context budget cannot admit even the smallest unit that
+    /// matched the task, so no pack can both respect the budget and carry
+    /// evidence. Reported instead of an empty "successful" pack.
+    InsufficientBudget,
 }
 
 impl DiagnosticCode {
@@ -164,6 +168,7 @@ impl DiagnosticCode {
             Self::UnsupportedIndexFilesystem => "unsupported_index_filesystem",
             Self::MissingIdentity => "missing_identity",
             Self::SourceUnavailable => "source_unavailable",
+            Self::InsufficientBudget => "insufficient_budget",
         }
     }
 
@@ -308,6 +313,16 @@ pub enum ConstellationError {
     /// in `failures` and flips `partial` instead. Snapshot reads never
     /// produce it — a lockfile's source set is frozen at pin time.
     SourceUnavailable { detail: String },
+    /// No evidence unit fits the requested token budget.
+    ///
+    /// A pack that respects the budget and a pack that carries evidence are
+    /// both required; when the budget admits neither, the honest answer is
+    /// this error, not an empty pack with a zeroed receipt that reads like
+    /// "nothing matched".
+    InsufficientBudget {
+        budget_tokens: usize,
+        smallest_unit_tokens: usize,
+    },
 }
 
 impl ConstellationError {
@@ -332,6 +347,7 @@ impl ConstellationError {
             Self::Io { .. } | Self::StorageIo { .. } => DiagnosticCode::StorageIo,
             Self::DurabilityUnavailable { .. } => DiagnosticCode::DurabilityUnavailable,
             Self::SourceUnavailable { .. } => DiagnosticCode::SourceUnavailable,
+            Self::InsufficientBudget { .. } => DiagnosticCode::InsufficientBudget,
         }
     }
 }
@@ -376,6 +392,14 @@ impl fmt::Display for ConstellationError {
                 write!(f, "index_protocol_mismatch: {field} overflowed at {value}")
             }
             Self::SourceUnavailable { detail } => write!(f, "source_unavailable: {detail}"),
+            Self::InsufficientBudget {
+                budget_tokens,
+                smallest_unit_tokens,
+            } => write!(
+                f,
+                "insufficient_budget: budget of {budget_tokens} tokens cannot admit the smallest \
+                 matching unit ({smallest_unit_tokens} tokens); raise the budget or narrow the task"
+            ),
         }
     }
 }

@@ -117,6 +117,9 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   Процессные отказы: 28 проверок (POSIX owner lock, SIGKILL владельца, два
   publisher-процесса, выживание после SIGKILL соседа, typed `source_unavailable`
   на обоих surface).
+utf-8
+- Локальная сборка `0.39.0+constellation.s1.1` доведена до полного покрытия на macOS (EVID-183, снимок `s1-local-v0396`); четыре оговорки предыдущего среза закрыты исполнением: (a) `constellation pack` отвечает `InsufficientBudget { budget_tokens, smallest_unit_tokens }`, когда бюджет меньше самой маленькой подходящей строки, и сериализует `payload_bytes` при нормальном бюджете; (b) `constellation impact` и `graph` принимают `KEY@src:<hash>` / `@<segment>` / `@<suffix>` и сужают walk к указанному источнику; (c) `constellation_open` запоминает `source_set_digest` каждого источника, а scope-чтения возвращают `snapshot_expired` вместо тихой выдачи новых байт — трёхпроектный федеративный probe: 25/25 PASS, 3 OBSERVED; (d) векторы покрывают всё тело через контигульные окна секций (реальный документ с 3290-символьным телом получил 4 ready rows и хвостовой токен найден со score 0.541); (e) `--semantic` пропускает model load, когда `count_eligible_semantic` возвращает 0 (CLI без опубликованных векторов отвечает за 0.01 с). Инференс остаётся per-process; daemon — отдельная задача. Матрица v0396: оба feature-режима, 5675 кейсов + 10 doctests, 0 падений; fingerprints unchanged между прогонами.
+
 
 ## [0.38.0] - 2026-10-12
 

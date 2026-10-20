@@ -34,9 +34,47 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 /// A scope the client opened: the frozen source list of one constellation.
+#[derive(Clone)]
 struct ScopeHandle {
     name: String,
     specs: Vec<federation::SourceSpec>,
+    /// The byte identity each source answered at when the scope was opened.
+    /// `None` means the source could not be read at open; that failure is
+    /// reported by the first read rather than by `open`.
+    versions: Vec<Option<String>>,
+}
+
+impl ScopeHandle {
+    /// Refuse a read when any source's bytes moved since the scope opened.
+    ///
+    /// A scope is a promise about *these* bytes. Re-reading a live source
+    /// after an edit and calling the answer the same scope is how an agent
+    /// ends up reasoning about text it never received.
+    async fn ensure_current(&self) -> Result<(), String> {
+        for (spec, recorded) in self.specs.iter().zip(&self.versions) {
+            let Some(recorded) = recorded else {
+                continue;
+            };
+            match federation::live_source_version(spec).await {
+                Ok(current) if &current == recorded => {}
+                Ok(_) => {
+                    return Err(format!(
+                        "source {} changed since this scope was opened; reopen the scope or \
+                         take a snapshot and read that",
+                        spec.path.display()
+                    ));
+                }
+                Err(failure) => {
+                    return Err(format!(
+                        "source {} can no longer be read: {}",
+                        spec.path.display(),
+                        failure.reason
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 enum Handle {
@@ -163,10 +201,9 @@ fn mode_of(strict: Option<bool>) -> QueryMode {
 /// so a caller can tell "a required source is down" apart from ordinary
 /// I/O trouble — the distinction the strict/partial contract exists for.
 fn fail_read(e: ConstellationError) -> Result<CallToolResult, McpError> {
-    match &e {
-        ConstellationError::SourceUnavailable { .. } => fail("source_unavailable", &e),
-        _ => fail("io", &e),
-    }
+    // Every error already carries its SPEC-008 code; collapsing the typed
+    // ones into "io" hides the only fact a caller can act on.
+    fail(e.code().as_str(), &e)
 }
 
 impl Default for ConstellationReadServer {
@@ -189,6 +226,27 @@ impl ConstellationReadServer {
             "{prefix}-{}",
             self.next_handle.fetch_add(1, Ordering::SeqCst)
         )
+    }
+}
+
+impl ConstellationReadServer {
+    /// Verify a scope still describes the bytes it was opened on.
+    ///
+    /// Clones the handle out of the table first: the verification awaits, and
+    /// holding the handle mutex across it would serialise every other request
+    /// behind a filesystem read.
+    async fn scope_current(&self, handle: &str) -> Result<(), String> {
+        let scope = {
+            let handles = self.handles.lock().await;
+            match handles.get(handle) {
+                Some(Handle::Scope(scope)) => Some(scope.clone()),
+                _ => None,
+            }
+        };
+        match scope {
+            Some(scope) => scope.ensure_current().await,
+            None => Ok(()),
+        }
     }
 }
 
@@ -227,21 +285,24 @@ impl ConstellationReadServer {
             None => return fail("no_scope", format!("no constellation named {name:?}")),
         };
         let handle = self.issue("scope");
-        let sources: Vec<serde_json::Value> = specs
-            .iter()
-            .map(|s| {
-                json!({
-                    "path": s.path.display().to_string(),
-                    "source_id": federation::spec_source_id(s),
-                    "role": s.role.as_str(),
-                })
-            })
-            .collect();
+        let mut versions = Vec::with_capacity(specs.len());
+        let mut sources: Vec<serde_json::Value> = Vec::with_capacity(specs.len());
+        for spec in &specs {
+            let version = federation::live_source_version(spec).await.ok();
+            sources.push(json!({
+                "path": spec.path.display().to_string(),
+                "source_id": federation::spec_source_id(spec),
+                "role": spec.role.as_str(),
+                "version": version,
+            }));
+            versions.push(version);
+        }
         self.handles.lock().await.insert(
             handle.clone(),
             Handle::Scope(ScopeHandle {
                 name: name.clone(),
                 specs,
+                versions,
             }),
         );
         ok_json(json!({
@@ -347,6 +408,11 @@ impl ConstellationReadServer {
         &self,
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(handle) = &p.scope_handle
+            && let Err(error) = self.scope_current(handle).await
+        {
+            return fail("snapshot_expired", &error);
+        }
         let limit = p.limit.unwrap_or(10);
         let handles = self.handles.lock().await;
         if let Some(snap_handle) = &p.snapshot_handle {
@@ -404,6 +470,11 @@ impl ConstellationReadServer {
         &self,
         Parameters(p): Parameters<GetParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(handle) = &p.scope_handle
+            && let Err(error) = self.scope_current(handle).await
+        {
+            return fail("snapshot_expired", &error);
+        }
         let handles = self.handles.lock().await;
         if let Some(snap_handle) = &p.snapshot_handle {
             return match handles.get(snap_handle) {
@@ -517,6 +588,11 @@ impl ConstellationReadServer {
         &self,
         Parameters(p): Parameters<PackParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(handle) = &p.scope_handle
+            && let Err(error) = self.scope_current(handle).await
+        {
+            return fail("snapshot_expired", &error);
+        }
         let budget = p.budget.unwrap_or(8000);
         let handles = self.handles.lock().await;
         if let Some(snap_handle) = &p.snapshot_handle {
@@ -541,10 +617,20 @@ impl ConstellationReadServer {
                 match context_pack::pack_live(&scope.specs, &p.task, budget, mode_of(p.strict))
                     .await
                 {
-                    Ok(pack) => ok_json(
-                        serde_json::to_value(&pack)
-                            .unwrap_or_else(|_| json!({"error":"serialize"})),
-                    ),
+                    Ok(pack) => {
+                        let payload = serde_json::to_value(&pack)
+                            .unwrap_or_else(|_| json!({"error":"serialize"}));
+                        // The content budget is charged to units; this field
+                        // states what the whole answer costs, so a caller can
+                        // see the envelope separately instead of inferring it.
+                        let payload_bytes = serde_json::to_string(&payload)
+                            .map(|text| text.len())
+                            .unwrap_or(0);
+                        ok_json(json!({
+                            "pack": payload,
+                            "payload_bytes": payload_bytes,
+                        }))
+                    }
                     Err(e) => fail_read(e),
                 }
             }
@@ -566,6 +652,11 @@ impl ConstellationReadServer {
         &self,
         Parameters(p): Parameters<ImpactParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(handle) = &p.scope_handle
+            && let Err(error) = self.scope_current(handle).await
+        {
+            return fail("snapshot_expired", &error);
+        }
         let bounds = ImpactBounds {
             max_depth: p.depth.unwrap_or(4),
             max_nodes: p.max_nodes.unwrap_or(256),
@@ -616,6 +707,11 @@ impl ConstellationReadServer {
         &self,
         Parameters(p): Parameters<GraphParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(handle) = &p.scope_handle
+            && let Err(error) = self.scope_current(handle).await
+        {
+            return fail("snapshot_expired", &error);
+        }
         let bounds = GraphBounds {
             limit: p.limit.unwrap_or(500),
         };

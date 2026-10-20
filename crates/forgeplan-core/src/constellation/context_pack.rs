@@ -246,12 +246,19 @@ fn collect_snapshot(
     Ok((source, docs))
 }
 
+/// Build the pack, or refuse when the budget cannot admit any evidence.
+///
+/// The budget is charged against **content**: the estimated tokens of every
+/// selected unit (excerpt + title + fixed per-unit overhead). The receipt's
+/// own JSON is not evidence and is not charged, but the serialized payload
+/// size is reported by the tool layer as `payload_bytes`, so a caller can
+/// see the envelope cost instead of guessing it.
 fn build_pack(
     task: &str,
     budget_tokens: usize,
     sources: Vec<(SourceRef, Vec<Packable>)>,
     failures: Vec<super::federation::SourceFailure>,
-) -> ContextPack {
+) -> Result<ContextPack, ConstellationError> {
     let terms = terms_of(task);
     // Score everything; hold the (source, doc, score, reasons, offset).
     struct Scored {
@@ -312,6 +319,9 @@ fn build_pack(
     let mut units = Vec::new();
     let mut omitted = Vec::new();
     let mut used = 0usize;
+    // The smallest unit that actually matched. If nothing fits the budget,
+    // this number is what makes the refusal actionable instead of a mystery.
+    let mut smallest_matched: Option<usize> = None;
     for (rank, item) in scored.into_iter().enumerate() {
         // A zero score means nothing matched. Naming such a unit in
         // `omitted` is evidence next to a real answer ("seen and rejected"),
@@ -341,6 +351,7 @@ fn build_pack(
         }
         let excerpt = excerpt_around(&item.doc.body, item.offset);
         let tokens = estimate_tokens(&excerpt) + estimate_tokens(&item.doc.title) + 8;
+        smallest_matched = Some(smallest_matched.map_or(tokens, |smallest| smallest.min(tokens)));
         if used + tokens > budget_tokens {
             omitted.push(Omission {
                 canonical_key: item.doc.canonical_key,
@@ -376,7 +387,17 @@ fn build_pack(
         *per_source.entry(unit.source.source_id.clone()).or_default() += 1;
     }
     let unit_count = units.len();
-    ContextPack {
+    // Refuse rather than return an empty pack that reads like "nothing
+    // matched": something did match, and the budget is why it is absent.
+    if unit_count == 0
+        && let Some(smallest_unit_tokens) = smallest_matched
+    {
+        return Err(ConstellationError::InsufficientBudget {
+            budget_tokens,
+            smallest_unit_tokens,
+        });
+    }
+    Ok(ContextPack {
         task: task.to_string(),
         sources: sources.iter().map(|(s, _)| s.clone()).collect(),
         units,
@@ -390,7 +411,7 @@ fn build_pack(
             per_source,
         },
         failures,
-    }
+    })
 }
 
 /// Pack a task's context from live scope sources.
@@ -419,7 +440,7 @@ pub async fn pack_live(
             }
         }
     }
-    Ok(build_pack(task, budget_tokens, sources, failures))
+    build_pack(task, budget_tokens, sources, failures)
 }
 
 /// Pack a task's context from a recorded snapshot — pinned revisions.
@@ -446,7 +467,7 @@ pub fn pack_snapshot(
             }),
         }
     }
-    Ok(build_pack(task, budget_tokens, sources, failures))
+    build_pack(task, budget_tokens, sources, failures)
 }
 
 #[cfg(test)]
@@ -516,19 +537,69 @@ Fonts, colors and spacing. No backend concerns here.
     }
 
     #[tokio::test]
-    async fn budget_excludes_units_and_reports_over_budget() {
+    async fn a_budget_below_the_smallest_unit_is_refused_then_excludes_the_rest() {
         let ws = ws_root();
         let specs = vec![SourceSpec::new(ws.path().join(".forgeplan"))];
-        let pack = pack_live(&specs, "auth", 20, QueryMode::Strict)
+        let refusal = pack_live(&specs, "auth", 1, QueryMode::Strict)
+            .await
+            .expect_err("a budget below every matched unit is a refusal, not an empty pack");
+        let smallest = match refusal {
+            ConstellationError::InsufficientBudget {
+                budget_tokens,
+                smallest_unit_tokens,
+            } => {
+                assert_eq!(budget_tokens, 1);
+                smallest_unit_tokens
+            }
+            other => panic!("expected an insufficient-budget refusal, got: {other}"),
+        };
+
+        // Exactly enough for one unit: that unit is selected and the rest are
+        // reported as over_budget rather than silently dropped.
+        let pack = pack_live(&specs, "auth", smallest, QueryMode::Strict)
             .await
             .unwrap();
-        assert_eq!(pack.units.len(), 0);
         assert!(
-            pack.omitted
-                .iter()
-                .any(|o| o.reason == "over_budget" && o.canonical_key.contains("ADR-001"))
+            !pack.units.is_empty(),
+            "a budget equal to the smallest unit must select it"
         );
-        assert_eq!(pack.receipt.used_tokens, 0);
+        assert!(pack.receipt.used_tokens <= smallest);
+
+        // Two matched units, room for one: the other is named, not dropped.
+        let source = SourceRef {
+            source_id: "src:two".to_string(),
+            path: "/tmp/two".to_string(),
+            channel: SourceChannel::Markdown,
+            version_key: "v1".to_string(),
+        };
+        let unit = |key: &str| Packable {
+            canonical_key: key.to_string(),
+            display_id: Some(key.to_string()),
+            title: "Auth".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            body: "auth token rotation policy".to_string(),
+            relative_path: format!("prds/{key}.md"),
+        };
+        let pair = || vec![(source.clone(), vec![unit("PRD-001"), unit("PRD-002")])];
+        let one_unit =
+            match build_pack("auth", 1, pair(), Vec::new()).expect_err("budget 1 admits nothing") {
+                ConstellationError::InsufficientBudget {
+                    smallest_unit_tokens,
+                    ..
+                } => smallest_unit_tokens,
+                other => panic!("expected an insufficient-budget refusal, got: {other}"),
+            };
+        let two =
+            build_pack("auth", one_unit, pair(), Vec::new()).expect("room for one unit is enough");
+        assert_eq!(two.units.len(), 1);
+        assert!(
+            two.omitted
+                .iter()
+                .any(|omission| omission.reason == "over_budget"),
+            "what did not fit is named, not dropped: {:?}",
+            two.omitted
+        );
     }
 
     #[tokio::test]
@@ -576,5 +647,36 @@ Fonts, colors and spacing. No backend concerns here.
             .unwrap();
         assert_eq!(pack.failures.len(), 1);
         assert_eq!(pack.units.len(), 1);
+    }
+
+    #[test]
+    fn a_budget_that_cannot_admit_any_unit_is_refused_not_answered_empty() {
+        let source = SourceRef {
+            source_id: "src:test".to_string(),
+            path: "/tmp/source".to_string(),
+            channel: SourceChannel::Markdown,
+            version_key: "v1".to_string(),
+        };
+        let doc = Packable {
+            canonical_key: "PRD-001".to_string(),
+            display_id: Some("PRD-001".to_string()),
+            title: "Auth".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            body: "auth token rotation policy".to_string(),
+            relative_path: "prds/PRD-001.md".to_string(),
+        };
+        let error = build_pack("auth", 1, vec![(source, vec![doc])], Vec::new())
+            .expect_err("a budget that admits no matched unit must not succeed");
+        match error {
+            ConstellationError::InsufficientBudget {
+                budget_tokens,
+                smallest_unit_tokens,
+            } => {
+                assert_eq!(budget_tokens, 1);
+                assert!(smallest_unit_tokens > budget_tokens);
+            }
+            other => panic!("expected an insufficient-budget refusal, got: {other}"),
+        }
     }
 }

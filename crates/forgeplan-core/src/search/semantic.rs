@@ -118,6 +118,16 @@ pub async fn workspace_semantic_scores(
         let Some(profile) = read.view().semantic_profile_id() else {
             return (None, false);
         };
+        // No eligible vector means inference cannot change the answer. Skip
+        // the model load (seconds) instead of paying it to rank nothing.
+        match facade::count_eligible_semantic(read.index_root(), read.view(), profile).await {
+            Ok(0) => return (None, false),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!("semantic eligibility unavailable: {error}");
+                return (None, false);
+            }
+        }
         let (profile_id, vector) = match runtime::cached_query_embedding(
             jobs::DEFAULT_MODEL_NAME,
             Some(profile),

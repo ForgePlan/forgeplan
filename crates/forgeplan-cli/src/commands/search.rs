@@ -114,6 +114,17 @@ async fn run_constellation(
             status,
             read.captured().artifacts.iter().map(|a| a.status.as_str()),
         );
+        // Nothing eligible under the pinned profile means the model load
+        // cannot change the answer; refuse with the reason instead of
+        // spending seconds to rank an empty set.
+        match facade::count_eligible_semantic(read.index_root(), read.view(), profile).await {
+            Ok(0) => anyhow::bail!(
+                "No eligible vectors under the published profile: every current input is \
+                 pending, failed, or changed since it was embedded. Run `forgeplan embed` first."
+            ),
+            Ok(_) => {}
+            Err(error) => return Err(error.into()),
+        }
         let (profile, vector) = runtime::cached_query_embedding(
             jobs::DEFAULT_MODEL_NAME,
             Some(profile),

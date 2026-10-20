@@ -154,6 +154,58 @@ fn absorb(graph: SourceGraph, bounds: GraphBounds, out: &mut GraphOutcome) {
     }
 }
 
+/// Resolve edges whose target carries an explicit `KEY@qualifier`.
+///
+/// Same-source resolution is the default and stays the default: a bare
+/// `ADR-001` never merges with another project's `ADR-001`. An explicit
+/// qualifier is the caller's statement that the edge is cross-source, so it
+/// is resolved against the node set of exactly the source it names — and only
+/// when that source holds exactly one matching node. A qualifier that matches
+/// nothing, or several nodes, leaves the edge dangling rather than guessing.
+fn resolve_qualified_edges(out: &mut GraphOutcome) {
+    if out
+        .edges
+        .iter()
+        .all(|edge| edge.resolved.is_some() || !edge.target.contains('@'))
+    {
+        return;
+    }
+    // Disjoint field borrows: the index reads `nodes` while `edges` mutates.
+    let GraphOutcome { nodes, edges, .. } = out;
+    let index: Vec<(&str, &str, Option<&str>, &str)> = nodes
+        .iter()
+        .map(|node| {
+            (
+                node.source.source_id.as_str(),
+                node.canonical_key.as_str(),
+                node.display_id.as_deref(),
+                node.source.path.as_str(),
+            )
+        })
+        .collect();
+    for edge in edges {
+        if edge.resolved.is_some() {
+            continue;
+        }
+        let (bare, qualifier) = super::federation::parse_qualified_ref(&edge.target);
+        let Some(qualifier) = qualifier else {
+            continue;
+        };
+        let mut matches = index
+            .iter()
+            .filter(|(source_id, canonical_key, display_id, path)| {
+                super::federation::qualifier_matches(source_id, path, qualifier)
+                    && (*canonical_key == bare || *display_id == Some(bare))
+            });
+        let Some((_, canonical_key, _, _)) = matches.next() else {
+            continue;
+        };
+        if matches.next().is_none() {
+            edge.resolved = Some((*canonical_key).to_string());
+        }
+    }
+}
+
 /// The relation graph of every named live source.
 ///
 /// Each source answers on the channel it honestly offers — pinned
@@ -198,6 +250,7 @@ pub async fn graph_live(
         }
     }
     out.partial = !out.failures.is_empty();
+    resolve_qualified_edges(&mut out);
     Ok(out)
 }
 
@@ -239,6 +292,7 @@ pub fn graph_snapshot(
         }
     }
     out.partial = !out.failures.is_empty();
+    resolve_qualified_edges(&mut out);
     Ok(out)
 }
 
@@ -523,5 +577,73 @@ mod tests {
         assert_eq!(edge.from, "ADR-002");
         assert_eq!(edge.resolved.as_deref(), Some("ADR-001"));
         assert_eq!(edge.declared_in.as_deref(), Some("adrs/B.md"));
+    }
+
+    #[tokio::test]
+    async fn an_explicitly_qualified_edge_resolves_across_sources() {
+        let first = workspace_with(&[(
+            "notes",
+            "NOTE-500.md",
+            &doc("NOTE-500", "note", &[("ADR-001@placeholder", "based_on")]),
+        )]);
+        let second = workspace_with(&[("adrs", "ADR-001.md", &doc("ADR-001", "adr", &[]))]);
+        let first_spec = SourceSpec::new(first.path().to_path_buf());
+        let second_spec = SourceSpec::new(second.path().to_path_buf());
+        let second_id =
+            super::super::federation::spec_source_id(&second_spec).expect("second source resolves");
+
+        // Rewrite the edge with the real qualifier before reading.
+        std::fs::write(
+            first.path().join("notes/NOTE-500.md"),
+            doc(
+                "NOTE-500",
+                "note",
+                &[(format!("ADR-001@{second_id}").as_str(), "based_on")],
+            ),
+        )
+        .unwrap();
+
+        let outcome = graph_live(
+            &[first_spec, second_spec],
+            GraphBounds::default(),
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+        let edge = outcome
+            .edges
+            .iter()
+            .find(|edge| edge.from == "NOTE-500")
+            .expect("the declared edge is present");
+        assert_eq!(
+            edge.resolved.as_deref(),
+            Some("ADR-001"),
+            "an explicit qualifier resolves against the source it names"
+        );
+
+        let bare = workspace_with(&[(
+            "notes",
+            "NOTE-501.md",
+            &doc("NOTE-501", "note", &[("ADR-001", "based_on")]),
+        )]);
+        let bare_outcome = graph_live(
+            &[
+                SourceSpec::new(bare.path().to_path_buf()),
+                SourceSpec::new(second.path().to_path_buf()),
+            ],
+            GraphBounds::default(),
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+        let bare_edge = bare_outcome
+            .edges
+            .iter()
+            .find(|edge| edge.from == "NOTE-501")
+            .expect("the bare edge is present");
+        assert_eq!(
+            bare_edge.resolved, None,
+            "a bare key never merges across sources"
+        );
     }
 }
