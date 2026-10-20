@@ -36,7 +36,7 @@ evidence_type: test-run
 - harness: 529e151ba07a057932073e55c6ed4c01eb8fba178eec57f91eedd82b116c7416
 - Cargo.lock: b90270407994afe84de8687101d655764a5ea28259d43b7bbad150cde02ab683
 
-Fingerprints перечитаны после каждого прогона и не менялись. `source_state` в result.json: UNCOMMITTED.
+Fingerprints перечитаны после каждого прогона и не менялись. `source_state` в result.json: UNCOMMITTED — измерение шло на незакоммиченном дереве. Проверенное дерево затем зафиксировано коммитом 8839646f в `feat/constellation-p0-contract` без изменения содержимого файлов; fingerprints по-прежнему совпадают с заморозкой.
 
 ## Observations
 
