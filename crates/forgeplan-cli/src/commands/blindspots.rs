@@ -5,8 +5,14 @@ use forgeplan_core::hints::{self, Hint};
 use crate::commands::common;
 
 pub async fn run() -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let report = health::health_report(&store).await?;
+    let (_ws, source) = common::open_read_source().await?;
+    // Same blind-spot / orphan computation on both layouts — the captured
+    // variant is the same shared computation over one capture, so a migrated
+    // workspace answers instead of refusing on the retired store.
+    let report = match &source {
+        common::ReadSource::Legacy(store) => health::health_report(store).await?,
+        common::ReadSource::Captured(read) => health::health_report_captured(read).await?,
+    };
 
     if report.blind_spots.is_empty() && report.orphans.is_empty() {
         println!("No blind spots found. All decision artifacts have linked evidence.");

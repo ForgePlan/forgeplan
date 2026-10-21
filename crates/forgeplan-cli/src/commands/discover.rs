@@ -14,7 +14,11 @@ use crate::commands::common;
 
 /// Start a new discovery session and print the protocol.
 pub async fn run_start(name: &str) -> Result<()> {
-    let (workspace, _lock, _store) = common::open_store_locked().await?;
+    // A discovery session is a `.forgeplan/discover/<id>.json` file plus a
+    // workspace lock — nothing here reads or writes an artifact index, so
+    // opening a store was pure second-writer exposure. Lock is still taken
+    // (session files are workspace state), and it is now the ONLY lock.
+    let (workspace, _lock) = common::open_workspace_locked().await?;
 
     let session = DiscoverSession::new(name);
     save_session(&workspace, &session)
@@ -80,7 +84,8 @@ pub async fn run_start(name: &str) -> Result<()> {
 
 /// List all discovery sessions.
 pub async fn run_list() -> Result<()> {
-    let (workspace, _lock, _store) = common::open_store_locked().await?;
+    // Pure read of the session directory: no lock, no index.
+    let workspace = common::find_workspace_path()?;
 
     let sessions = list_sessions(&workspace)?;
 
@@ -137,7 +142,8 @@ pub async fn run_list() -> Result<()> {
 
 /// Show details of a specific session.
 pub async fn run_show(session_id: &str) -> Result<()> {
-    let (workspace, _lock, _store) = common::open_store_locked().await?;
+    // Pure read of one session file: no lock, no index.
+    let workspace = common::find_workspace_path()?;
 
     let session = load_session(&workspace, session_id)
         .with_context(|| format!("Session '{}' not found", session_id))?;
@@ -223,7 +229,9 @@ pub async fn run_show(session_id: &str) -> Result<()> {
 
 /// Mark a session as completed.
 pub async fn run_complete(session_id: &str) -> Result<()> {
-    let (workspace, _lock, _store) = common::open_store_locked().await?;
+    // Writes the session file, so it holds the workspace lock — and still
+    // opens no artifact index.
+    let (workspace, _lock) = common::open_workspace_locked().await?;
 
     let mut session = load_session(&workspace, session_id)
         .with_context(|| format!("Session '{}' not found", session_id))?;

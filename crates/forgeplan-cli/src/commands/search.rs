@@ -156,16 +156,11 @@ async fn run_constellation(
             })
             .map(|artifact| artifact.canonical_key.as_str())
             .collect();
-        let expected_rows = expected_keys.len()
-            + if outcome.pinned_sections_version.is_some() {
-                read.captured()
-                    .sections
-                    .iter()
-                    .filter(|section| expected_keys.contains(section.parent_key.as_str()))
-                    .count()
-            } else {
-                0
-            };
+        // Expected rows are the CURRENT source set under this filter: one per
+        // artifact, plus one per section the capture actually holds for those
+        // artifacts. See [`expected_rows_for_capture`] for why that is a
+        // membership count and not a table-version check.
+        let expected_rows = expected_rows_for_capture(read, &expected_keys);
         let mut rows = Vec::with_capacity(outcome.hits.len().min(limit));
         for hit in outcome.hits.into_iter().take(limit) {
             let key = hit.parent_key.as_deref().unwrap_or(&hit.canonical_key);
@@ -184,6 +179,18 @@ async fn run_constellation(
             }));
         }
         if json {
+            // `semantic_scope` is passed through unchanged — this surface does
+            // not decide it. CONSUMER-VISIBLE VALUE CHANGE: it used to be
+            // derived from "a sections table version is pinned", and reported
+            // `prefix+sections` whenever one was. It is now derived from the
+            // published section MEMBERSHIP, so a generation that pins the
+            // sections table with zero rows — what a `semantic_unavailable`
+            // capture publishes — reports `prefix` instead. The field, its
+            // name and its two possible values are unchanged; only which of the
+            // two a given workspace receives has moved, and it moves toward the
+            // honest answer (no section rows → no section coverage advertised).
+            // `expected_rows` above now counts membership too, so the two
+            // fields cannot disagree.
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -214,6 +221,40 @@ async fn run_constellation(
         }
         Ok(())
     }
+}
+
+/// How many semantic rows the current source set is expected to hold under the
+/// filter: one per artifact, plus one per section the capture actually holds
+/// for those artifacts.
+///
+/// This counts section MEMBERSHIP, not the presence of a pinned sections table.
+/// Three tables are always pinned, so "a sections version exists" says nothing
+/// about whether any section was ever published — and a
+/// `semantic_unavailable` capture pins the table with zero members. Counting
+/// those would claim coverage that does not exist and make
+/// `eligible_rows < expected_rows` print a permanent, meaningless gap. A
+/// capture with no sections contributes zero, which is exactly what
+/// `semantic_scope: prefix` says alongside it.
+#[cfg(feature = "semantic-search")]
+fn expected_rows_for_capture(
+    read: &WorkspaceRead,
+    expected_keys: &std::collections::HashSet<&str>,
+) -> usize {
+    expected_rows(read.captured().sections.as_slice(), expected_keys)
+}
+
+/// The membership count itself, over the section slice — separated from the
+/// view plumbing so it can be exercised without a capture on disk.
+#[cfg(feature = "semantic-search")]
+fn expected_rows(
+    sections: &[forgeplan_core::constellation::capture::CapturedSection],
+    expected_keys: &std::collections::HashSet<&str>,
+) -> usize {
+    let section_rows = sections
+        .iter()
+        .filter(|section| expected_keys.contains(section.parent_key.as_str()))
+        .count();
+    expected_keys.len() + section_rows
 }
 
 fn build_filter(
@@ -703,4 +744,76 @@ async fn get_semantic_scores(
     query: &str,
 ) -> (Option<std::collections::HashMap<String, f64>>, bool) {
     forgeplan_core::search::semantic::semantic_scores(store, query).await
+}
+
+#[cfg(all(test, feature = "semantic-search"))]
+mod tests {
+    use super::expected_rows;
+
+    use forgeplan_core::constellation::capture::CapturedSection;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    fn section(parent: &str, ordinal: u32) -> CapturedSection {
+        let start = ordinal as usize * 10;
+        CapturedSection {
+            canonical_key: format!("{parent}#s{ordinal}"),
+            parent_key: parent.to_string(),
+            ordinal,
+            byte_start: start,
+            byte_end: start + 10,
+            heading: None,
+            level: None,
+            content: Arc::from("body"),
+            input_digest: String::new(),
+            parent_input_digest: String::new(),
+        }
+    }
+
+    fn keys(ids: &[&str]) -> HashSet<&str> {
+        ids.iter().copied().collect()
+    }
+
+    /// The whole point of the change: artifacts with NO published sections must
+    /// not have section rows counted for them. A `semantic_unavailable`
+    /// capture is exactly this shape, and the old table-version check counted
+    /// nothing extra only by luck.
+    #[test]
+    fn a_capture_with_no_sections_yields_one_row_per_artifact() {
+        assert_eq!(expected_rows(&[], &keys(&["prd-auth", "rfc-wire"])), 2);
+    }
+
+    /// Sections under the filter are counted: two artifacts, two sections
+    /// each.
+    #[test]
+    fn sections_of_filtered_artifacts_are_counted() {
+        let sections = vec![
+            section("prd-auth", 0),
+            section("prd-auth", 1),
+            section("rfc-wire", 0),
+            section("rfc-wire", 1),
+        ];
+        assert_eq!(expected_rows(&sections, &keys(&["prd-auth", "rfc-wire"])), 6);
+    }
+
+    /// Sections of an artifact OUTSIDE the filter are not counted — the
+    /// denominator has to describe the filter, not the corpus.
+    #[test]
+    fn sections_outside_the_filter_are_not_counted() {
+        let sections = vec![
+            section("prd-auth", 0),
+            section("prd-auth", 1),
+            section("prd-other", 0),
+            section("prd-other", 1),
+        ];
+        assert_eq!(expected_rows(&sections, &keys(&["prd-auth"])), 3);
+    }
+
+    /// An empty filter matches no artifact, so nothing is expected — including
+    /// no section rows, even for artifacts that have them.
+    #[test]
+    fn an_empty_key_set_expects_nothing() {
+        let sections = vec![section("prd-auth", 0), section("prd-auth", 1)];
+        assert_eq!(expected_rows(&sections, &keys(&[])), 0);
+    }
 }

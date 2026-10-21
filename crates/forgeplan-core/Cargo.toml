@@ -33,7 +33,19 @@ tract-onnx = { version = "0.23", optional = true }
 # The same tokenizer library fastembed uses internally, loaded from the same
 # tokenizer.json. Matching tokenization exactly is what keeps the vectors
 # identical rather than merely similar.
-tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
+#
+# **No longer optional.** ADR-029 §2A: section windows are measured in tokens,
+# so capture needs a tokenizer in every build — including `no-semantic`, where
+# the layout fingerprint still has to record the real `max_tokens` and the
+# metadata checksums. Making it optional would have meant either a
+# character-window substitute under the previous layout identity (explicitly
+# forbidden) or a fingerprint that claimed a layout no build could measure.
+#
+# `onig` keeps the same regex engine the engine path always used, so the token
+# boundaries capture measures are the token boundaries inference produces.
+# The cost is a C toolchain in a `no-semantic` build; that is a real, accepted
+# consequence, not an oversight.
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 # Model download. fastembed used this internally; with fastembed gone we call
 # it directly. `rustls-tls` to match the stack `reqwest` already pulls in —
 # a second TLS implementation in one binary is pure weight.
@@ -127,7 +139,10 @@ default = []
 # four of five targets). `tract-engine` is kept as the concrete name so the
 # parity tests can address the engine directly.
 semantic-search = ["tract-engine"]
-tract-engine = ["tract-onnx", "tokenizers", "hf-hub"]
+# `tokenizers` is deliberately absent: it is a required dependency now, because
+# the section layout is measured in tokens in every build. `tract-engine` is
+# the graph + weights + download, and only that stays behind this feature.
+tract-engine = ["tract-onnx", "hf-hub"]
 # Exposes test-only escape hatches (`*_for_test`) on `LanceStore` so
 # downstream test fixtures can seed the DB directly without going through
 # the projection pipeline they're not exercising. Production code MUST
@@ -237,4 +252,31 @@ required-features = ["test-helpers"]
 [[test]]
 name = "constellation_runtime_e2e"
 path = "tests/constellation_runtime_e2e.rs"
+required-features = ["test-helpers"]
+
+# ADR-029 §8 process/native fault barriers: a child stops at a real publication
+# stage and a fresh process inspects the published generation afterwards. The
+# barrier code itself is `test-helpers`-only, so this target cannot run without
+# it.
+[[test]]
+name = "constellation_fault_process"
+path = "tests/constellation_fault_process.rs"
+required-features = ["test-helpers"]
+
+# The metadata-only tokenizer loader and the section layout it resolves: the
+# fingerprint's inputs, the actual token limit, the header budget, and the
+# absent-metadata state. Runs in the `no-semantic` build on purpose — that is
+# the whole point of splitting the loader out of `tract_engine`.
+[[test]]
+name = "constellation_tokenizer"
+path = "tests/constellation_tokenizer.rs"
+required-features = ["test-helpers"]
+
+# Section windows measured in tokens: contiguous UTF-8 ranges whose
+# concatenation is the body exactly, for Russian, English, CJK, emoji,
+# no-space and whitespace-heavy input, plus the metadata absent / present /
+# absent transition and its effect on the published section set.
+[[test]]
+name = "constellation_section_windows"
+path = "tests/constellation_section_windows.rs"
 required-features = ["test-helpers"]

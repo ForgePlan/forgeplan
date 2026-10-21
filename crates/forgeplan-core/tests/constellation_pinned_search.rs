@@ -66,6 +66,9 @@ fn profile() -> EmbeddingProfile {
         max_tokens: DEFAULT_MAX_TOKENS,
         padding: "none".to_string(),
         truncation: "longest_first".to_string(),
+        // Hashed into `profile_id`, so it must be stated. A fixed value is
+        // enough: nothing here compares against a published layout.
+        section_layout_fingerprint: "layout-fixture".to_string(),
     }
 }
 
@@ -461,7 +464,7 @@ async fn the_readonly_open_refuses_a_missing_dataset_without_creating_it() {
     // the manifest still pins a version for it.
     let sections_dir = index_root.join(format!(
         "{}.lance",
-        forgeplan_core::constellation::manifest::TABLE_SECTIONS_V1
+        forgeplan_core::constellation::manifest::TABLE_SECTIONS_V2
     ));
     assert!(
         sections_dir.exists(),

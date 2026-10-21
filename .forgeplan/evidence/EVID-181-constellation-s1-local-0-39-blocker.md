@@ -71,3 +71,4 @@ BLOCKER сохраняется для проверенных здесь сним
 
 Новый положительный gate допустим только после независимого ревью исправленного снимка, ненулевого исполнения обоих feature-режимов и реальных CLI/stdio/fault-сценариев с сохранёнными exit codes и hashes бинарников. Отдельно проверить cold legacy tools, metadata-id reassignment, section aggregation, config prefix 512, Git reset, конкуренцию владельцев и аварийный restart.
 
+

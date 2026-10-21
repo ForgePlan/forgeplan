@@ -49,7 +49,7 @@ use std::sync::Arc;
 use super::durability::{DurabilityTrackingStore, PlatformDurability, StageTracker};
 use super::manifest::{
     BootstrapState, CurrentDescriptor, GenerationManifest, ProtocolMarker,
-    STORAGE_SCHEME_FILE_OBJECT_STORE, TABLE_ARTIFACTS_V1, TABLE_RELATIONS_V1, TABLE_SECTIONS_V1,
+    STORAGE_SCHEME_FILE_OBJECT_STORE, TABLE_ARTIFACTS_V1, TABLE_RELATIONS_V1, TABLE_SECTIONS_V2,
 };
 use super::{ConstellationError, sha256_hex};
 
@@ -71,7 +71,7 @@ pub const GENERATIONS_DIR: &str = "generations";
 pub const ACTIVE_TABLES: [(&str, &str); 3] = [
     ("artifacts", TABLE_ARTIFACTS_V1),
     ("relations", TABLE_RELATIONS_V1),
-    ("sections", TABLE_SECTIONS_V1),
+    ("sections", TABLE_SECTIONS_V2),
 ];
 
 /// Suffix of the `.lance` dataset directory Lance creates for a table.
@@ -113,22 +113,33 @@ pub fn table_uri_for_role(
     Ok(build_table_uri(index_root, name))
 }
 
-/// Resolve the URI for one active role, tolerating markers written before
-/// the role's table existed.
+/// Resolve the URI for one active role, tolerating markers whose declared
+/// `table_names` predate the current name for that role.
 ///
 /// [`table_uri_for_role`] stays strict — a marker that does not declare the
 /// name is a protocol mismatch. This helper adds exactly one exception, for
-/// upgrade-time table creation under the owner lock: when `(role,
-/// table_name)` is one of [`ACTIVE_TABLES`] — i.e. the caller is asking for
-/// our own canonical name — and the validating marker simply predates that
-/// table (a two-name `PROTOCOL.json` from before `constellation_sections_v1`
-/// existed), the canonical name under this index root is the URI.
+/// table creation under the owner lock: when `(role, table_name)` is one of
+/// [`ACTIVE_TABLES`] — i.e. the caller is asking for our own canonical name —
+/// the canonical name under this index root is the URI even if the marker's
+/// `table_names` list does not carry it.
+///
+/// # What this is not
+///
+/// It is **not** a v1 compatibility shim, and a v1 index does not reach it. A
+/// marker written before `constellation_sections_v1` existed declares
+/// `protocol_version` 1; [`ProtocolMarker::validate`] refuses that with
+/// `index_protocol_mismatch`, and this function is called after validation, so
+/// a pre-v2 index is rejected before any URI is resolved. What this tolerance
+/// covers is the v1→v2 rename: the sections role resolves to
+/// [`TABLE_SECTIONS_V2`](super::manifest::TABLE_SECTIONS_V2), and this is the
+/// single place that resolves it.
 ///
 /// A marker that fails `validate`, an unknown role, and a `table_name` that
 /// is not the role's canonical name all still fail as protocol mismatches —
 /// this widens nothing a foreign or future marker could slip through.
 ///
-/// `pub(crate)` — called by `lance_tables::ensure_active_table_shapes`.
+/// `pub(crate)` — called from `lance_tables::open_active_tables` and
+/// `open_active_tables_readonly`.
 pub(crate) fn resolve_table_uri(
     index_root: &Path,
     marker: &ProtocolMarker,
@@ -917,8 +928,18 @@ pub(crate) fn publish_current(
         return Err(e);
     }
 
+    // The checksum-bearing temp is complete and synced, and `CURRENT` still
+    // names the previous generation. Inside this file, immediately before the
+    // replacement — not an outer call pretending to be the internal point.
+    super::fault_barrier_if_selected("before_current_replace");
+
     // Visibility point.
     platform.replace_atomically(&temp, &dest)?;
+
+    // The replacement is visible. The directory has not been acknowledged yet,
+    // so the outcome is still uncertain — which is precisely the window a
+    // process kill here has to be inspected from.
+    super::fault_barrier_if_selected("after_current_replace");
 
     // Durable ACK. Reaching this point without the rename having returned
     // success is the definition of `publication_uncertain`.
@@ -1084,7 +1105,7 @@ mod tests {
         assert_ne!(r, s);
         assert!(a.contains(TABLE_ARTIFACTS_V1));
         assert!(r.contains(TABLE_RELATIONS_V1));
-        assert!(s.contains(TABLE_SECTIONS_V1));
+        assert!(s.contains(TABLE_SECTIONS_V2));
     }
 
     #[test]
@@ -1097,14 +1118,17 @@ mod tests {
         ];
         // The strict path still refuses what the marker does not declare.
         assert!(table_uri_for_role(&m, "sections", tmp.path()).is_err());
-        // The upgrade path maps the canonical name — and only that name.
-        let uri = resolve_table_uri(tmp.path(), &m, "sections", TABLE_SECTIONS_V1).unwrap();
-        assert!(uri.contains(TABLE_SECTIONS_V1));
+        // The upgrade path maps the canonical name — and only that name. The
+        // superseded v1 sections name is **not** the canonical one any more:
+        // admitting it here would be reopening a table whose rows carry no byte
+        // range under a schema that expects one.
+        let uri = resolve_table_uri(tmp.path(), &m, "sections", TABLE_SECTIONS_V2).unwrap();
+        assert!(uri.contains(TABLE_SECTIONS_V2));
         assert!(
             resolve_table_uri(tmp.path(), &m, "sections", "something_else").is_err(),
             "the fallback names the canonical table, never a caller's guess"
         );
-        assert!(resolve_table_uri(tmp.path(), &m, "bogus", TABLE_SECTIONS_V1).is_err());
+        assert!(resolve_table_uri(tmp.path(), &m, "bogus", TABLE_SECTIONS_V2).is_err());
         // A declared name resolves through the same helper unchanged.
         assert_eq!(
             resolve_table_uri(tmp.path(), &m, "artifacts", TABLE_ARTIFACTS_V1).unwrap(),

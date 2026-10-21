@@ -91,10 +91,24 @@ pub struct EmbeddingProfile {
     pub normalization: String,
     pub query_prefix: String,
     pub document_prefix: String,
+    /// The **artifact-prefix** budget only. It does not control sections: a
+    /// section window is cut in tokens by the section layout, and re-clipping
+    /// that window by characters is exactly the second, unrelated budget this
+    /// contract removes. The artifact row's vector is still prefix-bounded, and
+    /// this field says so honestly.
     pub body_prefix_chars: usize,
     pub max_tokens: usize,
     pub padding: String,
     pub truncation: String,
+    /// `section_layout_fingerprint` — the layout the capture measured its
+    /// windows under.
+    ///
+    /// ADR-029 §3 requires `profileId` to bind the layout identity and the
+    /// **same** actual token limit the engine uses. Without it, two profiles
+    /// differing only in tokenizer or token limit would share an id, and a
+    /// vector computed from one windowing would be served as current under
+    /// another.
+    pub section_layout_fingerprint: String,
 }
 
 /// Stable identity of an [`EmbeddingProfile`].
@@ -123,7 +137,8 @@ impl EmbeddingProfile {
             .field(self.body_prefix_chars.to_string().as_bytes())
             .field(self.max_tokens.to_string().as_bytes())
             .field(self.padding.as_bytes())
-            .field(self.truncation.as_bytes());
+            .field(self.truncation.as_bytes())
+            .field(self.section_layout_fingerprint.as_bytes());
         d.finish_hex()
     }
 }
@@ -150,50 +165,60 @@ pub fn embedding_input_digest(title: &str, body: &str, body_prefix_chars: usize)
 
 /// Deterministic identity of one section row.
 ///
-/// `<parent canonical key>#s<ordinal>` — the ordinal is the section's
-/// position in [`crate::artifact::sections::list_sections`] output, so the
-/// same captured body always produces the same key. Key uniqueness inside a
-/// parent is positional on purpose: two sections that happen to share a
-/// heading are still different rows, and a body edit that reorders sections
-/// changes which content a key binds, which is exactly what `input_digest`
-/// then detects.
+/// `<parent canonical key>#s<ordinal>` — the ordinal is the section's position
+/// in the capture's section set, so the same captured body under the same
+/// layout always produces the same keys. Key uniqueness inside a parent is
+/// positional on purpose: two sections that happen to share a heading are
+/// still different rows, and a body edit that reorders sections changes which
+/// content a key binds, which is exactly what `input_digest` then detects.
+///
+/// The layout fingerprint is deliberately **not** in the key. A change of
+/// tokenizer or token limit changes the layout identity, which changes
+/// `config_digest` and the `source_set_digest`, which produces a new capture
+/// and a new generation — so keys never silently keep their old meaning under
+/// a new layout.
 pub fn section_key(parent_key: &str, ordinal: u32) -> String {
     format!("{parent_key}#s{ordinal}")
 }
 
 /// The exact text handed to the tokenizer for one section.
 ///
-/// Same shape as the artifact input — `title + heading + content prefix` —
-/// so a section vector lives in the same embedding space as its parent's
-/// vector and the two ANN result sets can be merged on one score scale.
-/// `heading` is `None` only for the body-with-no-headings fallback section
-/// (ordinal 0), which embeds as `title + " " + content prefix`.
+/// **This is no longer a pure function of its arguments.** It is a thin,
+/// explicit delegation to the one shared builder in
+/// [`crate::embed::tokenizer`], because the window it receives was already cut
+/// in tokens and clipping it again by characters would reintroduce the second,
+/// unrelated budget this contract removes.
+///
+/// The builder needs a tokenizer to measure with, so this signature takes the
+/// loaded metadata and the resolved layout. A caller without usable metadata
+/// cannot build a section input at all — which is the point: it must not fall
+/// back to a character window under a previous layout's identity.
 pub fn section_input_text(
+    tokenizer: &crate::embed::tokenizer::MetadataTokenizer,
+    budgets: &crate::embed::tokenizer::TokenBudgets,
     title: &str,
     heading: Option<&str>,
     content: &str,
-    body_prefix_chars: usize,
-) -> String {
-    let prefix: String = content.chars().take(body_prefix_chars).collect();
-    match heading {
-        Some(heading) if !heading.is_empty() => format!("{title} {heading} {prefix}"),
-        _ => format!("{title} {prefix}"),
-    }
+) -> anyhow::Result<String> {
+    tokenizer.build_section_input(title, heading, content, budgets)
 }
 
 /// SHA-256 of the exact bytes handed to the tokenizer for one section.
 ///
 /// Separate from the parent's `input_digest` on purpose: the artifact row's
 /// digest describes the title+body-prefix input, the section row's digest
-/// describes the title+heading+section input. Folding them would let a
+/// describes the title+heading+section-window input. Folding them would let a
 /// section vector publish under a binding its bytes never satisfied.
 pub fn section_input_digest(
+    tokenizer: &crate::embed::tokenizer::MetadataTokenizer,
+    budgets: &crate::embed::tokenizer::TokenBudgets,
     title: &str,
     heading: Option<&str>,
     content: &str,
-    body_prefix_chars: usize,
-) -> String {
-    sha256_hex(section_input_text(title, heading, content, body_prefix_chars).as_bytes())
+) -> anyhow::Result<String> {
+    Ok(sha256_hex(
+        section_input_text(tokenizer, budgets, title, heading, content)?.as_bytes(),
+    ))
 }
 
 /// One unit of embedding work, bound to the exact state it was computed for.
@@ -531,6 +556,7 @@ impl SnapshotEvidence {
         tokenizer_checksum: String,
         tokenizer_config_checksum: String,
         engine_version: &str,
+        layout: &crate::embed::tokenizer::SectionLayout,
     ) -> Result<EmbeddingProfile, super::ConstellationError> {
         if !self.is_complete() {
             return Err(super::ConstellationError::ModelUnavailable {
@@ -554,9 +580,15 @@ impl SnapshotEvidence {
             query_prefix: String::new(),
             document_prefix: String::new(),
             body_prefix_chars: DEFAULT_BODY_PREFIX_CHARS,
-            max_tokens: DEFAULT_MAX_TOKENS,
+            // The engine's actual limit, read from the same layout the capture
+            // measured its windows under — not a restated constant. A profile
+            // claiming 512 while capture truncated at the model's own smaller
+            // limit is how a window tail disappears between admission and
+            // encode.
+            max_tokens: layout.max_tokens,
             padding: "none".to_string(),
             truncation: "longest_first".to_string(),
+            section_layout_fingerprint: layout.fingerprint(),
         })
     }
 }
@@ -774,11 +806,27 @@ impl ResolvedProfile {
             }
         })?;
         let checksums = snapshot_checksums_for_evidence(&evidence)?;
+        // The layout is resolved from the same snapshot by the metadata-only
+        // loader, so the profile's actual token limit and layout fingerprint
+        // describe the bytes that will actually be tokenized — not a constant
+        // restated here.
+        let layout = crate::embed::tokenizer::resolve_layout_in(cache_dir, repo);
+        let layout = layout.layout();
+        if !layout.is_available() {
+            return Err(super::ConstellationError::ModelUnavailable {
+                detail: format!(
+                    "snapshot {} has no usable tokenizer metadata, so no section layout and no \
+                     profile can be resolved from it",
+                    evidence.revision
+                ),
+            });
+        }
         let profile = evidence.to_profile(
             checksums.weights,
             checksums.tokenizer,
             checksums.tokenizer_config,
             engine_version,
+            &layout,
         )?;
         if !evidence.checksums_resolved(
             &profile.weights_checksums,
@@ -1298,7 +1346,7 @@ impl EmbeddingPublish {
 pub enum EmbeddingRowRole {
     /// One row of `constellation_artifacts_v1`.
     Artifact,
-    /// One row of `constellation_sections_v1`.
+    /// One row of `constellation_sections_v2`.
     Section,
 }
 
@@ -1415,6 +1463,19 @@ mod profile_tests {
         }
     }
 
+    /// The layout BGE-M3's own metadata resolves to: a declared 8192 clamped
+    /// by the 512 ceiling. Used where a test needs the *real* shape of the
+    /// layout rather than a stand-in.
+    fn bge_m3_layout() -> crate::embed::tokenizer::SectionLayout {
+        crate::embed::tokenizer::SectionLayout::from_metadata(
+            "tok".to_string(),
+            "tokcfg".to_string(),
+            "cfgjson".to_string(),
+            Some(8192),
+            2,
+        )
+    }
+
     fn profile_with(revision: &str) -> EmbeddingProfile {
         evidence(PathBuf::from("/cache"), revision)
             .to_profile(
@@ -1422,6 +1483,7 @@ mod profile_tests {
                 "tok-sha".to_string(),
                 "tokcfg-sha".to_string(),
                 "tract-onnx-0.23",
+                &bge_m3_layout(),
             )
             .unwrap()
     }
@@ -1478,7 +1540,13 @@ mod profile_tests {
         incomplete.missing_files = vec!["onnx/model.onnx".to_string()];
         assert!(!incomplete.is_complete());
         let err = incomplete
-            .to_profile(vec!["w".into()], "t".into(), "c".into(), "engine")
+            .to_profile(
+                vec!["w".into()],
+                "t".into(),
+                "c".into(),
+                "engine",
+                &bge_m3_layout(),
+            )
             .unwrap_err();
         assert_eq!(err.code(), super::super::DiagnosticCode::ModelUnavailable);
     }
@@ -1821,7 +1889,8 @@ mod profile_tests {
             "the job must reach the worker; a refusal here would hide the engine failure"
         );
 
-        let mut deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // Not `mut`: the deadline is a fixed instant, only ever read.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let reason = loop {
             match worker.try_failure() {
                 Poll::Ready(detail) => break detail,
@@ -2288,6 +2357,11 @@ mod tests {
             max_tokens: DEFAULT_MAX_TOKENS,
             padding: "none".to_string(),
             truncation: "longest_first".to_string(),
+            // Fixed rather than derived: this fixture is about the fields that
+            // are already listed, and a changing fingerprint would just be
+            // another moving part. The fingerprint's own contract is pinned by
+            // `tests/constellation_tokenizer.rs`.
+            section_layout_fingerprint: "layout-fixture".to_string(),
         }
     }
 

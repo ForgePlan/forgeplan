@@ -112,6 +112,181 @@ pub enum DrainGiveUp {
     ScanDue,
 }
 
+// ===========================================================================
+// Native-call observation
+//
+// What this is: a record that a **real** native encode was entered and, when it
+// returned, how long the stage took. Two `tracing::debug!` lines on stderr plus
+// two relaxed atomic stores.
+//
+// What this is deliberately not: a gate, a hook, a control, or a detector. It
+// does not change CallGate admission, the native permit, the soft deadline, the
+// worker lifecycle, engine construction, the embedding call itself, or any
+// result value — there is no environment variable, flag, or test-only switch on
+// this path, in any build. A production build with no subscriber pays two
+// relaxed stores and one `Instant` read per call.
+//
+// # What it can and cannot establish
+//
+// It can establish that a native encode was really entered, and that it really
+// returned. It **cannot** establish that the ONNX library hangs: nothing here
+// interrupts or inspects the call, and a process killed mid-encode leaves an
+// entered-with-no-returned record, which is a fact about the kill, not a
+// diagnosis of the library. The helper-controlled `native_call_entered` barrier
+// is a separate, test-only mechanism and proves something different again.
+// ===========================================================================
+
+/// One observed native encode.
+///
+/// `entered` without a completion is what a record looks like while the call
+/// is in flight, and what it still looks like if the process dies inside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCallTrace {
+    /// Monotonic per-process id, shared by the entry and the return, so a
+    /// reader can pair the two lines of one call across concurrent work.
+    pub call_id: u64,
+    /// `"inference"` for the maintenance worker, `"query"` for the cached
+    /// query worker. Two workers, two admission paths.
+    pub op: &'static str,
+    /// The key whose input was embedded.
+    pub canonical_key: String,
+    /// Whether the call has returned. `false` while in flight.
+    pub returned: bool,
+    /// Whether the returned call succeeded. Meaningless until `returned`.
+    pub ok: bool,
+    /// Wall time of the native stage. Meaningful only once `returned`.
+    pub elapsed_ms: u128,
+}
+
+/// Process-wide counter of native calls entered.
+static NATIVE_CALL_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The most recently entered or returned native call.
+///
+/// One slot, overwritten. A reader that wants to watch a specific call pairs
+/// lines on `call_id` from the tracing stream rather than polling this, which
+/// is exactly why this is a convenience and not the mechanism.
+static LAST_NATIVE_CALL: std::sync::LazyLock<
+    std::sync::Mutex<Option<NativeCallTrace>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// The number of native calls this process has entered.
+///
+/// Read-only, monotonic, and free of any effect on the call itself.
+pub fn native_call_sequence() -> u64 {
+    NATIVE_CALL_SEQUENCE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The most recent native-call record, or `None` before the first call.
+///
+/// Read-only. It does not gate, sample or influence anything: a probe that
+/// never calls it behaves identically.
+pub fn last_native_call() -> Option<NativeCallTrace> {
+    LAST_NATIVE_CALL
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+}
+
+/// A live native encode.
+///
+/// Constructed by [`NativeCallInFlight::enter`], which publishes the entry
+/// record and the tracing line; closed by [`Self::exited`], which publishes the
+/// return record and emits nothing else. The encode it wraps is untouched —
+/// this type exists to be passed around a call, not to influence it.
+///
+/// # Why the gate is `any(test, semantic-search)`
+///
+/// Its only production callers are the two worker loops (`enter` at the query
+/// worker and at the maintenance/inference worker), both inside
+/// `semantic-search`. A plain `#[cfg(feature = "semantic-search")]` would
+/// remove it from the default build — correct, but it would also remove the
+/// observer's unit tests with it, and those tests are about the counter, the
+/// single-slot mutex and the entered/returned transition, none of which need a
+/// model. `test` is therefore OR-ed in, which is what keeps the ordinary
+/// non-test build warning-free *and* keeps the tests running without weights.
+///
+/// Deliberately **not** `#[allow(dead_code)]`: an allow would suppress the
+/// question rather than answer it, and would stay silent if a future
+/// `semantic-search` refactor stopped calling `enter` entirely.
+///
+/// Note the deliberate asymmetry with the accessors below: `native_call_sequence`
+/// and `last_native_call` are **not** gated, so a fault harness running under
+/// `required-features = ["test-helpers"]` without `semantic-search` can still
+/// read the trace. Only the producer is gated.
+#[cfg(any(test, feature = "semantic-search"))]
+pub(crate) struct NativeCallInFlight {
+    pub call_id: u64,
+    op: &'static str,
+    canonical_key: String,
+    started: std::time::Instant,
+}
+
+#[cfg(any(test, feature = "semantic-search"))]
+impl NativeCallInFlight {
+    /// Record that a real native encode is being entered.
+    ///
+    /// Two relaxed operations and one clock read. A poisoned observation mutex
+    /// costs the record and nothing else, because the encode must not depend
+    /// on the observation being recordable — which is why `call_id` is derived
+    /// from an atomic counter rather than from the mutex.
+    pub(crate) fn enter(canonical_key: &str, op: &'static str) -> Self {
+        let call_id = NATIVE_CALL_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        tracing::debug!(
+            target: "forgeplan::constellation",
+            event = "constellation_native_encode_entered",
+            call_id,
+            op,
+            canonical_key,
+        );
+        if let Ok(mut slot) = LAST_NATIVE_CALL.lock() {
+            *slot = Some(NativeCallTrace {
+                call_id,
+                op,
+                canonical_key: canonical_key.to_string(),
+                returned: false,
+                ok: false,
+                elapsed_ms: 0,
+            });
+        }
+        Self {
+            call_id,
+            op,
+            canonical_key: canonical_key.to_string(),
+            started: std::time::Instant::now(),
+        }
+    }
+
+    /// Record that the encode returned.
+    ///
+    /// `ok` is the encode's own outcome, recorded as observed. The result value
+    /// itself is untouched and returned to the caller unchanged — this returns
+    /// `()` on purpose, so there is no path by which observation could rewrite
+    /// what the worker publishes.
+    pub(crate) fn exited(&self, ok: bool) {
+        let elapsed_ms = self.started.elapsed().as_millis();
+        tracing::debug!(
+            target: "forgeplan::constellation",
+            event = "constellation_native_encode_returned",
+            call_id = self.call_id,
+            op = self.op,
+            canonical_key = self.canonical_key.as_str(),
+            ok,
+            elapsed_ms,
+        );
+        if let Ok(mut slot) = LAST_NATIVE_CALL.lock() {
+            *slot = Some(NativeCallTrace {
+                call_id: self.call_id,
+                op: self.op,
+                canonical_key: self.canonical_key.clone(),
+                returned: true,
+                ok,
+                elapsed_ms,
+            });
+        }
+    }
+}
+
 impl DrainGiveUp {
     fn as_str(self) -> &'static str {
         match self {
@@ -530,6 +705,18 @@ pub async fn cached_query_embedding(
                         if !request.gate.enter_call() {
                             continue;
                         }
+                        // The CallGate permit has been taken and the worker is
+                        // about to enter the native encode. The gate stays
+                        // occupied until this request returns or the call
+                        // completes, which is what makes a busy-gate
+                        // observation a real one rather than a modelled
+                        // future that never ran.
+                        //
+                        // This is the helper-controlled stall point. It is
+                        // **not** evidence that the ONNX library hangs: a real
+                        // native stall is proved separately, by a production
+                        // build doing a real encode.
+                        crate::constellation::fault_barrier_if_selected("native_call_entered");
                         if cached.as_ref().is_none_or(|(key, _)| key != &request.key) {
                             match super::jobs::open_cached_query_engine_in(
                                 &request.key.cache_dir,
@@ -546,9 +733,19 @@ pub async fn cached_query_embedding(
                             }
                         }
                         let (_, engine) = cached.as_mut().expect("a matching engine was loaded");
+                        // Observation only, same as the maintenance worker: two
+                        // relaxed stores and one clock read around the existing
+                        // encode. Admission, the permit and the response
+                        // deadline are untouched, and the vector is returned
+                        // exactly as computed.
+                        let native_call = NativeCallInFlight::enter(
+                            request.text.as_str(),
+                            "query",
+                        );
                         let result = engine
                             .embed(&request.text)
                             .map(|vector| (engine.profile_id.clone(), vector));
+                        native_call.exited(result.is_ok());
                         request.gate.leave_call();
                         let _ = request.reply.send(result);
                     }
@@ -888,9 +1085,21 @@ mod imp {
                             drop(permit);
                             break;
                         }
+                        // Observation only. This records that a real native
+                        // encode started and how long the stage took; it does
+                        // not gate, time out, cancel or alter anything. The
+                        // permit, the gate and the deadline are untouched, and
+                        // a production build with no subscriber pays two
+                        // relaxed stores and one instant read.
+                        let native_call = NativeCallInFlight::enter(
+                            queued.job.job.canonical_key.as_str(),
+                            "inference",
+                        );
                         let computed = {
                             let _permit = permit;
-                            compute(&queued.job)
+                            let computed = compute(&queued.job);
+                            native_call.exited(computed.is_ok());
+                            computed
                         };
                         gate.leave_call();
                         match computed {
@@ -2600,10 +2809,30 @@ pub fn recover_pending(
             // detect.
             (artifact.embedding_input(body_prefix_chars), key.as_str())
         } else if let Some(section) = capture.section(key) {
-            (
-                capture.section_input(section, body_prefix_chars),
-                section.parent_key.as_str(),
-            )
+            // The shared builder, under this capture's own layout. No prefix
+            // argument: re-clipping a token window by characters is the second
+            // budget this contract removes, and a capture/recovery pair that
+            // disagreed about it would publish a vector for bytes the row's
+            // `input_digest` never described.
+            match capture.section_input(section) {
+                Ok(text) => (text, section.parent_key.as_str()),
+                // A section whose input cannot be built under this layout has
+                // no bindable work. It is reported as a gap rather than
+                // skipped silently, because a silently dropped section is a
+                // permanently unsearchable tail.
+                Err(error) => {
+                    gaps.push((
+                        key.clone(),
+                        RecoveryGap::Unjudgeable {
+                            reason: format!(
+                                "the section input cannot be built under layout {}: {error}",
+                                capture.layout.fingerprint()
+                            ),
+                        },
+                    ));
+                    continue;
+                }
+            }
         } else {
             gaps.push((
                 key.clone(),
@@ -2727,6 +2956,139 @@ mod tests {
     #[cfg(feature = "semantic-search")]
     use super::imp::Poll;
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Native-call observation.
+    //
+    // The production native encode is behind `semantic-search` and a live
+    // cached model, so the observer cannot be exercised through it. What
+    // these pin is the thing the runtime proof depends on and that is
+    // observable without a model: that entering a native call produces a
+    // **unique, strictly increasing** id drawn from an atomic rather than
+    // from the observation mutex, and that the recorded trace transitions
+    // from in-flight to returned with the encode's own outcome.
+    //
+    // Both statics are process-global. `NativeCallInFlight::enter` is only
+    // reached from the two worker loops, which need `semantic-search` and a
+    // cached model, so in a no-semantic run this is the only writer. Under a
+    // semantic run another test could in principle enter a call between this
+    // test's `enter` and its read of the single-slot `last_native_call`; the
+    // assertions below tolerate exactly that and fail on everything else.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn entering_a_native_call_advances_the_sequence_by_exactly_one() {
+        let before = native_call_sequence();
+        let call = NativeCallInFlight::enter("PRD-001", "inference");
+        let after = native_call_sequence();
+
+        assert_eq!(
+            after,
+            before + 1,
+            "one call entered, one increment: a counter that jumped would make `call_id` \
+             unusable for pairing an entry with its return"
+        );
+        assert_eq!(
+            call.call_id,
+            after,
+            "the guard must report the id the counter assigned it, not one derived locally"
+        );
+        assert!(call.call_id >= 1, "ids start at 1, so 0 is never a call");
+
+        let trace = last_native_call();
+        match trace {
+            Some(trace) if trace.call_id == call.call_id => {
+                assert_eq!(trace.op, "inference");
+                assert_eq!(trace.canonical_key, "PRD-001");
+                assert!(
+                    !trace.returned,
+                    "the entry record is in flight; a reader watching for a hang must see \
+                     `returned = false` here or it would conclude the call finished instantly"
+                );
+                assert!(
+                    !trace.ok && trace.elapsed_ms == 0,
+                    "`ok` and `elapsed_ms` are meaningless until the call returns, and they must \
+                     not read as a successful zero-duration call"
+                );
+            }
+            // Another call took the single slot. Not a failure of this code.
+            _ => {}
+        }
+
+        call.exited(true);
+    }
+
+    #[test]
+    fn a_returned_native_call_is_recorded_as_returned_with_its_own_outcome() {
+        let call = NativeCallInFlight::enter("PRD-002", "query");
+        call.exited(false);
+        match last_native_call() {
+            Some(trace) if trace.call_id == call.call_id => {
+                assert!(
+                    trace.returned,
+                    "after `exited` the record must say the call returned"
+                );
+                assert!(
+                    !trace.ok,
+                    "a failed encode must be recorded as failed: this is what stops a reader \
+                     from treating a permanently failing model as healthy"
+                );
+                assert_eq!(trace.op, "query", "the op distinguishes the two admission paths");
+                assert_eq!(trace.canonical_key, "PRD-002");
+            }
+            _ => {}
+        }
+
+        let success = NativeCallInFlight::enter("PRD-003", "inference");
+        success.exited(true);
+        match last_native_call() {
+            Some(trace) if trace.call_id == success.call_id => {
+                assert!(trace.returned && trace.ok);
+            }
+            _ => {}
+        }
+    }
+
+    /// The id must come from the atomic, not from the observation mutex.
+    ///
+    /// That is the design claim in `NativeCallInFlight::enter`: a poisoned
+    /// observation mutex costs the *record*, never the identity. If ids came
+    /// from the mutex, two concurrent calls could be handed the same id and a
+    /// reader pairing entry with return would silently attribute one call's
+    /// outcome to another.
+    #[test]
+    fn concurrent_native_calls_get_distinct_ids() {
+        const THREADS: usize = 8;
+        let handles: Vec<_> = (0..THREADS)
+            .map(|index| {
+                std::thread::spawn(move || {
+                    let call = NativeCallInFlight::enter(&format!("PRD-{index:03}"), "inference");
+                    let id = call.call_id;
+                    call.exited(true);
+                    id
+                })
+            })
+            .collect();
+
+        let ids: Vec<u64> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("the observer must not panic"))
+            .collect();
+
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            THREADS,
+            "every concurrent call needs its own id; a duplicate would make the entry and \
+             return lines ambiguous"
+        );
+        assert!(
+            native_call_sequence() >= THREADS as u64,
+            "the counter must have advanced for every call"
+        );
+    }
 
     /// TEST 1 — a build without `semantic-search` refuses to construct, and
     /// constructs no engine.
@@ -2956,6 +3318,7 @@ mod tests {
                     max_tokens: DEFAULT_MAX_TOKENS,
                     padding: "none".to_string(),
                     truncation: "longest_first".to_string(),
+                    section_layout_fingerprint: "layout-fixture".to_string(),
                 },
                 snapshot_root: std::path::PathBuf::from("/cache/snapshots").join(revision),
                 snapshot_id: revision.to_string(),
@@ -3610,14 +3973,31 @@ mod tests {
         use super::super::jobs::{DEFAULT_BODY_PREFIX_CHARS, EmbeddingJob};
         use super::super::manifest::{GenerationManifest, TableVersions};
 
+        // A real tokenizer: worker recovery rebuilds the section input through
+        // the capture's own layout, so a capture without one has nothing to
+        // rebuild from and the test would pass by reporting a gap instead of
+        // admitting the job.
+        let (_tok_dir, tokenizer, budgets) =
+            crate::embed::tokenizer::testing::fixture_tokenizer(512).unwrap();
+        let tokenizer = std::sync::Arc::new(tokenizer);
+        let section_content = "section body";
         let section = CapturedSection {
             canonical_key: "PRD-001#s1".to_string(),
             parent_key: "PRD-001".to_string(),
             ordinal: 1,
+            byte_start: 0,
+            byte_end: section_content.len(),
             heading: Some("Problem".to_string()),
             level: Some(2),
-            content: std::sync::Arc::from("section body"),
-            input_digest: "section-input-digest".to_string(),
+            content: std::sync::Arc::from(section_content),
+            input_digest: super::super::jobs::section_input_digest(
+                &tokenizer,
+                &budgets,
+                "",
+                Some("Problem"),
+                section_content,
+            )
+            .unwrap(),
             parent_input_digest: "parent-input-digest".to_string(),
         };
         let entry = SourceEntry {
@@ -3645,6 +4025,8 @@ mod tests {
             evaluated_at: "2026-10-17T00:00:00.000Z".to_string(),
             source_set_digest: "ss".to_string(),
             config_digest: "cd".to_string(),
+            layout: tokenizer.layout().clone(),
+            tokenizer: Some(std::sync::Arc::clone(&tokenizer)),
             body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
             sections: vec![section.clone()],
@@ -3665,7 +4047,7 @@ mod tests {
         };
 
         let mut manifest =
-            GenerationManifest::from_capture(&capture, "gen-1", TableVersions::new(1, 1));
+            GenerationManifest::from_capture(&capture, "gen-1", TableVersions::new(1, 1, 1));
         // The job records the binding the previous process was working
         // against: everything matches the fresh capture *except* the
         // recorded `input_digest`, which is what makes it work rather than
@@ -3692,14 +4074,14 @@ mod tests {
         assert_eq!(admitted.len(), 1);
         assert_eq!(admitted[0].canonical_key(), "PRD-001#s1");
         assert_eq!(
-            admitted[0].job.input_digest, "section-input-digest",
+            admitted[0].job.input_digest, section.input_digest,
             "the recovered job must be rebuilt from the fresh capture's binding, \
              not reused from the manifest — a manifest job names the bytes the \
              previous process was working against"
         );
         assert_eq!(
             admitted[0].input_text,
-            capture.section_input(&section, DEFAULT_BODY_PREFIX_CHARS),
+            capture.section_input(&section).unwrap(),
             "the recovered input is the section input, not the artifact prefix"
         );
 
@@ -3707,7 +4089,7 @@ mod tests {
         manifest.pending_jobs.insert(
             "PRD-001#s1".to_string(),
             EmbeddingJob {
-                input_digest: "section-input-digest".to_string(),
+                input_digest: section.input_digest.clone(),
                 ..manifest.pending_jobs["PRD-001#s1"].clone()
             },
         );
@@ -3914,6 +4296,10 @@ mod tests {
             max_tokens: 512,
             padding: "none".to_string(),
             truncation: "longest_first".to_string(),
+            // No capture is in play here: this profile exists only to give
+            // admission an identity to admit against, so the layout it claims
+            // is a fixed fixture value rather than a measured one.
+            section_layout_fingerprint: "layout-fixture".to_string(),
         }
     }
 

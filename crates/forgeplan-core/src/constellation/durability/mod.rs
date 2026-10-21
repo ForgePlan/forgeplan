@@ -403,6 +403,19 @@ pub(crate) fn install_immutable_file(
         std::fs::write(&temp, bytes).map_err(|e| ConstellationError::Io {
             detail: format!("cannot write {}: {e}", temp.display()),
         })?;
+        // The generation-manifest bytes are completely written; this is
+        // immediately before the file fsync. Inside this function rather than
+        // in the publisher that called it, because "before the fsync" is only
+        // meaningful at the fsync.
+        // `crate::constellation::fault_barrier_if_selected`, not
+        // `super::super::…`: the function is re-exported from the
+        // `constellation` module itself, and `super::super` from inside
+        // `constellation::durability` is `constellation`, so the two are only
+        // equivalent if the re-export is what is meant — naming it through the
+        // crate root keeps the one canonical path visible at every call site
+        // and makes a re-export removal a compile error rather than a silent
+        // second route to the same no-op.
+        crate::constellation::fault_barrier_if_selected("before_manifest_sync");
         // Durable bytes before a durable name — the same rule as
         // `write_bytes_via_temp`: an immutable file that survives its own
         // rename pointing at unwritten data is worse than no file.

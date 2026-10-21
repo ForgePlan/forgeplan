@@ -12,10 +12,10 @@
 
 use anyhow::Result;
 
-use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::release_notes;
-use forgeplan_core::workspace;
+
+use crate::commands::common;
 
 #[derive(Debug, Clone, Copy)]
 enum OutputFormat {
@@ -43,17 +43,26 @@ pub async fn run(
 ) -> Result<()> {
     let format = parse_output(output)?;
 
-    let cwd = std::env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-    // `find_workspace` returns the `.forgeplan/` directory; git
-    // commands run against the parent (the actual repo root).
+    let (ws, source) = common::open_read_source().await?;
+
+    // `find_workspace` returns the `.forgeplan/` directory; git commands run
+    // against the parent (the actual repo root).
     let repo_root = ws
         .parent()
         .ok_or_else(|| anyhow::anyhow!("workspace has no parent — bad .forgeplan/ path"))?;
-    let store = LanceStore::open(&ws).await?;
 
-    let notes = release_notes::generate(&store, repo_root, since, until, draft).await?;
+    // The git walk is identical on both layouts; only the artifact lookup the
+    // classifier performs differs. On a migrated workspace the old code opened
+    // a `LanceStore` directly — the one read path that still resurrected the
+    // retired table instead of going through the shared open.
+    let notes = match &source {
+        common::ReadSource::Legacy(store) => {
+            release_notes::generate(store, repo_root, since, until, draft).await?
+        }
+        common::ReadSource::Captured(read) => {
+            release_notes::generate_captured(read, repo_root, since, until, draft).await?
+        }
+    };
 
     match format {
         OutputFormat::Markdown => print!("{}", release_notes::format_markdown(&notes)),

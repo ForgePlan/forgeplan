@@ -5,6 +5,18 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "tract-engine")]
 pub mod tract_engine;
 
+/// Metadata-only tokenizer loading and the immutable section layout.
+///
+/// Unconditional, unlike [`tract_engine`]: section windows are measured in
+/// **tokens**, so capture needs a tokenizer in every build, and the weights,
+/// the graph and the download stay behind `semantic-search`. `tokenizers` is
+/// therefore a required dependency of this crate, with the same `onig`
+/// feature the engine used — which means a C toolchain is now required for a
+/// `no-semantic` build as well. That is the price of measuring windows in
+/// tokens rather than in characters, and it is stated here rather than
+/// discovered at build time.
+pub mod tokenizer;
+
 /// Approximate on-disk size of the default model (BGE-M3), measured on
 /// macOS 2026-08-29: `du -sh` over `models--BAAI--bge-m3` reported 2.1 GB.
 ///

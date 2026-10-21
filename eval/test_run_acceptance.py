@@ -1,362 +1,326 @@
+"""Executor/proof boundary tests. These do not certify a Forgeplan binary.
+
+All process tests below execute real children. Metadata/response fixtures are
+inputs to pure inventory/protocol validation, not mock production acceptance.
+"""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
+from pathlib import Path
+import signal
+import subprocess
 import sys
 import tempfile
-import time
+from types import SimpleNamespace
 import unittest
-from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import run_acceptance as runner
+import constellation_readiness as readiness
+
+
+def metadata_target(name: str, kind: str, *, test: bool = True,
+                    features: tuple[str, ...] = ()) -> dict:
+    return {"name": name, "kind": [kind], "test": test, "src_path": f"/fixture/{name}.rs",
+            "required-features": list(features)}
+
+
+def metadata(*targets: dict) -> dict:
+    return {"workspace_members": ["core-id"], "packages": [
+        {"id": "core-id", "name": "forgeplan-core", "targets": list(targets)},
+        {"id": "external-id", "name": "not-a-workspace-member", "targets": [metadata_target("external", "lib")]},
+    ]}
 
 
 class AcceptanceRunnerTests(unittest.TestCase):
-    def test_parses_rust_test_summary_counts(self) -> None:
-        output = (
-            "test result: ok. 3 passed; 1 failed; 2 ignored; "
-            "0 measured; 0 filtered out; finished in 0.01s\n"
-        )
-        self.assertEqual(
-            runner.parse_test_counts(output),
-            {"passed": 3, "failed": 1, "ignored": 2},
-        )
 
-    def test_build_command_uses_features_and_selected_worktree_target(self) -> None:
-        target_dir = runner.REPO / ".local" / "acceptance-target"
-        group = {
-            "name": "example",
-            "package": "forgeplan-core",
-            "tests": ["example_suite"],
-        }
-        declared = {
-            "forgeplan-core:example_suite": {
-                "package": "forgeplan-core",
-                "required_features": ["test-helpers"],
-            }
-        }
+    def test_empty_mandatory_phase_refuses_execution(self) -> None:
+        with patch.dict(runner.PHASE_GROUPS, {"empty-required-phase": []}):
+            with self.assertRaisesRegex(runner.Failure, "no acceptance suites"):
+                runner.required_phase_groups("empty-required-phase")
 
-        command = runner.build_group_argv(
-            target_dir,
-            group,
-            "no-semantic",
-            declared,
-        )
-
-        self.assertEqual(command[command.index("--target-dir") + 1], str(target_dir))
-        self.assertEqual(command[command.index("--features") + 1], "test-helpers")
-        self.assertEqual(command[command.index("--test") + 1], "example_suite")
-
-    def test_cli_package_does_not_receive_core_only_features(self) -> None:
-        command = runner.build_group_argv(
-            runner.REPO / ".local" / "acceptance-target",
-            {
-                "name": "cli",
-                "package": "forgeplan",
-                "tests": ["cli_migrated_write"],
-            },
-            "no-semantic",
-            {
-                "forgeplan:cli_migrated_write": {
-                    "package": "forgeplan",
-                    "required_features": [],
-                }
-            },
-        )
-        self.assertNotIn("--features", command)
-
-    def test_workspace_features_are_package_qualified(self) -> None:
-        features = runner.workspace_features_for("no-semantic")
-        self.assertEqual(features, ["forgeplan-core/test-helpers"])
-
-    def test_missing_targets_do_not_hide_available_groups(self) -> None:
-        groups = [
-            {
-                "name": "core",
-                "package": "forgeplan-core",
-                "tests": ["present_suite", "missing_suite"],
-            },
-            {
-                "name": "mcp",
-                "package": "forgeplan-mcp",
-                "tests": ["missing_group"],
-            },
+    def test_compiler_inventory_refuses_a_missing_executable_even_if_target_was_named(self) -> None:
+        records = [
+            {"reason": "compiler-artifact", "profile": {"test": True},
+             "target": {"kind": ["test"], "name": "present"}, "executable": "/fixture/present"},
+            {"reason": "compiler-artifact", "profile": {"test": True},
+             "target": {"kind": ["test"], "name": "missing"}, "executable": None},
         ]
-        declared = {
-            "forgeplan-core:present_suite": {
-                "package": "forgeplan-core",
-                "required_features": [],
-            }
-        }
+        with self.assertRaisesRegex(runner.Failure, "omitted required"):
+            runner.compiler_inventory("\n".join(json.dumps(row) for row in records),
+                                      {("test", "present"), ("test", "missing")})
+    def test_workspace_inventory_includes_library_binary_integration_and_compile_only(self) -> None:
+        groups, compile_only = runner.workspace_groups(metadata(
+            metadata_target("forgeplan_core", "lib"), metadata_target("tool", "bin"),
+            metadata_target("fault", "test", features=("test-helpers",)),
+            metadata_target("compile_only", "bin", test=False),
+            metadata_target("build-script-build", "custom-build"),
+        ))
+        self.assertEqual({group["target_key"] for group in groups}, {
+            "forgeplan-core:lib:forgeplan_core", "forgeplan-core:bin:tool", "forgeplan-core:test:fault"})
+        self.assertEqual(len(compile_only), 1)
+        self.assertEqual(compile_only[0]["status"], "NOT_APPLICABLE")
+        self.assertIn("test=false", compile_only[0]["reason"])
+        self.assertEqual(runner.test_selection_argv(groups[0]), ["--bin", "tool"])
 
-        self.assertEqual(
-            runner.missing_targets(groups, declared),
-            ["forgeplan-core:missing_suite", "forgeplan-mcp:missing_group"],
-        )
-        available, not_applicable, blocked = runner.runnable_groups(
-            groups, declared, "no-semantic"
-        )
-        self.assertEqual([group["name"] for group in available], ["core"])
-        self.assertEqual(available[0]["tests"], ["present_suite"])
+    def test_empty_inventory_is_a_failure_not_an_empty_success(self) -> None:
+        with self.assertRaisesRegex(runner.Failure, "no executable"):
+            runner.workspace_groups(metadata(metadata_target("build-script-build", "custom-build")))
+
+    def test_duplicate_metadata_target_fails_completeness(self) -> None:
+        target = metadata_target("duplicated", "test")
+        with self.assertRaisesRegex(runner.Failure, "duplicate target"):
+            runner.workspace_groups(metadata(target, target))
+
+    def test_missing_declared_phase_target_remains_an_error(self) -> None:
+        groups = [{"name": "faults", "package": "forgeplan-core", "tests": ["present", "missing"]}]
+        declared = {"forgeplan-core:present": {"package": "forgeplan-core", "required_features": []}}
+        self.assertEqual(runner.missing_targets(groups, declared), ["forgeplan-core:missing"])
+        available, not_applicable, blocked = runner.runnable_groups(groups, declared, "no-semantic")
+        self.assertEqual(available[0]["tests"], ["present"])
         self.assertEqual(not_applicable, [])
         self.assertEqual(blocked, [])
 
-    def test_semantic_only_target_is_n_a_in_no_semantic_profile(self) -> None:
-        groups = [
-            {
-                "name": "semantic",
-                "package": "forgeplan-core",
-                "tests": ["semantic_suite"],
-                "required_features": ["semantic-search"],
-            }
-        ]
-        declared = {
-            "forgeplan-core:semantic_suite": {
-                "package": "forgeplan-core",
-                "required_features": [],
-            }
-        }
-        available, not_applicable, blocked = runner.runnable_groups(
-            groups, declared, "no-semantic"
-        )
+    def test_workspace_semantic_gate_is_explicit_and_not_silently_enabled(self) -> None:
+        groups, _ = runner.workspace_groups(metadata(metadata_target("native", "test", features=("semantic-search",))))
+        available, not_applicable, blocked = runner.runnable_groups(groups, {}, "no-semantic")
         self.assertEqual(available, [])
-        self.assertEqual(not_applicable, ["forgeplan-core:semantic_suite"])
+        self.assertEqual(not_applicable, ["forgeplan-core:test:native"])
         self.assertEqual(blocked, [])
-        command = runner.build_group_argv(
-            runner.REPO / ".local" / "acceptance-target",
-            groups[0],
-            "semantic",
-            declared,
-        )
-        self.assertIn(
-            "semantic-search",
-            command[command.index("--features") + 1],
-        )
+        with self.assertRaises(runner.Failure):
+            runner.features_for("no-semantic", {"required_features": ["semantic-search"]})
 
-    def test_profile_does_not_silently_enable_missing_required_features(self) -> None:
-        with self.assertRaisesRegex(runner.Failure, "omits .*required features"):
-            runner.features_for(
-                "no-semantic",
-                {"required_features": ["semantic-search"]},
-            )
+    def test_target_selectors_preserve_exact_names(self) -> None:
+        command = runner.build_group_argv(runner.REPO / "target", {
+            "name": "actual-suite", "package": "forgeplan-core", "tests": ["exact_fault_name"]},
+            "no-semantic", {"forgeplan-core:exact_fault_name": {
+                "package": "forgeplan-core", "required_features": ["test-helpers"]}})
+        self.assertEqual(command[command.index("--test") + 1], "exact_fault_name")
+        self.assertNotIn("--all-features", command)
+        self.assertNotIn("semantic-search", command)
 
-    def test_command_wrapper_rejects_source_change_during_run(self) -> None:
-        before = {"production": "before"}
-        after = {"production": "after"}
-        process = Mock()
-        process.communicate.return_value = ("", "")
-        process.returncode = 0
-        with (
-            patch.object(runner, "source_fingerprints", side_effect=[before, after]),
-            patch.object(runner.subprocess, "Popen", return_value=process),
-            patch.object(runner, "log"),
-        ):
-            with self.assertRaisesRegex(runner.Failure, "files changed"):
-                runner.run(["cargo", "check"], runner.REPO, timeout=1)
+    def test_features_are_package_scoped_and_cli_does_not_inherit_test_helpers(self) -> None:
+        command = runner.build_group_argv(runner.REPO / "target", {
+            "name": "cli", "package": "forgeplan", "tests": ["compat"]}, "no-semantic",
+            {"forgeplan:compat": {"package": "forgeplan", "required_features": []}})
+        self.assertNotIn("--features", command)
+        self.assertEqual(runner.workspace_features_for("no-semantic"), ["forgeplan-core/test-helpers"])
 
-    def test_zero_doctests_are_not_reported_as_a_pass(self) -> None:
-        completed = runner.CommandResult(
-            returncode=0,
-            stdout="test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n",
-            stderr="",
-            source_fingerprints_before={},
-            source_fingerprints_after={},
-        )
-        with (
-            patch.object(runner, "run", return_value=completed),
-            patch.object(runner, "free_bytes", return_value=100),
-        ):
-            result = runner.doctests(
-                runner.REPO, runner.REPO / "target", "no-semantic", timeout=1
-            )
-        self.assertTrue(result["ran_nothing"])
+    def test_counts_require_actual_summary_lines(self) -> None:
+        self.assertEqual(runner.parse_test_counts("test result: ok. 3 passed; 1 failed; 2 ignored;\n"),
+                         {"passed": 3, "failed": 1, "ignored": 2})
+        self.assertEqual(runner.parse_test_counts("0 failed; build completed\n"),
+                         {"passed": 0, "failed": 0, "ignored": 0})
 
-    def test_recognizes_unit_test_artifacts_for_lib_and_bin_targets(self) -> None:
-        for kind in ("test", "lib", "bin"):
-            with self.subTest(kind=kind):
-                self.assertTrue(
-                    runner.is_test_executable_artifact(
-                        {
-                            "reason": "compiler-artifact",
-                            "profile": {"test": True},
-                            "target": {"kind": [kind]},
-                        }
-                    )
-                )
-        self.assertFalse(
-            runner.is_test_executable_artifact(
-                {
-                    "reason": "compiler-artifact",
-                    "profile": {"test": False},
-                    "target": {"kind": ["bin"]},
-                }
-            )
-        )
+    def test_real_child_exit_is_not_overridden_by_success_looking_stdout(self) -> None:
+        result = runner.run([sys.executable, "-c",
+            "import sys; print('test result: ok. 99 passed; 0 failed; 0 ignored;'); sys.exit(17)"],
+            runner.REPO, timeout=10)
+        self.assertEqual(result.returncode, 17)
+        self.assertFalse(result.timed_out)
+        self.assertEqual(runner.parse_test_counts(result.stdout)["passed"], 99)
 
-    def test_cargo_json_retains_complete_test_binary_paths(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            binary = Path(temp_dir) / "example_suite-abc123"
-            binary.write_bytes(b"linked test executable")
-            messages = [
-                {
-                    "reason": "compiler-artifact",
-                    "profile": {"test": False},
-                    "target": {"kind": ["bin"]},
-                    "executable": str(Path(temp_dir) / "ordinary-program"),
-                },
-                {
-                    "reason": "compiler-artifact",
-                    "profile": {"test": True},
-                    "target": {"kind": ["test"]},
-                    "executable": str(binary),
-                },
-                {
-                    "reason": "compiler-artifact",
-                    "profile": {"test": True},
-                    "target": {"kind": ["lib"]},
-                    "executable": None,
-                },
-            ]
-            completed = runner.CommandResult(
-                returncode=0,
-                stdout="\n".join(json.dumps(message) for message in messages),
-                stderr="",
-                source_fingerprints_before={},
-                source_fingerprints_after={},
-            )
-            with (
-                patch.object(runner, "run", return_value=completed),
-                patch.object(runner, "free_bytes", return_value=20 * 1024**3),
-            ):
-                result = runner.build_group(
-                    runner.REPO,
-                    runner.REPO / "target",
-                    {"name": "example", "package": "forgeplan-core", "tests": ["example_suite"]},
-                    "no-semantic",
-                    {"forgeplan-core:example_suite": {"package": "forgeplan-core", "required_features": []}},
-                    timeout=1,
-                )
-            self.assertEqual(result["executables"], [str(binary)])
-            self.assertEqual(
-                result["executable_sha256"],
-                {str(binary): hashlib.sha256(binary.read_bytes()).hexdigest()},
-            )
+    def test_real_zero_run_executable_is_not_a_pass(self) -> None:
+        if os.name == "nt":
+            self.fail("this executable-boundary test requires the Unix runner, not a silent SKIP")
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "zero-cases"
+            executable.write_text(f"#!{sys.executable}\nraise SystemExit(0)\n", encoding="utf-8")
+            executable.chmod(0o755)
+            result = runner.execute(str(executable), timeout=10)
+            self.assertEqual(result["exit"], 0)
+            self.assertTrue(result["ran_nothing"])
+            self.assertEqual(result["counts"], {"passed": 0, "failed": 0, "ignored": 0})
 
-    def test_target_dir_rejects_neighbor_worktree_and_dry_run_does_not_create(self) -> None:
-        with tempfile.TemporaryDirectory(dir=runner.REPO) as temp_dir:
-            missing_target = Path(temp_dir) / "not-created"
-            resolved = runner.target_dir(
-                {"target_directory": str(runner.REPO / "target")},
-                str(missing_target),
-                create=False,
-            )
-            self.assertEqual(resolved, missing_target)
-            self.assertFalse(missing_target.exists())
-
-        neighbor = runner.REPO.parent / f"{runner.REPO.name}-other/target"
-        with self.assertRaisesRegex(runner.Failure, "outside this worktree"):
-            runner.target_dir(
-                {"target_directory": str(runner.REPO / "target")},
-                str(neighbor),
-                create=False,
-            )
-
-    def test_relative_target_directory_is_based_on_this_worktree(self) -> None:
-        resolved = runner.target_dir(
-            {"target_directory": str(runner.REPO / "target")},
-            ".local/acceptance-target",
-            create=False,
-        )
-        self.assertEqual(resolved, runner.REPO / ".local/acceptance-target")
-
-    def test_empty_phase_is_reported_as_failure(self) -> None:
-        with tempfile.TemporaryDirectory(dir=runner.REPO) as temp_dir:
-            root = Path(temp_dir)
-            out = root / "results"
-            metadata = {
-                "packages": [],
-                "target_directory": str(root / "target"),
-            }
-            with (
-                patch.object(
-                    runner,
-                    "free_bytes",
-                    return_value=runner.REQUIRED_MIN_FREE_BYTES,
-                ),
-                patch.object(runner, "cargo_metadata", return_value=metadata),
-                patch.object(runner, "log"),
-                patch.dict(os.environ, {"FORGEPLAN_MODEL_CACHE": "test-cache"}),
-            ):
-                status = runner.main(
-                    [
-                        "--phase",
-                        "s3",
-                        "--profile",
-                        "no-semantic",
-                        "--out",
-                        str(out),
-                        "--target-dir",
-                        str(root / "target"),
-                    ]
-                )
-            self.assertEqual(status, 1)
-            report = json.loads((out / "result.json").read_text())
-            self.assertEqual(report["result"], "FAIL")
-            self.assertIn(
-                "s3/no-semantic: no acceptance suites are declared",
-                report["failures"],
-            )
-
-    def test_binary_hash_covers_the_file_and_missing_binary_is_reported(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            binary = Path(temp_dir) / "test-binary"
-            binary.write_bytes(b"compiled test payload")
-            self.assertEqual(
-                runner.binary_sha256(str(binary)),
-                hashlib.sha256(b"compiled test payload").hexdigest(),
-            )
-
-            missing = Path(temp_dir) / "missing-binary"
-            with (
-                patch.object(runner, "free_bytes", return_value=100),
-                patch.object(runner, "source_fingerprints", return_value={}),
-            ):
-                result = runner.execute(str(missing), timeout=1)
-            self.assertEqual(result["exit"], 127)
-            self.assertIsNone(result["binary_sha256_before"])
-            self.assertIsNone(result["binary_sha256_after"])
-            self.assertIn("could not start", result["stderr_tail"])
-
-    def test_command_timeout_kills_descendants_and_preserves_output(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            marker = Path(temp_dir) / "surviving-child"
-            child = (
-                "import pathlib,sys,time; time.sleep(0.6); "
-                "pathlib.Path(sys.argv[1]).write_text('survived')"
-            )
-            parent = (
-                "import subprocess,sys,time; "
-                "subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]]); "
-                "print('started', flush=True); time.sleep(5)"
-            )
-            command = [sys.executable, "-c", parent, child, str(marker)]
-            with (
-                patch.object(runner, "source_fingerprints", return_value={}),
-                patch.object(runner, "log"),
-            ):
-                result = runner.run(command, runner.REPO, timeout=0.2)
-            time.sleep(0.7)
-            marker_created = marker.exists()
-
+    def test_timeout_retains_actual_signal_exit_and_partial_logs(self) -> None:
+        result = runner.run([sys.executable, "-u", "-c",
+                             "import time; print('entered', flush=True); time.sleep(60)"],
+                            runner.REPO, timeout=0.3)
         self.assertTrue(result.timed_out)
-        self.assertEqual(result.returncode, 124)
-        self.assertIn("started", result.stdout)
-        self.assertIn("timeout after", result.stderr)
-        self.assertFalse(marker_created, "a child process survived the timed-out run")
+        self.assertNotEqual(result.returncode, 0)
+        if os.name != "nt":
+            self.assertIn(result.returncode, (-signal.SIGTERM, -signal.SIGKILL))
+        self.assertIn("entered", result.stdout)
+
+    def test_full_stream_logs_have_reproducible_hash_and_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(runner, "_COMMAND_LOG_DIR", Path(temporary)):
+                result = runner.run([sys.executable, "-c", "import sys; sys.stderr.write('failure detail'); sys.exit(3)"],
+                                    runner.REPO, timeout=10)
+            log = result.logs["stderr"]
+            path = Path(log["path"])
+            self.assertEqual(path.read_text(), "failure detail")
+            self.assertEqual(log["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertEqual(log["bytes"], len(path.read_bytes()))
+            self.assertEqual(result.returncode, 3)
+
+    def test_fingerprint_includes_new_owned_file_and_ignores_foreign_caches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            tracked = root / "crates/forgeplan-core/src/lib.rs"
+            tracked.parent.mkdir(parents=True)
+            tracked.write_text("pub fn tracked() {}\n", encoding="utf-8")
+            (root / "Cargo.lock").write_text("lock\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "Cargo.lock", "crates/forgeplan-core/src/lib.rs"], check=True)
+            new = root / "crates/forgeplan-core/tests/new_owned.rs"
+            new.parent.mkdir()
+            new.write_text("new behavioral test\n", encoding="utf-8")
+            foreign = root / ".local/copied-cache.rs"
+            foreign.parent.mkdir()
+            foreign.write_text("not source\n", encoding="utf-8")
+            with patch.object(runner, "REPO", root), \
+                 patch.object(runner, "_EXPLICIT_SOURCE_PATHS", {new}), \
+                 patch.object(runner, "_METADATA_SOURCE_PATHS", set()):
+                before = runner.source_fingerprints()
+                manifest = runner.source_inventory()
+                self.assertIn("crates/forgeplan-core/tests/new_owned.rs", manifest["tests"])
+                foreign.write_text("changed foreign bytes\n", encoding="utf-8")
+                self.assertEqual(before, runner.source_fingerprints())
+                new.write_text("changed behavioral test\n", encoding="utf-8")
+                changed = runner.source_fingerprints()
+                self.assertNotEqual(before["tests"], changed["tests"])
+                tracked.unlink()
+                self.assertNotEqual(changed["production"], runner.source_fingerprints()["production"])
+
+    def test_model_fingerprint_hashes_bytes_not_same_size_and_mtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            file = cache / "tokenizer.json"
+            file.write_bytes(b"AAA")
+            stamp = file.stat()
+            before = runner.model_cache_inventory(cache)
+            file.write_bytes(b"BBB")
+            os.utime(file, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            self.assertNotEqual(before, runner.model_cache_inventory(cache))
+
+    def test_target_directory_cannot_cross_to_another_worktree(self) -> None:
+        with self.assertRaisesRegex(runner.Failure, "outside this worktree"):
+            runner.target_dir({"target_directory": str(runner.REPO / "target")},
+                              str(runner.REPO.parent / "other-worktree/target"), create=False)
+
+
+    def test_frozen_patch_contains_real_unstaged_and_untracked_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "Cargo.lock").write_text("old lock\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "Cargo.lock"], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Patch Fixture",
+                            "-c", "user.email=fixture@forgeplan.invalid",
+                            "-c", "commit.gpgsign=false", "commit", "-qm", "Fixture baseline"], check=True)
+            (root / "Cargo.lock").write_text("changed lock\n", encoding="utf-8")
+            new = root / "crates/forgeplan-core/tests/new_process.rs"
+            new.parent.mkdir(parents=True)
+            new.write_text("new behavior bytes\n", encoding="utf-8")
+            with patch.object(runner, "REPO", root), \
+                 patch.object(runner, "_EXPLICIT_SOURCE_PATHS", {new}), \
+                 patch.object(runner, "_METADATA_SOURCE_PATHS", set()):
+                receipt = runner.freeze_source_patch(root / "source.patch")
+            delta = (root / "source.patch").read_bytes()
+            self.assertIn(b"+changed lock", delta)
+            self.assertIn(b"b/crates/forgeplan-core/tests/new_process.rs", delta)
+            self.assertIn(b"+new behavior bytes", delta)
+            self.assertEqual(receipt["sha256"], hashlib.sha256(delta).hexdigest())
+            self.assertEqual(receipt["bytes"], len(delta))
+
+
+class ReadinessBoundaryTests(unittest.TestCase):
+    def test_incomplete_capture_cannot_masquerade_as_empty_success(self) -> None:
+        healthy_looking = {"result": {"content": [{"type": "text", "text": '{"total":0,"partial":false}'}]}}
+        with self.assertRaises(readiness.ProofFailure):
+            readiness.explicit_failure(healthy_looking, ("source_unavailable",))
+        failure = {"result": {"isError": True, "content": [{"type": "text", "text": "source_unavailable: invalid YAML"}]}}
+        readiness.explicit_failure(failure, ("source_unavailable",))
+        with self.assertRaises(readiness.ProofFailure):
+            readiness.payload(failure)
+
+    def test_native_trace_requires_an_unreturned_query_entry(self) -> None:
+        self.assertIsNone(readiness.active_native_call("RPC request pending"))
+        entry = 'DEBUG event="constellation_native_encode_entered" call_id=12 op="query"'
+        self.assertEqual(readiness.active_native_call(entry), ("12", entry))
+        returned = 'DEBUG event="constellation_native_encode_returned" call_id=12 op="query" canonical_key="constellation_native_encode_entered"'
+        self.assertIsNone(readiness.active_native_call(entry + "\n" + returned))
+        self.assertIsNone(readiness.active_native_call('event="constellation_native_encode_entered" call_id=13 op="inference"'))
+
+    def test_reason_config_allows_public_fields_but_refuses_auth_or_unknown_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "reason.yaml"
+            path.write_text("llm:\n  provider: codex-cli\n  model: ''\n", encoding="utf-8")
+            self.assertEqual(readiness.reason_config(path), {"provider": "codex-cli", "model": ""})
+            path.write_text("llm:\n  provider: codex-cli\n  api_key_env: PRIVATE_KEY\n", encoding="utf-8")
+            with self.assertRaises(readiness.ProofFailure):
+                readiness.reason_config(path)
+
+
+class ReadinessPrerequisiteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_actual_missing_cache_blocks_before_any_model_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "empty-cache"
+            cache.mkdir()
+            proof = SimpleNamespace(models=runner.model_cache_inventory(cache))
+            with self.assertRaisesRegex(readiness.ProofBlocked, "real ONNX"):
+                await readiness.real_embed(proof, root)
+
+    async def test_mandatory_blocked_case_is_persisted_as_blocked_not_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            proof = readiness.Proof.__new__(readiness.Proof)
+            proof.out = Path(temporary)
+            proof.events = proof.out / "events.jsonl"
+            proof.cases = []
+
+            async def unavailable() -> None:
+                readiness.prerequisite(False, "explicit missing input")
+
+            await proof.case("mandatory-negative", unavailable)
+            recorded = json.loads((proof.out / "cases.json").read_text(encoding="utf-8"))
+            self.assertEqual(recorded[0]["status"], "BLOCKED")
+            self.assertEqual(recorded[0]["error"], "explicit missing input")
+
+
+    async def test_metadata_only_cache_candidate_is_blocked_without_requesting_weights(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            snapshot = cache / "models--BAAI--bge-m3/snapshots/metadata-only"
+            snapshot.mkdir(parents=True)
+            (snapshot / "tokenizer.json").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(readiness.ProofBlocked, "onnx/model.onnx_data"):
+                readiness.require_cached_model(runner.model_cache_inventory(cache))
+
+
+class BarrierTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_socket_rejects_another_child_pid(self) -> None:
+        async with readiness.Barrier("owner_acquired") as barrier:
+            endpoint = barrier.environment()["FORGEPLAN_TEST_BARRIER_ENDPOINT"]
+            host, port = endpoint.split(":")
+            _, writer = await asyncio.open_connection(host, int(port))
+            writer.write(json.dumps({"token": barrier.token, "stage": barrier.stage, "pid": 42}).encode() + b"\n")
+            await writer.drain()
+            try:
+                with self.assertRaises(readiness.ProofFailure):
+                    await barrier.reached(99, 1)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+    async def test_real_socket_accepts_only_exact_token_stage_pid(self) -> None:
+        async with readiness.Barrier("after_current_ack") as barrier:
+            endpoint = barrier.environment()["FORGEPLAN_TEST_BARRIER_ENDPOINT"]
+            host, port = endpoint.split(":")
+            _, writer = await asyncio.open_connection(host, int(port))
+            writer.write(json.dumps({"token": barrier.token, "stage": barrier.stage, "pid": 99}).encode() + b"\n")
+            await writer.drain()
+            try:
+                message, _ = await barrier.reached(99, 1)
+                self.assertEqual(message["stage"], "after_current_ack")
+            finally:
+                writer.close()
+                await writer.wait_closed()
 
 
 if __name__ == "__main__":

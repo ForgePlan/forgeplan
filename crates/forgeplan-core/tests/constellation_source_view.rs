@@ -137,7 +137,7 @@ async fn l01_a_metadata_only_change_is_seen_as_an_update_not_as_unchanged() {
     let published = GenerationManifest::from_capture(
         &before,
         "gen-1",
-        forgeplan_core::constellation::manifest::TableVersions::new(1, 1),
+        forgeplan_core::constellation::manifest::TableVersions::new(1, 1, 1),
     );
 
     std::fs::write(&file, artifact("PRD-001", "Auth", "active", "", "Body.\n")).unwrap();
@@ -429,7 +429,7 @@ async fn l08_invalid_frontmatter_is_diagnosed_and_is_not_a_delete() {
     let published = GenerationManifest::from_capture(
         &before,
         "gen-1",
-        forgeplan_core::constellation::manifest::TableVersions::new(2, 2),
+        forgeplan_core::constellation::manifest::TableVersions::new(2, 2, 2),
     );
     assert!(published.coverage.is_complete());
 
@@ -505,7 +505,7 @@ async fn l08_a_file_that_vanishes_from_a_complete_capture_is_a_delete() {
     let published = GenerationManifest::from_capture(
         &before,
         "gen-1",
-        forgeplan_core::constellation::manifest::TableVersions::new(2, 2),
+        forgeplan_core::constellation::manifest::TableVersions::new(2, 2, 2),
     );
 
     std::fs::remove_file(tmp.path().join("prds").join("PRD-002-second.md")).unwrap();

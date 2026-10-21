@@ -75,6 +75,10 @@ fn profile(prefix_chars: usize, revision: &str) -> EmbeddingProfile {
         max_tokens: DEFAULT_MAX_TOKENS,
         padding: "none".to_string(),
         truncation: "longest_first".to_string(),
+        // Part of `profile_id`, so two profiles differing only in layout are
+        // two embedding spaces. A fixed value is enough here: the property
+        // under test is the artifact-prefix budget, not the layout.
+        section_layout_fingerprint: "layout-fixture".to_string(),
     }
 }
 
@@ -295,7 +299,6 @@ async fn pinned_section_rows(index_root: &Path) -> Vec<(String, String)> {
     let marker = marker_for(&manifest);
     let version = descriptor
         .effective_sections_version(&manifest)
-        .unwrap()
         .expect("this build always pins a sections version");
     let table = forgeplan_core::constellation::lance_tables::open_table_at_version(
         index_root, &marker, "sections", version,

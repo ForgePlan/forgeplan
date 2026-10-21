@@ -138,24 +138,24 @@ pub enum HeadComparison {
     Diverged {
         artifacts_diverged: bool,
         relations_diverged: bool,
-        /// `true` only when the published manifest actually pins a sections
-        /// version and the physical head differs. A pre-sections generation
-        /// pins `None` and can never diverge — the table's head is free
-        /// regardless of where it stands.
         sections_diverged: bool,
     },
-    /// A published version is gone. Explicitly unavailable; never a jump to
-    /// latest.
+    /// A published version is gone, or the published set is not a complete
+    /// triple. Explicitly unavailable; never a jump to latest.
     MissingPublishedVersion { role: &'static str },
 }
 
 /// Compare physical head versions with the published set.
 ///
 /// `published` of `None` means nothing has been published, which matches by
-/// definition: there is no baseline to diverge from. `sections_head` is the
-/// physical sections head; it participates **only** when the published
-/// manifest pins a sections version — a generation written before
-/// `constellation_sections_v1` existed has no pin to diverge from.
+/// definition: there is no baseline to diverge from.
+///
+/// All three heads participate unconditionally. There used to be an exemption
+/// for a generation that pinned no sections version, on the reasoning that a
+/// pre-sections generation had nothing to diverge from — but that exemption is
+/// what let a stale sections head survive into a published generation, and an
+/// absent pin now means a torn set, reported as
+/// [`HeadComparison::MissingPublishedVersion`].
 pub fn compare_heads(
     published: Option<&GenerationManifest>,
     artifacts_head: u64,
@@ -165,20 +165,18 @@ pub fn compare_heads(
     let Some(published) = published else {
         return HeadComparison::Matches;
     };
-    if !published.table_versions.is_publishable() {
+    if published.table_versions.artifacts == 0 || published.table_versions.relations == 0 {
         return HeadComparison::MissingPublishedVersion { role: "pair" };
     }
-    if published.table_versions.sections == Some(0) {
-        // `Some(0)` is not a real version — the empty creation commit is v1.
-        // It is torn state, not "no sections": `None` carries that meaning.
+    if published.table_versions.sections == 0 {
+        // `0` is not a real version — the empty creation commit is v1. It is
+        // torn state, not "this generation has no sections": a generation with
+        // no semantic sections pins the version its empty commit produced.
         return HeadComparison::MissingPublishedVersion { role: "sections" };
     }
     let artifacts_diverged = artifacts_head != published.table_versions.artifacts;
     let relations_diverged = relations_head != published.table_versions.relations;
-    let sections_diverged = published
-        .table_versions
-        .sections
-        .is_some_and(|pinned| sections_head != pinned);
+    let sections_diverged = sections_head != published.table_versions.sections;
     if !artifacts_diverged && !relations_diverged && !sections_diverged {
         HeadComparison::Matches
     } else {
@@ -299,6 +297,11 @@ impl IndexPublisher {
         let _ = location.existing_parent()?;
 
         let owner = super::owner::acquire_owner(&location, Duration::from_millis(OWNER_BUDGET_MS))?;
+        // The OS guard is **already held** here — this fires after a real
+        // acquisition, never instead of one. A second process reaching this
+        // line after the first dies is the takeover case, and the parent
+        // distinguishes the two by the pid and token in the report.
+        super::fault_barrier_if_selected("owner_acquired");
 
         let (_support, platform, diagnostic) = platform_barrier(index_root);
         if let Some(diagnostic) = diagnostic {
@@ -357,10 +360,13 @@ impl IndexPublisher {
 
     /// Republish `CURRENT.json` under this publisher's durability barrier.
     ///
-    /// The descriptor is the one mutable pointer a completed write may move:
-    /// an embedding drain records the post-publish artifacts head here so the
-    /// next reconcile treats it as the baseline instead of rewinding the
-    /// vectors as divergence. The manifest itself stays immutable.
+    /// **Only the claimed embedding space may move this way.** It used to also
+    /// carry the embedding heads, which is how `CURRENT` became a second,
+    /// weaker source of table versions: the descriptor could name a sections
+    /// head the immutable manifest never pinned, and `effective_sections_version`
+    /// had to reconcile two authorities. A drain now publishes a **new
+    /// generation** — it already did for its pending set — and the descriptor
+    /// carries nothing but the checksum binding to that manifest.
     ///
     /// # This runs the same barrier `publish` runs
     ///
@@ -372,22 +378,17 @@ impl IndexPublisher {
     ///
     /// Before this, the republish reached straight for
     /// [`storage::publish_current`], so the drain's Lance writes were tracked
-    /// but never fsynced before the pointer named a head they produced. A
-    /// crash there left a visible `CURRENT` whose versions the tables did not
-    /// yet hold — the C04 hole.
+    /// but never fsynced before the pointer moved. A crash there left a visible
+    /// `CURRENT` whose directory entry the tables had not yet acknowledged —
+    /// the C04 hole.
     ///
     /// The barrier runs over **this publisher's** [`Self::tracker`], the same
-    /// instance both tables' wrappers write into, so it sees the drain's whole
-    /// closure. A second tracker here would see an empty set and ACK nothing.
-    ///
-    /// There is no manifest step: the manifest is immutable and was made
-    /// durable by the `publish` that created it, and the descriptor this
-    /// republish installs already names that verified file. Rewriting it
-    /// would be a second publication of one generation id, which
-    /// [`storage::write_generation_manifest`] refuses by design.
+    /// instance all three tables' wrappers write into, so it sees the drain's
+    /// whole closure. A second tracker here would see an empty set and ACK
+    /// nothing.
     ///
     /// Safe to call only while this publisher is held — the write assumes no
-    /// other writer can move the head between the caller's read and this
+    /// other writer can move the pointer between the caller's read and this
     /// republish, which is exactly what the owner lock guarantees.
     ///
     /// # Errors
@@ -416,7 +417,9 @@ impl IndexPublisher {
         // 2. Visibility point, then the durable ACK — both inside
         //    `publish_current`, which is what makes a failure after the
         //    rename `PublicationUncertain` rather than a plain error.
-        storage::publish_current(index_root, descriptor, self.platform.as_ref())
+        storage::publish_current(index_root, descriptor, self.platform.as_ref())?;
+        super::fault_barrier_if_selected("after_current_ack");
+        Ok(())
     }
 
     /// Write the bootstrap marker announcing an in-progress build.
@@ -485,11 +488,18 @@ impl IndexPublisher {
         let write_set = self.tracker.finish_writes()?;
         self.tracker
             .sync_written_set(&write_set, index_root, self.platform.as_ref())?;
+        // All three writes joined and the full WriteSet barrier returned
+        // success. Not merely `finish_writes`, and not a partial set.
+        super::fault_barrier_if_selected("after_storage_sync");
 
         // 2. Generation manifest barrier. A durable manifest alone is an
         //    orphan: readers ignore it until CURRENT names it.
         let manifest_sha256 =
             storage::write_generation_manifest(index_root, manifest, self.platform.as_ref())?;
+        // The manifest is installed and its directory durability returned;
+        // `CURRENT` still names the previous generation, so this file is an
+        // orphan a reader is right to ignore.
+        super::fault_barrier_if_selected("after_manifest_sync");
 
         // 3 + 4. Visibility point, then the durable ACK. The profile is placed
         //      on the descriptor **before** the single `publish_current`: an
@@ -498,6 +508,10 @@ impl IndexPublisher {
         let descriptor =
             storage::descriptor_for(manifest, self.owner.epoch(), &manifest_sha256, profile_id);
         storage::publish_current(index_root, &descriptor, self.platform.as_ref())?;
+        // The pointer is visible, the platform durability ACK returned, and the
+        // descriptor's checksum and triple have been re-read below by the
+        // caller. Nothing is left unproven at this point.
+        super::fault_barrier_if_selected("after_current_ack");
 
         Ok(descriptor)
     }
@@ -1283,10 +1297,78 @@ pub struct SectionsPlan {
     /// merge is emitted — an empty corpus's sections are still deleted by
     /// `parent_delete_keys` when the capture is complete.
     pub merge_rows: usize,
-    /// `true` when the published generation pins no sections version — a
-    /// pre-sections index — so the merge must run even on a pass whose
-    /// artifact side is a no-op. This is the upgrade path, not a keepalive.
-    pub bootstrap: bool,
+    /// The captured section set differs from the published generation's
+    /// recorded membership, so the merge must run even on a pass whose
+    /// artifact side is a no-op.
+    ///
+    /// It replaces the old `bootstrap` flag, which meant "the published
+    /// generation pins no sections version". That condition no longer exists —
+    /// the triple is always complete — and the flag it replaced was wrong for
+    /// the case that matters: a capture that changes the **layout**, or that
+    /// publishes an empty set because metadata went absent, moves the section
+    /// set without moving a single artifact row. ADR-029 §4.3 allows an
+    /// unchanged physical version only when the exact set matches, so "differs"
+    /// is the condition, not "the artifact side changed".
+    pub set_changed: bool,
+}
+
+/// Whether the capture's section set differs from the published membership.
+///
+/// Compares the **exact** key set and each row's own binding identity — parent,
+/// ordinal, byte range, input digests and layout fingerprint. A layout change
+/// alone is enough: the same keys would mean different bytes under a different
+/// layout, and keeping the old physical version would publish section rows
+/// whose stored text no longer matches what the key binds.
+pub fn section_set_changed(
+    captured: &super::capture::CapturedSourceView,
+    published: Option<&GenerationManifest>,
+) -> bool {
+    let Some(published) = published else {
+        return true;
+    };
+    let layout = captured.layout.fingerprint();
+    let captured_rows: Vec<(&str, &str, u32, usize, usize, &str, &str)> = captured
+        .sections
+        .iter()
+        .map(|section| {
+            (
+                section.canonical_key.as_str(),
+                section.parent_key.as_str(),
+                section.ordinal,
+                section.byte_start,
+                section.byte_end,
+                section.input_digest.as_str(),
+                layout.as_str(),
+            )
+        })
+        .collect();
+    let published_rows: Vec<(&str, &str, u32, usize, usize, &str, &str)> = published
+        .section_bindings
+        .iter()
+        .map(|binding| {
+            (
+                binding.section_key.as_str(),
+                binding.parent_key.as_str(),
+                binding.ordinal,
+                binding.byte_start,
+                binding.byte_end,
+                binding.section_input_digest.as_str(),
+                binding.layout_fingerprint.as_str(),
+            )
+        })
+        .collect();
+    // `from_capture` sorts the bindings by key and the capture emits sections
+    // parent-key-sorted then ordinal, which is the same order for keys of the
+    // form `{parent}#s{n}` — but only under a lexically identical parent set.
+    // Sorting both sides removes that assumption rather than relying on it.
+    let mut captured_sorted = captured_rows.clone();
+    let mut published_sorted = published_rows.clone();
+    captured_sorted.sort();
+    published_sorted.sort();
+    if captured_sorted.len() != published_sorted.len() {
+        return true;
+    }
+    captured_sorted != published_sorted
 }
 
 /// Turn a commit plan into the sequence of commits that can actually run.
@@ -1375,11 +1457,12 @@ pub fn stage_sequence(
         });
     }
     // The merge is gated the same way as `MergeUpsert` plus one extra case:
-    // `bootstrap` means the published generation pins no sections version —
-    // a pre-sections index was just upgraded — so the table must be
-    // populated even on a pass whose artifact side is a no-op. Without it a
-    // reopened index would sit empty until the next content change.
-    if sections.merge_rows > 0 && (!commit.is_empty() || sections.bootstrap) {
+    // `set_changed` means the captured section set differs from the published
+    // membership — a layout change, or an empty set because metadata went
+    // absent — so the table must be rewritten even on a pass whose artifact
+    // side is a no-op. Without it, a layout change would leave the previous
+    // generation's rows published under keys that now mean different bytes.
+    if sections.merge_rows > 0 && (!commit.is_empty() || sections.set_changed) {
         ops.push(CommitOp::SectionsMerge {
             rows: sections.merge_rows,
             full_source_batch: commit.full_source_batch,
@@ -1800,6 +1883,8 @@ pub fn sections_batch(
     let mut parent_key = arrow_array::builder::StringBuilder::new();
     let mut parent_display_id = arrow_array::builder::StringBuilder::new();
     let mut ordinal = arrow_array::builder::UInt64Builder::new();
+    let mut byte_start = arrow_array::builder::UInt64Builder::new();
+    let mut byte_end = arrow_array::builder::UInt64Builder::new();
     let mut heading = arrow_array::builder::StringBuilder::new();
     let mut level = arrow_array::builder::UInt64Builder::new();
     let mut title = arrow_array::builder::StringBuilder::new();
@@ -1862,6 +1947,8 @@ pub fn sections_batch(
         parent_key.append_value(section.parent_key.as_str());
         parent_display_id.append_value(artifact.display_id.as_str());
         ordinal.append_value(u64::from(section.ordinal));
+        byte_start.append_value(section.byte_start as u64);
+        byte_end.append_value(section.byte_end as u64);
         heading.append_option(section.heading.as_deref());
         level.append_option(section.level.map(u64::from));
         title.append_value(artifact.title.as_str());
@@ -1916,6 +2003,8 @@ pub fn sections_batch(
             "parent_key" => Arc::new(parent_key.finish()),
             "parent_display_id" => Arc::new(parent_display_id.finish()),
             "ordinal" => Arc::new(ordinal.finish()),
+            "byte_start" => Arc::new(byte_start.finish()),
+            "byte_end" => Arc::new(byte_end.finish()),
             "heading" => Arc::new(heading.finish()),
             "level" => Arc::new(level.finish()),
             "title" => Arc::new(title.finish()),
@@ -2181,11 +2270,12 @@ pub struct VerificationReport {
     pub expected_edges: usize,
     /// The edge count actually present at the pinned relations version.
     pub verified_edges: usize,
-    /// The sections version the pinned reader opened — `None` when the
-    /// generation predates `constellation_sections_v1` and no check ran.
-    pub sections_version: Option<u64>,
-    /// The section count the capture implies. `0` under `None` — the
-    /// count is meaningless when no sections check ran.
+    /// The sections version the pinned reader opened. Always present: the
+    /// check always runs, and an empty expectation verifies that the pinned
+    /// version really holds no rows.
+    pub sections_version: u64,
+    /// The section count the capture implies. `0` is a real answer — a
+    /// generation whose metadata was absent publishes no sections.
     pub expected_sections: usize,
     /// The section rows actually present at the pinned sections version.
     pub verified_sections: usize,
@@ -2232,7 +2322,7 @@ pub async fn verify_staged(
     expected: &std::collections::BTreeMap<String, String>,
     expected_relations_version: u64,
     expected_edges: usize,
-    expected_sections: Option<&SectionsExpectation>,
+    expected_sections: &SectionsExpectation,
 ) -> Result<VerificationReport, VerifyFailure> {
     use std::collections::BTreeSet;
 
@@ -2411,40 +2501,40 @@ pub async fn verify_staged(
         ));
     }
 
-    // The sections half — skipped entirely when the generation predates the
-    // table (`None`). When present it is checked the same way artifacts are:
-    // pinned reader, version equality, then per-row key + parent-digest
-    // agreement. A row the capture did not mint fails as `UnexpectedRow`
-    // exactly as an orphan artifact row would.
-    let mut sections_version = None;
-    let mut expected_section_count = 0usize;
+    // The sections half — **always** run. It used to be skipped when the
+    // generation pinned no sections version, which is what let a generation
+    // with an empty set and a generation that predates the table look
+    // identical to a verifier. Now an empty expectation verifies that the
+    // pinned version really holds no rows: pinned reader, version equality,
+    // then per-row key + parent-digest agreement. A row the capture did not
+    // mint fails as `UnexpectedRow` exactly as an orphan artifact row would.
+    let expectation = expected_sections;
+    let sections_reader = super::lance_tables::open_table_at_version(
+        index_root,
+        marker,
+        "sections",
+        expectation.version,
+    )
+    .await
+    .map_err(|e| VerifyFailure::Unavailable(e.to_string()))?;
+
+    let sections_version = sections_reader.version().await.map_err(|e| {
+        VerifyFailure::Invariant(VerificationError::Query {
+            detail: format!("cannot read the sections reader version: {e}"),
+        })
+    })?;
+    if sections_version != expectation.version {
+        return Err(VerifyFailure::Invariant(
+            VerificationError::SectionsVersionMismatch {
+                expected: expectation.version,
+                found: sections_version,
+            },
+        ));
+    }
+    let expected_section_count = expectation.digests.len();
     let mut verified_section_count = 0usize;
-    if let Some(expectation) = expected_sections {
-        let sections_reader = super::lance_tables::open_table_at_version(
-            index_root,
-            marker,
-            "sections",
-            expectation.version,
-        )
-        .await
-        .map_err(|e| VerifyFailure::Unavailable(e.to_string()))?;
 
-        let found_version = sections_reader.version().await.map_err(|e| {
-            VerifyFailure::Invariant(VerificationError::Query {
-                detail: format!("cannot read the sections reader version: {e}"),
-            })
-        })?;
-        if found_version != expectation.version {
-            return Err(VerifyFailure::Invariant(
-                VerificationError::SectionsVersionMismatch {
-                    expected: expectation.version,
-                    found: found_version,
-                },
-            ));
-        }
-        sections_version = Some(found_version);
-        expected_section_count = expectation.digests.len();
-
+    {
         let mut seen_sections: BTreeSet<&str> = BTreeSet::new();
         let section_batches = sections_reader.query_batches().await.map_err(|e| {
             VerifyFailure::Invariant(VerificationError::Query {
@@ -2866,7 +2956,8 @@ fn in_literals(keys: &[String]) -> String {
 mod tests {
     use super::*;
     use crate::constellation::capture::{
-        CaptureLimits, CaptureRequest, Coverage, FilesystemSupport, SourceEntry, UnusableSource,
+        CaptureLimits, CaptureRequest, CapturedSection, Coverage, FilesystemSupport, SourceEntry,
+        UnusableSource,
     };
     use crate::constellation::jobs::SemanticState;
     use crate::constellation::manifest::GenerationManifest;
@@ -2906,8 +2997,6 @@ mod tests {
             evaluated_at: "2026-10-17T00:00:00.000Z".to_string(),
             manifest_path: format!("generations/{generation_id}.json"),
             manifest_sha256: "aa".to_string(),
-            embedding_artifacts_head: None,
-            embedding_sections_head: None,
         }
     }
 
@@ -2997,21 +3086,7 @@ mod tests {
     // Head comparison
     // -------------------------------------------------------------------
 
-    fn manifest_with_versions(artifacts: u64, relations: u64) -> GenerationManifest {
-        manifest_with_sections(artifacts, relations, None)
-    }
-
-    fn manifest_with_sections(
-        artifacts: u64,
-        relations: u64,
-        sections: Option<u64>,
-    ) -> GenerationManifest {
-        let mut manifest = manifest_with_versions_inner(artifacts, relations);
-        manifest.table_versions.sections = sections;
-        manifest
-    }
-
-    fn manifest_with_versions_inner(artifacts: u64, relations: u64) -> GenerationManifest {
+    fn manifest_with_versions(artifacts: u64, relations: u64, sections: u64) -> GenerationManifest {
         GenerationManifest {
             schema_version: crate::constellation::FORMAT_VERSION,
             generation_id: "gen-1".to_string(),
@@ -3019,8 +3094,9 @@ mod tests {
             index_epoch: 1,
             source_set_digest: "ss".to_string(),
             config_digest: "cd".to_string(),
-            table_versions: TableVersions::new(artifacts, relations),
+            table_versions: TableVersions::new(artifacts, relations, sections),
             source_entries: Vec::new(),
+            section_bindings: Vec::new(),
             tombstones: Vec::new(),
             pending_jobs: Default::default(),
             coverage: Coverage {
@@ -3041,18 +3117,8 @@ mod tests {
     }
 
     #[test]
-    fn matching_heads_restore_nothing_and_commit_nothing() {
-        let published = manifest_with_versions(3, 2);
-        // No sections pin: any sections head is free, never divergent.
-        assert_eq!(
-            compare_heads(Some(&published), 3, 2, 9),
-            HeadComparison::Matches
-        );
-    }
-
-    #[test]
-    fn matching_three_way_heads_restore_nothing() {
-        let published = manifest_with_sections(3, 2, Some(5));
+    fn matching_three_way_heads_restore_nothing_and_commit_nothing() {
+        let published = manifest_with_versions(3, 2, 5);
         assert_eq!(
             compare_heads(Some(&published), 3, 2, 5),
             HeadComparison::Matches
@@ -3061,7 +3127,7 @@ mod tests {
 
     #[test]
     fn divergence_names_exactly_the_table_that_moved() {
-        let published = manifest_with_sections(3, 2, Some(5));
+        let published = manifest_with_versions(3, 2, 5);
         assert_eq!(
             compare_heads(Some(&published), 4, 2, 5),
             HeadComparison::Diverged {
@@ -3096,22 +3162,29 @@ mod tests {
         );
     }
 
+    /// A stale sections head is now divergence like any other. It used to be
+    /// exempt whenever the manifest pinned no sections version, and that
+    /// exemption is what let a head an abandoned pass left behind survive into
+    /// a published generation.
     #[test]
-    fn a_pre_sections_generation_never_reports_sections_divergence() {
-        // `sections: None` means the pin does not exist — the physical head
-        // is free whatever it is, so nothing rewinds it.
-        let published = manifest_with_versions(3, 2);
+    fn a_moved_sections_head_is_divergence_and_is_rewound() {
+        let published = manifest_with_versions(3, 2, 5);
         assert_eq!(
             compare_heads(Some(&published), 3, 2, 42),
-            HeadComparison::Matches
+            HeadComparison::Diverged {
+                artifacts_diverged: false,
+                relations_diverged: false,
+                sections_diverged: true
+            },
+            "a sections head nobody published must not be served as current"
         );
     }
 
     #[test]
     fn a_sections_pin_of_zero_is_torn_not_divergence() {
-        // `Some(0)` is not a real version — the empty creation commit is v1.
-        // It means the manifest was torn mid-write, not that the table moved.
-        let published = manifest_with_sections(3, 2, Some(0));
+        // `0` is not a real version — the empty creation commit is v1. It
+        // means the manifest was torn mid-write, not that the table moved.
+        let published = manifest_with_versions(3, 2, 0);
         assert_eq!(
             compare_heads(Some(&published), 3, 2, 3),
             HeadComparison::MissingPublishedVersion { role: "sections" }
@@ -3120,7 +3193,7 @@ mod tests {
 
     #[test]
     fn a_published_pair_with_a_missing_half_is_unavailable_not_divergence() {
-        let published = manifest_with_versions(0, 2);
+        let published = manifest_with_versions(0, 2, 1);
         assert_eq!(
             compare_heads(Some(&published), 4, 2, 1),
             HeadComparison::MissingPublishedVersion { role: "pair" }
@@ -3162,6 +3235,14 @@ mod tests {
             evaluated_at: "2026-10-17T00:00:00.000Z".to_string(),
             source_set_digest: "ss".to_string(),
             config_digest: "cd".to_string(),
+            layout: crate::embed::tokenizer::SectionLayout::from_metadata(
+                "tok".to_string(),
+                "tokcfg".to_string(),
+                "cfgjson".to_string(),
+                Some(crate::embed::tokenizer::MAX_TOKENS_CEILING),
+                2,
+            ),
+            tokenizer: None,
             body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
             sections: Vec::new(),
@@ -3195,7 +3276,7 @@ mod tests {
     }
 
     fn published(entries: Vec<SourceEntry>) -> GenerationManifest {
-        GenerationManifest::from_capture(&complete(entries), "gen-1", TableVersions::new(1, 1))
+        GenerationManifest::from_capture(&complete(entries), "gen-1", TableVersions::new(1, 1, 1))
     }
 
     #[test]
@@ -3390,7 +3471,7 @@ mod tests {
         .await
         .unwrap();
 
-        let manifest = first_generation(&captured, "gen-1", TableVersions::new(1, 1)).unwrap();
+        let manifest = first_generation(&captured, "gen-1", TableVersions::new(1, 1, 1)).unwrap();
         assert_eq!(manifest.generation_id, "gen-1");
         assert_eq!(manifest.source_entries.len(), 1);
         assert!(manifest.coverage.is_complete());
@@ -3420,7 +3501,7 @@ mod tests {
         .await
         .unwrap();
 
-        let err = first_generation(&captured, "gen-1", TableVersions::new(1, 1)).unwrap_err();
+        let err = first_generation(&captured, "gen-1", TableVersions::new(1, 1, 1)).unwrap_err();
         assert_eq!(
             err.code(),
             DiagnosticCode::SourceBusy,
@@ -3495,7 +3576,7 @@ mod tests {
         SectionsPlan {
             parent_delete_keys: vec![],
             merge_rows: 0,
-            bootstrap: false,
+            set_changed: false,
         }
     }
 
@@ -3617,7 +3698,7 @@ mod tests {
             &SectionsPlan {
                 parent_delete_keys: vec!["PRD-002".into()],
                 merge_rows: 4,
-                bootstrap: false,
+                set_changed: false,
             },
         );
         assert_eq!(
@@ -3646,11 +3727,12 @@ mod tests {
     }
 
     #[test]
-    fn a_noop_artifact_pass_still_populates_sections_on_upgrade() {
-        // `bootstrap` is the pre-sections-generation upgrade path: the
-        // artifact side staged nothing, but the table must still be filled —
-        // otherwise a reopened index would sit sectionless until the next
-        // content change.
+    fn a_noop_artifact_pass_still_populates_sections_when_the_set_changed() {
+        // The artifact side staged nothing, but the captured section set
+        // differs from the published membership — a layout change, or a
+        // capture whose metadata went absent. The table must still be
+        // rewritten, or the previous generation's rows stay published under
+        // keys that now mean different bytes.
         let sequence = stage_sequence(
             &commit_plan(true, 0, 0, 0),
             0,
@@ -3660,7 +3742,7 @@ mod tests {
             &SectionsPlan {
                 parent_delete_keys: vec![],
                 merge_rows: 5,
-                bootstrap: true,
+                set_changed: true,
             },
         );
         assert_eq!(
@@ -3669,10 +3751,12 @@ mod tests {
                 rows: 5,
                 full_source_batch: true
             }],
-            "an upgraded index fills the sections table even when nothing else moved"
+            "a changed section set is published even when no artifact row moved — a layout \
+             change, or an empty set because metadata went absent, moves the sections and nothing \
+             else"
         );
 
-        let same_without_bootstrap = stage_sequence(
+        let same_when_unchanged = stage_sequence(
             &commit_plan(true, 0, 0, 0),
             0,
             vec![],
@@ -3681,13 +3765,158 @@ mod tests {
             &SectionsPlan {
                 parent_delete_keys: vec![],
                 merge_rows: 5,
-                bootstrap: false,
+                set_changed: false,
             },
         );
         assert!(
-            same_without_bootstrap.is_empty(),
-            "without bootstrap a no-op pass emits nothing — the sections merge \
-             is gated on real work"
+            same_when_unchanged.is_empty(),
+            "with an unchanged section set a no-op pass emits nothing — the \
+             sections merge is gated on real work"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // `section_set_changed` itself.
+    //
+    // The test above consumes a hand-written `SectionsPlan`, so it proves the
+    // gate is wired up; it cannot prove the predicate decides correctly. These
+    // do that, and the layout case is the one that matters: a capture whose
+    // tokenizer or token limit changed holds the **same keys** binding
+    // **different bytes**, which no key-set comparison would ever notice.
+    // -----------------------------------------------------------------------
+
+    /// A capture whose sections are published, for `section_set_changed`.
+    fn captured_with_section() -> CapturedSourceView {
+        let mut captured = complete(vec![entry("PRD-001", "prds/PRD-001-a.md", "sd")]);
+        captured.artifacts = vec![fixture_artifact(None, None, None)];
+        captured.sections = vec![captured_section()];
+        captured
+    }
+
+    #[test]
+    fn an_unpublished_index_always_has_work_to_do_on_the_sections() {
+        assert!(
+            section_set_changed(&captured_with_section(), None),
+            "with nothing published there is nothing to match, so the set has changed"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_capture_reports_no_section_change() {
+        let captured = captured_with_section();
+        let published =
+            GenerationManifest::from_capture(&captured, "gen-1", TableVersions::new(1, 1, 1));
+        assert!(
+            !section_set_changed(&captured, Some(&published)),
+            "the same capture published as itself is the unchanged case; a false `true` here \
+             would rewrite the sections table on every pass"
+        );
+    }
+
+    /// The case a key-set comparison cannot see.
+    ///
+    /// Identical keys, identical ordinals, identical byte ranges, identical
+    /// input digests — and a different layout. The rows mean something else,
+    /// because the window that produced them was cut differently, so the
+    /// published membership is not the captured one.
+    #[test]
+    fn a_layout_change_alone_is_a_section_change() {
+        let captured = captured_with_section();
+        let published =
+            GenerationManifest::from_capture(&captured, "gen-1", TableVersions::new(1, 1, 1));
+
+        let mut relaid = captured.clone();
+        // A different declared limit resolves to a different actual limit,
+        // which is part of the layout's fingerprint.
+        relaid.layout = crate::embed::tokenizer::SectionLayout::from_metadata(
+            "tok".to_string(),
+            "tokcfg".to_string(),
+            "cfgjson".to_string(),
+            Some(256),
+            2,
+        );
+        assert_ne!(
+            captured.layout.fingerprint(),
+            relaid.layout.fingerprint(),
+            "the fixture must actually change the layout, or this proves nothing"
+        );
+        assert_eq!(
+            captured.sections.len(),
+            relaid.sections.len(),
+            "the section rows are identical; only the layout they were measured under moved"
+        );
+
+        assert!(
+            section_set_changed(&relaid, Some(&published)),
+            "the same keys under a different layout bind different bytes, so the published \
+             membership no longer describes the capture"
+        );
+    }
+
+    #[test]
+    fn a_moved_byte_range_or_changed_input_is_a_section_change() {
+        let captured = captured_with_section();
+        let published =
+            GenerationManifest::from_capture(&captured, "gen-1", TableVersions::new(1, 1, 1));
+
+        let mut moved = captured.clone();
+        moved.sections[0].byte_end += 4;
+        assert!(
+            section_set_changed(&moved, Some(&published)),
+            "a window that covers different bytes is a different row under the same key"
+        );
+
+        let mut redigested = captured.clone();
+        redigested.sections[0].input_digest = "a-different-input".to_string();
+        assert!(
+            section_set_changed(&redigested, Some(&published)),
+            "a different input digest means the stored vector would not answer for these bytes"
+        );
+
+        let mut reparented = captured.clone();
+        reparented.sections[0].parent_key = "PRD-002".to_string();
+        assert!(
+            section_set_changed(&reparented, Some(&published)),
+            "the parent is part of the row's binding identity, not just its key"
+        );
+
+        let mut reordered = captured.clone();
+        reordered.sections[0].ordinal = 7;
+        assert!(
+            section_set_changed(&reordered, Some(&published)),
+            "the ordinal is positional identity: the key is derived from it"
+        );
+    }
+
+    #[test]
+    fn a_dropped_or_added_section_is_a_section_change() {
+        let captured = captured_with_section();
+        let published =
+            GenerationManifest::from_capture(&captured, "gen-1", TableVersions::new(1, 1, 1));
+
+        let dropped = complete(vec![entry("PRD-001", "prds/PRD-001-a.md", "sd")]);
+        assert!(
+            section_set_changed(&dropped, Some(&published)),
+            "a capture that published no sections against a generation that published one is a \
+             change — this is the `semantic_unavailable` transition"
+        );
+
+        let mut added = captured.clone();
+        added.sections.push(CapturedSection {
+            canonical_key: "PRD-001#s2".to_string(),
+            parent_key: "PRD-001".to_string(),
+            ordinal: 2,
+            byte_start: 99,
+            byte_end: 120,
+            heading: Some("Goals".to_string()),
+            level: Some(2),
+            content: Arc::from("goals"),
+            input_digest: "another-input".to_string(),
+            parent_input_digest: "id".to_string(),
+        });
+        assert!(
+            section_set_changed(&added, Some(&published)),
+            "a new window is a new row even when every existing row is untouched"
         );
     }
 
@@ -3705,7 +3934,7 @@ mod tests {
             &SectionsPlan {
                 parent_delete_keys: vec!["PRD-009".into()],
                 merge_rows: 0,
-                bootstrap: false,
+                set_changed: false,
             },
         );
         assert_eq!(
@@ -3737,7 +3966,7 @@ mod tests {
             &SectionsPlan {
                 parent_delete_keys: vec![],
                 merge_rows: 5,
-                bootstrap: false,
+                set_changed: false,
             },
         );
         assert_eq!(
@@ -4264,6 +4493,8 @@ mod tests {
             canonical_key: "PRD-001#s0".to_string(),
             parent_key: "PRD-001".to_string(),
             ordinal: 0,
+            byte_start: 0,
+            byte_end: "Body.\n".len(),
             heading: None,
             level: None,
             content: Arc::from("Body.\n"),
@@ -4313,6 +4544,8 @@ mod tests {
             canonical_key: "PRD-001#s0".to_string(),
             parent_key: "PRD-001".to_string(),
             ordinal: 0,
+            byte_start: 0,
+            byte_end: "Body.\n".len(),
             heading: None,
             level: None,
             content: Arc::from("Body.\n"),
@@ -4648,6 +4881,8 @@ mod tests {
             canonical_key: "PRD-001#s1".to_string(),
             parent_key: "PRD-001".to_string(),
             ordinal: 1,
+            byte_start: 0,
+            byte_end: "section body".len(),
             heading: Some("Problem".to_string()),
             level: Some(2),
             content: std::sync::Arc::from("section body"),
@@ -5013,8 +5248,12 @@ mod tests {
     /// from. This asserts the reader's own path — read the pointer off disk,
     /// then ask the descriptor which table version it claims — rather than
     /// that the writer's in-memory descriptor still says so.
+    ///
+    /// The republish now carries **only** the claimed embedding space. A drain
+    /// that moved a head publishes a new generation instead, so there is no
+    /// second authority for versions to disagree with.
     #[test]
-    fn a_republished_head_is_the_version_a_reader_resolves() {
+    fn a_republish_carries_the_profile_and_never_a_table_version() {
         let tmp = TempDir::new().unwrap();
         // Canonicalise before the publisher sees the path: on macOS a temp dir
         // is reached through `/var/...`, which resolves to `/private/var/...`,
@@ -5029,11 +5268,7 @@ mod tests {
         let spy = Arc::new(SpyDurability::default());
         let publisher = spy_publisher(&index_root, &spy);
 
-        // The manifest pin the first publication recorded, then the head a
-        // later drain moved the artifacts table to. The head must win, and
-        // only because the pointer says so — the manifest is immutable and
-        // still names the older version.
-        let manifest = manifest_with_versions(3, 2);
+        let manifest = manifest_with_versions(3, 2, 5);
         publisher
             .republish_current(&descriptor_for("gen-1"))
             .unwrap();
@@ -5044,15 +5279,14 @@ mod tests {
                 .effective_artifacts_version(&manifest)
                 .unwrap(),
             3,
-            "before the drain republish, the reader resolves the manifest's pin"
+            "the reader resolves the manifest's own pin"
         );
 
         let mut moved = descriptor_for("gen-1");
-        moved.embedding_artifacts_head = Some(7);
         moved.profile_id = Some("profile-a".to_string());
 
         // The tracked write the drain's completion produced: the barrier has
-        // to sync it before the pointer may name the head it created.
+        // to sync it before the pointer moves.
         let key = touched
             .to_str()
             .unwrap()
@@ -5070,9 +5304,13 @@ mod tests {
             .expect("a published pointer");
         assert_eq!(
             visible.effective_artifacts_version(&manifest).unwrap(),
-            7,
-            "a reader must resolve the head the republish recorded, not the \
-             older pin the immutable manifest still carries"
+            3,
+            "a republish cannot move a table version; only a new generation can"
+        );
+        assert_eq!(
+            visible.effective_sections_version(&manifest).unwrap(),
+            5,
+            "and it cannot move the sections version either"
         );
         assert_eq!(
             visible.profile_id.as_deref(),

@@ -9,7 +9,21 @@ use crate::commands::common;
 
 /// `forgeplan scan-import [--path <dir>] [--dry-run]`
 pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    // A preview acquires NOTHING. Taking the workspace lock would create
+    // `.forgeplan/.lock`, and opening the store would run its schema
+    // migrations — so `--dry-run` on a legacy layout would perform exactly
+    // the mutations it promises not to perform, and a read-only workspace
+    // would fail on a lock it never needed.
+    let (ws, lock, store) = if dry_run {
+        (common::find_workspace_path()?, None, None)
+    } else {
+        // Lock + OPTIONAL legacy store, decided before either is opened: on a
+        // constellation-managed workspace the store is `None` and the Markdown
+        // write is the whole mutation. `open_store_locked` used to refuse here.
+        let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+        (ws, Some(lock), store)
+    };
+    let migrated = store.is_none() && !dry_run;
     let project_root = ws
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine project root"))?;
@@ -26,11 +40,35 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
         );
     }
 
-    // PRD-058 FR-001: pass `ws` (the .forgeplan/ directory) so each
-    // imported artifact gets a markdown projection written, making the
-    // scan-import pipeline ADR-003-compliant. Without this, reindex
-    // considers imported artifacts orphans and purges them.
-    let result = scan_and_import_to_workspace(project_root, &ws, &store, &options).await?;
+    // PRD-058 FR-001 + S1-R2: the canonical Markdown is written FIRST for
+    // every imported document, and the legacy projection is taken afterwards
+    // only where one still exists. No source file is ever moved or deleted.
+    let result = scan_and_import_to_workspace(
+        project_root,
+        &ws,
+        lock.as_ref(),
+        store.as_ref(),
+        &options,
+    )
+    .await?;
+    drop(lock);
+
+    // ONE reconcile for the whole successful batch, after the lock is
+    // released — the reconcile re-acquires it per storage commit, so holding
+    // it here would turn the pass into a lock timeout. Only a migrated
+    // workspace needs it: on a legacy layout the batch just took its rows.
+    if !dry_run && migrated && result.imported > 0 {
+        if result.failed > 0 {
+            // A partial batch is not a complete one: say so instead of
+            // printing a clean "reconciled" line over a half-finished import.
+            eprintln!(
+                "  note: {} document(s) failed — the reconcile below publishes only the \
+                 {} that landed; re-run after fixing them.",
+                result.failed, result.imported
+            );
+        }
+        common::reconcile_after_file_mutation(&ws).await;
+    }
 
     // Print results
     if result.entries.is_empty() {

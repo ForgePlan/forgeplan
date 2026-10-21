@@ -1,10 +1,18 @@
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use anyhow::Context as _;
 
 use crate::artifact::types::ArtifactKind;
 use crate::db::store::{LanceStore, NewArtifact};
 use crate::scan::detect::{DetectionResult, DetectionTier, detect_kind_with_path};
 use crate::scan::discovery::{DiscoveredFile, discover_markdown_files};
 use crate::scan::status_map::map_external_status;
+
+/// Author recorded for a document whose frontmatter declares none. Keeps the
+/// import auditable ("this row came from a scan") without overwriting a
+/// human-supplied `author:` (PROB-068).
+const SCAN_IMPORT_AUTHOR: &str = "scan-import";
 
 /// Options for scan-import operation.
 #[derive(Debug, Clone, Default)]
@@ -18,9 +26,11 @@ pub struct ScanImportOptions {
 /// Status of a single file during import.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportStatus {
-    /// Successfully imported into LanceDB.
+    /// Written as canonical Markdown (and, where one exists, into the
+    /// optional legacy projection).
     Imported,
-    /// Skipped because artifact with same ID already exists.
+    /// The canonical file already exists — an earlier run imported it, or the
+    /// artifact was created by hand. The existing document is never rewritten.
     Skipped,
     /// Could not determine artifact type.
     Unknown,
@@ -42,8 +52,9 @@ pub struct ScanImportEntry {
     /// Import status.
     pub status: ImportStatus,
     /// Non-fatal warnings (PRD-058 FR-004): unknown frontmatter status,
-    /// projection write failed post-store, etc. Fail-loud — import report
-    /// surfaces these so the user knows something needs attention.
+    /// canonical write failure, a derived relation that could not be restored.
+    /// Fail-loud — the import report surfaces these so the user knows
+    /// something needs attention.
     #[doc(alias = "advisory")]
     pub warnings: Vec<String>,
 }
@@ -83,7 +94,6 @@ pub struct ScanImportResult {
 /// maps to more than one source file. Deterministic order (BTreeMap by id,
 /// paths sorted) so the report and tests are stable.
 pub fn find_duplicate_ids(entries: &[ScanImportEntry]) -> Vec<DuplicateIdGroup> {
-    use std::collections::BTreeMap;
     let mut by_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for e in entries {
         if let Some(id) = &e.artifact_id {
@@ -103,53 +113,47 @@ pub fn find_duplicate_ids(entries: &[ScanImportEntry]) -> Vec<DuplicateIdGroup> 
         .collect()
 }
 
-/// Run scan-import: discover files, detect types, import into LanceDB.
+/// Canonical-first scan-import: discover external documents, detect their
+/// kind, and write each accepted one into `.forgeplan/` as canonical Markdown.
 ///
-/// ⚠ **ADR-003 compliance warning**: this variant does NOT write markdown
-/// projections. The consequence is that `forgeplan reindex` will treat
-/// imported artifacts as orphans (no .md file found) and purge them —
-/// the exact failure mode in Telegram bug report 2026-04-19. New
-/// callers MUST use [`scan_and_import_to_workspace`] instead. Kept here
-/// only for backward compatibility with existing unit tests that do not
-/// need projection.
-#[deprecated(
-    since = "0.25.0",
-    note = "use scan_and_import_to_workspace(…, workspace, …) for ADR-003 compliance; \
-            bare scan_and_import leaves LanceDB entries without .md files and \
-            `forgeplan reindex` will purge them on the next run"
-)]
-pub async fn scan_and_import(
-    project_root: &Path,
-    store: &LanceStore,
-    options: &ScanImportOptions,
-) -> anyhow::Result<ScanImportResult> {
-    scan_and_import_inner(project_root, store, options, None).await
-}
-
-/// Brownfield-ready variant: same as `scan_and_import` plus writes a
-/// markdown projection (`.forgeplan/<kind>s/<ID>-<slug>.md`) for every
-/// successfully imported artifact (PRD-058 FR-001). Required for
-/// `reindex` round-trip safety and ADR-003 compliance.
+/// `legacy` is the OPTIONAL derived projection:
 ///
-/// `workspace` is the `.forgeplan/` directory (same that `forgeplan init`
-/// creates), not the project root.
+/// - `Some(store)` — a workspace that still owns a legacy `artifacts.lance`.
+///   The Markdown is written first and the row second; a row failure is
+///   reported, never repaired by rolling the file back.
+/// - `None` — a constellation-managed workspace. The Markdown write is the
+///   whole mutation and the caller runs one reconcile afterwards
+///   (`maintain_index` / `forgeplan index`). No `LanceStore` is opened and no
+///   retired table is recreated.
+///
+/// Ordering per file: resolve id → check existence → canonical write →
+/// optional projection. The file is never derived from the store, and the
+/// store never becomes a precondition for the file existing.
+///
+/// `workspace` is the `.forgeplan/` directory, not the project root.
+///
+/// `guard` is the caller's already-held
+/// [`WorkspaceLock`](crate::workspace::lock::WorkspaceLock), and it is `None`
+/// **only** for a dry run. A dry run must not take the lock: acquiring it
+/// creates `.forgeplan/.lock`, so a preview would mutate a workspace it claims
+/// not to touch. A mutating run with no guard is refused here rather than
+/// writing canonical Markdown outside the workspace serialization every other
+/// mutation uses. The caller must release the guard before reconciling, since
+/// the reconcile re-acquires it per storage commit.
 pub async fn scan_and_import_to_workspace(
     project_root: &Path,
     workspace: &Path,
-    store: &LanceStore,
+    guard: Option<&crate::workspace::lock::WorkspaceLock>,
+    legacy: Option<&LanceStore>,
     options: &ScanImportOptions,
 ) -> anyhow::Result<ScanImportResult> {
-    scan_and_import_inner(project_root, store, options, Some(workspace)).await
-}
-
-async fn scan_and_import_inner(
-    project_root: &Path,
-    store: &LanceStore,
-    options: &ScanImportOptions,
-    workspace: Option<&Path>,
-) -> anyhow::Result<ScanImportResult> {
+    if !options.dry_run && guard.is_none() {
+        anyhow::bail!(
+            "scan-import needs the workspace lock for a mutating run; a dry run may pass none"
+        );
+    }
     // Discover files — with path traversal protection
-    let scan_root = if let Some(ref custom) = options.custom_path {
+    let scan_root = if let Some(custom) = &options.custom_path {
         let candidate = project_root.join(custom);
         let canonical = candidate.canonicalize().unwrap_or(candidate.clone());
         let canonical_root = project_root
@@ -186,7 +190,7 @@ async fn scan_and_import_inner(
 
         let entry = match detection {
             Some(det) => {
-                process_detected_file_inner(file, &det, store, options.dry_run, workspace).await
+                process_detected_file(file, &det, workspace, guard, legacy, options.dry_run).await
             }
             None => {
                 unknown += 1;
@@ -226,36 +230,32 @@ async fn scan_and_import_inner(
     })
 }
 
-/// Process a file with a successful detection result. When `workspace`
-/// is `Some`, also writes a markdown projection (PRD-058 FR-001 —
-/// ADR-003 compliance). `None` keeps the LanceDB-only behavior for
-/// pre-existing unit tests that don't need the projection.
-async fn process_detected_file_inner(
+/// What one source document contributes to the canonical artifact.
+struct ParsedDocument {
+    /// Complete frontmatter map, unknown keys included. Preserved verbatim on
+    /// the canonical write so an imported document keeps whatever its author
+    /// put there (agent stamps, `last_modified_by`, domain keys).
+    frontmatter: BTreeMap<String, serde_yaml::Value>,
+    /// Body with the frontmatter block removed — what the artifact body is.
+    body: String,
+    title: String,
+    status: String,
+    tags: Vec<String>,
+    author: String,
+    links: Vec<(String, String)>,
+}
+
+/// Parse one discovered document into the fields the canonical write needs,
+/// splitting frontmatter from body exactly once (R2 audit rust-pro CRITICAL).
+///
+/// A document whose frontmatter does not parse is NOT rejected: it becomes a
+/// body-only artifact, which is the historical and correct behaviour for a
+/// plain markdown file. Its raw bytes stay untouched on disk.
+fn parse_document(
     file: &DiscoveredFile,
     detection: &DetectionResult,
-    store: &LanceStore,
-    dry_run: bool,
-    workspace: Option<&Path>,
-) -> ScanImportEntry {
-    let artifact_id = resolve_artifact_id(detection, store).await;
-
-    let entry_base = ScanImportEntry {
-        relative_path: file.relative_path.display().to_string(),
-        detected_kind: Some(detection.kind.clone()),
-        detection_tier: Some(detection.tier.clone()),
-        artifact_id: Some(artifact_id.clone()),
-        status: ImportStatus::Imported, // will be overwritten
-        warnings: Vec::new(),
-    };
-
-    if dry_run {
-        return ScanImportEntry {
-            status: ImportStatus::Imported, // preview: would be imported
-            ..entry_base
-        };
-    }
-
-    // Build title: prefer detection → filename → "Untitled"
+    warnings: &mut Vec<String>,
+) -> ParsedDocument {
     let title = detection
         .suggested_title
         .clone()
@@ -267,194 +267,356 @@ async fn process_detected_file_inner(
         })
         .unwrap_or_else(|| "Untitled".to_string());
 
-    // Parse frontmatter ONCE to extract tags + status + body-without-FM.
-    // R2 audit rust-pro CRITICAL: previously we passed `file.content`
-    // (which includes the original `---…---` block) as both
-    // `NewArtifact.body` and `render_projection_with_body` input.
-    // `render_projection_with_body` then prepended its OWN regenerated
-    // frontmatter → every imported artifact ended up with two
-    // `---…---` blocks stacked on disk. Split FM from body here and
-    // keep only the body portion downstream.
-    //
-    // PROB-068 union-merge: also pull out `author:` and `links:` so the
-    // round-trip (markdown → LanceDB → markdown) doesn't drop them. The
-    // historical bug overwrote `author: <human>` with `scan-import` and
-    // wiped the `links:` block because `maybe_write_projection` passed
-    // an empty `&[]` to the renderer.
-    let mut warnings: Vec<String> = Vec::new();
-    let (tags, status, body_only, fm_author, fm_links) =
-        match crate::artifact::frontmatter::parse_frontmatter(&file.content) {
-            Ok((fm, body)) => {
-                let tags = crate::artifact::frontmatter::tags_from_frontmatter(&fm);
-                let raw_status = fm.get("status").and_then(|v| v.as_str());
-                let status = match raw_status {
-                    Some(s) => {
-                        let (mapped, warning) = map_external_status(s);
-                        if let Some(w) = warning {
-                            warnings.push(w);
-                        }
-                        mapped
+    match crate::artifact::frontmatter::parse_frontmatter(&file.content) {
+        Ok((frontmatter, body)) => {
+            let raw_status = frontmatter.get("status").and_then(|v| v.as_str());
+            let status = match raw_status {
+                Some(s) => {
+                    let (mapped, warning) = map_external_status(s);
+                    if let Some(w) = warning {
+                        warnings.push(w);
                     }
-                    None => "draft".to_string(), // no frontmatter status → default (AC-5)
-                };
-                let author = crate::artifact::frontmatter::author_from_frontmatter(&fm);
-                let links = crate::artifact::frontmatter::links_from_frontmatter(&fm);
-                (tags, status, body, author, links)
+                    mapped
+                }
+                // No frontmatter status → default draft, no warning (AC-5).
+                None => "draft".to_string(),
+            };
+            let tags = crate::artifact::frontmatter::tags_from_frontmatter(&frontmatter);
+            let author = crate::artifact::frontmatter::author_from_frontmatter(&frontmatter)
+                .unwrap_or_else(|| SCAN_IMPORT_AUTHOR.to_string());
+            let links = crate::artifact::frontmatter::links_from_frontmatter(&frontmatter);
+            ParsedDocument {
+                frontmatter,
+                body,
+                title,
+                status,
+                tags,
+                author,
+                links,
             }
-            Err(_) => (
-                Vec::new(),
-                "draft".to_string(),
-                file.content.clone(),
-                None,
-                Vec::new(),
-            ),
+        }
+        Err(_) => ParsedDocument {
+            frontmatter: BTreeMap::new(),
+            body: file.content.clone(),
+            title,
+            status: "draft".to_string(),
+            tags: Vec::new(),
+            author: SCAN_IMPORT_AUTHOR.to_string(),
+            links: Vec::new(),
+        },
+    }
+}
+
+/// Process one detected document.
+///
+/// Canonical-first: the id is resolved, existence is checked, the Markdown is
+/// written, and only then is the optional legacy projection taken. A repeat run
+/// never rewrites an existing document — it reports `Skipped` and leaves both
+/// the artifact and the external source byte-identical.
+async fn process_detected_file(
+    file: &DiscoveredFile,
+    detection: &DetectionResult,
+    workspace: &Path,
+    guard: Option<&crate::workspace::lock::WorkspaceLock>,
+    legacy: Option<&LanceStore>,
+    dry_run: bool,
+) -> ScanImportEntry {
+    let mut warnings: Vec<String> = Vec::new();
+    let document = parse_document(file, detection, &mut warnings);
+
+    // Build the canonical Markdown BEFORE resolving the id: the id lands in the
+    // frontmatter, so the content is otherwise rendered twice. Dry-run never
+    // allocates — it must not take the id-alloc lock or create a file.
+    let artifact_id = if dry_run {
+        preview_artifact_id(detection, legacy).await
+    } else {
+        match allocate_artifact_id(workspace, legacy, detection).await {
+            Ok(id) => id,
+            Err(e) => {
+                return ScanImportEntry {
+                    relative_path: file.relative_path.display().to_string(),
+                    detected_kind: Some(detection.kind.clone()),
+                    detection_tier: Some(detection.tier.clone()),
+                    artifact_id: None,
+                    status: ImportStatus::Failed(format!("allocate id: {e}")),
+                    warnings,
+                };
+            }
+        }
+    };
+
+    let entry_base = ScanImportEntry {
+        relative_path: file.relative_path.display().to_string(),
+        detected_kind: Some(detection.kind.clone()),
+        detection_tier: Some(detection.tier.clone()),
+        artifact_id: Some(artifact_id.clone()),
+        status: ImportStatus::Imported, // will be overwritten
+        warnings: Vec::new(),
+    };
+
+    if dry_run {
+        // Preview only: no file, no lock file, no row. `imported` here counts
+        // documents that WOULD be imported, exactly as before.
+        return ScanImportEntry {
+            status: ImportStatus::Imported,
+            ..entry_base
         };
+    }
 
-    // PROB-068: preserve human-supplied author when the source frontmatter
-    // had one; default `scan-import` only when the file had no author key.
-    let effective_author = fm_author
-        .clone()
-        .unwrap_or_else(|| "scan-import".to_string());
+    // Past this point nothing is a preview, so a guard must exist. The public
+    // entry point already refuses that combination; this makes the invariant
+    // local rather than assumed.
+    let guard = guard.expect("scan-import entry point guarantees a guard for a mutating run");
+    let ctx = crate::projection::MutationContext::new(workspace, guard, legacy);
 
-    // R2 audit rust-pro HIGH #3: a previous run may have successfully
-    // written to LanceDB but failed the projection write — the DB row
-    // then prevents re-try because this check returns Skipped. Detect
-    // that case and resume by writing the missing projection rather
-    // than silently leaving the artifact orphaned.
-    match store.get_artifact(&artifact_id).await {
-        Ok(Some(_)) => {
-            // PROB-068 heal-on-retry: when the artifact already exists
-            // but the projection is missing, restore it from the
-            // *source* frontmatter so author / links survive the
-            // round-trip. Relations that aren't yet known to LanceDB
-            // are also inserted so subsequent renders pick them up.
-            if let Some(ws) = workspace
-                && !projection_exists(ws, &detection.kind, &artifact_id).await
+    // Existence is a property of the canonical file, not of the derived index.
+    // Checking the projection first is what makes a repeat run a no-op on a
+    // migrated workspace, where there is no row to ask.
+    let canonical_exists = projection_exists(workspace, &detection.kind, &artifact_id).await;
+    let legacy_row = match legacy {
+        Some(store) => match store.get_artifact(&artifact_id).await {
+            Ok(row) => row,
+            Err(e) => {
+                return ScanImportEntry {
+                    status: ImportStatus::Failed(format!("Check existing: {e}")),
+                    ..entry_base
+                };
+            }
+        },
+        None => None,
+    };
+
+    if canonical_exists || legacy_row.is_some() {
+        // Already imported. Do NOT rewrite: the canonical file is the source of
+        // truth and a repeat must not overwrite a document the user may have
+        // edited since the first import. The missing-projection heal below is
+        // the one case that writes, and only because nothing was there.
+        if !canonical_exists {
+            if let Err(e) =
+                write_canonical_document(&ctx, &detection.kind, &artifact_id, &document).await
             {
-                // Best-effort: missing relations get added; existing
-                // ones are silently de-duplicated by add_relation.
-                for (target, relation) in &fm_links {
+                warnings.push(format!(
+                    "scan-import: {artifact_id} exists in the derived index but its \
+                     canonical file could not be restored: {e}"
+                ));
+            }
+            if let Some(store) = legacy {
+                for (target, relation) in &document.links {
                     if let Err(e) = store.add_relation(&artifact_id, target, relation).await {
                         warnings.push(format!(
                             "scan-import: could not restore relation {artifact_id}→{target} ({relation}): {e}"
                         ));
                     }
                 }
-                maybe_write_projection(
-                    ws,
-                    &artifact_id,
-                    detection.kind.template_key(),
-                    &title,
-                    &status,
-                    &tags,
-                    &body_only,
-                    &effective_author,
-                    &fm_links,
-                    &mut warnings,
-                )
-                .await;
             }
-            return ScanImportEntry {
-                status: ImportStatus::Skipped,
-                warnings,
-                ..entry_base
-            };
         }
-        Ok(None) => {} // proceed with import
-        Err(e) => {
-            return ScanImportEntry {
-                status: ImportStatus::Failed(format!("Check existing: {e}")),
-                warnings,
-                ..entry_base
-            };
-        }
-    }
-
-    let new_artifact = NewArtifact {
-        id: artifact_id.clone(),
-        kind: detection.kind.template_key().to_string(),
-        status: status.clone(),
-        title: title.clone(),
-        body: body_only.clone(),
-        depth: "standard".to_string(),
-        author: Some(effective_author.clone()),
-        parent_epic: None,
-        valid_until: None,
-        tags: tags.clone(),
-    };
-
-    if let Err(e) = store.create_artifact(&new_artifact).await {
         return ScanImportEntry {
-            status: ImportStatus::Failed(format!("{e}")),
+            status: ImportStatus::Skipped,
             warnings,
             ..entry_base
         };
     }
 
-    // PROB-068: restore typed relations parsed from source frontmatter so
-    // the LanceDB row carries them, and the next render emits the same
-    // `links:` block back to disk.
-    for (target, relation) in &fm_links {
-        if let Err(e) = store.add_relation(&artifact_id, target, relation).await {
-            warnings.push(format!(
-                "scan-import: could not restore relation {artifact_id}→{target} ({relation}): {e}"
-            ));
-        }
+    // Canonical Markdown FIRST. Everything below this line is derived.
+    let mut write_warnings = warnings;
+    if let Err(e) =
+        write_canonical_document(&ctx, &detection.kind, &artifact_id, &document).await
+    {
+        // Nothing was derived yet, so there is nothing to roll back — and the
+        // document stays out of the workspace rather than half-imported.
+        return ScanImportEntry {
+            status: ImportStatus::Failed(format!("canonical write failed: {e}")),
+            warnings: write_warnings,
+            ..entry_base
+        };
     }
 
-    // PRD-058 FR-001 (ADR-003 compliance): write the markdown projection.
-    // R2 audit rust-pro MEDIUM: rollback DB insert on projection failure
-    // so the invariant "file is source of truth" isn't violated by a
-    // LanceDB row with no matching .md file.
-    if let Some(ws) = workspace {
-        let before_len = warnings.len();
-        maybe_write_projection(
-            ws,
-            &artifact_id,
-            detection.kind.template_key(),
-            &title,
-            &status,
-            &tags,
-            &body_only,
-            &effective_author,
-            &fm_links,
-            &mut warnings,
-        )
-        .await;
-        if warnings.len() > before_len {
-            // Projection failed — roll back the DB insert so the next
-            // scan-import can retry cleanly. If rollback itself fails,
-            // leave a warning and let the user sort it out.
-            if let Err(rb_err) = store.delete_artifact(&artifact_id).await {
-                warnings.push(format!(
-                    "rollback of {artifact_id} failed after projection error: {rb_err}"
-                ));
-                return ScanImportEntry {
-                    status: ImportStatus::Failed(
-                        warnings.last().cloned().unwrap_or_else(|| "unknown".into()),
-                    ),
-                    warnings,
-                    ..entry_base
-                };
-            }
+    // Optional derived projection, second. Its failure does NOT delete the
+    // canonical file: the Markdown is the truth, and reconcile re-derives it.
+    if let Some(store) = legacy {
+        let new_artifact = NewArtifact {
+            id: artifact_id.clone(),
+            kind: detection.kind.template_key().to_string(),
+            status: document.status.clone(),
+            title: document.title.clone(),
+            body: document.body.clone(),
+            depth: "standard".to_string(),
+            author: Some(document.author.clone()),
+            parent_epic: None,
+            valid_until: None,
+            tags: document.tags.clone(),
+        };
+        if let Err(e) = store.create_artifact(&new_artifact).await {
             return ScanImportEntry {
-                status: ImportStatus::Failed(
-                    warnings
-                        .last()
-                        .cloned()
-                        .unwrap_or_else(|| "projection failed".into()),
-                ),
-                warnings,
+                status: ImportStatus::Failed(format!("{e}")),
+                warnings: write_warnings,
                 ..entry_base
             };
+        }
+        for (target, relation) in &document.links {
+            if let Err(e) = store.add_relation(&artifact_id, target, relation).await {
+                write_warnings.push(format!(
+                    "scan-import: could not restore relation {artifact_id}→{target} ({relation}): {e}"
+                ));
+            }
         }
     }
 
     ScanImportEntry {
         status: ImportStatus::Imported,
-        warnings,
+        warnings: write_warnings,
         ..entry_base
     }
+}
+
+/// Write the canonical Markdown for an imported document through the one
+/// writer every mutation uses, with the document's own unknown frontmatter
+/// carried through as preserved extras.
+///
+/// `render_projection_record` preserves unknown keys from an EXISTING file at
+/// the target path — but there is none on a first import, so the source's own
+/// keys would be dropped. Writing the source document first and letting the
+/// renderer normalise it is what makes "unknown frontmatter survives the round
+/// trip" true rather than hoped for.
+async fn write_canonical_document(
+    ctx: &crate::projection::MutationContext<'_>,
+    kind: &ArtifactKind,
+    artifact_id: &str,
+    document: &ParsedDocument,
+) -> anyhow::Result<()> {
+    let path = canonical_path(ctx.workspace(), kind, artifact_id, &document.title);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    // Seed the canonical file with the SOURCE document so its unknown
+    // frontmatter keys are on disk before the renderer reads what to preserve.
+    let seed = render_frontmatter_with_known_keys(document, kind, artifact_id)?;
+    atomic_write(&path, seed.as_bytes()).await?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let record = crate::db::store::ArtifactRecord {
+        id: artifact_id.to_string(),
+        kind: kind.template_key().to_string(),
+        status: document.status.clone(),
+        title: document.title.clone(),
+        body: document.body.clone(),
+        depth: "standard".to_string(),
+        author: Some(document.author.clone()),
+        parent_epic: None,
+        r_eff_score: 0.0,
+        valid_until: None,
+        created_at: now.clone(),
+        updated_at: now,
+        tags: document.tags.clone(),
+        body_hash: None,
+        embedding: None,
+    };
+    // Files-first: the renderer keeps the seeded body + unknown keys and
+    // normalises the known ones. `force_body = true` because this write IS the
+    // body decision — a stale file must not win over the document being
+    // imported right now.
+    crate::projection::render_projection_record_with_body(
+        ctx.workspace(),
+        &record,
+        &document.links,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// The canonical file path for `(kind, id, title)` — the same computation the
+/// projection renderer performs, so the seed write and the normalised write
+/// land on ONE file rather than two.
+fn canonical_path(workspace: &Path, kind: &ArtifactKind, artifact_id: &str, title: &str) -> PathBuf {
+    workspace
+        .join(kind.dir_name())
+        .join(format!(
+            "{}-{}.md",
+            artifact_id,
+            crate::projection::projection_slug(title)
+        ))
+}
+
+/// Render the source document's frontmatter with the canonical keys
+/// (`id`, `kind`, `status`, `depth`, `author`, `tags`, `links`) written last so
+/// they always win, and every unknown key preserved verbatim.
+fn render_frontmatter_with_known_keys(
+    document: &ParsedDocument,
+    kind: &ArtifactKind,
+    artifact_id: &str,
+) -> anyhow::Result<String> {
+    let mut fm = document.frontmatter.clone();
+    let s = |v: String| serde_yaml::Value::String(v);
+    fm.insert("id".to_string(), s(artifact_id.to_string()));
+    fm.insert("kind".to_string(), s(kind.template_key().to_string()));
+    fm.insert("title".to_string(), s(document.title.clone()));
+    fm.insert("status".to_string(), s(document.status.clone()));
+    fm.insert(
+        "depth".to_string(),
+        s(document.frontmatter
+            .get("depth")
+            .and_then(|v| v.as_str())
+            .unwrap_or("standard")
+            .to_string()),
+    );
+    fm.insert("author".to_string(), s(document.author.clone()));
+    if document.tags.is_empty() {
+        fm.remove("tags");
+    } else {
+        fm.insert(
+            "tags".to_string(),
+            serde_yaml::Value::Sequence(
+                document
+                    .tags
+                    .iter()
+                    .map(|t| s(t.clone()))
+                    .collect(),
+            ),
+        );
+    }
+    if document.links.is_empty() {
+        fm.remove("links");
+    } else {
+        fm.insert(
+            "links".to_string(),
+            serde_yaml::Value::Sequence(
+                document
+                    .links
+                    .iter()
+                    .map(|(target, relation)| {
+                        // `Mapping::insert` takes `Value` KEYS, not `String`
+                        // ones — the same shape `projection::render_markdown`
+                        // uses for its links block.
+                        let mut m = serde_yaml::Mapping::new();
+                        m.insert(s("target".to_string()), s(target.clone()));
+                        m.insert(s("relation".to_string()), s(relation.clone()));
+                        serde_yaml::Value::Mapping(m)
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    crate::artifact::frontmatter::render_frontmatter(&fm, &document.body)
+}
+
+/// Tempfile + rename, so a kill between truncate and write cannot leave a
+/// half-written canonical document. Same discipline as
+/// `projection::atomic_markdown_write`; duplicated rather than exposed because
+/// that helper is private to the projection module and this one is the
+/// scan-import seed, not a projection render.
+async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "canonical path has no parent",
+        )
+    })?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(bytes)?;
+    tmp.flush()?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 /// Check whether a projection file for `(kind, artifact_id)` already exists
@@ -475,95 +637,85 @@ async fn projection_exists(workspace: &Path, kind: &ArtifactKind, artifact_id: &
     false
 }
 
-/// Write the markdown projection for an imported artifact. Appends any
-/// failure to `warnings` so the caller can decide on rollback.
+/// Allocate the id for an imported document under the existing per-kind
+/// `id_alloc` lock.
 ///
-/// R2 audit rust-pro HIGH #2: uses `render_projection_record` so tags
-/// land in the file's frontmatter (not just LanceDB). Without that, the
-/// next `forgeplan reindex` (files-first per ADR-003) would re-read the
-/// empty-tags file and null the DB column.
+/// A document that declares its own well-formed id keeps it — the author's
+/// `id:` is a fact about the document, not something a lock may renumber.
+/// Everything else is allocated, and the allocation consults BOTH the
+/// canonical files on disk and (when present) the legacy rows, so a migrated
+/// workspace without a store still cannot collide with an id a sibling
+/// worktree just took.
 ///
-/// PROB-068 union-merge: `author` and `links` are now passed through
-/// from the source frontmatter (or fall back to defaults for files that
-/// never had them) so the round-trip preserves human/agent metadata
-/// instead of stomping it with `scan-import` + empty `links:`.
-#[allow(clippy::too_many_arguments)]
-async fn maybe_write_projection(
+/// The workspace lock is NOT taken here: the caller's guard already serializes
+/// the canonical writes, and id allocation guards a different thing on a
+/// different lock file — the same split `id_alloc` documents for its own
+/// callers.
+async fn allocate_artifact_id(
     workspace: &Path,
-    artifact_id: &str,
-    kind_str: &str,
-    title: &str,
-    status: &str,
-    tags: &[String],
-    body: &str,
-    author: &str,
-    links: &[(String, String)],
-    warnings: &mut Vec<String>,
-) {
-    use crate::db::store::ArtifactRecord;
-    use crate::projection::render_projection_record;
-
-    let now = chrono::Utc::now().to_rfc3339();
-    let record = ArtifactRecord {
-        id: artifact_id.to_string(),
-        kind: kind_str.to_string(),
-        status: status.to_string(),
-        title: title.to_string(),
-        body: body.to_string(),
-        depth: "standard".to_string(),
-        author: Some(author.to_string()),
-        parent_epic: None,
-        valid_until: None,
-        r_eff_score: 0.0,
-        created_at: now.clone(),
-        updated_at: now,
-        tags: tags.to_vec(),
-        body_hash: None,
-        embedding: None,
-    };
-    if let Err(e) = render_projection_record(workspace, &record, links).await {
-        warnings.push(format!(
-            "projection write failed for {artifact_id}: {e} — \
-             artifact is in LanceDB but .forgeplan/{kind_str}s/ is missing a .md file; \
-             next `forgeplan reindex` could treat it as orphan"
-        ));
+    legacy: Option<&LanceStore>,
+    detection: &DetectionResult,
+) -> anyhow::Result<String> {
+    if let Some(id) = &detection.suggested_id {
+        let normalized = id.to_uppercase();
+        if is_safe_artifact_id(&normalized) {
+            return Ok(normalized);
+        }
     }
+    let kind = &detection.kind;
+    let _id_lock = crate::artifact::id_alloc::acquire_id_alloc_lock(workspace, kind)
+        .await
+        .with_context(|| format!("acquire id-alloc lock for {}", kind.prefix()))?;
+    let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
+    for n in 1..=999u32 {
+        let candidate = format!("{prefix}-{n:03}");
+        if projection_exists(workspace, kind, &candidate).await {
+            continue;
+        }
+        if let Some(store) = legacy
+            && let Ok(Some(_)) = store.get_artifact(&candidate).await
+        {
+            continue;
+        }
+        return Ok(candidate);
+    }
+    anyhow::bail!(
+        "no free {prefix}-NNN id for kind {} — id space exhausted at 999",
+        kind.prefix()
+    )
 }
 
-/// Resolve the artifact ID: use suggested_id from detection, or generate
-/// next available. Enforces ID character-set locally instead of relying
-/// on the downstream `store.create_artifact` check (R2 audit rust-pro
-/// MEDIUM + security LOW): a crafted frontmatter `id: ../../etc/passwd`
-/// would uppercase to `../../ETC/PASSWD` and flow into a path join
-/// before create_artifact errors, if the call order ever changes.
-async fn resolve_artifact_id(detection: &DetectionResult, store: &LanceStore) -> String {
-    // If detection found an ID and it's well-formed, use it. Otherwise
-    // fall through to auto-generation — worst case a user with a weird
-    // custom ID gets a new sequential one instead of an error.
-    if let Some(ref id) = detection.suggested_id {
+/// The id a dry-run would use, computed WITHOUT the id-alloc lock, without
+/// touching disk and without writing anything.
+///
+/// A dry-run that took the allocation lock would create a lock file, which is
+/// exactly the "dry-run creates nothing" contract it is supposed to honour.
+async fn preview_artifact_id(
+    detection: &DetectionResult,
+    legacy: Option<&LanceStore>,
+) -> String {
+    if let Some(id) = &detection.suggested_id {
         let normalized = id.to_uppercase();
         if is_safe_artifact_id(&normalized) {
             return normalized;
         }
     }
-
-    // Otherwise, generate next available ID for this kind
-    let kind_prefix = detection.kind.prefix().trim_end_matches('-').to_uppercase();
-    for n in 1..=999 {
-        let candidate = format!("{}-{:03}", kind_prefix, n);
-        match store.get_artifact(&candidate).await {
-            Ok(None) => return candidate,
-            Ok(Some(_)) => continue,
-            Err(_) => return candidate, // on error, try anyway
+    let prefix = detection
+        .kind
+        .prefix()
+        .trim_end_matches('-')
+        .to_uppercase();
+    if let Some(store) = legacy {
+        for n in 1..=999u32 {
+            let candidate = format!("{prefix}-{n:03}");
+            match store.get_artifact(&candidate).await {
+                Ok(None) => return candidate,
+                Ok(Some(_)) => continue,
+                Err(_) => return candidate,
+            }
         }
     }
-
-    // Exhausted ID space — return a clearly invalid ID that will fail at create
-    // (better than silently returning a collision)
-    format!(
-        "{}-OVERFLOW",
-        detection.kind.prefix().trim_end_matches('-').to_uppercase()
-    )
+    format!("{prefix}-001")
 }
 
 /// Same safety contract as `db::store::validate_id_for_filter` but
@@ -589,42 +741,243 @@ fn is_safe_artifact_id(id: &str) -> bool {
 }
 
 #[cfg(test)]
-// Existing tests call the deprecated bare `scan_and_import` — they
-// intentionally exercise the no-projection path to isolate the LanceDB
-// contract. The new PRD-058 AC tests use `scan_and_import_to_workspace`.
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    async fn setup_store() -> (TempDir, std::path::PathBuf, LanceStore) {
+    /// A `.forgeplan/` with the artifact dirs a real workspace has, and NO
+    /// lance/ — i.e. the constellation-managed layout. Every default test
+    /// exercises this one, because it is the layout that used to be refused.
+    async fn workspace() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        std::fs::create_dir_all(&ws).unwrap();
-        let store = LanceStore::init(&ws).await.unwrap();
-        (tmp, ws, store)
+        for dir in crate::workspace::ARTIFACT_DIRS {
+            std::fs::create_dir_all(ws.join(dir)).unwrap();
+        }
+        (tmp, ws)
+    }
+
+    async fn guard(ws: &Path) -> crate::workspace::lock::WorkspaceLock {
+        crate::workspace::lock::acquire_workspace_lock(ws).await.unwrap()
+    }
+
+    fn source(tmp: &Path, rel: &str, body: &str) -> PathBuf {
+        let path = tmp.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// Sorted inventory of every file under `root`, for "nothing was created"
+    /// assertions that are stronger than "the one file I know about".
+    fn inventory(root: &Path) -> Vec<String> {
+        fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
+            let Ok(rd) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, base, out);
+                } else if let Ok(rel) = path.strip_prefix(base) {
+                    out.push(rel.to_string_lossy().to_string());
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    fn imported_file(ws: &Path, dir: &str, prefix: &str) -> Option<(PathBuf, String)> {
+        let mut entries: Vec<_> = std::fs::read_dir(ws.join(dir))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| {
+                        let n = n.to_string_lossy().to_string();
+                        n.starts_with(prefix) && n.ends_with(".md")
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+        entries.sort();
+        let path = entries.into_iter().next()?;
+        let body = std::fs::read_to_string(&path).ok()?;
+        Some((path, body))
     }
 
     #[tokio::test]
-    async fn dry_run_does_not_persist() {
-        let (tmp, _ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(
-            docs.join("PRD-001-test.md"),
+    async fn a_dry_run_creates_nothing_at_all() {
+        let (tmp, ws) = workspace().await;
+        source(
+            tmp.path(),
+            "docs/PRD-001-test.md",
             "---\nkind: prd\nid: PRD-001\ntitle: Test\n---\n# Test",
+        );
+        let lock = guard(&ws).await;
+        let before = inventory(&ws);
+
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions {
+                dry_run: true,
+                custom_path: None,
+            },
         )
+        .await
         .unwrap();
 
-        let opts = ScanImportOptions {
-            dry_run: true,
-            custom_path: None,
-        };
-        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
+        assert_eq!(result.imported, 1, "dry run still previews what it would do");
+        assert_eq!(
+            inventory(&ws),
+            before,
+            "dry-run must not create a file, a lock or a table"
+        );
+    }
 
-        assert_eq!(result.imported, 1); // preview count
-        // But artifact should NOT exist in store
+    #[tokio::test]
+    async fn a_dry_run_on_a_legacy_workspace_creates_no_row() {
+        let (tmp, ws) = workspace().await;
+        let store = LanceStore::init(&ws).await.unwrap();
+        source(
+            tmp.path(),
+            "docs/PRD-001-test.md",
+            "---\nkind: prd\nid: PRD-001\ntitle: Test\n---\n# Test",
+        );
+        let lock = guard(&ws).await;
+
+        scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            Some(&store),
+            &ScanImportOptions {
+                dry_run: true,
+                custom_path: None,
+            },
+        )
+        .await
+        .unwrap();
+
         assert!(store.get_artifact("PRD-001").await.unwrap().is_none());
+    }
+
+    /// A dry run is allowed to run with NO workspace lock — that is the whole
+    /// point of it: taking the lock creates `.forgeplan/.lock`, so a preview
+    /// behind the lock mutates the workspace it promises not to touch.
+    #[tokio::test]
+    async fn a_dry_run_needs_no_workspace_lock() {
+        let (tmp, ws) = workspace().await;
+        source(
+            tmp.path(),
+            "docs/ADR-030-preview.md",
+            "---\nkind: adr\nid: ADR-030\ntitle: Preview\n---\n# Preview",
+        );
+        let before = inventory(&ws);
+
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            None,
+            None,
+            &ScanImportOptions {
+                dry_run: true,
+                custom_path: None,
+            },
+        )
+        .await
+        .expect("a dry run must work without the workspace lock");
+
+        assert_eq!(result.imported, 1);
+        assert_eq!(
+            inventory(&ws),
+            before,
+            "a lockless dry run created something in the workspace"
+        );
+    }
+
+    /// The converse: a MUTATING run with no lock is refused rather than writing
+    /// canonical Markdown outside the workspace serialization.
+    #[tokio::test]
+    async fn a_mutating_run_without_the_lock_is_refused() {
+        let (tmp, ws) = workspace().await;
+        source(
+            tmp.path(),
+            "docs/ADR-031-unlocked.md",
+            "---\nkind: adr\nid: ADR-031\ntitle: Unlocked\n---\n# Unlocked",
+        );
+        let before = inventory(&ws);
+
+        let err = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            None,
+            None,
+            &ScanImportOptions::default(),
+        )
+        .await
+        .expect_err("a mutating run must not proceed without the lock");
+
+        assert!(err.to_string().contains("lock"), "got: {err}");
+        assert_eq!(
+            inventory(&ws),
+            before,
+            "the refused run still wrote a file"
+        );
+    }
+
+    /// A failed batch is visible in the result, not flattened into the
+    /// counts — `init --scan` and the `scan-import` command both report from
+    /// these entries.
+    #[tokio::test]
+    async fn a_failed_document_is_reported_as_failed_with_its_reason() {
+        let (tmp, ws) = workspace().await;
+        source(
+            tmp.path(),
+            "docs/ADR-031-blocked.md",
+            "---\nkind: adr\nid: ADR-031\ntitle: Blocked\n---\n# Blocked",
+        );
+        // Replace the artifact directory with a regular file: the canonical
+        // write cannot create its parent, so the document genuinely fails —
+        // as opposed to being skipped, which is what an existing file does.
+        let adrs = ws.join("adrs");
+        std::fs::remove_dir_all(&adrs).unwrap();
+        std::fs::write(&adrs, b"not a directory").unwrap();
+        let lock = guard(&ws).await;
+
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let entry = result
+            .entries
+            .iter()
+            .find(|e| e.relative_path.contains("ADR-031"))
+            .expect("the blocked document is reported");
+        let ImportStatus::Failed(reason) = &entry.status else {
+            panic!(
+                "a canonical write that cannot succeed must be Failed, got {:?}",
+                entry.status
+            );
+        };
+        assert!(!reason.is_empty(), "a failure must carry a reason");
+        assert_eq!(
+            result.imported, 0,
+            "a failed document must not be counted as imported"
+        );
     }
 
     fn entry(id: Option<&str>, path: &str) -> ScanImportEntry {
@@ -663,353 +1016,474 @@ mod tests {
         assert!(find_duplicate_ids(&entries).is_empty());
     }
 
-    /// End-to-end: two files on disk carrying the SAME id are surfaced in the
-    /// scan result's `duplicate_ids` (the PRD-008 collision class).
+    /// Two files resolving to one id must be visible in the result — the
+    /// resolver otherwise mixes status/body across them.
     #[tokio::test]
-    #[allow(deprecated)]
-    async fn scan_detects_duplicate_id_files() {
-        let (tmp, _ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(
-            docs.join("PRD-009-first.md"),
+    async fn two_files_with_one_id_are_reported_as_a_collision() {
+        let (tmp, ws) = workspace().await;
+        source(
+            tmp.path(),
+            "docs/PRD-009-first.md",
             "---\nkind: prd\nid: PRD-009\ntitle: First\n---\n# A",
-        )
-        .unwrap();
-        std::fs::write(
-            docs.join("PRD-009-second.md"),
-            "---\nkind: prd\nid: PRD-009\ntitle: Second\n---\n# B",
-        )
-        .unwrap();
-
-        let opts = ScanImportOptions {
-            dry_run: true,
-            custom_path: None,
-        };
-        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
-
-        assert_eq!(
-            result.duplicate_ids.len(),
-            1,
-            "PRD-009 file-level id collision must be detected"
         );
+        source(
+            tmp.path(),
+            "docs/PRD-009-second.md",
+            "---\nkind: prd\nid: PRD-009\ntitle: Second\n---\n# B",
+        );
+        let lock = guard(&ws).await;
+
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions {
+                dry_run: true,
+                custom_path: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.duplicate_ids.len(), 1);
         assert_eq!(result.duplicate_ids[0].id, "PRD-009");
         assert_eq!(result.duplicate_ids[0].paths.len(), 2);
     }
 
+    /// S1-R2-A: apply preserves the full body, the source author and status,
+    /// the typed links and every frontmatter key the importer does not own —
+    /// on a constellation-managed workspace with no store at all.
     #[tokio::test]
-    async fn import_creates_artifact() {
-        let (tmp, _ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(
-            docs.join("RFC-001-design.md"),
+    async fn apply_preserves_body_author_status_links_and_unknown_frontmatter() {
+        let (tmp, ws) = workspace().await;
+        source(
+            tmp.path(),
+            "docs/ADR-001-storage.md",
+            "---\n\
+             kind: adr\n\
+             id: ADR-001\n\
+             title: Use Postgres\n\
+             status: accepted\n\
+             author: Ada Lovelace\n\
+             tags:\n  - source=code\n\
+             links:\n  - target: RFC-002\n    relation: informs\n\
+             review_owner: platform-team\n\
+             last_modified_by: agent-x\n\
+             ---\n\
+             ## Context\n\
+             \n\
+             Needed reliable storage.\n",
+        );
+        let lock = guard(&ws).await;
+
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.imported, 1);
+
+        let (_, content) = imported_file(&ws, "adrs", "ADR-001-").expect("canonical ADR written");
+        let (fm, body) =
+            crate::artifact::frontmatter::parse_frontmatter(&content).expect("valid frontmatter");
+
+        assert_eq!(body.trim(), "## Context\n\nNeeded reliable storage.");
+        assert_eq!(fm.get("author").unwrap().as_str(), Some("Ada Lovelace"));
+        // `accepted` is an Obsidian spelling; the canonical status is `active`.
+        assert_eq!(fm.get("status").unwrap().as_str(), Some("active"));
+        assert_eq!(fm.get("tags").unwrap().as_sequence().unwrap().len(), 1);
+        let links = fm.get("links").unwrap().as_sequence().unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].get("target").unwrap().as_str(),
+            Some("RFC-002")
+        );
+        assert_eq!(links[0].get("relation").unwrap().as_str(), Some("informs"));
+        // Unknown keys survive the round trip verbatim.
+        assert_eq!(
+            fm.get("review_owner").unwrap().as_str(),
+            Some("platform-team")
+        );
+        assert_eq!(
+            fm.get("last_modified_by").unwrap().as_str(),
+            Some("agent-x")
+        );
+    }
+
+    /// A document with no frontmatter still imports as a body-only artifact
+    /// and still lands on disk — not as a silent no-op.
+    #[tokio::test]
+    async fn a_document_without_frontmatter_imports_as_a_body_only_artifact() {
+        let (tmp, ws) = workspace().await;
+        source(tmp.path(), "docs/ADR-005-plain.md", "# Plain\n\nJust prose.\n");
+        let lock = guard(&ws).await;
+
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.imported, 1);
+        let entry = &result.entries[0];
+        assert!(entry.warnings.is_empty(), "got {:?}", entry.warnings);
+        let (_, content) = imported_file(&ws, "adrs", "ADR-005-").expect("canonical ADR written");
+        let (fm, body) = crate::artifact::frontmatter::parse_frontmatter(&content).unwrap();
+        assert_eq!(fm.get("status").unwrap().as_str(), Some("draft"));
+        assert!(body.contains("Just prose."));
+    }
+
+    /// The external document is the operator's file. An import copies it in;
+    /// it never edits or removes the original.
+    #[tokio::test]
+    async fn apply_never_touches_the_external_source_file() {
+        let (tmp, ws) = workspace().await;
+        let original = "---\nkind: prd\nid: PRD-010\ntitle: Source\n---\n# Source body\n";
+        let path = source(tmp.path(), "docs/PRD-010-source.md", original);
+        let lock = guard(&ws).await;
+
+        scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "scan-import must not rewrite its input"
+        );
+    }
+
+    /// S1-R2-A repeat: a second run is a no-op on the artifact AND on the
+    /// source, and it reports `Skipped` rather than a fresh import.
+    #[tokio::test]
+    async fn a_repeat_run_skips_and_changes_nothing() {
+        let (tmp, ws) = workspace().await;
+        let original = "---\nid: ADR-011\nkind: adr\ntitle: Repeatable\nstatus: accepted\n---\n# Once\n";
+        let path = source(tmp.path(), "docs/ADR-011-repeat.md", original);
+        let lock = guard(&ws).await;
+
+        let first = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.imported, 1);
+        let (_, after_first) = imported_file(&ws, "adrs", "ADR-011-").unwrap();
+
+        let second = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(second.imported, 0);
+        assert_eq!(second.skipped, 1);
+        let (_, after_second) = imported_file(&ws, "adrs", "ADR-011-").unwrap();
+        assert_eq!(after_first, after_second, "repeat rewrote the artifact");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// An existing canonical file the operator has since edited must not be
+    /// overwritten by a repeat import.
+    #[tokio::test]
+    async fn a_repeat_does_not_overwrite_a_locally_edited_artifact() {
+        let (tmp, ws) = workspace().await;
+        source(
+            tmp.path(),
+            "docs/ADR-012-edited.md",
+            "---\nid: ADR-012\nkind: adr\ntitle: Edited\nstatus: accepted\n---\n# From import\n",
+        );
+        let lock = guard(&ws).await;
+        scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let (path, imported) = imported_file(&ws, "adrs", "ADR-012-").unwrap();
+        let edited = imported.replace("# From import", "# Hand edited");
+        std::fs::write(&path, &edited).unwrap();
+
+        let second = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(second.skipped, 1);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            edited,
+            "a repeat import overwrote a user's local edit"
+        );
+    }
+
+    /// The migrated layout is the whole point: importing there must not
+    /// create a `lance/` directory, let alone the retired artifact tables.
+    #[tokio::test]
+    async fn a_migrated_workspace_import_leaves_no_legacy_tables() {
+        let (tmp, ws) = workspace().await;
+        source(
+            tmp.path(),
+            "docs/RFC-001-design.md",
             "---\nkind: rfc\nid: RFC-001\ntitle: Design\n---\n# Design",
+        );
+        let lock = guard(&ws).await;
+
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
         )
+        .await
         .unwrap();
 
-        let opts = ScanImportOptions::default();
-        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
-
         assert_eq!(result.imported, 1);
-        assert!(store.get_artifact("RFC-001").await.unwrap().is_some());
+        assert!(
+            !ws.join("lance").exists(),
+            "import created a legacy index on a constellation-managed workspace"
+        );
+        for legacy in ["artifacts.lance", "evidence.lance", "relations.lance"] {
+            assert!(
+                !ws.join("lance").join(legacy).exists(),
+                "{legacy} must not be recreated"
+            );
+        }
+        let (_, content) = imported_file(&ws, "rfcs", "RFC-001-").expect("canonical RFC written");
+        assert!(content.contains("# Design"));
     }
 
+    /// On a legacy workspace the same call still takes the derived row, and
+    /// the row agrees with the file the import just wrote.
     #[tokio::test]
-    async fn import_preserves_frontmatter_tags() {
-        // C1 fix: scan-import must parse tags from frontmatter (ADR-003: files=truth).
-        let (tmp, _ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(
-            docs.join("PRD-007-tagged.md"),
+    async fn a_legacy_workspace_still_receives_the_derived_row() {
+        let (tmp, ws) = workspace().await;
+        let store = LanceStore::init(&ws).await.unwrap();
+        source(
+            tmp.path(),
+            "docs/PRD-007-tagged.md",
             "---\nkind: prd\nid: PRD-007\ntitle: Tagged\ntags:\n  - source=code\n  - layer=auth\n---\n# Tagged",
+        );
+        let lock = guard(&ws).await;
+
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            Some(&store),
+            &ScanImportOptions::default(),
         )
+        .await
         .unwrap();
-
-        let opts = ScanImportOptions::default();
-        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
-
         assert_eq!(result.imported, 1);
-        let rec = store.get_record("PRD-007").await.unwrap().unwrap();
-        assert_eq!(rec.tags, vec!["source=code", "layer=auth"]);
+
+        let record = store.get_record("PRD-007").await.unwrap().unwrap();
+        assert_eq!(record.tags, vec!["source=code", "layer=auth"]);
+        let (_, content) = imported_file(&ws, "prds", "PRD-007-").expect("canonical PRD written");
+        assert!(content.contains("layer=auth"), "tags must reach the file too");
     }
 
+    /// A legacy row whose canonical file is missing is healed from the source
+    /// document rather than left orphaned (the case `reindex` would purge).
     #[tokio::test]
-    async fn skips_existing_artifact() {
-        let (tmp, _ws, store) = setup_store().await;
+    async fn a_legacy_row_without_a_file_is_healed_from_the_source() {
+        let (tmp, ws) = workspace().await;
+        let store = LanceStore::init(&ws).await.unwrap();
+        store
+            .create_artifact(&NewArtifact {
+                id: "ADR-013".to_string(),
+                kind: "adr".to_string(),
+                status: "draft".to_string(),
+                title: "Healed".to_string(),
+                body: String::new(),
+                depth: "standard".to_string(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .unwrap();
+        source(
+            tmp.path(),
+            "docs/ADR-013-healed.md",
+            "---\nkind: adr\nid: ADR-013\ntitle: Healed\nstatus: accepted\nauthor: Grace\n---\n# Healed body\n",
+        );
+        let lock = guard(&ws).await;
 
-        // Pre-create artifact
-        let existing = crate::db::store::NewArtifact {
-            id: "PRD-001".to_string(),
-            kind: "prd".to_string(),
-            status: "draft".to_string(),
-            title: "Existing".to_string(),
-            body: "".to_string(),
-            depth: "standard".to_string(),
-            author: None,
-            parent_epic: None,
-            valid_until: None,
-            tags: Vec::new(),
-        };
-        store.create_artifact(&existing).await.unwrap();
-
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(
-            docs.join("PRD-001-dup.md"),
-            "---\nkind: prd\nid: PRD-001\ntitle: Duplicate\n---\n# Dup",
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            Some(&store),
+            &ScanImportOptions::default(),
         )
+        .await
         .unwrap();
-
-        let opts = ScanImportOptions::default();
-        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
 
         assert_eq!(result.skipped, 1);
-        assert_eq!(result.imported, 0);
+        let (_, content) = imported_file(&ws, "adrs", "ADR-013-")
+            .expect("the missing canonical file is restored from the source");
+        assert!(content.contains("Grace"), "author must survive the heal");
+        assert!(content.contains("# Healed body"));
     }
 
     #[tokio::test]
-    async fn unknown_files_counted() {
-        let (tmp, _ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(docs.join("random.md"), "# Shopping\n- Milk").unwrap();
+    async fn unknown_files_are_counted_not_imported() {
+        let (tmp, ws) = workspace().await;
+        source(tmp.path(), "docs/random.md", "# Shopping\n- Milk");
+        let lock = guard(&ws).await;
 
-        let opts = ScanImportOptions::default();
-        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.unknown, 1);
         assert_eq!(result.imported, 0);
     }
 
+    /// No declared id ⇒ an allocated one, and the allocation consults the
+    /// files already on disk so it cannot collide with them.
     #[tokio::test]
-    async fn generates_id_when_none_suggested() {
-        let (tmp, _ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        // File with frontmatter kind but no id
+    async fn a_document_without_an_id_gets_the_next_free_one() {
+        let (tmp, ws) = workspace().await;
         std::fs::write(
-            docs.join("my-feature.md"),
+            ws.join("prds").join("PRD-001-existing.md"),
+            "---\nid: PRD-001\nkind: prd\ntitle: Existing\n---\n# Existing\n",
+        )
+        .unwrap();
+        source(
+            tmp.path(),
+            "docs/my-feature.md",
             "---\nkind: prd\ntitle: My Feature\n---\n# Feature",
-        )
-        .unwrap();
-
-        let opts = ScanImportOptions::default();
-        let result = scan_and_import(tmp.path(), &store, &opts).await.unwrap();
-
-        assert_eq!(result.imported, 1);
-        // Should have generated PRD-001
-        assert!(store.get_artifact("PRD-001").await.unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn path_traversal_rejected() {
-        let (tmp, _ws, store) = setup_store().await;
-
-        let opts = ScanImportOptions {
-            dry_run: false,
-            custom_path: Some("../../etc".to_string()),
-        };
-        let result = scan_and_import(tmp.path(), &store, &opts).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("traversal"));
-    }
-
-    // ── PRD-058 FR-005: AC-1..5 regression guards ──────────────────────
-
-    #[tokio::test]
-    async fn scan_import_creates_projection_file() {
-        // AC-1: scan-import must write `.forgeplan/<kind>/<ID>-<slug>.md`.
-        // Without this, reindex treats the DB entry as orphan and purges
-        // it — the root cause of Telegram bug report 2026-04-19.
-        let (tmp, ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(
-            docs.join("ADR-001-use-postgres.md"),
-            "---\nkind: adr\nid: ADR-001\ntitle: Use Postgres\nstatus: accepted\n---\n## Context\n\nNeeded reliable storage.\n\n## Decision\n\nPostgres.\n",
-        )
-        .unwrap();
-
-        let opts = ScanImportOptions::default();
-        let result = scan_and_import_to_workspace(tmp.path(), &ws, &store, &opts)
-            .await
-            .unwrap();
-        assert_eq!(result.imported, 1);
-
-        // AC-1: the projection file must exist.
-        let adrs_dir = ws.join("adrs");
-        let mut entries = tokio::fs::read_dir(&adrs_dir).await.unwrap();
-        let mut found = false;
-        while let Some(e) = entries.next_entry().await.unwrap() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with("ADR-001-") && name.ends_with(".md") {
-                found = true;
-                let content = tokio::fs::read_to_string(e.path()).await.unwrap();
-                // AC-2: body is preserved (the original Context / Decision sections).
-                assert!(
-                    content.contains("Needed reliable storage"),
-                    "body lost — AC-2 regression"
-                );
-                assert!(content.contains("Postgres"));
-            }
-        }
-        assert!(found, "AC-1 regression: projection file not created");
-    }
-
-    #[tokio::test]
-    async fn scan_import_maps_obsidian_status_accepted_to_active() {
-        // AC-4: `status: accepted` in frontmatter must land as `active`,
-        // not hardcoded `draft`.
-        let (tmp, ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(
-            docs.join("ADR-002-tls.md"),
-            "---\nkind: adr\nid: ADR-002\ntitle: Use TLS\nstatus: accepted\n---\n# TLS\n",
-        )
-        .unwrap();
-
-        let opts = ScanImportOptions::default();
-        let result = scan_and_import_to_workspace(tmp.path(), &ws, &store, &opts)
-            .await
-            .unwrap();
-        assert_eq!(result.imported, 1);
-
-        let artifact = store.get_artifact("ADR-002").await.unwrap().unwrap();
-        assert_eq!(
-            artifact.status, "active",
-            "AC-4 regression: accepted must map to active"
         );
-    }
+        let lock = guard(&ws).await;
 
-    #[tokio::test]
-    async fn scan_import_maps_rejected_to_superseded() {
-        let (tmp, ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(
-            docs.join("ADR-003-old-decision.md"),
-            "---\nkind: adr\nid: ADR-003\ntitle: Old\nstatus: rejected\n---\n# Old\n",
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
         )
+        .await
         .unwrap();
 
-        let opts = ScanImportOptions::default();
-        scan_and_import_to_workspace(tmp.path(), &ws, &store, &opts)
-            .await
-            .unwrap();
-
-        let artifact = store.get_artifact("ADR-003").await.unwrap().unwrap();
-        assert_eq!(artifact.status, "superseded");
-    }
-
-    #[tokio::test]
-    async fn scan_import_warns_on_unknown_status() {
-        // AC-4 fail-loud: unknown status → draft + warning.
-        let (tmp, ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(
-            docs.join("ADR-004-wip.md"),
-            "---\nkind: adr\nid: ADR-004\ntitle: WIP\nstatus: wip\n---\n# WIP\n",
-        )
-        .unwrap();
-
-        let opts = ScanImportOptions::default();
-        let result = scan_and_import_to_workspace(tmp.path(), &ws, &store, &opts)
-            .await
-            .unwrap();
         assert_eq!(result.imported, 1);
+        assert_eq!(result.entries[0].artifact_id.as_deref(), Some("PRD-002"));
+        imported_file(&ws, "prds", "PRD-002-").expect("the allocated id is written to disk");
+    }
 
-        let artifact = store.get_artifact("ADR-004").await.unwrap().unwrap();
-        assert_eq!(artifact.status, "draft");
+    #[tokio::test]
+    async fn a_custom_path_outside_the_project_is_rejected() {
+        let (tmp, ws) = workspace().await;
+        let lock = guard(&ws).await;
 
-        let entry = result
-            .entries
-            .iter()
-            .find(|e| e.artifact_id.as_deref() == Some("ADR-004"))
-            .expect("entry for ADR-004");
+        let err = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions {
+                dry_run: false,
+                custom_path: Some("../../etc".to_string()),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("traversal"), "got: {err}");
+    }
+
+    // ── status mapping: the four spellings an external document can carry ──
+
+    async fn import_status_of(status: &str) -> (String, Vec<String>) {
+        let (tmp, ws) = workspace().await;
+        source(
+            tmp.path(),
+            "docs/ADR-020-status.md",
+            &format!("---\nkind: adr\nid: ADR-020\ntitle: Status\nstatus: {status}\n---\n# Body\n"),
+        );
+        let lock = guard(&ws).await;
+        let result = scan_and_import_to_workspace(
+            tmp.path(),
+            &ws,
+            Some(&lock),
+            None,
+            &ScanImportOptions::default(),
+        )
+        .await
+        .unwrap();
+        let entry = &result.entries[0];
+        let (_, content) = imported_file(&ws, "adrs", "ADR-020-").expect("canonical ADR written");
+        let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&content).unwrap();
+        (
+            fm.get("status").unwrap().as_str().unwrap().to_string(),
+            entry.warnings.clone(),
+        )
+    }
+
+    #[tokio::test]
+    async fn obsidian_accepted_maps_to_active_without_a_warning() {
+        let (status, warnings) = import_status_of("accepted").await;
+        assert_eq!(status, "active");
+        assert!(warnings.is_empty(), "got {warnings:?}");
+    }
+
+    #[tokio::test]
+    async fn rejected_maps_to_superseded() {
+        let (status, _) = import_status_of("rejected").await;
+        assert_eq!(status, "superseded");
+    }
+
+    #[tokio::test]
+    async fn an_unmappable_status_falls_back_to_draft_and_warns() {
+        // Fail-loud: a status the methodology does not know must not be
+        // silently rewritten to `draft` with no trace.
+        let (status, warnings) = import_status_of("wip").await;
+        assert_eq!(status, "draft");
         assert!(
-            entry.warnings.iter().any(|w| w.contains("wip")),
-            "AC-4 fail-loud: warning must mention unknown status, got {:?}",
-            entry.warnings
+            warnings.iter().any(|w| w.contains("wip")),
+            "the warning must name the offending value, got {warnings:?}"
         );
-    }
-
-    #[tokio::test]
-    async fn scan_import_no_frontmatter_status_defaults_to_draft() {
-        // AC-5: file without frontmatter `status:` key — default to draft,
-        // no warning (expected backward-compat path).
-        let (tmp, ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(
-            docs.join("ADR-005-no-fm.md"),
-            "# ADR-005: No frontmatter\n\nSomething.\n",
-        )
-        .unwrap();
-
-        let opts = ScanImportOptions::default();
-        let result = scan_and_import_to_workspace(tmp.path(), &ws, &store, &opts)
-            .await
-            .unwrap();
-        assert_eq!(result.imported, 1);
-
-        let artifact = store.get_artifact("ADR-005").await.unwrap().unwrap();
-        assert_eq!(artifact.status, "draft");
-
-        let entry = result
-            .entries
-            .iter()
-            .find(|e| e.artifact_id.as_deref() == Some("ADR-005"))
-            .expect("entry for ADR-005");
-        assert!(
-            entry.warnings.is_empty(),
-            "no-frontmatter path must not warn: got {:?}",
-            entry.warnings
-        );
-    }
-
-    #[tokio::test]
-    async fn scan_import_body_survives_second_import_roundtrip() {
-        // AC-3 proxy: running scan-import twice on the same file yields
-        // Skipped (not duplicate) and the body on disk is unchanged.
-        // Full reindex round-trip isn't unit-testable here (reindex lives
-        // in a separate module); this guards the equivalent invariant at
-        // the scan-import boundary.
-        let (tmp, ws, store) = setup_store().await;
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(
-            docs.join("ADR-010-idempotent.md"),
-            "---\nid: ADR-010\nkind: adr\ntitle: Idempotent\nstatus: accepted\n---\n# Canonical body\n",
-        )
-        .unwrap();
-
-        let opts = ScanImportOptions::default();
-        let r1 = scan_and_import_to_workspace(tmp.path(), &ws, &store, &opts)
-            .await
-            .unwrap();
-        assert_eq!(r1.imported, 1);
-
-        // Verify projection file content mentions the body.
-        let adrs_dir = ws.join("adrs");
-        let mut first_body = String::new();
-        let mut rd = tokio::fs::read_dir(&adrs_dir).await.unwrap();
-        while let Some(e) = rd.next_entry().await.unwrap() {
-            let n = e.file_name().to_string_lossy().to_string();
-            if n.starts_with("ADR-010-") && n.ends_with(".md") {
-                first_body = tokio::fs::read_to_string(e.path()).await.unwrap();
-            }
-        }
-        assert!(first_body.contains("Canonical body"));
-
-        // Second run → skipped, projection untouched.
-        let r2 = scan_and_import_to_workspace(tmp.path(), &ws, &store, &opts)
-            .await
-            .unwrap();
-        assert_eq!(r2.imported, 0);
-        assert_eq!(r2.skipped, 1);
     }
 }

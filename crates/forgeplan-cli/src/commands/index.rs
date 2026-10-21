@@ -167,15 +167,14 @@ pub async fn run(embed_profile: Option<String>, deadline_secs: u64) -> Result<()
             commit.kind, commit.version, commit.rows_affected
         );
     }
+    // All three tables are always pinned, so the version is printed directly.
+    // A `-` branch here would advertise "no sections version", a state the
+    // index can no longer be in.
     println!(
         "  tables:      artifacts@v{} relations@v{} sections@v{}",
         outcome.table_versions.artifacts,
         outcome.table_versions.relations,
-        outcome
-            .table_versions
-            .sections
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".into())
+        outcome.table_versions.sections
     );
     match &outcome.verification {
         Some(report) => {
@@ -189,10 +188,7 @@ pub async fn run(embed_profile: Option<String>, deadline_secs: u64) -> Result<()
                 report.expected_sections,
                 report.reader_version,
                 report.relations_version,
-                report
-                    .sections_version
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "-".into())
+                report.sections_version
             );
         }
         None => println!("  verified:    nothing staged (no-op pass)"),

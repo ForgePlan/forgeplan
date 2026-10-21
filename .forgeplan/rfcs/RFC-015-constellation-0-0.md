@@ -126,7 +126,7 @@ P1–P5 — **внутренние шаги одной истории**, а не
 
 ### P3 — conditional publish
 
-Публикация только для всё ещё актуального source/input/profile. Stale ANN eligibility. Сценарии A→B→C и delete/recreate. Совместимость профилей, честный prefix scope.
+Публикация только для всё ещё актуального source/input/profile. Stale ANN eligibility. Сценарии A→B→C и delete/recreate. Совместимость профилей; отдельный artifact-prefix channel и token-bounded sections по всему body, без заявления о полной semantic coverage при pending/unavailable.
 
 ### P4 — owner и workers
 
@@ -146,40 +146,92 @@ CLI и MCP используют настоящие vectors. Для MCP: explicit
 
 ## Докодовый допуск и активация — разные решения
 
-Текущий маршрут — Row 7; автоматический SPARC-переход не выбран. В этой цепочке независимый положительный архитектурный вердикт по валидным draft SPEC/RFC/ADR, успешный ADI и отдельный generation/owner ADR являются докодовым условием S1-C, **не** переводом артефакта в active. Действующий CLAUDE.md не меняется: Validate → Code → Evidence → Activate; активация без кода и связанного Evidence запрещена. Новые исходники допускаются только отдельным разрешением координатора после S1-A. Если позднее выбирается SPARC, сначала нужен отдельный согласованный маршрут и выполненные active-parent/Architecture-RFC предпосылки; эта передача не разрешает молча обойти ни их, ни правила репозитория.
+Действующий CLAUDE.md не меняется: Validate → Code → Evidence → Activate; активация без кода и связанного Evidence запрещена. Текущий corrective маршрут — Row 4 (RIPER-5, Deep). Governance checkpoint 3bf82667789d8bad095645551f6d59c5f1bc478a принят отдельно. До source dispatch нужны согласованная дельта SPEC-008/RFC-015/ADR-028/ADR-029, настоящий ADI по новым редакциям, validate без MUST и независимый architect-reviewer. Затем: отдельные авторы → замороженная интеграция → независимое ревью → единственный build-owner → CLI/stdio проверка координатором → S1-G. Только PASS S1-G допускает S2; затем аналогично S3 и S4. Ни governance, ни старый суммарный прогон не являются этим допуском.
 
 ## S1-A: конкретный статический контракт
 
-Основное решение — **ADR-029**, все Data Models и eligibility — SPEC-008. Проект выбран по pinned API lancedb0.27.2/lance4.0.0/fs2 0.4.3, без probe/сборки. Настоящие Codex ADI ADR-029/RFC-015 выполнены; авторизация Claude не требуется. Их рекомендации и полный независимый докодовый gate обязательны отдельно от статического validate. Запуск S1-C требует принятой S1-A и отдельного разрешения; runtime только S1-V.
+Основное решение — **ADR-029**, все Data Models и eligibility — SPEC-008. Проект выбран по pinned API lancedb0.27.2/lance4.0.0/fs2 0.4.3, без probe/сборки. Исторические Codex ADI ADR-029/RFC-015 и статическая S1-A приняты (10/10); это не runtime PASS. Реализация существует и имеет корректирующие разрывы #538. Новые ADI и независимое принятие текущей corrective-дельты обязательны до пяти source-срезов; runtime проверяется заново в S1-V.
 
 ### Поток одного поколения
 
 Два явных пути без смены действующего ADR-016:
 
 - Read: SoftFallback resolve → no-write capture bytes/config → persisted либо ephemeral immutable ReadView → lexical/graph/pure score + exact eligible pinned vector cache. Не берёт owner/WorkspaceLock, не открывает мигрирующий LanceStore::open, не создаёт index/locks, не запускает maintenance или hidden model download.
-- Maintain: Strict resolve + own maintain_index capability → owner actor/OS guard → bootstrap/recover baseline → capture/compute delta → stage artifacts/relations **с WorkspaceLock на каждый commit** → join writes/commit versions → DurabilityTrackingStore.finish_writes+sync_written_set → immutable manifest → final source validate под WorkspaceLock → CURRENT atomic replace+sync ACK. Publisher имеет один owner; model compute вне guards.
+- Maintain: Strict resolve + own maintain_index capability → owner actor/OS guard → bootstrap/recover baseline → capture/compute delta → stage artifacts/relations/sections **с WorkspaceLock на каждый commit** → join writes/commit versions → DurabilityTrackingStore.finish_writes+sync_written_set → immutable manifest → final source validate под WorkspaceLock → CURRENT atomic replace+sync ACK. Publisher имеет один owner; model compute вне guards.
 
 Mutation handler отпускает WorkspaceLock **до** обращения к maintenance. Короткий CLI read/mutation не создаёт фоновый publisher/inference, вправе вернуть index_pending; live watch/serve обеспечивает maintenance только при явно разрешённой Strict capability. Query embedding с cached моделью использует dedicated std::thread worker без write capability, не tokio::spawn_blocking, который удержит runtime shutdown. Response deadline не считается измерением process-exit deadline; S1-V проверяет реальный exit, в том числе hung native inference. Не читать staged latest/clone writer handle.
 
 ### Предлагаемые внутренние контракты (не существующие exported API)
 
-- capture_source(resolved_workspace, deadline) → Result<CapturedSourceView, SourceDiagnostic> — read-only exact bytes/FM/full parsed model/outgoing и source/config digests.
-- ensure_read_view(soft_resolved_workspace, captured_source, deadline) → Result<ReadView, ReadDiagnostic> — persisted либо ephemeral capture, никаких index writes/locks/model scheduling; one snapshot across text/graph/score/vector eligibility.
-- maintain_index(strict_maintain_capability, index_runtime, deadline) → Result<PublishedReadView, ReconcileOutcome> — единственный writer bootstrap/schema/derived artifacts/relations/score/pending/manifest, со всеми nested storage operations под owner→WorkspaceLock.
-- open_pinned_view(resolved_workspace, descriptor) → Result<PinnedVectorView, IndexGenerationUnavailable> — distinct independently opened handles checkout exact versions; не мигрирует.
-- publish_embedding(result, strict_maintain_capability, index_runtime) → Published | StaleResult | Failed — exact full binding, conditional update vector/binding/state, никогда insert; UpdateResult.version/rows_updated проверяются по результату commit.
-- mark_dirty(resolved_workspace, cause) — bounded coalesced signal в память already-live runtime; dropped notify обнаруживается полным source capture, read не пишет durable queue.
-- shutdown_runtime(index_location) — stop admission; join publisher/storage calls до release owner; model soft timeout не kill native call, старый worker не имеет publisher capability.
+- `capture_source(resolved_workspace, deadline)` → Result<CapturedSourceView, SourceDiagnostic> — read-only exact bytes/FM/full parsed model/outgoing и source/config digests.
+- `ensure_read_view(soft_resolved_workspace, captured_source, deadline)` → Result<ReadView, ReadDiagnostic> — persisted либо ephemeral capture, никаких index writes/locks/model scheduling; one snapshot across text/graph/score/vector eligibility.
+- `maintain_index(strict_maintain_capability, index_runtime, deadline)` → Result<PublishedReadView, ReconcileOutcome> — единственный writer bootstrap/schema/derived artifacts/relations/sections, derived scores внутри artifact records, pending/manifest, со всеми nested storage operations под owner→WorkspaceLock.
+- `open_pinned_view(resolved_workspace, descriptor)` → Result<PinnedVectorView, IndexGenerationUnavailable> — distinct independently opened handles checkout exact versions; не мигрирует.
+- `publish_embedding(result, strict_maintain_capability, index_runtime)` → Published | StaleResult | Failed — exact full binding, conditional update vector/binding/state, никогда insert; UpdateResult.version/rows_updated проверяются по результату commit.
+- `mark_dirty(resolved_workspace, cause)` — bounded coalesced signal в память already-live runtime; dropped notify обнаруживается полным source capture, read не пишет durable queue.
+- `shutdown_runtime(index_location)` — stop admission; join publisher/storage calls до release owner; model soft timeout не kill native call, старый worker не имеет publisher capability.
 
 Это private design boundaries, не готовые API. Реализация переиспользует projection/lock/error/search/embed/resolver, без второго reconciler/reader-copy store. Source/Arrow data разделены Arc, не body copy на job.
+
+### S1 corrective: общие интерфейсы и владельцы
+
+Все восемь новых функций async, принимают заимствованный `&WorkspaceRead`, сохраняют существующие параметры, значения по умолчанию и реальные типы результатов:
+
+- `health::health_report_captured(read) -> anyhow::Result<HealthReport>`
+- `health::health_report_with_phase_captured(read, workspace) -> anyhow::Result<(HealthReport, Vec<PhaseMismatch>)>`
+- `journal::build_journal_captured(read, kind_filter, risk_only) -> anyhow::Result<Vec<JournalEntry>>`
+- `scoring::decay::decay_report_captured(read) -> anyhow::Result<Vec<DecayEntry>>`
+- `drift::check_drift_captured(read, project_root) -> anyhow::Result<Vec<DriftReport>>`
+- `anomalies::detect_anomalies_captured(read, workspace, filter) -> anyhow::Result<AnomalyReport>`
+- `release_notes::generate_captured(read, repo_root, since, until, draft) -> anyhow::Result<ReleaseNotes>`
+- `fpf::check_artifact_against_rules_captured(read, artifact_id, fpf_config) -> anyhow::Result<Option<RuleCheckResult>>`
+
+LocalReports выделяет общие приватные вычисления по records/relations для legacy и captured входов; не создаёт второй scoring engine, generic async closures или JournalReport. Сохраняются health phase mismatches/verdict и двусторонний учёт evidence в decay. Используются существующие AssuranceSource и coverage::build_coverage_from_records. open_workspace_read строит один свежий полный authoritative capture и проверяет CURRENT: corrupt/incomplete не становится пустым успешным отчётом. Retired legacy tables не создаются заново.
+
+MCPCompat мигрирует ровно 12 отказов: health, anomalies, journal, blindspots, decay, **fpf_search**, fpf_section, fpf_list, fpf_check, drift, coverage, release_notes. Строка отказа fpf_search ошибочно подписана forgeplan_fpf_rules; настоящий config-only forgeplan_fpf_rules не требует миграции. KB search/list/section читают AuxiliaryStore::open_existing; только явный ingest создаёт/мигрирует KB. FPF check получает артефакт из WorkspaceRead. Explicit workspace сохраняется; parameterless tools проверяются отдельным настоящим сервером нужного checkout.
+
+LocalCLI переводит перечисленные ниже команды на WorkspaceRead, а session/discover операции выполняет по workspace/session files без artifact DB; writes используют WorkspaceLock. Уже file-first score/activate/reason/ingest не переписываются: проверяется их фактическая совместимость. scan_and_import_to_workspace получает optional legacy projection, сначала пишет canonical Markdown с исходными body/author/status/unknown frontmatter/typed links, выделяет ID под существующим id_alloc lock, после успешной партии делает один reconcile. Dry-run ничего не создаёт; повтор не перезаписывает документ; исходные внешние файлы не удаляются.
+
+### WholeBody: требуемый layout и точный набор sections
+
+- Loader проверяет только tokenizer.json/tokenizer_config.json/config.json, без ONNX plan, весов, сети и зависимости от CachedSnapshot с weights. Недокачанный каталог не признаётся пригодным. Один immutable tokenizer Arc удерживается всем capture; tokenizers/onig доступен в обоих feature-режимах, поэтому no-semantic также требует C toolchain. Веса/tract/download остаются semantic-only.
+- Domain-separated section_layout_fingerprint включает algorithm version, checksums tokenizer/config, фактический max_tokens и header limit 128. Он участвует в config_digest, двухпроходном pass agreement и embedding profile; raw source/input/profile digests остаются отдельными. Metadata absence — отдельное fingerprinted semantic_unavailable, не char-window подмена token-window. Появление metadata создаёт новый layout/capture; одинаковое окно с одинаковой layout identity даёт тот же input на разных машинах.
+- sections_for создаёт contiguous UTF-8 byte ranges по offsets без truncation/padding. Special offsets (0,0) не служат границей. Whitespace/metaspace между окнами сохраняется; конкатенация content окон в точности равна всему body, включая CJK/emoji/no-space/длинные строки и хвост за 2000-м символом.
+- Общий builder ограничивает title+heading 128 токенами контекста и проверяет целый input со special tokens <= фактического profile.max_tokens (нынешний потолок 512). Engine использует тот же предел. Полные display title/heading в rows остаются без сокращения. Тот же builder используется при capture, input digest, admission и worker recovery; повторного body_prefix_chars clipping и параметра у section_input_text/CapturedSourceView::section_input больше нет. Artifact-prefix остаётся отдельным каналом.
+- CURRENT/manifest связывают exact versions **трёх** физических таблиц artifacts/relations/sections, а не score-table. Publisher публикует ровно section set текущего capture, в том числе пустой при semantic_unavailable; старые лишние section rows не current. Старые vectors допустимы только как cache rows, не current hits. Recovery не смешивает table versions и не восстанавливает sections из latest.
+- Постоянный MCP использует существующий cached native query worker, без нового daemon/IPC; повторные запросы не строят ONNX plan заново. Cold CLI и warm MCP измеряются раздельно в одинаковой сборочной конфигурации; старый release #534 не сравнивается с debug CLI как ускорение.
+
+Состояния SemanticState остаются ready/pending/failed/unavailable; semantic_unavailable и model_unavailable обозначают причины/диагностику и layout availability, не дополнительные enum-варианты. Read-only query сообщает backlog, но не получает разрешение запускать maintenance; backlog обрабатывает только отдельно разрешённый maintenance. L15 требует exact eligible prefilter до top-K (либо доказанную эквивалентную выборку), не postfilter-only отрицательный результат. Durable pending сохраняет один текущий entry на артефакт с immutable captured section refs и проверкой завершённости; новые section inputs не порождают очередь копий body на каждое событие. Это уточнение S1 full-body работы, не второй queue engine. Предметные S1–S4 suites проверяются после своих freeze, полный workspace matrix один раз после всех изменений S4.
+
+### RuntimeProof: точные стадии, процессы и inventory
+
+Fault points в core добавляет только WholeBody, тесты/runner — только RuntimeProof. Минимальный test-helpers-only протокол: parent слушает loopback TCP с новым token, child получает endpoint/token/selected stage через env; на реальной стадии отправляет newline JSON {token,stage,pid} и ждёт release ACK. Parent проверяет stage/token и убивает именно этот child через SIGKILL либо возвращает newline JSON ACK {token,stage,release:true}; child проверяет token/stage перед release. Ожидание sockets/processes ограничено deadline, не sleep-надеждой. В production таких env-controlled барьеров нет; это не daemon и не базовый IPC Forgeplan.
+
+Общие stage names для реализации и harness: after_artifacts_commit, after_relations_commit, after_sections_commit, after_storage_sync, before_manifest_sync, after_manifest_sync, before_current_replace, after_current_replace, after_current_ack, owner_acquired, native_call_entered. Название подтверждает фактическую точку исполнения, не событие, посланное заранее. Если порядок фактических commits отличается, каждый stage означает завершение именно соответствующего commit; CURRENT публикуется только после всех трёх и durability barriers. Native stage — после получения CallGate permit в native worker, не в mock future. Helper blocked-entry proof отдельно от production real-encode+bounded shutdown и не считается наблюдённым зависанием ONNX или power-loss safety.
+
+После SIGKILL читает новый процесс: завершённое старое/новое поколение либо typed unavailable, никогда смесь. Отдельно проверяются durable pending recovery, два owner/serve+CLI и WorkspaceLock caller. Обязательные стадии не могут быть SKIP/NOT_RUN/zero-run PASS. RuntimeProof сохраняет run_acceptance default suite=phase и добавляет suite=workspace с inventory всех Cargo metadata library/bin/test targets последовательно; compile-only с причиной NOT_APPLICABLE, не PASSED. Пустая обязательная phase/missing target — ошибка. Нет --all-features или конкурентного Cargo.
+
+Fingerprints включают отсортированные относительные пути и bytes точных production src/test/bench/example и eval roots, Cargo manifests/lockfile, а также явно принадлежащие новые unstaged файлы (либо staging до freeze). Tracked-only до staging пропустил бы новые tests; rglob по foreign sources/dev/.local недопустим. target, sources, dev, .local, .serena/caches исключены по построению. До/после run фиксируются actual command/cwd/env/toolchain, source/test/harness fingerprints, true exit, executable count/pass/fail/skip/NOT_RUN, model/tokenizer and binary hashes, log paths+SHA+size, df. Пустой вывод не означает PASS.
+
+### Уточнение границ по EVID-188 — до source dispatch
+
+Координатор явно назначает WholeBody дополнительные manifest.rs/storage.rs/view.rs и durability helpers только для обязательной тройки artifacts/relations/sections, удаления descriptor-only overlay bypass, реальных fault boundaries и миграции затронутых fixtures; новые federation/export/retention алгоритмы не входят. Существующий BTreeMap<String, EmbeddingJob> может сохранить тип. Родительская coalescing семантика — изменение payload/admission/recovery в jobs/runtime с captured section refs, не уже реализованный envelope и не второй queue engine. Manifest validation меняется в назначенном manifest.rs независимо от формы map. effective_artifacts_version сохраняет Result<u64>, поэтому его export consumer не получает новую S2-логику. owner.rs менять не требуется: hook после actual acquire_owner в publisher/runtime наблюдает уже полученный OS guard.
+
+Реальные стадии, а не имитация в outer caller:
+- before_manifest_sync: generation-manifest bytes полностью записаны, непосредственно перед file fsync/FlushFileBuffers внутри назначенного durability/mod.rs; на Windows — соответствующий прямой helper durability/windows.rs. Hook ограничен операцией generation manifest, не всеми durable markers.
+- after_manifest_sync: immutable manifest installation и directory/platform durability уже завершены, CURRENT ещё старый; stage допустим в publisher после успешного возврата install.
+- before_current_replace: checksum-bearing CURRENT temp полностью записан и synced; stage внутри storage.rs перед atomic replacement.
+- after_current_replace: replacement уже видим, до полного publication/descriptor-pin verification ACK. На Windows write-through replacement уже включает namespace durability; эта точка не выдаётся за несуществующее pre-durability окно.
+- after_storage_sync означает join всех трёх writes плюс успешный полный WriteSet/PlatformDurability barrier, не только finish_writes. after_current_ack — полный успешный ACK и проверка descriptor/трёх pins.
+- after_*_commit посылается только после реального соответствующего commit; unchanged/no-commit path не имитирует стадию. Parent test обязан вызвать операцию, которая действительно достигает требуемой стадии.
+
+LocalCLI также мигрирует реальный init --scan caller в commands/init.rs: прежний migrated skip не считается выполненным импортом. RuntimeProof не редактирует существующие core constellation runtime/embedding/pinned-search suites параллельно с WholeBody; новые process/fault targets отдельны. Остальные срезы и запрет исходников S2–S4 до предыдущего G сохраняются.
 
 ### Привязка API, durability, bootstrap и recovery
 
 Table.version/checkout/checkout_latest/restore проверены для pinned0.27.2. Каждый reader independent open, не Table.clone(Arc). UpdateBuilder/MergeInsertBuilder — одна таблица, а не Markdown+Lance+relations transaction. Normal durability seam выбран: обязательный встроенный file-object-store scheme active create/open/restore URI (иначе pinned local fast path обходит wrapper, ADR-029 §0/S8), public NativeTable::create/create_empty/open_with_params(write_store_wrapper), WrappingObjectStore4.0.0 с ObjectStore0.12.5, ReadParams.store_options.object_store_wrapper при reopen, Table::new(Arc<dyn BaseTable>, connection.database().clone()). Shared tracker перехватывает ВСЕ mutations/MultipartUpload.complete/rename/delete и parents; join writes → sync затронутых final files → directories bottom-up → descriptor. Closure — старые durable pinned файлы плюс новое mutation надмножество, а не guessed filenames или пока ненайденная API. ADR-029 §0 определяет normal path и ошибки; runtime проверяет полноту инъекции и filesystem guarantees.
 
-Первый запуск не пытается restore отсутствующую baseline: ADR-029 §0B задаёт PROTOCOL initializing → новые wrapped constellation_artifacts_v1/constellation_relations_v1 из полного canonical capture → первый CURRENT → PROTOCOL active. Legacy snapshot backup сохраняется inert, не второй active путь. Crash before first publish — повтор bootstrap; initializing+valid CURRENT — verify/complete marker; active+missing/corrupt pointer — явная недоступность, не auto-empty init. Partial scan не публикует initial complete. Schema migration и cached scores проходят через того же владельца. После first ACK steady-state сравнивает heads: restore только при unpublished divergence, не безусловный commit перед каждым stage; delta(A,C) не должна унаследовать неполный B. Recovery-only restored heads фиксируются обычным publish/ACK. Unpublished latest читателем игнорируется. Vacuum отключён в S1, никакого удаления pinned versions/lockfile live. После rename и до sync ошибка publication_uncertain, не success. Windows normal backend теперь выбран ADR-029 §0/S9: WindowsNtfsDurability (CreateFileW/FlushFileBuffers, предсозданные через CreateDirectoryW+MoveFileExW WRITE_THROUGH parents, same-volume pointer replacement WRITE_THROUGH без COPY_ALLOWED). Sibling owner-lock в existing canonical parent доступен до создания root; watcher игнорирует его тоже. Это конкретный механизм без POSIX directory fsync/admin/TxF; platform metadata/namespace ordering и весь Windows fault proof ещё NOT RUN в S1-V, обязательства не сняты.
-
-
+Первый запуск не пытается restore отсутствующую baseline: ADR-029 §0B задаёт PROTOCOL initializing → новые wrapped constellation_artifacts_v1/constellation_relations_v1/constellation_sections_v1 из полного canonical capture → первый CURRENT → PROTOCOL active. Legacy snapshot backup сохраняется inert, не второй active путь. Crash before first publish — повтор bootstrap; initializing+valid CURRENT — verify/complete marker; active+missing/corrupt pointer — явная недоступность, не auto-empty init. Partial scan не публикует initial complete. Schema migration и cached scores проходят через того же владельца. После first ACK steady-state сравнивает heads: restore только при unpublished divergence, не безусловный commit перед каждым stage; delta(A,C) не должна унаследовать неполный B. Recovery-only restored heads фиксируются обычным publish/ACK. Unpublished latest читателем игнорируется. Vacuum отключён в S1, никакого удаления pinned versions/lockfile live. После rename и до sync ошибка publication_uncertain, не success. Windows normal backend теперь выбран ADR-029 §0/S9: WindowsNtfsDurability (CreateFileW/FlushFileBuffers, предсозданные через CreateDirectoryW+MoveFileExW WRITE_THROUGH parents, same-volume pointer replacement WRITE_THROUGH без COPY_ALLOWED). Sibling owner-lock в existing canonical parent доступен до создания root; watcher игнорирует его тоже. Это конкретный механизм без POSIX directory fsync/admin/TxF; platform metadata/namespace ordering и весь Windows fault proof ещё NOT RUN в S1-V, обязательства не сняты.
 
 Критерий stable capture формализован SPEC-008: два полных enumerate/bytes/config прохода с равными path sets/digests, bounded discard/source_busy, immutable first confirmed view; это не глобальная external-filesystem linearizability. Уточнения настоящего ADI закреплены ADR-029 §0D: capture_for_read без guards против capture_for_maintenance под owner→WorkspaceLock; acquire/recover/stage/abandon/publish/release имеют явные pre/post laws. Durability order: joined storage writes → closure barrier → generation manifest barrier → CURRENT visibility → ACK; orphan manifest не current. Фактический engine — Embedder→TractEmbedder (semantic-search=[tract-engine]), CLS/L2/512tokens; старый with_model автоматически получает веса и запрещён в cached-only query. P1–P5 должны дать явный local-snapshot-only loader в том же embed module; explicit embed/setup warm_model/FPF ingest отдельно сохраняют download permission; bool ensure_model — show_progress, не переключатель permission. Никакой подмены engine/перегенерации oracle или фактически выполненного model test здесь нет.
 
@@ -200,8 +252,6 @@ Table.version/checkout/checkout_latest/restore проверены для pinned0
 | max running inference after soft timeout | 1 | новых модельных calls нет до join; responsive lexical, без обещания убить зависшую native call |
 | per-query result limit | existing CLI/MCP limit | cap + truncation; no new silent cap whole corpus |
 
-
-
 ### Затронутые callsites и cutover
 
 - projection::MutationContext и все mutation helpers: полный canonical ingest; guard-aware path; **release WorkspaceLock before barrier**. Удалить body-only skip/empty-body восстановление.
@@ -214,23 +264,22 @@ Table.version/checkout/checkout_latest/restore проверены для pinned0
 
 ### Полный cutover: дополнительные production и compatibility пути
 
-Обещание одного owner относится ко ВСЕМ writes одного canonical physical IndexLocation, не только двум coherent tables. Generation CURRENT связывает artifacts+relations; auxiliary tables не объявляются общей транзакцией с ними.
+Обещание одного owner относится ко ВСЕМ writes одного canonical physical IndexLocation, не только трём coherent tables. Generation CURRENT связывает artifacts+relations+sections; auxiliary tables не объявляются общей транзакцией с ними.
 
 | Surface / source | Classification / обязательный cutover |
 |---|---|
 | core/playbook/dispatch/forgeplan_core_dispatcher.rs:259–262 | Реальный production constructor: исключить raw LanceStore::open/migrations из read; writes проводить через Strict maintenance owner→WorkspaceLock, как CLI/MCP |
 | CLI fpf.rs:62–66,125–126 | Explicit FPF ingest: init/clear_fpf/insert_fpf_chunks — auxiliary writes. При том же физическом root тот же owner/WorkspaceLock; при отдельном root свой physical owner. Не bypass из-за другого table kind |
 | CLI fpf.rs:193–205; MCP server.rs:6851–6853 | FPF query — no-write reader без migration/retry checkout_latest; semantic encoder cached-only, не старый Embedder::new/with_model с download. Keyword fallback/diagnostics прежние, не переписывать FPF business logic |
-| CLI common.rs:333,354; git_sync.rs:80,214 | change_log append — auxiliary writes под тем же owner→WorkspaceLock после release canonical mutation guard, без reverse lock order. Это не atomic член artifact/relations generation и не rollback audit history через restore этих двух tables |
+| CLI common.rs:333,354; git_sync.rs:80,214 | change_log append — auxiliary writes под тем же owner→WorkspaceLock после release canonical mutation guard, без reverse lock order. Это не atomic член generation artifacts/relations/sections и не rollback audit history через restore generation tables (artifacts/relations/sections) |
 | core/driver/lance.rs:20–26,35–36,59–64,146–147; driver/factory.rs:13–20 | Публичная compatibility surface reads/writes: закрыть raw writer/мигрирующий read bypass. common::open_driver:363 allow(dead_code): НЕ выдавать за доказанный активный CLI caller. Мигрировать известные consumers, без вечного legacy shim |
 | db/store.rs:610–684,797–850 | Старый read retry с checkout_latest запрещён pinned facade: missing version/error не делает implicit latest refresh |
 | CLI setup.rs:89–97 warm_model | Explicit obtaining/download entrypoint, как explicit embed/FPF ingest; не ordinary query и не запрет всех downloads |
 | scoring/reff.rs:290–324,341–352 и evidence parser | Coherent scores/evidence читаются из artifact records+relations; отдельная третья evidence table не требуется. store.evidence dead_code не выдумывается active dependency |
 
-Auxiliary FPF/change_log имеют собственную per-table семантику; их latest reads не разрешают latest artifact/relations reads. Их writes всё равно сериализованы physical owner и проходят соответствующий durability adapter; ни один auxiliary caller не восстанавливает/не очищает published pair в обход publisher. При source implementation P1–P5 необходимо закрыть все production constructors и exported compatibility entrypoints, не только перечисленные command names. Независимый source sweep проверяет эту карту; один список автора не доказывает полноту.
+Auxiliary FPF/change_log имеют собственную per-table семантику; их latest reads не разрешают latest artifact/relations/sections reads. Их writes всё равно сериализованы physical owner и проходят соответствующий durability adapter; ни один auxiliary caller не восстанавливает/не очищает published generation из трёх таблиц в обход publisher. При source implementation P1–P5 необходимо закрыть все production constructors и exported compatibility entrypoints, не только перечисленные command names. Независимый source sweep проверяет эту карту; один список автора не доказывает полноту.
 
 Дополнение source sweep к закрытому реестру:
-
 - CLI coverage.rs:139–140 → core/coverage/mod.rs:220–248 (update_body241): DB-only mutation устраняется, canonical-first→release WorkspaceLock→publisher; guard вокруг старого DB-first не считается cutover.
 - core/scan/import.rs:337/386/398/428 через CLI scan_import и init --scan: тот же canonical-first ingest/reconcile и partial-scan safeguards.
 - core/undo/restore.rs:121–241 через CLI restore:69/undo_last:69, MCP:8906/9058: восстановление canonical сначала, затем unlock→reconcile; не прямой authoritative DB restore в обход источника.
@@ -244,11 +293,27 @@ Auxiliary FPF/change_log имеют собственную per-table семан�
 
 ADR-029 Evidence Requirements перечисляет fault points, two-process owner/deadlock/late commit, pinned-view isolation/retention, forced jobs ordering, malformed sources, exact eligible vectors, model unavailable и platform filesystem obligations. В S1-V выполнить их вместе с **всей** L01–L16 и исходной regression/no-feature→semantic матрицей, без сужения. Пробник только после полного P1–P5 freeze; успешный статический validate не доказывает storage safety.
 
+## S2-S4: Sequential Boundaries
+
+S1 закрывает локальную стадию 0А/0Б. Следующие этапы:
+
+- **S2-A**: federation, единый qualified ref, межпроектный граф. Предмет S2 определён планом; текущий документ не предвосхищает его решения.
+- **S3-A**: ContextPack с жёстким бюджетом, обязательные основания, continuation. Предмет S3 определён планом; текущий документ не предвосхищает его решения.
+- **S4-A**: воспроизводимая оценка F10/F11, cache, переносимые adapters. Предмет S4 определён планом; текущий документ не предвосхищает его решения.
+
 ## Affected Files
 
-- crates/forgeplan-core/src/** (index reconciler, projection, embed engine)
-- crates/forgeplan-cli/src/commands/{watch,git_sync,reindex,embed}.rs
-- crates/forgeplan-mcp/src/{server.rs,lib.rs}
+Corrective ownership (у каждого автора отдельная worktree от exact governance checkpoint; tests принадлежат тому же срезу):
+
+| Срез | Исключительные production/harness paths |
+|---|---|
+| LocalReports | core/src/health/mod.rs, journal/mod.rs, scoring/decay.rs, drift/mod.rs, anomalies.rs, release_notes.rs, fpf/mod.rs |
+| LocalCLI | CLI `commands/{common,health,blindspots,journal,decay,drift,anomalies,release_notes,status,decompose,discover,scan_import}.rs`; CLI `commands/init.rs` — только существующий run_scan_import adapter и его regression coverage; core `scan/import.rs`; соответствующие CLI/core tests |
+| MCPCompat | MCP/src/server.rs целиком; отдельные MCP regression tests |
+| WholeBody | core `constellation/{capture,jobs,facade,runtime,publisher,lance_tables,manifest,storage,view}.rs`; `constellation/durability/{mod,windows}.rs`; `constellation/reconciler.rs` — только затронутые embedded fixtures; `constellation/generations.rs` — только pair-only fixtures и механическая проекция sections type при её изменении, без retention/GC redesign; `embed/{tract_engine,tokenizer,mod}.rs`; core `Cargo.toml`, `Cargo.lock` при необходимости; существующие core tests `constellation_{source_view,embedding_state,embedding_preservation,pinned_search,runtime_e2e}.rs` и новые section/tokenizer tests |
+| RuntimeProof | `eval/run_acceptance.py`, `eval/test_run_acceptance.py`, новый `eval/constellation_readiness.py`; отдельные НОВЫЕ subprocess/fault test targets; не existing core constellation_runtime_e2e/embedding_preservation/pinned_search, не core production и не Cargo dependencies; helper-gated регистрации согласуются через WholeBody как владельца core Cargo.toml |
+
+core/CLI/MCP обозначают crates/forgeplan-core, crates/forgeplan-cli, crates/forgeplan-mcp. Контрактов новых exported API без references в правильном worktree нет. Source writers не запускают Cargo/formatters/tests и не коммитят; единственный tester выполняет проверки после integration freeze, координатор применяет только owned paths и отдельно упражняет бинарники, guardian принимает всю актуальную цепочку. Переход S1-G → S2-G → S3-G → S4-G последовательный; уже написанные поздние части не считаются принятыми. G1–G4 событийного направления вне этой программы.
 
 ## Risks
 
@@ -262,7 +327,7 @@ ADR-029 Evidence Requirements перечисляет fault points, two-process o
 Конкретный protocol теперь описан ADR-029; прежние вопросы ниже заменены проектными решениями, но остаются обязательные ADI/независимый verdict и отложенные runtime-доказательства.
 
 - Общую точку видимости задаёт CURRENT rename над exact table versions (ADR-029), не lancedb multi-table transaction.
-- `semantic_scope` первой версии — `prefix` с честным сообщением (L12), section chunking отложен.
+- Семантика corrective-версии: artifact-prefix — отдельный дополнительный канал; sections охватывают весь body contiguous UTF-8 окнами в пределах реального token budget. Готовность/неполнота каждого канала видна. При отсутствии tokenizer metadata sections имеют fingerprinted semantic_unavailable и точный пустой current set. Это требование к исправлению, не заявление о выполненной реализации.
 - Cooldown 60000ms выбран как проектный параметр; производительность/достаточность измеряется S1-V, не обещается сейчас.
 
 ## Rollback Plan
@@ -274,7 +339,7 @@ Triggers: регрессия search/get либо систематически н
 3. Вернуть прежний binary/config из verified backup. Его собственный explicit reindex строит совместимый derived index из canonical; один forgeplan init не считается полноценным ingestion/rebuild. Если offline replacement нужен — только после backup и при всех остановленных процессах, с новым indexEpoch.
 4. Проверить реальные search/get/graph новым и откатанным binary, записать measured cause/revisit condition в Evidence. Любой будущий повтор cutover использует полный bootstrap §0B, не старые jobs.
 
-Нет runtime disable flag, обещанных compatibility shims или одновременно работающих старого/нового publisher. Область риска: derived index и доступность чтения; canonical source сохраняется, но «откат безопасен» без backup/stop/rebuild не заявляется. ADR-029 и этот RFC используют один offline путь.
+Эта corrective-дельта не вводит runtime disable flag, compatibility shims или одновременно работающие старый и новый publishers. Область риска: derived index и доступность чтения; canonical source сохраняется, но «откат безопасен» без backup/stop/rebuild не заявляется. ADR-029 и этот RFC используют один offline путь.
 
 ## Evidence Requirements
 
@@ -292,11 +357,6 @@ Triggers: регрессия search/get либо систематически н
 | ADR-029 | ADR | based_on |
 
 Контекст без дополнительных structural edges: PRD-085 прослеживается через SPEC-008; NOTE-053 хранит подготовку; RFC-004 остаётся действующим ограничением.
-
-
-
-
-
 
 
 

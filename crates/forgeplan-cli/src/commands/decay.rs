@@ -5,8 +5,14 @@ use forgeplan_core::scoring::decay;
 use crate::commands::common;
 
 pub async fn run() -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let entries = decay::decay_report(&store).await?;
+    let (_ws, source) = common::open_read_source().await?;
+    // Both-sided evidence accounting (incoming AND outgoing) is preserved by
+    // the captured variant, so the R_eff numbers a migrated workspace prints
+    // are the same ones the legacy path computed.
+    let entries = match &source {
+        common::ReadSource::Legacy(store) => decay::decay_report(store).await?,
+        common::ReadSource::Captured(read) => decay::decay_report_captured(read).await?,
+    };
 
     if entries.is_empty() {
         println!("No evidence decay detected. All linked evidence is current.");

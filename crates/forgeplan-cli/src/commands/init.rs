@@ -998,42 +998,95 @@ fn emit_recommendation_hints(workspace_root: &Path) {
 }
 
 /// Run scan-import after init to discover and import existing docs.
+///
+/// Canonical-first: the importer writes `.forgeplan/<kind>/<ID>-<slug>.md` and
+/// only then takes a legacy projection where one exists. On a
+/// constellation-managed workspace that projection is absent, so nothing here
+/// opens a `LanceStore` — which is why this path now runs there instead of
+/// skipping.
 async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
     println!(
         "\n  {} Scanning for existing documents...",
         style("◉").cyan()
     );
 
-    // `scan_and_import_to_workspace` allocates ids and creates rows through a
-    // `LanceStore`. On a workspace the constellation protocol owns, that store
-    // is retired — calling `LanceStore::init` here would recreate the retired
-    // artifact tables beside the live index, and nothing can remove them
-    // afterwards. So the legacy scan path does not run at all there.
-    //
-    // Known gap, deliberately visible: brownfield scan-import on a migrated
-    // workspace needs a file-first variant of the core importer, which does not
-    // exist yet. `forgeplan scan-import` has the same limitation and reports it
-    // the same way; `init --scan` does not pretend to be a second, working
-    // implementation of it.
-    if common::index_migrated(workspace) {
-        println!(
-            "  {} Skipped: scan-import needs the legacy store, which the constellation \
-             protocol owns here.\n    Import documents on a legacy workspace, or \
-             reconcile existing markdown with `forgeplan index`.",
-            style("⚠").yellow().bold()
-        );
-        return Ok(());
-    }
-
-    let store = LanceStore::init(workspace).await?;
+    // Lock FIRST, decide ownership SECOND. Sampling `index_migrated` before
+    // acquiring the lock leaves a window in which a concurrent migration
+    // completes and this call then takes the legacy branch —
+    // `LanceStore::init` would then recreate the retired artifact tables
+    // beside the live index, with no way back. Deciding under the lock is the
+    // same ordering `common::open_store_locked_tolerating_constellation`
+    // uses, and for the same reason.
+    let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(workspace).await?;
+    let migrated = common::index_migrated(workspace);
+    // `LanceStore::init` CREATES the tables when they are absent. It is only
+    // safe on a layout that still owns a legacy index.
+    let store = if migrated {
+        None
+    } else {
+        Some(LanceStore::init(workspace).await?)
+    };
     let options = ScanImportOptions::default();
 
-    // PRD-058 FR-001: ADR-003-compliant variant writes markdown projections.
-    let result = scan_and_import_to_workspace(project_root, workspace, &store, &options).await?;
+    // PRD-058 FR-001 + S1-R2: Markdown first, optional projection second.
+    let result = scan_and_import_to_workspace(
+        project_root,
+        workspace,
+        Some(&lock),
+        store.as_ref(),
+        &options,
+    )
+    .await?;
+    drop(lock);
 
     if result.total_found == 0 {
         println!("  No documents found to import.");
         return Ok(());
+    }
+
+    // Failures are reported BEFORE any reconcile, and before the success
+    // summary. A canonical write that fails silently would otherwise print a
+    // clean "Imported N" over a batch that is actually incomplete — and a
+    // fully failed batch would print "Imported 0" and return success.
+    let failed: Vec<&forgeplan_core::scan::import::ScanImportEntry> = result
+        .entries
+        .iter()
+        .filter(|e| matches!(e.status, ImportStatus::Failed(_)))
+        .collect();
+    if !failed.is_empty() {
+        println!(
+            "  {} {} document(s) FAILED to import:",
+            style("✗").red().bold(),
+            style(failed.len()).red().bold()
+        );
+        for entry in &failed {
+            let reason = match &entry.status {
+                ImportStatus::Failed(reason) => reason.as_str(),
+                _ => unreachable!("filtered to Failed above"),
+            };
+            println!(
+                "    {} — {}",
+                style(entry.relative_path.as_str()).dim(),
+                style(reason).red()
+            );
+        }
+    }
+    if result.imported > 0 {
+        // A partial batch is not a complete one: the reconcile publishes only
+        // what landed, and saying so is part of the output, not a footnote.
+        if !failed.is_empty() {
+            println!(
+                "  {} partial import — {} artifact(s) landed, {} did not. Fix the failures \
+                 and re-run {}.",
+                style("⚠").yellow().bold(),
+                result.imported,
+                failed.len(),
+                style("forgeplan scan-import").cyan()
+            );
+        }
+        if migrated {
+            common::reconcile_after_file_mutation(workspace).await;
+        }
     }
 
     let mut by_kind: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -1056,7 +1109,11 @@ async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
     println!(
         "  Imported {} artifact(s): {}",
         style(result.imported).green().bold(),
-        kind_summary.join(", ")
+        if kind_summary.is_empty() {
+            "none".to_string()
+        } else {
+            kind_summary.join(", ")
+        }
     );
 
     if result.skipped > 0 {

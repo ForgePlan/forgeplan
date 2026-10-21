@@ -65,7 +65,7 @@ pub async fn run(
     fail_on: Option<String>,
     strict: bool,
 ) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, source) = common::open_read_source().await?;
 
     let config = workspace::load_config(&ws)?;
     // PROB-051 L-H3 closure: route through `health_report_with_phase` so
@@ -75,7 +75,20 @@ pub async fn run(
     // see different verdict via CLI vs MCP. Phase tracking is opt-in per
     // workspace config; when disabled `phase_mismatches` is empty and the
     // verdict equals the legacy `health_report` value.
-    let (report, phase_mismatches) = health::health_report_with_phase(&store, &ws).await?;
+    //
+    // On a constellation-managed workspace there is no store to fold over:
+    // the captured variant computes the identical report from one capture, so
+    // a migrated workspace reports the same verdict instead of refusing. A
+    // capture failure is an ERROR here — it never degrades to an empty
+    // "everything is fine" report.
+    let (report, phase_mismatches) = match &source {
+        common::ReadSource::Legacy(store) => {
+            health::health_report_with_phase(store, &ws).await?
+        }
+        common::ReadSource::Captured(read) => {
+            health::health_report_with_phase_captured(read, &ws).await?
+        }
+    };
 
     // PRD-071 contract: derive a single deterministic Next: action from the
     // report. Priority order — blind spots > stubs > orphans > stale > at risk

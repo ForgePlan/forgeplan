@@ -684,8 +684,8 @@ async fn the_served_view_keeps_its_own_pin() {
 /// An **ephemeral** view — a workspace with no pointer — invents no index
 /// identity.
 ///
-/// There is nothing published to describe, and an invented `embedding_heads`
-/// would let a caller read semantic state for a generation that never existed.
+/// There is nothing published to describe, and invented table versions would
+/// let a caller read semantic state for a generation that never existed.
 #[tokio::test]
 async fn an_ephemeral_view_invents_no_index_identity() {
     let tmp = workspace();
@@ -702,8 +702,8 @@ async fn an_ephemeral_view_invents_no_index_identity() {
     assert!(view.descriptor().is_none());
     assert!(view.pin().is_none());
     assert!(
-        view.embedding_heads().is_none(),
-        "a capture has no published embedding heads to report"
+        view.pinned_versions().is_none(),
+        "a capture has no published table versions to report"
     );
     assert!(
         view.manifest().is_none(),

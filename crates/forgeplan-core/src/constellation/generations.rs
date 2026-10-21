@@ -66,9 +66,11 @@ pub struct GenerationEntry {
     /// Table versions this generation pins, when known.
     pub artifacts_version: Option<u64>,
     pub relations_version: Option<u64>,
-    /// The sections version, when the manifest pins one. `None` is both "an
-    /// old generation" and "an unparseable manifest" — either way it does not
-    /// enter the GC floor, which errs toward keeping versions.
+    /// The sections version. `None` only when the manifest did not parse:
+    /// every parseable manifest now pins a complete triple, so "no sections"
+    /// is expressed as a real version plus an empty membership, not as an
+    /// absent field. An unparseable manifest still enters no GC floor, which
+    /// errs toward keeping versions.
     pub sections_version: Option<u64>,
     pub evaluated_at: Option<String>,
     pub is_current: bool,
@@ -197,7 +199,7 @@ pub fn generation_index(index_root: &Path) -> Result<GenerationIndex, Constellat
             manifest_bytes: bytes.len() as u64,
             artifacts_version: manifest.as_ref().map(|m| m.table_versions.artifacts),
             relations_version: manifest.as_ref().map(|m| m.table_versions.relations),
-            sections_version: manifest.as_ref().and_then(|m| m.table_versions.sections),
+            sections_version: manifest.as_ref().map(|m| m.table_versions.sections),
             evaluated_at: manifest.as_ref().map(|m| m.evaluated_at.clone()),
             leased_by: if pinned {
                 vec![OS_SHARED_LOCK_PIN.to_string()]

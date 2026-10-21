@@ -315,11 +315,14 @@ pub struct PinnedVectorView {
     pub manifest: Arc<GenerationManifest>,
     pub artifacts_version: u64,
     pub relations_version: u64,
-    /// The exact sections version this generation pins — `None` for a
-    /// generation written before `constellation_sections_v1` existed. `None`
-    /// means "section search is not part of this generation", never "open
-    /// the latest": there is no fallback to head anywhere in this protocol.
-    pub sections_version: Option<u64>,
+    /// The exact sections version this generation pins.
+    ///
+    /// Always present: the triple is mandatory. A generation that publishes
+    /// **no** semantic sections pins the version its empty commit produced and
+    /// carries an empty `section_bindings`, which is how "this generation has
+    /// no sections" is now said — instead of the `None` that used to mean both
+    /// "no sections" and "written before the table existed".
+    pub sections_version: u64,
 }
 
 /// Open the generation a descriptor names, at its **exact** versions.
@@ -328,7 +331,8 @@ pub struct PinnedVectorView {
 ///
 /// [`ConstellationError::IndexGenerationUnavailable`] when the manifest is
 /// missing, fails its checksum, names a different generation than `CURRENT`,
-/// or names a pair with a missing half. Never a fallback to latest.
+/// or does not pin a complete artifacts/relations/sections triple. Never a
+/// fallback to latest.
 pub fn open_pinned_view(
     index_root: &Path,
     descriptor: &CurrentDescriptor,
@@ -346,16 +350,20 @@ pub fn open_pinned_view(
     if !manifest.table_versions.is_publishable() {
         return Err(ConstellationError::IndexGenerationUnavailable {
             detail: format!(
-                "generation `{}` names table versions {:?}; a coherent pair needs both",
+                "generation `{}` names table versions {:?}; a coherent triple needs all three",
                 manifest.generation_id, manifest.table_versions
             ),
         });
     }
+    // The recorded membership must be internally true before a reader serves
+    // it: keys sorted and unique, and every parent present. A manifest that
+    // fails this is not a generation whose section set can be reasoned about.
+    manifest.validate_section_membership()?;
 
     Ok(PinnedVectorView {
         descriptor: descriptor.clone(),
         artifacts_version: descriptor.effective_artifacts_version(&manifest)?,
-        relations_version: manifest.table_versions.relations,
+        relations_version: descriptor.effective_relations_version(&manifest)?,
         sections_version: descriptor.effective_sections_version(&manifest)?,
         manifest,
     })
@@ -629,16 +637,15 @@ fn rebind_lexical_index(
     .ok()
 }
 
-/// The manifest a pass treats as its baseline: the published generation with
-/// its table versions replaced by the **effective** ones the descriptor names.
+/// The manifest a pass treats as its baseline.
 ///
-/// The artifacts half is the descriptor's effective version, because an
-/// embedding admission or completion legitimately advances the head past the
-/// manifest's pin and records it there. Comparing against the manifest's pin
-/// alone would call those writes "divergence" and rewind over committed
-/// vectors on every pass — the exact defect `effective_artifacts_version`
-/// exists to prevent. Sections follow the same rule through
-/// `effective_sections_version`.
+/// Now a **validation**, not a substitution: the manifest's own triple is the
+/// baseline, and the descriptor's `effective_*` calls confirm it is complete
+/// and belongs to the descriptor's generation. It used to overwrite the
+/// manifest's artifacts and sections pins with heads the descriptor carried
+/// separately, which is how `CURRENT` became a second authority for table
+/// versions. A drain now publishes a new generation, so there is nothing to
+/// substitute.
 ///
 /// One definition, three callers: [`maintain_index`],
 /// [`prepare_embedding_batch`] and [`complete_embedding_batch`] must all agree
@@ -648,9 +655,17 @@ fn published_baseline(
     descriptor: &CurrentDescriptor,
     published: &GenerationManifest,
 ) -> Result<GenerationManifest, ConstellationError> {
+    // All three legs, so an incomplete or torn triple is refused here rather
+    // than half-honoured: a baseline that pinned artifacts and relations while
+    // leaving sections to a caller would let a stale section head survive.
+    let artifacts = descriptor.effective_artifacts_version(published)?;
+    let relations = descriptor.effective_relations_version(published)?;
+    let sections = descriptor.effective_sections_version(published)?;
     let mut baseline = published.clone();
-    baseline.table_versions.artifacts = descriptor.effective_artifacts_version(published)?;
-    baseline.table_versions.sections = descriptor.effective_sections_version(published)?;
+    // Qualified like every other `TableVersions` reference in this file
+    // (lines 593, 600, 690, 2082) rather than imported, so the type is named
+    // the same way wherever a reader meets it.
+    baseline.table_versions = super::manifest::TableVersions::new(artifacts, relations, sections);
     Ok(baseline)
 }
 
@@ -665,9 +680,8 @@ fn published_baseline(
 ///
 /// Each restore creates a NEW physical head, so the returned versions are
 /// re-read afterwards and are never the pre-restore numbers. Only the affected
-/// table is rewound. A pre-sections generation pins `sections: None`, so
-/// `sections_diverged` can never be true under one — the head is free, not
-/// divergent.
+/// table is rewound — and all three heads are compared, because the published
+/// set is now always a complete triple.
 ///
 /// # Errors
 ///
@@ -702,13 +716,9 @@ async fn restore_diverged_heads(
                     .await?;
             }
             if sections_diverged {
-                let pinned = baseline.table_versions.sections.ok_or_else(|| {
-                    ConstellationError::IndexGenerationUnavailable {
-                        detail: "sections head diverged but the published manifest pins none"
-                            .to_string(),
-                    }
-                })?;
-                tables.restore_sections_to(pinned).await?;
+                tables
+                    .restore_sections_to(baseline.table_versions.sections)
+                    .await?;
             }
         }
         HeadComparison::MissingPublishedVersion { role } => {
@@ -911,13 +921,14 @@ pub async fn maintain_index(
     // * `SectionsMerge` when the section batch is non-empty **and** either the
     //   commit plan is non-empty — a delete-only pass still rewrites the whole
     //   section set, so gating on creates/updates alone would hand it an empty
-    //   preserve map — or the table is being brought up for the first time.
+    //   preserve map — or the exact section set changed.
     //
     // Everything else it emits (`DeleteByPredicate`, `RelationsDelete`,
     // `RelationsMerge`) is key-addressed and never carries a batch whose
     // semantic columns were reset. When this gate is false the sequence is
     // empty, so the empty maps below are never spliced over anything.
-    let merges_rows = !commits_plan.is_empty() || baseline.table_versions.sections.is_none();
+    let sections_changed = super::publisher::section_set_changed(&captured, Some(&published));
+    let merges_rows = !commits_plan.is_empty() || sections_changed;
     let (preserved_artifacts, preserved_sections) = if merges_rows {
         (
             tables.artifact_semantics().await?,
@@ -949,10 +960,11 @@ pub async fn maintain_index(
             )
             .collect(),
         merge_rows: section_batch.num_rows(),
-        // A published generation that predates the sections table has no pin;
-        // its first post-upgrade pass must populate the table even when the
-        // artifact side is a no-op.
-        bootstrap: baseline.table_versions.sections.is_none(),
+        // A layout change, or a capture whose metadata went absent, changes
+        // the exact section set without changing a single artifact row. The
+        // merge still has to run, or the previous generation's rows stay
+        // published under keys that now mean different bytes.
+        set_changed: sections_changed,
     };
     let sequence = stage_sequence(
         &commits_plan,
@@ -1096,13 +1108,14 @@ pub async fn maintain_index(
                     .map(|entry| (section.canonical_key.clone(), entry.source_digest.clone()))
             })
             .collect();
-        let sections_expectation =
-            committed_versions
-                .sections
-                .map(|version| super::publisher::SectionsExpectation {
-                    version,
-                    digests: expected_sections_map,
-                });
+        // Always checked, and always against the committed head. An empty
+        // captured set is verified as empty — that is how "this generation
+        // publishes no semantic sections" becomes a verified fact rather than
+        // a skipped check.
+        let sections_expectation = super::publisher::SectionsExpectation {
+            version: committed_versions.sections,
+            digests: expected_sections_map,
+        };
         verification = Some(
             super::publisher::verify_staged(
                 &index_root,
@@ -1111,7 +1124,7 @@ pub async fn maintain_index(
                 &expected,
                 committed_versions.relations,
                 expected_edges,
-                sections_expectation.as_ref(),
+                &sections_expectation,
             )
             .await
             .map_err(|e| ConstellationError::Io {
@@ -1218,6 +1231,17 @@ pub async fn maintain_index(
     next.coverage = captured.coverage;
     next.evaluated_at = captured.evaluated_at.clone();
     next.table_versions = committed_versions;
+    // The exact section membership this generation publishes. Carried from
+    // the same immutable capture the section rows were staged from, so the
+    // manifest and the table describe one set — and a generation with no
+    // usable metadata carries an **empty** list against a real sections
+    // version, which is how "no sections" is now said.
+    next.section_bindings = super::manifest::GenerationManifest::from_capture(
+        &captured,
+        &generation_id,
+        committed_versions,
+    )
+    .section_bindings;
 
     // finish_writes → sync_written_set → write_generation_manifest →
     // descriptor_for(real owner epoch) → publish_current, in that order.
@@ -2029,6 +2053,8 @@ fn admitted_binding_and_input(
             profile_id,
         )
         .ok()?;
+        // The **artifact** prefix budget — still a separate additional
+        // channel, and deliberately not the section layout's business.
         let text =
             super::jobs::embedding_input_text(&artifact.title, &artifact.body, body_prefix_chars);
         return Some((binding, text));
@@ -2039,7 +2065,11 @@ fn admitted_binding_and_input(
         .iter()
         .find(|entry| entry.canonical_key == section.parent_key)?;
     let binding = super::publisher::binding_for_section(section, parent, profile_id).ok()?;
-    Some((binding, captured.section_input(section, body_prefix_chars)))
+    // **No** prefix argument. The window was already cut in tokens by this
+    // capture's layout, and the shared builder is the only thing allowed to
+    // assemble it — a second, independent character budget here is exactly the
+    // coupling this removes.
+    Some((binding, captured.section_input(section).ok()?))
 }
 
 /// The manifest admission publishes: same generation identity and source set,
@@ -2354,46 +2384,35 @@ pub async fn complete_embedding_batch(
         drop(guard);
     }
 
-    // The heads this publish moved and the space it claims live on the
-    // descriptor: the manifest is immutable and checksum-pinned, so the next
-    // reconcile would otherwise read the movement as divergence and restore
-    // over the vectors just written. The publisher is still held, so nothing
-    // else can move the heads first.
+    // The heads this pass moved are already recorded: the manifest publish
+    // above wrote a **new generation** whose `table_versions` name the exact
+    // triple the index holds. There is nothing left to record on the
+    // descriptor, and nothing may be: `CURRENT` carries the manifest checksum
+    // binding and the claimed space, never a table version of its own.
     //
-    // Read after the manifest publish above, which advanced the heads itself:
-    // the descriptor must name the head the index actually has.
+    // What can still move here is the claimed embedding space, and only when
+    // none is claimed yet — `fence_served_profile` already established that
+    // this index serves `profile_id` or names no space, so this can establish
+    // a first claim and never move the pointer onto a space a batch happens
+    // to carry.
     let descriptor = super::storage::read_current(&index_root)?.ok_or_else(|| {
         ConstellationError::IndexGenerationUnavailable {
-            detail: "the manifest publish left no pointer to record the heads on".to_string(),
+            detail: "the manifest publish left no pointer".to_string(),
         }
     })?;
     let mut next = descriptor.clone();
-    if artifacts_embedded > 0 {
-        next.embedding_artifacts_head = Some(tables.artifacts_version().await?);
-    }
-    if sections_embedded > 0 {
-        next.embedding_sections_head = Some(tables.sections_version().await?);
-    }
-    // The claimed space is **carried forward**, never written from a batch.
-    // `fence_served_profile` already established that this index serves
-    // `profile_id` (or names no space yet), so this line can only ever
-    // establish a first claim or re-state the one the fence checked — it
-    // cannot move the pointer onto the space a batch happens to carry. That is
-    // the property `adopt_embedding_profile` exists to own, and it stays owned
-    // there.
     if next.profile_id.is_none()
         && (artifacts_embedded + sections_embedded > 0 || !after.current_keys().is_empty())
     {
         next.profile_id = Some(profile_id.clone());
     }
     if next != descriptor {
-        // The heads moved with no manifest behind them, so this republish is a
-        // pointer switch too — under the workspace lock, for the same reason
-        // the manifest publish above is.
+        // Under the workspace lock, for the same reason the manifest publish
+        // above is.
         let guard = crate::workspace::acquire_workspace_lock(&workspace)
             .await
             .map_err(|e| ConstellationError::Io {
-                detail: format!("cannot take the workspace lock to record heads: {e}"),
+                detail: format!("cannot take the workspace lock to record the profile: {e}"),
             })?;
         publisher.republish_current(&next)?;
         drop(guard);
@@ -2644,27 +2663,21 @@ pub async fn fail_embedding_batch(
         drop(guard);
     }
 
-    // The state writes above moved the physical heads, and the manifest is
-    // immutable: without recording them on CURRENT the next reconcile would
-    // read the movement as divergence and rewind over the recorded failure,
-    // turning a visible `failed` back into an unexplained `pending`.
+    // The state writes above moved the physical heads, and the manifest publish
+    // just above wrote a new generation whose `table_versions` name the exact
+    // triple — so the next reconcile reads them as its baseline rather than as
+    // divergence to rewind over the recorded failure.
     if artifacts_failed + sections_failed > 0 {
         let descriptor = super::storage::read_current(&index_root)?.ok_or_else(|| {
             ConstellationError::IndexGenerationUnavailable {
-                detail: "the manifest publish left no pointer to record the heads on".to_string(),
+                detail: "the manifest publish left no pointer".to_string(),
             }
         })?;
         let mut next = descriptor.clone();
-        if artifacts_failed > 0 {
-            next.embedding_artifacts_head = Some(tables.artifacts_version().await?);
-        }
-        if sections_failed > 0 {
-            next.embedding_sections_head = Some(tables.sections_version().await?);
-        }
-        // Carried forward for the same reason as in completion: the fence
-        // above established that the index already serves this space or names
-        // none, so a batch can only establish a first claim, never move the
-        // pointer onto the space it happens to carry.
+        // Carried forward for the same reason as in completion: the fence above
+        // established that the index already serves this space or names none,
+        // so a batch can only establish a first claim, never move the pointer
+        // onto the space it happens to carry.
         if next.profile_id.is_none() {
             next.profile_id = Some(profile_id.clone());
         }
@@ -2672,7 +2685,7 @@ pub async fn fail_embedding_batch(
             let guard = crate::workspace::acquire_workspace_lock(&workspace)
                 .await
                 .map_err(|e| ConstellationError::Io {
-                    detail: format!("cannot take the workspace lock to record heads: {e}"),
+                    detail: format!("cannot take the workspace lock to record the profile: {e}"),
                 })?;
             publisher.republish_current(&next)?;
             drop(guard);
@@ -3660,10 +3673,13 @@ pub struct SemanticHit {
 pub struct SemanticSearchOutcome {
     pub generation_id: String,
     pub pinned_artifacts_version: u64,
-    /// The pinned sections version the search also queried, or `None` when
-    /// this generation predates `constellation_sections_v1` — the hits then
-    /// came from artifact rows alone and `semantic_scope` says so.
-    pub pinned_sections_version: Option<u64>,
+    /// The pinned sections version the search also queried.
+    ///
+    /// Always present: the pinned generation always names the sections
+    /// version it read. A generation with no semantic sections pins the version
+    /// its empty commit produced and records no members — so the hits then came
+    /// from artifact rows alone, and `semantic_scope` says exactly that.
+    pub pinned_sections_version: u64,
     /// Which embedding space the hits span: `prefix` or `prefix+sections`.
     pub semantic_scope: &'static str,
     /// How many stored vectors were eligible to rank — ready under *this*
@@ -3965,13 +3981,16 @@ pub async fn count_eligible_semantic(
     )
     .await?;
     let mut count = table.count_rows_where(&artifact_predicate).await?;
-    if let Some(version) = descriptor.effective_sections_version(manifest)? {
-        let sections =
-            super::lance_tables::open_table_at_version(index_root, &marker, "sections", version)
-                .await?;
-        let predicate = section_predicate.unwrap_or_else(|| ready.clone());
-        count += sections.count_rows_where(&predicate).await?;
-    }
+    // The sections table is always part of the pinned generation. A generation
+    // with no semantic sections has an empty set at a real version, and
+    // counting against it costs one query and returns zero — which is the
+    // honest answer rather than a skipped half of the eligible set.
+    let sections_version = descriptor.effective_sections_version(manifest)?;
+    let sections =
+        super::lance_tables::open_table_at_version(index_root, &marker, "sections", sections_version)
+            .await?;
+    let predicate = section_predicate.unwrap_or_else(|| ready.clone());
+    count += sections.count_rows_where(&predicate).await?;
     Ok(count)
 }
 
@@ -4008,17 +4027,15 @@ async fn search_semantic_at(
     )
     .await?;
 
-    // The sections half pins to the descriptor's effective version — the
-    // manifest's pin or the drain head — and is absent entirely for a
-    // pre-sections generation. `None` never means "open latest".
+    // The sections half pins to the descriptor's effective version. It is
+    // always present: a generation with no semantic sections has an empty set
+    // at a real version, so the query returns no section rows rather than
+    // skipping a table it could have read. `None` no longer exists here, and
+    // there is no "open latest" path.
     let sections_version = descriptor.effective_sections_version(manifest)?;
-    let sections_table = match sections_version {
-        Some(version) => Some(
-            super::lance_tables::open_table_at_version(index_root, &marker, "sections", version)
-                .await?,
-        ),
-        None => None,
-    };
+    let sections_table =
+        super::lance_tables::open_table_at_version(index_root, &marker, "sections", sections_version)
+            .await?;
 
     // `escape_predicate_literal` already returns a delimited literal —
     // wrapping it in quotes again would produce `''x''`, which parses as an
@@ -4031,7 +4048,7 @@ async fn search_semantic_at(
     let (artifact_predicate, section_predicate) = if let Some(captured) = captured {
         let (artifacts, sections) =
             captured_semantic_predicates(captured, manifest, filter, &ready_predicate);
-        (artifacts, sections_table.as_ref().map(|_| sections))
+        (artifacts, Some(sections))
     } else {
         // The artifacts half carries `kind`/`status`, so the restriction is one
         // more AND on the same predicate.
@@ -4046,22 +4063,20 @@ async fn search_semantic_at(
         // restriction — and the section query is bounded by it. That keeps the
         // section half inside `limit` after filtering instead of spending the
         // whole budget on rows the caller's filter excludes.
-        let section_predicate = match (&sections_table, filter.is_empty()) {
-            (Some(_), true) => Some(ready_predicate.clone()),
-            (Some(_), false) => {
-                let restriction = filter
-                    .row_predicate()
-                    .expect("a non-empty filter always yields a row predicate");
-                let admitted = table
-                    .keys_where(&format!("{ready_predicate} AND ({restriction})"))
-                    .await?;
-                // `None` means no parent passed the filter, so no section row
-                // qualifies either and the section query is skipped entirely.
-                filter
-                    .section_predicate(&admitted)
-                    .map(|restriction| format!("{ready_predicate} AND ({restriction})"))
-            }
-            (None, _) => None,
+        let section_predicate = if filter.is_empty() {
+            Some(ready_predicate.clone())
+        } else {
+            let restriction = filter
+                .row_predicate()
+                .expect("a non-empty filter always yields a row predicate");
+            let admitted = table
+                .keys_where(&format!("{ready_predicate} AND ({restriction})"))
+                .await?;
+            // `None` means no parent passed the filter, so no section row
+            // qualifies either and the section query is skipped entirely.
+            filter
+                .section_predicate(&admitted)
+                .map(|restriction| format!("{ready_predicate} AND ({restriction})"))
         };
         (artifact_predicate, section_predicate)
     };
@@ -4069,13 +4084,13 @@ async fn search_semantic_at(
     let batches = table
         .nearest_embeddings(query_vector, &artifact_predicate, limit)
         .await?;
-    let section_batches = match (&sections_table, &section_predicate) {
-        (Some(sections), Some(predicate)) => {
-            sections
+    let section_batches = match &section_predicate {
+        Some(predicate) => {
+            sections_table
                 .nearest_embeddings(query_vector, predicate, limit)
                 .await?
         }
-        _ => Vec::new(),
+        None => Vec::new(),
     };
 
     let read_str = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<String> {
@@ -4129,9 +4144,9 @@ async fn search_semantic_at(
     // limit-free scan over the same predicate — per table, because the two
     // halves do not share one when a filter is in force.
     let eligible_rows = table.count_rows_where(&artifact_predicate).await?
-        + match (&sections_table, &section_predicate) {
-            (Some(sections), Some(predicate)) => sections.count_rows_where(predicate).await?,
-            _ => 0,
+        + match &section_predicate {
+            Some(predicate) => sections_table.count_rows_where(predicate).await?,
+            None => 0,
         };
 
     let mut hits = Vec::new();
@@ -4177,7 +4192,13 @@ async fn search_semantic_at(
         generation_id: manifest.generation_id.clone(),
         pinned_artifacts_version: artifacts_version,
         pinned_sections_version: sections_version,
-        semantic_scope: if sections_version.is_some() {
+        // The scope is decided by the **published membership**, not by whether
+        // a sections table happened to be open. A generation that pins the
+        // sections table but records no members — which is what a
+        // `semantic_unavailable` capture publishes — covers the artifact
+        // prefix alone, and saying `prefix+sections` there would advertise
+        // coverage the generation does not have.
+        semantic_scope: if !manifest.section_bindings.is_empty() {
             super::jobs::SEMANTIC_SCOPE_WITH_SECTIONS
         } else {
             super::jobs::SEMANTIC_SCOPE
@@ -4387,7 +4408,7 @@ mod tests {
     }
 
     fn manifest_for(captured: &CapturedSourceView, generation_id: &str) -> GenerationManifest {
-        GenerationManifest::from_capture(captured, generation_id, TableVersions::new(1, 1))
+        GenerationManifest::from_capture(captured, generation_id, TableVersions::new(1, 1, 1))
     }
 
     #[tokio::test]
@@ -4542,20 +4563,17 @@ mod tests {
         let sha =
             super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
                 .unwrap();
-        let mut descriptor = super::super::storage::descriptor_for(&manifest, 7, &sha, None);
-        // A completion drain republishes the descriptor with new heads and
-        // leaves the immutable manifest alone.
-        descriptor.embedding_artifacts_head = Some(11);
+        let descriptor = super::super::storage::descriptor_for(&manifest, 7, &sha, None);
         super::super::storage::publish_current(&root, &descriptor, barrier.as_ref()).unwrap();
 
         let view = ensure_read_view(tmp.path(), Arc::clone(&captured))
             .await
             .unwrap();
         assert_eq!(
-            view.embedding_heads(),
-            Some((Some(11), None)),
-            "the heads a reader serves must be the ones CURRENT published, not the manifest's \
-             own table versions"
+            view.pinned_versions(),
+            Some((1, 1, 1)),
+            "the versions a reader serves are exactly the triple the manifest pinned; CURRENT \
+             carries no second copy of them"
         );
 
         // GC runs while the view is alive. The view holds a shared lock on the
@@ -4725,9 +4743,13 @@ mod tests {
         let barrier = barrier_for(&root);
         let captured = capture(tmp.path()).await;
         let manifest = manifest_for(&captured, "gen-10");
-        // One half of the pair is version 0: never committed, never coherent.
+        // One leg of the triple is version 0: never committed, never coherent.
+        // The relations leg is the one refused here, because a generation that
+        // never published sections is a legitimate `semantic_unavailable`
+        // state and only a missing *pair* can prove it is being served half of
+        // what it claims.
         let manifest = GenerationManifest {
-            table_versions: TableVersions::new(1, 0),
+            table_versions: TableVersions::new(1, 0, 1),
             ..manifest
         };
         let sha =
@@ -5465,6 +5487,10 @@ mod tests {
             max_tokens: super::super::jobs::DEFAULT_MAX_TOKENS,
             padding: "none".to_string(),
             truncation: "longest_first".to_string(),
+            // Distinct profiles must differ in `body_prefix_chars`, which
+            // changes `profile_id`; the layout fingerprint is held constant so
+            // this fixture exercises that one difference and not two.
+            section_layout_fingerprint: "layout-fixture".to_string(),
         }
     }
 

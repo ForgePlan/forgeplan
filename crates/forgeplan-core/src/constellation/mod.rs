@@ -69,6 +69,36 @@ pub mod workspace_read;
 mod durability;
 mod owner;
 
+/// Test-only publication/native fault barriers (ADR-029 §8).
+///
+/// The module exists in every build but contains **nothing** unless
+/// `test-helpers` is on, and a release binary therefore has no barrier code,
+/// no listener and no environment lookup. Call sites are gated at their own
+/// definitions, so a production build does not even reference the name.
+#[cfg(feature = "test-helpers")]
+#[cfg_attr(docsrs, doc(cfg(feature = "test-helpers")))]
+pub mod fault_barrier;
+
+/// Stop at a real fault stage when this process was selected for one.
+///
+/// A **no-op in a production build**, not merely a cheap one: without
+/// `test-helpers` there is no module, no environment lookup, no socket and no
+/// listener anywhere in the binary. Every call site uses this one name so the
+/// gating decision lives in exactly one place.
+#[cfg(feature = "test-helpers")]
+#[inline]
+pub(crate) fn fault_barrier_if_selected(stage: &str) {
+    fault_barrier::barrier(stage);
+}
+
+/// The production no-op.
+///
+/// Empty, so a call site costs one predicted branch and the compiler can drop
+/// it entirely — no argument evaluation, no allocation, no syscall.
+#[cfg(not(feature = "test-helpers"))]
+#[inline]
+pub(crate) fn fault_barrier_if_selected(_stage: &str) {}
+
 pub use durability::{DurabilityTrackingStore, StageTracker, WriteSet};
 
 /// Wire string for the versioned domain separator of `sourceSetDigest`.
@@ -87,7 +117,17 @@ pub(crate) const SNAPSHOT_DOMAIN: &str = "forgeplan.constellation.snapshot.v1";
 /// Bumping it is an incompatible protocol change: an older live publisher
 /// then reports `index_protocol_mismatch` instead of writing into the same
 /// root.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// **Bumped to 2** for the section row's byte range and the mandatory
+/// artifacts/relations/sections triple. Without the bump, an index published
+/// under v1 would open: its `PROTOCOL.json` still validates, its sections
+/// dataset still opens with the old schema, and the mismatch would first
+/// appear as a merge failure with nothing explaining it. With the bump the
+/// refusal happens where it is meaningful — at the marker — and ADR-029 §3's
+/// rule applies unchanged: an old manifest is not completed with a guessed
+/// value, and the upgrade is an explicit maintain/rebuild from canonical
+/// markdown. A read never migrates.
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Machine-readable diagnostic code carried by a [`SourceDiagnostic`].
 ///

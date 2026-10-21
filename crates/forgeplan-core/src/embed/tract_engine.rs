@@ -39,13 +39,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use tract_onnx::prelude::*;
 
-/// Token limit fastembed applies to this model family.
-///
-/// `min(512, model_max_length)`. BGE-M3 declares 8192, so 512 wins. Getting
-/// this wrong is invisible on short inputs and silently changes the vector on
-/// long ones — exactly the failure mode that is hardest to notice.
-const MAX_TOKENS: usize = 512;
-
 /// The optimised, runnable form of the model.
 ///
 /// `into_runnable()` hands back an `Arc` because the plan is shareable and
@@ -172,23 +165,34 @@ pub fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {
 }
 
 /// Build the tokenizer with the same truncation and padding fastembed applies.
+///
+/// The vocabulary itself now comes from [`crate::embed::tokenizer`] — the same
+/// metadata-only loader capture uses — so the engine and the capture cannot
+/// disagree about what the tokenizer is or how many tokens a special token
+/// costs. Only the inference-side configuration is added here: padding and
+/// truncation, neither of which capture ever applies.
+///
+/// `max_length` is the layout's **actual** limit rather than a constant
+/// recomputed from `model_max_length`: if capture measured windows against one
+/// number and the engine truncated at another, a section's tail would be
+/// dropped at encode time while its row still claimed whole-window coverage.
+///
+/// This file used to alias `MAX_TOKENS_CEILING` as its own `MAX_TOKENS`
+/// constant, for exactly the token limit fastembed applied to this model
+/// family — `min(512, model_max_length)`, where BGE-M3's config declares 8192
+/// and 512 wins. It no longer does: the limit is read from the layout the
+/// capture measured its windows under, so there is nothing to alias. That is
+/// the point of the change rather than an accident — two constants that happen
+/// to agree today is precisely how a windowed section lost its tail while the
+/// capture believed it was covered.
 fn load_tokenizer(snapshot: &Path) -> Result<tokenizers::Tokenizer> {
     use tokenizers::{PaddingParams, PaddingStrategy, TruncationParams};
 
-    let tokenizer_path = snapshot.join("tokenizer.json");
-    let mut tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
-        .map_err(|e| anyhow::anyhow!("cannot load {}: {e}", tokenizer_path.display()))?;
-
+    let loaded = crate::embed::tokenizer::MetadataTokenizer::load(snapshot)?;
     let tok_config = read_json(&snapshot.join("tokenizer_config.json"))?;
     let model_config = read_json(&snapshot.join("config.json"))?;
 
-    // `min` of our limit and the model's own — fastembed/src/common.rs:97.
-    let model_max = tok_config
-        .get("model_max_length")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(MAX_TOKENS as f64) as usize;
-    let max_length = MAX_TOKENS.min(model_max);
-
+    let max_length = loaded.layout().max_tokens;
     let pad_token = tok_config
         .get("pad_token")
         .and_then(|v| v.as_str())
@@ -199,6 +203,10 @@ fn load_tokenizer(snapshot: &Path) -> Result<tokenizers::Tokenizer> {
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
 
+    // `MetadataTokenizer` measures; this call adds the inference-side padding
+    // and truncation on a clone, so the shared measurement value is never
+    // mutated into an inference configuration.
+    let mut tokenizer = loaded.into_tokenizer();
     tokenizer
         .with_padding(Some(PaddingParams {
             strategy: PaddingStrategy::BatchLongest,
@@ -223,17 +231,19 @@ fn read_json(path: &Path) -> Result<serde_json::Value> {
 
 /// Find the model snapshot inside the shared cache.
 ///
-/// The cache follows HuggingFace's layout — `models--ORG--NAME/snapshots/<rev>/`.
-/// Picks the first snapshot present; a cache holding several revisions of one
-/// model is not something our download path produces.
+/// The cache follows HuggingFace's layout — `models--ORG--NAME/snapshots/<rev>/`,
+/// with `refs/main` naming the resolved revision when present. A directory
+/// counts only when it holds **all three** metadata files; a cache holding
+/// several revisions of one model is not something our download path produces,
+/// so the first complete one wins.
 pub fn find_snapshot(cache_dir: &Path, repo: &str) -> Option<PathBuf> {
-    let repo_dir = cache_dir.join(format!("models--{}", repo.replace('/', "--")));
-    let snapshots = repo_dir.join("snapshots");
-    std::fs::read_dir(snapshots)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| p.join("tokenizer.json").exists())
+    // `find_metadata_snapshot` is the stricter rule: a directory holding only
+    // `tokenizer.json` is a half-fetched snapshot, not a model, and accepting
+    // it here produced an engine that failed at load with no explanation of
+    // what was missing. The weights still have to be checked by
+    // [`REQUIRED_FILES`] at every cached-only open; this only refuses the
+    // directory outright when the metadata itself is absent.
+    crate::embed::tokenizer::find_metadata_snapshot(cache_dir, repo)
 }
 
 /// Files a snapshot needs before it can be loaded.
@@ -245,10 +255,10 @@ pub fn find_snapshot(cache_dir: &Path, repo: &str) -> Option<PathBuf> {
 /// discovered.
 ///
 /// `pub` because it is also **the** verification list for cache-only
-/// constructors: [`find_snapshot`] accepts a directory holding
-/// `tokenizer.json` and nothing else, so a half-fetched snapshot from an
-/// interrupted run would otherwise be opened as if it were whole. Every
-/// cached-only open checks this list before constructing an engine.
+/// constructors. [`find_snapshot`] now requires the three metadata files, so
+/// it already refuses the worst half-fetch — but a snapshot carrying metadata
+/// and no graph is still a directory that looks usable. Every cached-only open
+/// checks this whole list before constructing an engine.
 pub const REQUIRED_FILES: &[&str] = &[
     "onnx/model.onnx",
     "onnx/model.onnx_data",

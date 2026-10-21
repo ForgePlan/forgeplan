@@ -30,9 +30,11 @@ updated: 2026-10-16
 
 Constellation должна дать агенту актуальный read plane поверх нескольких `.forgeplan` workspace: найти ограничение, разобрать supersession, собрать контекст по задаче. Источник предложения — `ForgePlan-Constellation-Architecture-2026-10-16.docx` (SHA-256 `1c3c92fd6f1875f1a9be434d0e18f93c30c33c1ba08c9c851cda6d6f228551ec`), это предложение, а не выпущенное поведение.
 
-Проблема, которую решает это решение, — форма read plane, а не его функции. По исходному DOCX федеративное чтение ещё требуется реализовать; это предпосылка предложения, а не измеренный факт текущего кода. У каждой формы разная цена владения, разные обязательства по обновлению индекса и разные границы доступа к чужому `.forgeplan`.
+Проблема этого решения — форма read plane, а не повторное определение его функций. Историческая предпосылка DOCX от 2026-10-16 «федеративное чтение ещё требуется реализовать» не описывает нынешнее дерево: реализация уже существует, но полная readiness S1–S4 не принята. У каждой формы разная цена владения, обязательства по обновлению индекса и границы доступа к чужому `.forgeplan`.
 
-**Что НЕ входит в это решение.** Оно не доказывает crash safety публикации поколения, не выбирает алгоритм владения индексом (owner/takeover) и не фиксирует числовые пределы deadline/queue/worker. Это отдельное решение generation/owner, обязательное до кода — см. S1-A в RFC-015.
+Корректирующее продолжение S1 по утверждённому плану и #538 выполняется на integration base `3bf82667789d8bad095645551f6d59c5f1bc478a`. S1-A принят ранее как статический контракт с checklist 10/10; это неизменная история, не runtime acceptance. Настоящая дельта ограничена обычными локальными командами после `forgeplan index`, полным semantic body и проверкой publication/native-process failures. Она не принимает S2, не вводит новый federation API и не объявляет planned behavior реализованным PASS.
+
+**Что НЕ входит в это решение.** Оно не доказывает crash safety и не переопределяет owner/takeover, deadline/queue/worker. Generation/owner контракт уже записан в draft ADR-029 и статически принят в S1-A; его ограниченная корректирующая дельта остаётся draft до Validate → Code → Evidence → Activate. Все текущие runtime-проверки обязательны отдельно.
 
 ## Decision Drivers
 
@@ -70,7 +72,7 @@ Constellation живёт в forgeplan-core; тот же бинарник пре�
 
 ## Decision Outcome
 
-**Proposed selection (draft)**: Option 3 — встроенная Rust-плоскость чтения Constellation. Решение не принято и не реализовано.
+**Proposed selection (draft)**: Option 3 — встроенная Rust-плоскость чтения Constellation. Статический S1-A принят; существующий код не означает принятия всей readiness. ADR и corrective delta остаются draft, runtime-гейт S1-G ещё не пройден.
 
 **Why Selected**: единственный вариант, который одновременно удовлетворяет D1 (одна установка), D2 (Markdown authoritative — федерация читает файлы, а не чужие LanceDB) и D4 (профиль federated-read не содержит write-инструментов и не запускает migrations). Option 1 не решает задачу, Option 2 вводит обязательную вторую установку.
 
@@ -87,7 +89,9 @@ Constellation живёт в forgeplan-core; тот же бинарник пре�
 ### Negative (trade-offs)
 - Core растёт; нужен явный контроль границы модулей.
 - Федеративный кэш придётся чинить независимо от проектных LanceDB.
-- Пока не выбран owner индекса, read plane может разойтись с write plane — это закрывает S1-A, а не этот ADR.
+- Owner/generation уже выбран статическим ADR-029; полнота миграции каждого caller и трёхтабличной публикации требует новой проверки, а не доверия прежнему S1-A.
+- Metadata-only tokenizer с onig требует C toolchain также в no-semantic сборке; lexical fallback остаётся честно semantic-unavailable.
+- Полный token layout и pinned sections увеличивают объём индекса и проверок; второй reconciler/scoring engine не уменьшает этот долг и не допускается.
 
 ### Risks
 - Подмена пути: LanceStore::open запускает ensure_change_log и run_migrations; если read-путь случайно пойдёт через него, федерация перестанет быть read-only. Митигация — отдельный reader и тест на отсутствие open чужого store (F05, F06).
@@ -99,7 +103,8 @@ Constellation живёт в forgeplan-core; тот же бинарник пре�
 - Федеративное чтение не выполняет migrations, hooks и запись чужого workspace.
 - Ссылка на внешний workspace не включает его автоматически.
 - Ноль совпадений при неполном охвате не выдаётся как «ограничений нет».
-- Локальные get/context/link/score/activate не меняют смысл молча.
+- Локальные get/context/link/score/activate не меняют смысл молча; создание Constellation-индекса не выключает обычные локальные команды.
+- Нет второго artifact store, обязательного daemon/IPC, reconciler или scoring engine.
 
 ## Evidence Requirements
 
@@ -109,7 +114,7 @@ Constellation живёт в forgeplan-core; тот же бинарник пре�
 
 ## Valid Until
 
-**Дата**: `valid_until` из frontmatter (2027-04-16).
+**История TTL**: исходный проект называл 2027-04-16. В фактическом текущем artifact `valid_until=null`; эта дата не является установленным frontmatter-полем или доказательством срока действия. Текущие основания пересмотра заданы в `## Revisit Trigger`; metadata этим body-only изменением не подделывается.
 
 **Обоснование TTL**: форма read plane пересматривается при смене транспорта MCP или появлении обязательного внешнего store.
 
@@ -118,11 +123,12 @@ Constellation живёт в forgeplan-core; тот же бинарник пре�
 - появляется требование обязательной внешней федерации;
 - ADR-016 (single resolution chain) получает замену.
 
-## Pre-conditions (чеклист ДО реализации)
+## Preconditions — corrective admission
 
-- [ ] S1-A закрепляет generation/owner контракт отдельным ADR
-- [ ] S1-A подтверждает операции конкретной версии lancedb из Cargo.lock
-- [ ] SPEC-008 и RFC-015 валидны без внесённых MUST-ошибок
+- Исторический S1-A принят 10/10 только статически; не открывать его как «ещё не принятый» и не переносить его галочки на runtime.
+- Depth Deep, routing-map Row 4, RIPER-5 corrective continuation. Не Row 7 и не автоматический SPARC-переход.
+- До пяти source writers требуются финальные изменённые draft SPEC-008/RFC-015/ADR-028/ADR-029, настоящий ADI на новой нормативной дельте, validate с нулём MUST и независимый architect-reviewer, включая границы владения.
+- Source dispatch разрешает координатор после review; эта запись не dispatch и не activation. Lifecycle — Validate → Code → Evidence → Activate.
 
 ## Post-conditions (Definition of Done)
 
@@ -139,27 +145,41 @@ Constellation живёт в forgeplan-core; тот же бинарник пре�
 
 ## Rollback Plan
 
-**Triggers** (когда откатывать):
-- Core не удерживает границу read/write без постоянных исключений;
-- федерация систематически ломает локальные команды.
+**Triggers**: встроенный read plane систематически нарушает локальную совместимость или границу read/write.
 
-**Steps** (шаги отката):
-1. Отключить read-профиль MCP и CLI-группу constellation флагом.
-2. Вернуть локальный single-workspace режим как единственный.
-3. Зафиксировать измеренный вывод в Evidence и пересмотреть варианты 1/2.
-
-**Blast Radius**: локальный read plane; канонические Markdown не затрагиваются.
+**Procedure**: остановить publishers/readers, сохранить canonical Markdown и derived backup; координатор выбирает явно проверенную версию бинарника и процедуру восстановления производного индекса. Старый бинарник не читает staged latest нового protocol. Несуществующий runtime-флаг отключения не предполагается; автоматический pointer rollback после uncertain publication запрещён. Markdown не удаляется. Измеренное нарушение фиксируется Evidence и служит причиной пересмотра вариантов 1/2, а не скрытого переключения на второй store.
 
 ## Weakest Link
 
-Самое слабое звено решения — доказанность координации записи между Markdown и несколькими таблицами Lance. Lance поддерживает версии таблиц, но это не общая транзакция. Пока S1-A не подтвердил конкретный CAS/generation механизм на используемой версии lancedb, R_eff этого ADR остаётся 0.
+Самое слабое звено — не наличие статического generation/owner ADR, а его полнота в реальном процессе и на текущем fingerprint: согласование artifacts/relations/sections, локальные consumers и native shutdown. R_eff здесь не назначается автором и не повышается текстом. Отрицательные EVID-180/181 и EVID-183 сохраняются; исторический набор составляет 5673 executable cases + 10 doctests, не доказательство всех readiness-требований.
 
-## Affected Files
+### Уточнение границ по EVID-188 — до source dispatch
 
-| File | Baseline Hash |
-|------|---------------|
-| crates/forgeplan-core/src/** | не измерен — код не менялся |
-| crates/forgeplan-mcp/src/server.rs | не измерен — код не менялся |
+Координатор явно назначает WholeBody дополнительные manifest.rs/storage.rs/view.rs и durability helpers только для обязательной тройки artifacts/relations/sections, удаления descriptor-only overlay bypass, реальных fault boundaries и миграции затронутых fixtures; новые federation/export/retention алгоритмы не входят. Существующий BTreeMap<String, EmbeddingJob> может сохранить тип. Родительская coalescing семантика — изменение payload/admission/recovery в jobs/runtime с captured section refs, не уже реализованный envelope и не второй queue engine. Manifest validation меняется в назначенном manifest.rs независимо от формы map. effective_artifacts_version сохраняет Result<u64>, поэтому его export consumer не получает новую S2-логику. owner.rs менять не требуется: hook после actual acquire_owner в publisher/runtime наблюдает уже полученный OS guard.
+
+Реальные стадии, а не имитация в outer caller:
+- before_manifest_sync: generation-manifest bytes полностью записаны, непосредственно перед file fsync/FlushFileBuffers внутри назначенного durability/mod.rs; на Windows — соответствующий прямой helper durability/windows.rs. Hook ограничен операцией generation manifest, не всеми durable markers.
+- after_manifest_sync: immutable manifest installation и directory/platform durability уже завершены, CURRENT ещё старый; stage допустим в publisher после успешного возврата install.
+- before_current_replace: checksum-bearing CURRENT temp полностью записан и synced; stage внутри storage.rs перед atomic replacement.
+- after_current_replace: replacement уже видим, до полного publication/descriptor-pin verification ACK. На Windows write-through replacement уже включает namespace durability; эта точка не выдаётся за несуществующее pre-durability окно.
+- after_storage_sync означает join всех трёх writes плюс успешный полный WriteSet/PlatformDurability barrier, не только finish_writes. after_current_ack — полный успешный ACK и проверка descriptor/трёх pins.
+- after_*_commit посылается только после реального соответствующего commit; unchanged/no-commit path не имитирует стадию. Parent test обязан вызвать операцию, которая действительно достигает требуемой стадии.
+
+LocalCLI также мигрирует реальный init --scan caller в commands/init.rs: прежний migrated skip не считается выполненным импортом. RuntimeProof не редактирует существующие core constellation runtime/embedding/pinned-search suites параллельно с WholeBody; новые process/fault targets отдельны. Остальные срезы и запрет исходников S2–S4 до предыдущего G сохраняются.
+
+## Affected Files — S1 ownership
+
+Пути относительно integration checkout. Только будущий назначенный source owner меняет свои paths; эта ADR-дельта исходники не меняет.
+
+| Owner | Exclusive paths |
+|---|---|
+| LocalReports | core `health/mod.rs`, `journal/mod.rs`, `scoring/decay.rs`, `drift/mod.rs`, `anomalies.rs`, `release_notes.rs`, `fpf/mod.rs`; их поведенческие проверки |
+| LocalCLI | CLI `commands/{common,health,blindspots,journal,decay,drift,anomalies,release_notes,status,decompose,discover,scan_import}.rs`; CLI `commands/init.rs` — только существующий run_scan_import adapter и его regression coverage; core `scan/import.rs`; соответствующие CLI/core tests |
+| MCPCompat | весь MCP `src/server.rs`, отдельные MCP regression tests |
+| WholeBody | core `constellation/{capture,jobs,facade,runtime,publisher,lance_tables,manifest,storage,view}.rs`; `constellation/durability/{mod,windows}.rs`; `constellation/reconciler.rs` — только затронутые embedded fixtures; `constellation/generations.rs` — только pair-only fixtures и механическая проекция sections type при её изменении, без retention/GC redesign; `embed/{tract_engine,tokenizer,mod}.rs`; core `Cargo.toml`, `Cargo.lock` при необходимости; существующие core tests `constellation_{source_view,embedding_state,embedding_preservation,pinned_search,runtime_e2e}.rs` и новые section/tokenizer tests |
+| RuntimeProof | `eval/run_acceptance.py`, `eval/test_run_acceptance.py`, новый `eval/constellation_readiness.py`; отдельные НОВЫЕ subprocess/fault test targets; не existing core constellation_runtime_e2e/embedding_preservation/pinned_search, не core production и не Cargo dependencies; helper-gated регистрации согласуются через WholeBody как владельца core Cargo.toml |
+
+Не расширять владение через изменение common signatures для десятков посторонних команд. Общие exported signatures, default args и реальные response types сохраняются; точные восемь captured API приведены ниже. WholeBody добавляет core test-only barriers, RuntimeProof только вызывает их. Изменения других shared files требуют решения координатора, не конкурентной записи.
 
 ## AI Guidance
 
@@ -168,27 +188,54 @@ Constellation живёт в forgeplan-core; тот же бинарник пре�
 - Если задача требует внешнего store для базового сценария — это конфликт, поднять явно.
 - Не активировать артефакт без кода и связанного Evidence.
 
-## Фактический ADI — условие до кода
+## История ADI 2026-10-16 — исходный отказ сохранён
 
 2026-10-16 выполнен настоящий `forgeplan_reason` с explicit workspace подготовки. Настроенный провайдер `claude-code` отказал: `claude --print` завершился с code=1; инструмент требует `claude login`. Полный ответ сохранён в `/Users/explosovebit/Work/ForgePlan/.local/planning/constellation-minimax/audit/adi-results.json`. Аутентификация и конфигурация провайдера не менялись. Это **не положительный ADI**: три варианта ниже — авторский проект сравнения. По утверждённому исключению подготовку можно принять, но S1-A обязан получить и сохранить действительный ADI перед архитектурным принятием и допуском S1-C. Rust, storage probe и модельный запуск MiniMax не выполнялись.
 
 ## Докодовый допуск и активация — разные решения
 
-Текущий маршрут — Row 7; автоматический SPARC-переход не выбран. В этой цепочке независимый положительный архитектурный вердикт по валидным draft SPEC/RFC/ADR, успешный ADI и отдельный generation/owner ADR являются докодовым условием S1-C, **не** переводом артефакта в active. Действующий CLAUDE.md не меняется: Validate → Code → Evidence → Activate; активация без кода и связанного Evidence запрещена. Новые исходники допускаются только отдельным разрешением координатора после S1-A. Если позднее выбирается SPARC, сначала нужен отдельный согласованный маршрут и выполненные active-parent/Architecture-RFC предпосылки; эта передача не разрешает молча обойти ни их, ни правила репозитория.
+Row 7 и «S1-A ещё не принят» описывали прежнюю подготовку, не текущий corrective admission. Сейчас действует Row 4/RIPER-5, Deep. Успешный reason на финальной дельте, validate и независимый review — допуск координатору рассмотреть source dispatch, не право активировать draft. Код уже есть, но его наличие и старый статический S1-A не заменяют S1-R/V/G. Ни провайдер, ни model/auth/config этим решением не меняются.
 
-## Implementation Plan
+## Implementation Plan — bounded S1 correction
 
-### Phase 0: Preparation
-- [ ] **0.1** S1-A: generation/owner контракт
-- [ ] **0.2** S1-A: числовые пределы как проектные параметры
-
-### Phase 1: S1-C (одна история, без Rust-запусков)
-- [ ] **1.1** P1 ingest, P2 reconciler
-- [ ] **1.2** P3 conditional publish, P4 owner/workers, P5 facade
+1. LocalReports выделяет общие приватные вычисления по одному набору records/relations; legacy и captured adapters используют их, не второй scoring engine. Сохранить health phase mismatches/verdict и bidirectional evidence links в decay; использовать существующие `AssuranceSource` и `coverage::build_coverage_from_records`.
+2. LocalCLI/MCPCompat мигрируют callers на полный `WorkspaceRead`; WholeBody исправляет immutable token layout и точный section set по ADR-029; RuntimeProof реализует process/model/fault observations без изменения oracle. Не добавлять второй store/daemon/reconciler.
+3. После независимого frozen-delta review единственный build-owner выполняет проверки, координатор проверяет реальные CLI/stdio MCP, guardian принимает S1-G. До этого обязательные runtime строки NOT_RUN, а не PASS по плану.
 
 ## Implementation Log
 
-Реализации ещё нет; runtime = NOT RUN.
+Текущее дерево содержит реализацию Constellation, но она не принята по всей readiness. Статический S1-A 10/10 — история; эта дельта исправляет контракт, не пишет source и не запускает Cargo/model/runtime. Отрицательные EVID-180/181 и исторический EVID-183 не заменяются. Старые ADI outputs сохраняются; новые реальные reason/validate outputs после изменения bodies передаются отдельными логами.
+
+## S1 corrective local compatibility contract
+
+После `forgeplan index` ordinary local CLI/MCP сохраняют смысл health/phase, anomalies, journal, blindspots, decay, drift, coverage, release-notes и FPF. `open_workspace_read` даёт один свежий authoritative complete capture и проверяет имеющийся CURRENT. Повреждённый CURRENT, invalid source или failed read не превращаются в пустой успешный health/coverage/FPF result. Ошибка migrated workspace не разрешает legacy fallback и не создаёт старые artifacts/evidence/relations tables. Только действительно unmigrated workspace может использовать существующий legacy путь; вычисления общие.
+
+Все восемь API async; `read: &WorkspaceRead`, его accessors остаются synchronous. Порядок остальных аргументов/defaults и существующие типы неизменны:
+
+```text
+health::health_report_captured(read) -> anyhow::Result<HealthReport>
+health::health_report_with_phase_captured(read, workspace) -> anyhow::Result<(HealthReport, Vec<PhaseMismatch>)>
+journal::build_journal_captured(read, kind_filter, risk_only) -> anyhow::Result<Vec<JournalEntry>>
+scoring::decay::decay_report_captured(read) -> anyhow::Result<Vec<DecayEntry>>
+drift::check_drift_captured(read, project_root) -> anyhow::Result<Vec<DriftReport>>
+anomalies::detect_anomalies_captured(read, workspace, filter) -> anyhow::Result<AnomalyReport>
+release_notes::generate_captured(read, repo_root, since, until, draft) -> anyhow::Result<ReleaseNotes>
+fpf::check_artifact_against_rules_captured(read, artifact_id, fpf_config) -> anyhow::Result<Option<RuleCheckResult>>
+```
+
+Это shared contract LocalReports → LocalCLI/MCPCompat, не утверждение, что функции уже реализованы. Не вводить `JournalReport`, generic async closures или второй assurance/scoring путь. Genuine `forgeplan_fpf_rules` читает config и не нуждается в искусственной миграции. Двенадцать отказов MCP — health, anomalies, journal, blindspots, decay, **fpf_search**, fpf_section, fpf_list, fpf_check, drift, coverage, release_notes; старый label `forgeplan_fpf_rules` внутри search — ошибка подписи. FPF search/list/section используют `AuxiliaryStore::open_existing`; только explicit FPF ingest создаёт/мигрирует KB, FPF check получает artifact из WorkspaceRead. Missing KB даёт объяснимое состояние, не скрыто созданную таблицу.
+
+Существующие explicit-workspace параметры не удаляются. Parameterless tools проверяются отдельным stdio сервером нужного checkout, не mounted MCP другого workspace. Score/activate/reason и ingest уже имеют file-first путь; их не переписывать заново, но фактическую совместимость проверить. Session/discover использует workspace/session files без открытия artifact DB; записи соблюдают WorkspaceLock. `scan_and_import_to_workspace` принимает optional legacy projection и пишет **сначала Markdown**, сохраняя body, author/status, typed links/unknown frontmatter и `id_alloc` lock; один reconcile успешной партии, source files не удаляются, dry-run ничего не создаёт, repeat не перезаписывает документ.
+
+WholeBody сохраняет существующий cached native query worker в постоянном MCP: warm запрос не строит ONNX plan заново; отдельный CLI процесс не называют warm MCP. Полное body и native process checks обязательны по ADR-029, без S2 runtime claims.
+
+## Revisit Trigger
+
+- [ ] **Type**: event — обязательный внешний store/сервер для базового чтения либо замена ADR-016.
+- [ ] **Type**: event — S1-V обнаруживает regression обычных локальных команд после index или нарушение read/write boundary.
+- [ ] **Type**: event — меняется MCP transport/handle contract.
+
+Каждое событие — самостоятельное основание пересмотра. Фактический trigger подтверждается новым Evidence; runtime PASS или F+G+R не выдумываются. Неизмеренные confidence metrics — TBD. Слабая runtime основа сохраняется как отрицательное последствие до независимых S1-R/V/G.
 
 ## Related Artifacts
 
@@ -200,12 +247,4 @@ Constellation живёт в forgeplan-core; тот же бинарник пре�
 | RFC-015 | RFC | incoming based_on: RFC-015 → ADR-028 |
 | SPEC-008 | Spec | контекст, без structural edge |
 | NOTE-053 | Note | контекст, без structural edge |
-
-
-
-
-
-
-
-
 

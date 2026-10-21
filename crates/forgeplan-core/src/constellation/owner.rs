@@ -473,11 +473,42 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join(".forgeplan").join("lance");
         std::fs::create_dir_all(root.join("constellation")).unwrap();
-        std::fs::write(
-            root.join(PROTOCOL_FILE),
-            r#"{"protocol_version":1,"state":"active","index_epoch":9,"checkout_id":"checkout-from-marker","table_names":["constellation_artifacts_v1","constellation_relations_v1"],"storage_scheme":"file-object-store","bootstrap_attempt":1,"unknown_future_field":1}"#,
-        )
-        .unwrap();
+        // The fixture names the CURRENT format and all three active tables,
+        // built from the same constants production writes from.
+        //
+        // History, stated as history: this fixture used to hardcode
+        // `protocol_version: 1` and a two-name table list. That was not a test
+        // of legacy markers — it was a stale literal that happened to still
+        // parse, because this test reads only the identity fields and never
+        // validated the version. A pre-v2 marker is **not** something this
+        // build can use: `ProtocolMarker::validate` refuses it with
+        // `index_protocol_mismatch`. Deriving both values from the constants
+        // means a future format bump fails here rather than leaving a fixture
+        // that looks valid but describes an index no longer readable.
+        let marker = serde_json::json!({
+            "protocol_version": super::super::FORMAT_VERSION,
+            "state": "active",
+            "index_epoch": 9,
+            "checkout_id": "checkout-from-marker",
+            "table_names": super::super::manifest::ProtocolMarker::active_table_names(),
+            "storage_scheme": "file-object-store",
+            "bootstrap_attempt": 1,
+            // A field this build does not know: parsing must tolerate it, so
+            // a future marker stays readable by an older reader.
+            "unknown_future_field": 1,
+        });
+        std::fs::write(root.join(PROTOCOL_FILE), marker.to_string()).unwrap();
+
+        // The fixture is a marker this build would actually accept — asserted
+        // here because the point of deriving it is that it stays current.
+        let parsed: ProtocolMarker =
+            serde_json::from_str(&std::fs::read_to_string(root.join(PROTOCOL_FILE)).unwrap())
+                .expect("the fixture must parse as a marker");
+        assert!(
+            parsed.validate().is_ok(),
+            "the fixture marker must be valid for this build, or it is testing a legacy format"
+        );
+
         let identity = IndexIdentity::derive(&IndexLocation::new(&root));
         assert_eq!(identity.checkout_id(), "checkout-from-marker");
         assert_eq!(identity.index_epoch(), 9);

@@ -4,12 +4,17 @@ use forgeplan_core::hints::{self, Hint};
 use crate::commands::common;
 
 pub async fn run(json: bool) -> anyhow::Result<()> {
-    let (ws, store) = common::open_store().await?;
+    let (ws, source) = common::open_read_source().await?;
 
     let workspace_root = ws
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Workspace path has no parent directory"))?;
-    let reports = drift::check_drift(&store, workspace_root).await?;
+    // Drift reads ADR/RFC frontmatter from the capture and git mtimes from the
+    // same project root on both layouts; only the record source differs.
+    let reports = match &source {
+        common::ReadSource::Legacy(store) => drift::check_drift(store, workspace_root).await?,
+        common::ReadSource::Captured(read) => drift::check_drift_captured(read, workspace_root).await?,
+    };
 
     let stale_count = reports.iter().filter(|r| r.is_stale).count();
     let total = reports.len();

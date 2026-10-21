@@ -11,7 +11,22 @@ pub async fn run(
     since: Option<String>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    // The report itself is a pure read now: `detect_anomalies*` computes the
+    // summary and returns the journal alongside it, without persisting. The
+    // WRITE is the explicit `persist_anomaly_journal` call below, and it is
+    // serialized by the workspace lock.
+    //
+    // The lock spans scan AND persist on purpose: the scan reads the journal
+    // and applies `--since` against it, so releasing between them would let a
+    // concurrent process change the journal in the gap and leave this run
+    // persisting state the report was not computed from. Persisting first
+    // would be worse still — the run would observe its own detection and
+    // `--since` would return everything, defeating diff-style polling.
+    //
+    // `_lock` is bound (not `_`) on purpose: the guard must stay ALIVE for the
+    // whole of run() — dropping it early would silently un-serialize the
+    // persist below. Its leading underscore says "held, never read".
+    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
     let kind_filter = match kind.as_deref() {
         Some(s) => Some(parse_kind(s)?),
@@ -40,7 +55,33 @@ pub async fn run(
         since: since_filter,
         kind: kind_filter,
     };
-    let report = anomalies::detect_anomalies(&store, &ws, &filter).await?;
+    // The detection is the same computation over records + relations on both
+    // layouts — so a migrated workspace reports the same anomalies instead of
+    // refusing — and it returns the journal it would have written without
+    // writing it.
+    let scan = match &store {
+        Some(store) => {
+            anomalies::detect_anomalies_with_journal(store, &ws, &filter).await?
+        }
+        None => {
+            let read = common::workspace_read(&ws).await?;
+            anomalies::detect_anomalies_captured_with_journal(&read, &ws, &filter).await?
+        }
+    };
+    // Exactly one persist, under the guard acquired above. A failure degrades
+    // `--since` to per-scan timestamps — the same best-effort contract the
+    // implicit write had — and must not fail the report.
+    //
+    // `eprintln!`, not `tracing::warn!`: this crate has no `tracing` dependency
+    // and its warnings all go to stderr this way. Adding a logging framework for
+    // one line would be a manifest change well outside this surface.
+    if let Err(e) = anomalies::persist_anomaly_journal(&ws, &scan.journal).await {
+        eprintln!(
+            "  warning: anomaly journal write failed ({e}) — `--since` filter will lose \
+             pre-existing-anomaly memory"
+        );
+    }
+    let report = scan.report;
 
     if json {
         // Audit-r3 HIGH-1 / F3: emit `_next_action` so CLI JSON matches

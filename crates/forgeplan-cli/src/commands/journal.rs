@@ -5,8 +5,16 @@ use forgeplan_core::journal;
 use crate::commands::common;
 
 pub async fn run(kind: Option<&str>, risk: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let entries = journal::build_journal(&store, kind, risk).await?;
+    let (_ws, source) = common::open_read_source().await?;
+    // Filters, ordering and the empty-journal output are unchanged; only the
+    // read source differs. A capture failure propagates — an unreadable
+    // workspace must not read as "no decision artifacts found".
+    let entries = match &source {
+        common::ReadSource::Legacy(store) => journal::build_journal(store, kind, risk).await?,
+        common::ReadSource::Captured(read) => {
+            journal::build_journal_captured(read, kind, risk).await?
+        }
+    };
 
     if entries.is_empty() {
         println!("No decision artifacts found.");

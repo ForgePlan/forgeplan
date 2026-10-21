@@ -8,15 +8,16 @@
 //! end-to-end, including parameter parsing and response serialization.
 //!
 //! Test categories:
-//!   * **validation-only** — exercise bounds checks that happen BEFORE any store
-//!     access (empty query, oversized query). These need no workspace at all.
-//!   * **workspace-gated** — exercise the "workspace not initialized" and
-//!     "FPF KB not loaded" paths. These require only a tempdir; no FPF ingest.
-//!   * **requires-KB (skipped)** — happy-path keyword search and limit-cap
-//!     assertions need the FPF knowledge base ingested into LanceDB. There is
-//!     no cheap test fixture for that today (ingest pulls from an embedded
-//!     ~200-section corpus and writes Lance tables), so those tests are
-//!     documented here but not implemented. See the module doc at bottom.
+//!   * **validation-only** — exercise bounds checks that happen BEFORE any
+//!     workspace resolution (empty query, oversized query). No workspace at all.
+//!   * **workspace-gated** — the "no `.forgeplan/`" and "knowledge base not
+//!     loaded" paths, plus the absence of any retired table afterwards. These
+//!     need only a tempdir; no FPF ingest.
+//!   * **requires-KB** — happy-path keyword search over a REAL ingested
+//!     knowledge base lives in `constellation_local_compat.rs`, which builds
+//!     the `fpf_spec` table through the same write-side `open_or_create` the
+//!     `forgeplan fpf ingest` CLI uses. It does not need the embedded
+//!     ~200-section corpus.
 
 use forgeplan_mcp::ForgeplanServer;
 use forgeplan_mcp::server::FpfSearchParams;
@@ -187,58 +188,67 @@ async fn fpf_search_without_workspace_reports_not_initialized() {
 }
 
 #[tokio::test]
-async fn fpf_search_skeleton_workspace_reports_not_initialized() {
-    // `.forgeplan/` dir skeleton exists (config.yaml + subdirs) but no Lance
-    // tables. ADR-016 Phase 3c routes this through `resolve_workspace_read`,
-    // which FINDS the `.forgeplan/` dir then fails to OPEN the store (the
-    // `artifacts` table is absent). The error is the resolver's precise
-    // "store could not be opened" rather than the legacy "Workspace not
-    // initialized" string — a strictly more informative message for the
-    // "half-initialized workspace" edge case. We pin the skeleton root as an
-    // EXPLICIT workspace param so resolution is deterministic (param step wins
-    // over any ambient `FORGEPLAN_WORKSPACE`).
+async fn fpf_search_skeleton_workspace_reports_the_knowledge_base_is_absent() {
+    // `.forgeplan/` dir skeleton exists (config.yaml + subdirs) but nothing was
+    // ever ingested. Reading the auxiliary knowledge base no longer opens a
+    // `LanceStore` at all — that open ran schema migrations, which a read of an
+    // auxiliary table has no business doing — so the honest answer is the state
+    // of the KNOWLEDGE BASE, not the state of a table this call no longer
+    // touches. Explicit workspace param so resolution is deterministic.
     let (srv, tmp) = server_with_skeleton_workspace().await;
     let r = srv
         .forgeplan_fpf_search(params_ws("trust", None, None, tmp.path()))
         .await
         .unwrap();
-    assert_is_error(&r, "store could not be opened");
+    assert_is_error(&r, "knowledge base not loaded");
+    assert_is_error(&r, "forgeplan fpf ingest");
 }
 
 #[tokio::test]
 async fn fpf_search_skeleton_workspace_semantic_flag_same_gate() {
-    // Semantic flag does not bypass the workspace-resolution gate — same
-    // "store could not be opened" error whether semantic=true or false. Pins
-    // order of checks. ADR-016 Phase 3c: explicit workspace param for
-    // deterministic resolution (see sibling test for the wording rationale).
+    // Semantic flag does not bypass the knowledge-base gate — the same
+    // absent-KB answer whether semantic=true or false. Pins order of checks.
+    // Explicit workspace param for deterministic resolution (see sibling test).
     let (srv, tmp) = server_with_skeleton_workspace().await;
     let r = srv
         .forgeplan_fpf_search(params_ws("trust", None, Some(true), tmp.path()))
         .await
         .unwrap();
-    assert_is_error(&r, "store could not be opened");
+    assert_is_error(&r, "knowledge base not loaded");
 }
 
-// ── intentionally deferred (require seeded FPF KB) ──────────────────────────
+/// The knowledge-base readers must not bring the retired artifact tables into
+/// existence on a workspace that never created them: the auxiliary open is the
+/// only I/O they do.
+#[tokio::test]
+async fn fpf_reads_of_a_skeleton_workspace_create_no_retired_table() {
+    let (srv, tmp) = server_with_skeleton_workspace().await;
+    let ws = tmp.path().join(".forgeplan");
+
+    let _ = srv
+        .forgeplan_fpf_search(params_ws("trust", None, None, tmp.path()))
+        .await
+        .unwrap();
+
+    for name in ["artifacts.lance", "relations.lance", "evidence.lance"] {
+        assert!(
+            !ws.join("lance").join(name).exists(),
+            "a knowledge-base read must not create {name}"
+        );
+    }
+}
+
+// ── where the KB-backed cases live ──────────────────────────────────────────
 //
-// The following scenarios are intentionally NOT implemented in this harness
-// because they require a populated FPF knowledge base in LanceDB, and there
-// is no lightweight fixture for that today:
+// The scenarios that need a populated knowledge base — the keyword happy path,
+// the limit cap, and the no-semantic-feature fallback warning — are covered in
+// `constellation_local_compat.rs` (`fpf_reads_return_the_ingested_knowledge_base_on_a_migrated_workspace`).
+// That harness builds `fpf_spec` through `AuxiliaryStore::open_or_create`, the
+// same write-side entry point `forgeplan fpf ingest` uses, with a handful of
+// real rows. The "no cheap fixture" note that used to live here was the reason
+// those cases went untested; they are tested now.
 //
-//   * `fpf_search_keyword_happy_path` — asserts count > 0, well-formed hits
-//   * `fpf_search_limit_capped_at_50` — asserts response.count <= 50 when
-//     limit=100 is requested against a KB with >50 sections
-//   * `fpf_search_semantic_feature_off_falls_back` — asserts the warning
-//     "semantic-search feature not compiled in" appears on the successful
-//     fallback path (requires has_fpf()==true to reach the branch)
-//
-// Seeding these would require either (a) wiring `fpf::ingest` into the test
-// (pulls real corpus, slow, writes Lance files) or (b) a hand-rolled fixture
-// that inserts a handful of rows into the `fpf_chunks` Lance table directly.
-// Either is a worthwhile follow-up but out of scope for the Sprint 13.7
-// post-closeout hotfix. Tracked for a future sprint as "MCP handler harness
-// phase 2 — FPF fixture".
-//
-// What IS covered here: every code path in `forgeplan_fpf_search` that does
-// NOT require KB data — parameter validation, store gating, and KB gating —
-// plus one boundary test for the 8192-char query-length guard.
+// What IS covered here: every code path in `forgeplan_fpf_search` that needs no
+// KB data — parameter validation, workspace resolution, and KB gating — plus
+// the absence of a retired table after a knowledge-base read, and one boundary
+// test for the 8192-char query-length guard.

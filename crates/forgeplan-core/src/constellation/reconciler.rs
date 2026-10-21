@@ -332,6 +332,14 @@ mod tests {
             evaluated_at: "2026-10-17T00:00:00.000Z".to_string(),
             source_set_digest: "srcset".to_string(),
             config_digest: "cfg".to_string(),
+            layout: crate::embed::tokenizer::SectionLayout::from_metadata(
+                "tok".to_string(),
+                "tokcfg".to_string(),
+                "cfgjson".to_string(),
+                Some(crate::embed::tokenizer::MAX_TOKENS_CEILING),
+                2,
+            ),
+            tokenizer: None,
             body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
             sections: Vec::new(),
@@ -382,7 +390,7 @@ mod tests {
     }
 
     fn manifest(entries: Vec<SourceEntry>) -> GenerationManifest {
-        GenerationManifest::from_capture(&complete(entries), "gen-1", TableVersions::new(1, 1))
+        GenerationManifest::from_capture(&complete(entries), "gen-1", TableVersions::new(1, 1, 1))
     }
 
     #[test]

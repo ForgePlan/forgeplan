@@ -40,7 +40,8 @@
 
 use crate::artifact::sanitize::sanitize_for_hint;
 use crate::artifact::types::DECISION_KINDS_EVIDENCE;
-use crate::db::store::LanceStore;
+use crate::constellation::workspace_read::WorkspaceRead;
+use crate::db::store::{ArtifactRecord, LanceStore};
 use crate::health::DEFAULT_STALE_DRAFT_HOURS;
 // Note: `is_evidence_complete` is consumed via `lifecycle::ready_to_activate`
 // (audit-r3 F1 closure) — no direct import needed here.
@@ -253,29 +254,184 @@ pub struct TierCounts {
     pub user: usize,
 }
 
+/// A completed scan: the report a caller renders, plus the `observed_at`
+/// journal state that scan produced.
+///
+/// The two are separated because they have different authority. The report
+/// is a pure function of the captured workspace and the prior journal — any
+/// caller may ask for it, and it writes nothing. The journal is workspace
+/// STATE: persisting it is a maintenance write that must be serialized by a
+/// [`WorkspaceLock`](crate::workspace::WorkspaceLock) the caller holds, and a
+/// caller that does not want to write simply never calls
+/// [`persist_anomaly_journal`].
+///
+/// Bundling them in one value is deliberate: the journal cannot be recomputed
+/// from the report alone, because the journal covers every detected anomaly
+/// while the report may be filtered down to a subset. Handing the caller a
+/// filtered report and persisting from it would GC away the history of every
+/// anomaly the filter excluded.
+#[derive(Debug, Clone)]
+pub struct AnomalyScan {
+    /// What the caller renders. Identical to what the report-only entry
+    /// points return.
+    pub report: AnomalyReport,
+    /// Post-scan journal state, before any filter was applied: prior
+    /// timestamps preserved, new anomalies stamped, resolved ones dropped.
+    pub journal: HashMap<String, String>,
+}
+
 /// Scan the workspace store and return a structured anomaly report.
 ///
 /// `workspace` is the `.forgeplan/` path (or its parent) — passed through
-/// to the underlying health scan which uses it for phase-state reads.
-/// `filter` narrows the result set per the caller's interest.
+/// to the underlying health scan which uses it for phase-state reads, and
+/// used to LOAD the observed_at journal so `observed_at` is stable across
+/// runs. `filter` narrows the result set per the caller's interest.
+///
+/// PURE: this reads the journal but never writes it, so it is safe for a
+/// read-only caller and does not race another reader on the journal's
+/// temporary file. Use [`detect_anomalies_with_journal`] and
+/// [`persist_anomaly_journal`] when the caller both needs the journal and
+/// holds a workspace lock to write it.
 pub async fn detect_anomalies(
     store: &LanceStore,
     workspace: &Path,
     filter: &AnomalyFilter,
 ) -> anyhow::Result<AnomalyReport> {
-    let now = Utc::now();
-    let now_str = now.to_rfc3339();
-    // Audit-r2 closure: load the per-anomaly observed_at journal so
-    // pre-existing anomalies keep their original timestamp and the
-    // `since` filter yields proper diff semantics. New anomalies use
-    // `now_str`; missing or unreadable journal degrades gracefully
-    // (treat every anomaly as fresh — preserves pre-v0.33 behaviour).
+    Ok(detect_anomalies_with_journal(store, workspace, filter)
+        .await?
+        .report)
+}
+
+/// [`detect_anomalies`] plus the journal state this scan produced, for a
+/// caller that intends to persist it under its own lock.
+pub async fn detect_anomalies_with_journal(
+    store: &LanceStore,
+    workspace: &Path,
+    filter: &AnomalyFilter,
+) -> anyhow::Result<AnomalyScan> {
     let mut journal = load_anomaly_journal(workspace).await.unwrap_or_default();
-    let mut anomalies: Vec<Anomaly> = Vec::new();
 
     // One-time data load — reused by every detector below.
     let all_records = store.list_records(None).await?;
     let all_relations = store.get_all_relations().await?;
+    let (health_report, phase_mismatches) =
+        crate::health::health_report_with_phase(store, workspace).await?;
+
+    let now = Utc::now();
+    let now_str = now.to_rfc3339();
+    let report = detect_anomalies_from_records(
+        &all_records,
+        &all_relations,
+        &health_report,
+        &phase_mismatches,
+        &mut journal,
+        now,
+        &now_str,
+        filter,
+    );
+
+    Ok(AnomalyScan { report, journal })
+}
+
+/// Scan one captured/pinned read view and return a structured anomaly
+/// report.
+///
+/// The same [`detect_anomalies_from_records`] computation over the same
+/// journal, the same filters and the same health/phase bridge the legacy path
+/// uses — so a migrated workspace reports the same anomalies, at the same
+/// severities and tiers, with the same `observed_at` journal semantics. Only
+/// the record and relation sources differ, and no legacy table is opened.
+///
+/// PURE: the observed_at journal is READ (so timestamps stay stable) but
+/// never written, so a read-only caller cannot race another process on the
+/// journal's temporary file. Use [`detect_anomalies_captured_with_journal`]
+/// plus [`persist_anomaly_journal`] to write it under a caller's lock.
+///
+/// A capture or `CURRENT` failure is raised by `open_workspace_read` before
+/// this runs; it is never converted into an empty anomaly report.
+pub async fn detect_anomalies_captured(
+    read: &WorkspaceRead,
+    workspace: &Path,
+    filter: &AnomalyFilter,
+) -> anyhow::Result<AnomalyReport> {
+    Ok(detect_anomalies_captured_with_journal(read, workspace, filter)
+        .await?
+        .report)
+}
+
+/// [`detect_anomalies_captured`] plus the journal state this scan produced,
+/// for a caller that holds a workspace lock and intends to persist it.
+pub async fn detect_anomalies_captured_with_journal(
+    read: &WorkspaceRead,
+    workspace: &Path,
+    filter: &AnomalyFilter,
+) -> anyhow::Result<AnomalyScan> {
+    let mut journal = load_anomaly_journal(workspace).await.unwrap_or_default();
+
+    let all_records = read.records();
+    let all_relations = read.get_all_relations();
+    let (health_report, phase_mismatches) =
+        crate::health::health_report_with_phase_captured(read, workspace).await?;
+
+    let now = Utc::now();
+    let now_str = now.to_rfc3339();
+    let report = detect_anomalies_from_records(
+        all_records,
+        &all_relations,
+        &health_report,
+        &phase_mismatches,
+        &mut journal,
+        now,
+        &now_str,
+        filter,
+    );
+
+    Ok(AnomalyScan { report, journal })
+}
+
+/// Persist an `observed_at` journal produced by a scan.
+///
+/// A MAINtenance write, not part of the read seam: the caller must already
+/// hold the workspace lock (`acquire_workspace_lock`) for the whole
+/// read-then-persist sequence, which is what serializes two processes that
+/// scan the same workspace at once. Taking the lock here instead would leave
+/// a window between the read and the write in which the journal could change
+/// underneath this call; taking it in the caller closes that window.
+///
+/// The write is atomic (unique temp file, fsync, rename), so a reader never
+/// observes a torn journal, and the temp name is unique per process so two
+/// unlocked stragglers cannot clobber each other's partial file.
+///
+/// Ordering: call this AFTER the scan. The scan reads the journal and applies
+/// `since` against it, so writing first would let a run observe its own
+/// detection and defeat the diff-style semantics `since` promises.
+pub async fn persist_anomaly_journal(
+    workspace: &Path,
+    journal: &HashMap<String, String>,
+) -> anyhow::Result<()> {
+    save_anomaly_journal(workspace, journal).await
+}
+
+/// The anomaly detection pass, over already-loaded records, relations and
+/// health findings.
+///
+/// `journal` is read for prior `observed_at` stamps and updated with the ones
+/// this scan observed (including the GC of resolved entries); persisting it is
+/// the caller's job, because the journal file lives under `workspace` and this
+/// pass is otherwise pure.
+#[allow(clippy::too_many_arguments)]
+fn detect_anomalies_from_records(
+    all_records: &[ArtifactRecord],
+    all_relations: &[(String, String, String)],
+    health_report: &crate::health::HealthReport,
+    phase_mismatches: &[crate::health::PhaseMismatch],
+    journal: &mut HashMap<String, String>,
+    now: DateTime<Utc>,
+    now_str: &str,
+    filter: &AnomalyFilter,
+) -> AnomalyReport {
+    let mut anomalies: Vec<Anomaly> = Vec::new();
+
     let id_set: HashSet<&str> = all_records.iter().map(|r| r.id.as_str()).collect();
     let kind_by_id: HashMap<&str, &str> = all_records
         .iter()
@@ -285,7 +441,7 @@ pub async fn detect_anomalies(
     // Outgoing-edge index — needed by stuck_draft (has_links) and
     // circular_dependency.
     let mut outgoing: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
-    for (src, tgt, rel) in &all_relations {
+    for (src, tgt, rel) in all_relations {
         outgoing
             .entry(src.as_str())
             .or_default()
@@ -295,7 +451,7 @@ pub async fn detect_anomalies(
     // ---------------------------------------------------------------
     // 1. stuck_draft — complete EVID, linked, draft >24h
     // ---------------------------------------------------------------
-    for r in &all_records {
+    for r in all_records {
         if !r.status.eq_ignore_ascii_case("draft") || !r.kind.eq_ignore_ascii_case("evidence") {
             continue;
         }
@@ -324,7 +480,7 @@ pub async fn detect_anomalies(
             severity: Severity::Medium,
             tier: Tier::Auto,
             affected: vec![r.id.clone()],
-            observed_at: now_str.clone(),
+            observed_at: now_str.to_string(),
             description: format!(
                 "{}: complete evidence in draft for {} hours, R_eff={:.2}",
                 r.id, age_hours, r_eff
@@ -347,7 +503,7 @@ pub async fn detect_anomalies(
     // ---------------------------------------------------------------
     // 2. orphan_link — relation target id does not exist
     // ---------------------------------------------------------------
-    for (src, tgt, rel) in &all_relations {
+    for (src, tgt, rel) in all_relations {
         if id_set.contains(tgt.as_str()) {
             continue;
         }
@@ -357,7 +513,7 @@ pub async fn detect_anomalies(
             severity: Severity::High,
             tier: Tier::User,
             affected: vec![src.clone(), tgt.clone()],
-            observed_at: now_str.clone(),
+            observed_at: now_str.to_string(),
             description: format!("{src} --{rel}--> {tgt} (target does not exist)"),
             evidence: serde_json::json!({
                 "source": src,
@@ -371,7 +527,7 @@ pub async fn detect_anomalies(
     // ---------------------------------------------------------------
     // 3. mistyped_based_on — EVID→<parent> via based_on (should be informs)
     // ---------------------------------------------------------------
-    for (src, tgt, rel) in &all_relations {
+    for (src, tgt, rel) in all_relations {
         if rel != "based_on" {
             continue;
         }
@@ -396,7 +552,7 @@ pub async fn detect_anomalies(
             severity: Severity::Medium,
             tier: Tier::Adi,
             affected: vec![src.clone(), tgt.clone()],
-            observed_at: now_str.clone(),
+            observed_at: now_str.to_string(),
             // `based_on` and `informs` score identically (both CL2 — see
             // scoring/reff.rs), so this is a canonical-form nudge, NOT a scoring
             // penalty. The earlier "(CL penalty cascades)" wording was false.
@@ -433,7 +589,7 @@ pub async fn detect_anomalies(
             .iter()
             .map(|r| (r.id.as_str(), r.status.as_str()))
             .collect();
-        for r in &all_records {
+        for r in all_records {
             if !r.kind.eq_ignore_ascii_case("evidence") {
                 continue;
             }
@@ -480,7 +636,7 @@ pub async fn detect_anomalies(
                     v.extend(live_targets.iter().cloned());
                     v
                 },
-                observed_at: now_str.clone(),
+                observed_at: now_str.to_string(),
                 description: format!(
                     "{} ({verdict}) is {} with no supersedes successor while {} is live — \
                      the pack left the R_eff min without replacement evidence",
@@ -511,7 +667,7 @@ pub async fn detect_anomalies(
     // ---------------------------------------------------------------
     // 4. expired_evidence — valid_until past, still linked
     // ---------------------------------------------------------------
-    for r in &all_records {
+    for r in all_records {
         if !r.kind.eq_ignore_ascii_case("evidence") {
             continue;
         }
@@ -553,7 +709,7 @@ pub async fn detect_anomalies(
             affected: std::iter::once(r.id.clone())
                 .chain(parents.clone())
                 .collect(),
-            observed_at: now_str.clone(),
+            observed_at: now_str.to_string(),
             description: format!(
                 "{}: valid_until={} expired; still linked to {} active parent(s)",
                 r.id,
@@ -571,7 +727,7 @@ pub async fn detect_anomalies(
     // ---------------------------------------------------------------
     // 5. circular_dependency — A based_on B, B based_on A
     // ---------------------------------------------------------------
-    for (src, tgt, rel) in &all_relations {
+    for (src, tgt, rel) in all_relations {
         if rel != "based_on" {
             continue;
         }
@@ -598,7 +754,7 @@ pub async fn detect_anomalies(
             severity: Severity::High,
             tier: Tier::User,
             affected: vec![src.clone(), tgt.clone()],
-            observed_at: now_str.clone(),
+            observed_at: now_str.to_string(),
             description: format!("Cycle: {src} based_on {tgt} AND {tgt} based_on {src}"),
             evidence: serde_json::json!({
                 "cycle": [src, tgt],
@@ -608,22 +764,20 @@ pub async fn detect_anomalies(
     }
 
     // ---------------------------------------------------------------
-    // 6-9. Bridge to existing health detectors. The health scan already
-    // computes phase_mismatches, possible_duplicates, and detects
-    // missing-MUST-section via active_stubs. Reuse them to avoid
-    // duplicating the heuristics.
+    // 6-9. Bridge to the health findings the caller already loaded. The
+    // health scan already computes phase_mismatches, possible_duplicates,
+    // and detects missing-MUST-section via active_stubs. Reuse them to
+    // avoid duplicating the heuristics — and so both layouts read the same
+    // health answers, which are themselves computed over the same records.
     // ---------------------------------------------------------------
-    let (health_report, phase_mismatches) =
-        crate::health::health_report_with_phase(store, workspace).await?;
-
-    for pm in &phase_mismatches {
+    for pm in phase_mismatches {
         anomalies.push(Anomaly {
             id: format!("anom-phase-mismatch-{}", pm.id),
             kind: AnomalyKind::PhaseMismatch,
             severity: Severity::Low,
             tier: Tier::Auto,
             affected: vec![pm.id.clone()],
-            observed_at: now_str.clone(),
+            observed_at: now_str.to_string(),
             description: format!(
                 "{}: status=active but phase={}; Code/Evidence likely skipped",
                 pm.id, pm.current_phase
@@ -655,7 +809,7 @@ pub async fn detect_anomalies(
             severity: Severity::Medium,
             tier: Tier::Adi,
             affected: vec![a.clone(), b.clone()],
-            observed_at: now_str.clone(),
+            observed_at: now_str.to_string(),
             description: format!(
                 "{a} and {b}: similar titles (similarity={:.2})",
                 dup.similarity
@@ -692,7 +846,7 @@ pub async fn detect_anomalies(
             severity: Severity::High,
             tier: Tier::User,
             affected: vec![stub.id.clone()],
-            observed_at: now_str.clone(),
+            observed_at: now_str.to_string(),
             description: format!(
                 "{}: active artifact has stub markers (TODO/TBD/placeholder)",
                 stub.id
@@ -742,7 +896,7 @@ pub async fn detect_anomalies(
         .map(|r| r.id.as_str())
         .collect();
     const WEAKEST_LINK_MAX_DEPTH: usize = 16;
-    for r in &all_records {
+    for r in all_records {
         // weakest_link_unresolvable diagnoses DECISION artifacts whose evidence
         // chain bottoms out at an un-evidenced ancestor. Evidence packs and notes
         // do not self-score — their R_eff=0 is inherent, not a resolvable weak
@@ -864,7 +1018,7 @@ pub async fn detect_anomalies(
                 }
                 v
             },
-            observed_at: now_str.clone(),
+            observed_at: now_str.to_string(),
             description: match (&weakest_link_owned, chain_depth) {
                 (Some(wl), d) => format!(
                     "{}: active with cached R_eff={:.2}; weakest link in chain = {wl} (depth {d})",
@@ -929,13 +1083,13 @@ pub async fn detect_anomalies(
     // (pure functions, no I/O — the records snapshot is already loaded).
     // ---------------------------------------------------------------
     anomalies.extend(crate::brownfield::contradictions_as_anomalies(
-        &all_records,
-        &now_str,
+        all_records,
+        now_str,
     ));
     anomalies.extend(crate::brownfield::orphans_as_anomalies(
-        &all_records,
-        &all_relations,
-        &now_str,
+        all_records,
+        all_relations,
+        now_str,
     ));
 
     // ---------------------------------------------------------------
@@ -959,16 +1113,6 @@ pub async fn detect_anomalies(
     // and carries deletion-resistant audit data nobody asked for.
     let live_ids: HashSet<&str> = anomalies.iter().map(|a| a.id.as_str()).collect();
     journal.retain(|id, _| live_ids.contains(id.as_str()));
-    // Best-effort journal write — failures degrade `since` semantics
-    // back to pre-v0.33 behaviour (per-scan timestamp) but do not
-    // crash the scan. The journal is purely a heuristic store.
-    if let Err(e) = save_anomaly_journal(workspace, &journal).await {
-        tracing::warn!(
-            target: "forgeplan::anomalies",
-            error = %e,
-            "anomaly journal write failed — `since` filter will lose pre-existing-anomaly memory"
-        );
-    }
 
     // Apply filter
     // ---------------------------------------------------------------
@@ -1022,12 +1166,12 @@ pub async fn detect_anomalies(
         }
     }
     let total = anomalies.len();
-    Ok(AnomalyReport {
+    AnomalyReport {
         anomalies,
         total,
         by_severity,
         by_tier,
-    })
+    }
 }
 
 fn severity_order(s: Severity) -> u8 {
@@ -1140,7 +1284,18 @@ async fn save_anomaly_journal(
     }
 
     let path = workspace.join(ANOMALY_JOURNAL_NAME);
-    let tmp = workspace.join(format!(".{ANOMALY_JOURNAL_NAME}.tmp"));
+    // Per-process temp name. The write is serialized by the caller's
+    // workspace lock, so this is defence in depth rather than the primary
+    // guard: a fixed `.<name>.tmp` means any process that reaches this
+    // point without the lock (a straggler, a future caller that forgot)
+    // writes into the SAME file as everyone else, and two interleaved
+    // O_NOFOLLOW + create_new writers then either collide or truncate each
+    // other's partial journal. A pid-suffixed name makes that impossible
+    // and costs one format call.
+    let tmp = workspace.join(format!(
+        ".{ANOMALY_JOURNAL_NAME}.tmp.{}",
+        std::process::id()
+    ));
 
     // Audit-r3 HIGH-4: deterministic line order. HashMap iteration is
     // randomised per process; emitting in insertion order produces a
@@ -1188,7 +1343,12 @@ async fn save_anomaly_journal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::store::{LanceStore, NewArtifact};
+    use crate::db::store::LanceStore;
+    // `NewArtifact` is used only by the feature-gated detector tests below
+    // (and by `new_artifact`, which carries the same gate). Importing it
+    // unconditionally leaves an unused import once `test-helpers` is off.
+    #[cfg(feature = "test-helpers")]
+    use crate::db::store::NewArtifact;
     use chrono::Duration;
     use tempfile::TempDir;
 
@@ -1666,6 +1826,12 @@ mod tests {
 
     /// Shared helper — build a NewArtifact with the boilerplate filled in.
     /// Reduces noise across the 8 detector tests below.
+    ///
+    /// Gated with the same `test-helpers` feature as the tests that call it:
+    /// every caller is feature-gated, so an ungated helper compiles with no
+    /// callers when the feature is off — a dead-code warning for a function
+    /// that is very much alive in the configuration its callers live in.
+    #[cfg(feature = "test-helpers")]
     fn new_artifact(id: &str, kind: &str, status: &str, body: &str) -> NewArtifact {
         NewArtifact {
             id: id.to_string(),
@@ -2525,11 +2691,14 @@ mod tests {
             .unwrap();
 
         // Scan 1 — populates the journal with this anomaly's observed_at.
-        let scan1 = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        // The report is pure, so persisting is an explicit, separate step:
+        // this is the authorized-caller sequence (read, then write).
+        let scan1 = detect_anomalies_with_journal(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
+        persist_anomaly_journal(&ws, &scan1.journal).await.unwrap();
         assert!(
-            scan1.total >= 1,
+            scan1.report.total >= 1,
             "scan 1 must detect at least the orphan_link"
         );
 
@@ -2584,9 +2753,10 @@ mod tests {
             .await
             .unwrap();
 
-        let _scan1 = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let scan1 = detect_anomalies_with_journal(&store, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
+        persist_anomaly_journal(&ws, &scan1.journal).await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let cutoff = Utc::now();
@@ -2666,6 +2836,581 @@ mod tests {
                 .all(|a| a.kind != AnomalyKind::CircularDependency),
             "v1 detector intentionally misses 3-node cycles: {:?}",
             report.anomalies
+        );
+    }
+}
+
+/// Behaviour of the captured read view: the anomaly set a migrated
+/// workspace reports, its filters, its journal-backed `since` semantics, and
+/// its parity with the legacy projection over the same records.
+#[cfg(test)]
+mod captured_read_tests {
+    use super::*;
+    use crate::constellation::capture::CaptureLimits;
+    use crate::constellation::facade::open_workspace_read;
+    use crate::constellation::workspace_read::WorkspaceRead;
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
+
+    const EVIDENCE_BODY: &str = "## Structured Fields\n\nverdict: supports\n\
+         congruence_level: 3\nevidence_type: test\n\n\
+         ## Verdict\n\nThe anomaly run observed the same graph on both workspace \
+         layouts, and this pack is part of that graph.\n";
+
+    fn write_artifact(
+        ws: &Path,
+        dir: &str,
+        id: &str,
+        kind: &str,
+        title: &str,
+        status: &str,
+        created_at: &str,
+        valid_until: Option<&str>,
+        links: &[(&str, &str)],
+        body: &str,
+    ) -> PathBuf {
+        let mut fm = format!(
+            "---\nid: {id}\ntitle: {title}\nkind: {kind}\nstatus: {status}\n\
+             depth: standard\ncreated_at: {created_at}\n"
+        );
+        if let Some(vu) = valid_until {
+            fm.push_str(&format!("valid_until: {vu}\n"));
+        }
+        if !links.is_empty() {
+            fm.push_str("links:\n");
+            for (target, relation) in links {
+                fm.push_str(&format!("  - target: {target}\n    relation: {relation}\n"));
+            }
+        }
+        let path = ws
+            .join(dir)
+            .join(format!("{id}-{}.md", crate::artifact::types::slugify(title)));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("{fm}---\n\n{body}\n")).unwrap();
+        path
+    }
+
+    /// A workspace that trips one detector of every class the parity run
+    /// asserts on: an orphan link, a mis-typed `based_on`, an expired pack,
+    /// a stuck draft pack, a phase mismatch, a two-node cycle, an active
+    /// stub, and a duplicate-title pair.
+    async fn anomaly_workspace() -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        for dir in crate::workspace::ARTIFACT_DIRS {
+            std::fs::create_dir_all(ws.join(dir)).unwrap();
+        }
+        write_artifact(
+            &ws,
+            "evidence",
+            "EVID-001",
+            "evidence",
+            "Mis-typed pack",
+            "active",
+            "2026-01-01T00:00:00Z",
+            None,
+            &[("ADR-001", "based_on")],
+            EVIDENCE_BODY,
+        );
+        write_artifact(
+            &ws,
+            "evidence",
+            "EVID-002",
+            "evidence",
+            "Expired pack",
+            "active",
+            "2026-01-01T00:00:00Z",
+            Some("2020-01-01"),
+            &[("ADR-001", "informs")],
+            EVIDENCE_BODY,
+        );
+        write_artifact(
+            &ws,
+            "evidence",
+            "EVID-003",
+            "evidence",
+            "Stuck draft pack",
+            "draft",
+            "2020-01-01T00:00:00Z",
+            None,
+            &[("ADR-002", "informs")],
+            EVIDENCE_BODY,
+        );
+        write_artifact(
+            &ws,
+            "adrs",
+            "ADR-001",
+            "adr",
+            "Evidenced decision",
+            "active",
+            "2026-01-01T00:00:00Z",
+            None,
+            &[],
+            "## Context\n\nThree packs point at this decision.\n",
+        );
+        write_artifact(
+            &ws,
+            "adrs",
+            "ADR-002",
+            "adr",
+            "Decision with a dangling link",
+            "active",
+            "2026-01-01T00:00:00Z",
+            None,
+            &[("GHOST-001", "informs")],
+            "## Context\n\nThis decision links to an artifact that is gone.\n",
+        );
+        write_artifact(
+            &ws,
+            "prds",
+            "PRD-001",
+            "prd",
+            "First half of a cycle",
+            "active",
+            "2026-01-01T00:00:00Z",
+            None,
+            &[("PRD-002", "based_on")],
+            "## Problem\n\nThis requirement derives from the other one.\n",
+        );
+        write_artifact(
+            &ws,
+            "prds",
+            "PRD-002",
+            "prd",
+            "Second half of a cycle",
+            "active",
+            "2026-01-01T00:00:00Z",
+            None,
+            &[("PRD-001", "based_on")],
+            "## Problem\n\nThis requirement derives back from the first.\n",
+        );
+        write_artifact(
+            &ws,
+            "prds",
+            "PRD-003",
+            "prd",
+            "Unfinished requirement",
+            "active",
+            "2026-01-01T00:00:00Z",
+            None,
+            &[],
+            // Three canonical stub markers: `check_stub_detailed` only
+            // counts an active artifact as a stub from three up.
+            "## Problem\n\
+             What we are building and why\n\n\
+             ## Users\n\
+             How the problem affects users\n\n\
+             ## Scope\n\
+             What's in the MVP\n\n",
+        );
+        for id in ["PRD-004", "PRD-005"] {
+            write_artifact(
+                &ws,
+                "prds",
+                id,
+                "prd",
+                "Shared title requirement",
+                "active",
+                "2026-01-01T00:00:00Z",
+                None,
+                &[],
+                "## Problem\n\nTwo requirements carry the same title on purpose.\n",
+            );
+        }
+        crate::phase::store::write_phase(
+            &ws,
+            &crate::phase::initial_state("ADR-001", Some("anomaly fixture".into())),
+        )
+        .await
+        .unwrap();
+        (tmp, ws)
+    }
+
+    async fn open_read(ws: &Path) -> WorkspaceRead {
+        open_workspace_read(ws, None, CaptureLimits::default())
+            .await
+            .expect("the fixture workspace captures completely")
+    }
+
+    async fn legacy_store_for(read: &WorkspaceRead) -> LanceStore {
+        let store = LanceStore::init(read.workspace()).await.unwrap();
+        // Seeded from `read.records()`, NOT from `record_from_parsed`:
+        // `from_parts` recomputes `r_eff_score` after conversion, so the
+        // conversion output carries 0.0 for every artifact. Inserting that
+        // would give the legacy side a different score population than the
+        // captured side and make any parity comparison meaningless.
+        for record in read.records() {
+            store
+                .create_artifact(&crate::db::store::NewArtifact {
+                    id: record.id.clone(),
+                    kind: record.kind.clone(),
+                    status: record.status.clone(),
+                    title: record.title.clone(),
+                    body: record.body.clone(),
+                    depth: record.depth.clone(),
+                    author: record.author.clone(),
+                    parent_epic: record.parent_epic.clone(),
+                    valid_until: record.valid_until.clone(),
+                    tags: record.tags.clone(),
+                })
+                .await
+                .unwrap();
+            store.replace_record(record).await.unwrap();
+        }
+        for (source, target, relation) in read.get_all_relations() {
+            store.add_relation(&source, &target, &relation).await.unwrap();
+        }
+        store
+    }
+
+    fn ids(report: &AnomalyReport) -> Vec<&str> {
+        report.anomalies.iter().map(|a| a.id.as_str()).collect()
+    }
+
+    /// Anomaly ids currently recorded in the JSONL observed_at journal.
+    fn journal_ids(path: &Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line)
+                    .expect("journal line is JSON")
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .expect("journal line carries an id")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Scan and persist, the way an authorized caller does: read, then
+    /// write the journal the read produced.
+    async fn scan_and_persist(
+        read: &WorkspaceRead,
+        ws: &Path,
+        filter: &AnomalyFilter,
+    ) -> AnomalyReport {
+        let scan = detect_anomalies_captured_with_journal(read, ws, filter)
+            .await
+            .unwrap();
+        persist_anomaly_journal(ws, &scan.journal).await.unwrap();
+        scan.report
+    }
+
+    #[tokio::test]
+    async fn captured_report_does_not_write_the_journal() {
+        let (_tmp, ws) = anomaly_workspace().await;
+        let read = open_read(&ws).await;
+
+        let report = detect_anomalies_captured(&read, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        assert!(report.total > 0, "the fixture must detect something");
+
+        // The report is a read: no journal file appears.
+        assert!(
+            !ws.join(ANOMALY_JOURNAL_NAME).exists(),
+            "a pure report must not write the observed_at journal"
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_anomalies_cover_every_detected_class() {
+        let (_tmp, ws) = anomaly_workspace().await;
+        let read = open_read(&ws).await;
+
+        let report = detect_anomalies_captured(&read, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+
+        let found = ids(&report);
+        for expected in [
+            "anom-orphan-link-ADR-002-informs-GHOST-001",
+            "anom-mistyped-based-on-EVID-001-ADR-001",
+            "anom-expired-evidence-EVID-002",
+            "anom-stuck-draft-EVID-003",
+            "anom-phase-mismatch-ADR-001",
+            "anom-circular-PRD-001-PRD-002",
+            "anom-missing-must-PRD-003",
+            "anom-duplicate-PRD-004-PRD-005",
+            "anom-weakest-link-PRD-001",
+        ] {
+            assert!(
+                found.contains(&expected),
+                "missing {expected} in {found:?}"
+            );
+        }
+
+        // An active pack that merely expired is not an unbacked
+        // displacement — that class is reserved for terminal packs.
+        assert!(
+            !found.contains(&"anom-unbacked-displacement-EVID-002"),
+            "found {found:?}"
+        );
+
+        assert_eq!(report.total, report.anomalies.len());
+        assert_eq!(
+            report.by_severity.low + report.by_severity.medium + report.by_severity.high,
+            report.total,
+            "severity counts must add up to the total"
+        );
+        assert_eq!(
+            report.by_tier.auto + report.by_tier.adi + report.by_tier.user,
+            report.total,
+            "tier counts must add up to the total"
+        );
+        // Sorted high → low, then by id.
+        let severities: Vec<u8> = report
+            .anomalies
+            .iter()
+            .map(|a| severity_order(a.severity))
+            .collect();
+        let mut descending = severities.clone();
+        descending.sort_by(|a, b| b.cmp(a));
+        assert_eq!(severities, descending);
+    }
+
+    #[tokio::test]
+    async fn captured_anomalies_narrow_by_filter_without_changing_counts() {
+        let (_tmp, ws) = anomaly_workspace().await;
+        let read = open_read(&ws).await;
+
+        let all = detect_anomalies_captured(&read, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let orphans = detect_anomalies_captured(
+            &read,
+            &ws,
+            &AnomalyFilter {
+                kind: Some(AnomalyKind::OrphanLink),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(all.total > orphans.total, "the filter must narrow");
+        assert!(
+            orphans
+                .anomalies
+                .iter()
+                .all(|a| a.kind == AnomalyKind::OrphanLink)
+        );
+        assert_eq!(orphans.total, 1);
+        assert_eq!(orphans.by_severity.high, 1);
+        assert_eq!(orphans.by_tier.user, 1);
+
+        let high = detect_anomalies_captured(
+            &read,
+            &ws,
+            &AnomalyFilter {
+                severity: Some(Severity::High),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(high.total > 0 && high.total < all.total);
+        assert!(high.anomalies.iter().all(|a| a.severity == Severity::High));
+        assert_eq!(high.by_severity.high, high.total);
+    }
+
+    #[tokio::test]
+    async fn captured_anomalies_keep_the_journal_timestamp_and_honour_since() {
+        let (_tmp, ws) = anomaly_workspace().await;
+        let read = open_read(&ws).await;
+
+        // First scan, persisted explicitly the way an authorized caller does.
+        let first = scan_and_persist(&read, &ws, &AnomalyFilter::default()).await;
+        let first_observed: Vec<&str> = first.anomalies.iter().map(|a| a.id.as_str()).collect();
+        let journal_path = ws.join(ANOMALY_JOURNAL_NAME);
+        assert!(
+            journal_path.exists(),
+            "an authorized persist must write the observed_at journal for the next scan"
+        );
+
+        // Re-scan: the same anomalies keep their original timestamp.
+        let second = scan_and_persist(&read, &ws, &AnomalyFilter::default()).await;
+        let first_map: HashMap<&str, &str> = first
+            .anomalies
+            .iter()
+            .map(|a| (a.id.as_str(), a.observed_at.as_str()))
+            .collect();
+        for anomaly in &second.anomalies {
+            assert_eq!(
+                first_map.get(anomaly.id.as_str()).copied(),
+                Some(anomaly.observed_at.as_str()),
+                "observed_at must survive a re-scan for {}",
+                anomaly.id
+            );
+        }
+
+        // `since` is a real temporal filter over that stamp.
+        let since = chrono::Utc::now() + chrono::Duration::hours(1);
+        let future = detect_anomalies_captured(
+            &read,
+            &ws,
+            &AnomalyFilter {
+                since: Some(since),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            future.total, 0,
+            "nothing observed now can be newer than the future: {:?}",
+            future.anomalies
+        );
+
+        let past = detect_anomalies_captured(
+            &read,
+            &ws,
+            &AnomalyFilter {
+                since: Some(chrono::Utc::now() - chrono::Duration::days(3650)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            past.total, second.total,
+            "a window older than every stamp keeps the whole set"
+        );
+        assert!(!first_observed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn captured_anomalies_gc_journal_entries_that_no_longer_appear() {
+        let (_tmp, ws) = anomaly_workspace().await;
+        let read = open_read(&ws).await;
+
+        scan_and_persist(&read, &ws, &AnomalyFilter::default()).await;
+        let journal_path = ws.join(ANOMALY_JOURNAL_NAME);
+        assert!(
+            journal_ids(&journal_path)
+                .contains(&"anom-orphan-link-ADR-002-informs-GHOST-001".to_string()),
+            "the observed anomaly must be remembered: {:?}",
+            journal_ids(&journal_path)
+        );
+
+        // Resolve the orphan link: the anomaly disappears, so its journal
+        // entry must not survive the next scan. The rewrite emits a VALID
+        // empty `links: []` rather than deleting the key — leaving `links:`
+        // with no value would make this test depend on how the parser
+        // tolerates a malformed block instead of on the journal GC.
+        let adr2 = std::fs::read_dir(ws.join("adrs"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .find(|p| {
+                std::fs::read_to_string(p)
+                    .map(|b| b.contains("GHOST-001"))
+                    .unwrap_or(false)
+            })
+            .expect("the ADR that carries the dangling link");
+        let body = std::fs::read_to_string(&adr2).unwrap();
+        let rewritten = body.replace(
+            "links:\n  - target: GHOST-001\n    relation: informs\n",
+            "links: []\n",
+        );
+        assert_ne!(
+            rewritten, body,
+            "the fixture must contain the exact links block this test rewrites"
+        );
+        assert!(
+            !rewritten.contains("GHOST-001"),
+            "the dangling target must be gone from the rewritten file"
+        );
+        std::fs::write(&adr2, rewritten).unwrap();
+
+        let read = open_read(&ws).await;
+        let report = scan_and_persist(&read, &ws, &AnomalyFilter::default()).await;
+        assert!(!ids(&report).contains(&"anom-orphan-link-ADR-002-informs-GHOST-001"));
+
+        assert!(
+            !journal_ids(&journal_path)
+                .contains(&"anom-orphan-link-ADR-002-informs-GHOST-001".to_string()),
+            "a resolved anomaly must not stay in the journal: {:?}",
+            journal_ids(&journal_path)
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_anomalies_match_the_legacy_projection() {
+        let (_tmp, ws) = anomaly_workspace().await;
+        let read = open_read(&ws).await;
+        let store = legacy_store_for(&read).await;
+
+        // INPUT EQUALITY FIRST. Parity over different inputs proves nothing,
+        // so assert the two sides really do hold the same records — scores
+        // included, because `weakest_link_unresolvable` reads the cached
+        // column and would otherwise fire on one layout only.
+        let legacy_records = store.list_records(None).await.unwrap();
+        assert_eq!(
+            legacy_records.len(),
+            read.records().len(),
+            "both layouts must see the same number of artifacts"
+        );
+        for (l, c) in legacy_records.iter().zip(read.records()) {
+            assert_eq!(l.id, c.id, "record ids must match in order");
+            assert_eq!(l.kind, c.kind, "id={}", l.id);
+            assert_eq!(l.status, c.status, "id={}", l.id);
+            assert_eq!(l.title, c.title, "id={}", l.id);
+            assert_eq!(
+                l.r_eff_score, c.r_eff_score,
+                "id={} — the cached score drives weakest_link detection",
+                l.id
+            );
+            assert_eq!(l.body, c.body, "id={}", l.id);
+            assert_eq!(l.created_at, c.created_at, "id={}", l.id);
+        }
+        assert_eq!(
+            store.get_all_relations().await.unwrap(),
+            read.get_all_relations(),
+            "both layouts must see the same edges"
+        );
+
+        let legacy = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+        let captured = detect_anomalies_captured(&read, &ws, &AnomalyFilter::default())
+            .await
+            .unwrap();
+
+        assert_eq!(legacy.total, captured.total, "sets differ");
+        assert_eq!(ids(&legacy), ids(&captured));
+        for (l, c) in legacy.anomalies.iter().zip(&captured.anomalies) {
+            assert_eq!(l.kind, c.kind, "id={}", l.id);
+            assert_eq!(l.severity, c.severity, "id={}", l.id);
+            assert_eq!(l.tier, c.tier, "id={}", l.id);
+            assert_eq!(l.affected, c.affected, "id={}", l.id);
+            assert_eq!(l.description, c.description, "id={}", l.id);
+        }
+        assert_eq!(
+            (
+                legacy.by_severity.low,
+                legacy.by_severity.medium,
+                legacy.by_severity.high
+            ),
+            (
+                captured.by_severity.low,
+                captured.by_severity.medium,
+                captured.by_severity.high
+            )
+        );
+        assert_eq!(
+            (
+                legacy.by_tier.auto,
+                legacy.by_tier.adi,
+                legacy.by_tier.user
+            ),
+            (
+                captured.by_tier.auto,
+                captured.by_tier.adi,
+                captured.by_tier.user
+            )
         );
     }
 }

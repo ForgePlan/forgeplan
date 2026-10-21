@@ -377,6 +377,14 @@ impl WindowsNtfsDurability {
         self.ensure_dir(dir)?;
         let temp = temp_sibling(dir, name, "new");
         self.write_file_create_new(&temp, bytes)?;
+        // The generation-manifest bytes are written and flushed; the
+        // write-through move that will install them has not happened, so
+        // `CURRENT` still names the previous generation and this file is an
+        // orphan. On Windows the manifest's own durability barrier is
+        // `FlushFileBuffers` inside `write_file_create_new`, and `before_
+        // manifest_sync` fires immediately after it returns — the equivalent
+        // internal point, not an outer call standing in for it.
+        crate::constellation::fault_barrier_if_selected("before_manifest_sync");
         let final_path = dir.join(name);
         match self.move_write_through(&temp, &final_path, false) {
             Ok(()) => Ok(()),

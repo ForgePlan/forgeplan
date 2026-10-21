@@ -2,7 +2,7 @@
 //!
 //! `constellation_artifacts_v1` keeps exactly one row per canonical key,
 //! `constellation_relations_v1` one row per outgoing edge, and
-//! `constellation_sections_v1` one row per deterministic captured section.
+//! `constellation_sections_v2` one row per deterministic captured section.
 //! The sections table exists so semantic coverage is not capped at the
 //! 2000-character body prefix the artifact row embeds — a section's vector
 //! is its own binding, and merging its ANN results with the artifact rows'
@@ -146,12 +146,23 @@ pub fn artifacts_v1_schema() -> SchemaRef {
 /// checkout, incarnation, row revision, source digest — so a stale
 /// completion predicates on exactly what the artifact row would, plus the
 /// section's own `input_digest` over `title + heading + content prefix`.
+///
+/// `byte_start`/`byte_end` are here because the window they name is what makes
+/// "these rows reproduce the body exactly" checkable against **published**
+/// data. A dataset written before the token layout has no such columns, which
+/// is why the sections role now resolves to
+/// [`TABLE_SECTIONS_V2`](super::manifest::TABLE_SECTIONS_V2): a pre-v2 index
+/// is refused by the `FORMAT_VERSION` check rather than reopened under a
+/// schema it cannot satisfy.
 pub const SECTION_COLUMNS: &[&str] = &[
     // Section identity.
     "canonical_key",
     "parent_key",
     "parent_display_id",
     "ordinal",
+    // The byte range of this window inside the parent's body.
+    "byte_start",
+    "byte_end",
     "heading",
     "level",
     // Rendered attribution and the captured content itself.
@@ -170,7 +181,7 @@ pub const SECTION_COLUMNS: &[&str] = &[
     "retry_after",
 ];
 
-/// Arrow schema for `constellation_sections_v1`.
+/// Arrow schema for `constellation_sections_v2`.
 ///
 /// One row per captured section — `"{parent}#s{ordinal}"`, never one per
 /// artifact. `content` is the exact section bytes (LargeUtf8 like the
@@ -185,6 +196,12 @@ pub fn sections_v1_schema() -> SchemaRef {
         Field::new("parent_key", DataType::Utf8, false),
         Field::new("parent_display_id", DataType::Utf8, true),
         Field::new("ordinal", DataType::UInt64, false),
+        // The UTF-8 byte range this window covers inside the parent's body.
+        // Recorded on the row so "the windows tile the body exactly" is
+        // checkable against published data rather than only against the
+        // in-memory capture that produced it.
+        Field::new("byte_start", DataType::UInt64, false),
+        Field::new("byte_end", DataType::UInt64, false),
         Field::new("heading", DataType::Utf8, true),
         Field::new("level", DataType::UInt64, true),
         Field::new("title", DataType::Utf8, false),
@@ -404,13 +421,14 @@ impl IndexTables {
     /// All three head versions, for `compare_heads` and for the manifest pin.
     ///
     /// This build always owns a sections table — created alongside the other
-    /// two at bootstrap, or created on first open over a pre-sections root —
-    /// so the head is always `Some`. The `Option` in [`TableVersions`] exists
-    /// for manifests *written before* the table existed, not for this one.
+    /// two at bootstrap, or created on first open over a root that predates
+    /// it — so all three legs of [`TableVersions`] are always real versions.
+    /// A generation with no semantic sections pins the version its empty commit
+    /// produced; `0` is never a version and never means "no sections".
     pub async fn head_versions(
         &self,
     ) -> Result<super::manifest::TableVersions, ConstellationError> {
-        Ok(super::manifest::TableVersions::with_sections(
+        Ok(super::manifest::TableVersions::new(
             self.artifacts_version().await?,
             self.relations_version().await?,
             self.sections_version().await?,
@@ -423,14 +441,18 @@ impl IndexTables {
         batch: Arc<arrow_array::RecordBatch>,
         full_source_batch: bool,
     ) -> Result<super::publisher::MergeOutcome, ConstellationError> {
-        super::publisher::execute_merge(
+        let outcome = super::publisher::execute_merge(
             self.artifacts_table(),
             "artifacts",
             batch,
             full_source_batch,
             &super::publisher::MERGE_KEY,
         )
-        .await
+        .await?;
+        // After the **real** artifacts commit returned. A pass that committed
+        // nothing never reaches this line, so no stage is reported for it.
+        super::fault_barrier_if_selected("after_artifacts_commit");
+        Ok(outcome)
     }
 
     /// A bounded delete against the artifacts table.
@@ -468,14 +490,16 @@ impl IndexTables {
         batch: Arc<arrow_array::RecordBatch>,
         full_source_batch: bool,
     ) -> Result<super::publisher::MergeOutcome, ConstellationError> {
-        super::publisher::execute_merge(
+        let outcome = super::publisher::execute_merge(
             self.relations_table(),
             "relations",
             batch,
             full_source_batch,
             &super::publisher::RELATIONS_MERGE_KEY,
         )
-        .await
+        .await?;
+        super::fault_barrier_if_selected("after_relations_commit");
+        Ok(outcome)
     }
 
     /// A bounded delete against the relations table, for replacing one
@@ -502,14 +526,21 @@ impl IndexTables {
         batch: Arc<arrow_array::RecordBatch>,
         full_source_batch: bool,
     ) -> Result<super::publisher::MergeOutcome, ConstellationError> {
-        super::publisher::execute_merge(
+        let outcome = super::publisher::execute_merge(
             self.sections_table(),
             "sections",
             batch,
             full_source_batch,
             &super::publisher::MERGE_KEY,
         )
-        .await
+        .await?;
+        // After the sections commit of the **exact captured set** returned. An
+        // empty set still commits — an empty batch with the right schema, not
+        // a skipped table — so this stage is reachable for a
+        // `semantic_unavailable` capture, which is what makes "the generation
+        // publishes zero sections" observable rather than inferred.
+        super::fault_barrier_if_selected("after_sections_commit");
+        Ok(outcome)
     }
 
     /// A bounded delete against the sections table, by **parent** key.
@@ -1547,10 +1578,17 @@ pub async fn open_active_tables(
     // `ACTIVE_TABLES` is `[(&str, &str)]` — `(role, table_name)` — so the role
     // is the tuple's first element, not the tuple itself.
     for (role, table_name) in storage::ACTIVE_TABLES {
-        // `resolve_table_uri`, not `table_uri_for_role`: a marker written
-        // before `constellation_sections_v1` existed declares only two names,
-        // and the sections role still resolves to its canonical URI — that is
-        // the whole upgrade path. Artifacts/relations keep strict lookup.
+        // `resolve_table_uri`, not `table_uri_for_role`: the sections role must
+        // resolve to `TABLE_SECTIONS_V2` even when the marker names something
+        // else. Artifacts/relations keep strict lookup.
+        //
+        // History, stated as history: this tolerance originally existed for a
+        // two-name marker written before `constellation_sections_v1` existed at
+        // all. That case is gone — such a marker declares `protocol_version` 1
+        // and is refused by `ProtocolMarker::validate` with
+        // `index_protocol_mismatch` before this loop runs. What survives is the
+        // v1→v2 rename: a v2 marker is required to name the v2 sections name,
+        // and this resolution is the single place that enforces it.
         let uri = storage::resolve_table_uri(index_root, marker, role, table_name)?;
         storage::assert_not_wrapped_route(&uri)?;
         // A writer opens on the same wrapped route as its creator, with the
@@ -1570,13 +1608,21 @@ pub async fn open_active_tables(
         .await
         {
             Ok(native) => native,
-            // The sections upgrade path: an index published before the third
-            // table existed has no `constellation_sections_v1.lance` dataset,
-            // and its manifest legitimately pins `sections: None`. Creating
-            // the missing dataset here — under the same owner the caller
-            // already holds and through the same tracking wrapper — is the
-            // upgrade, not a silent repair: a manifest that pins a sections
-            // version still fails its pinned open at `open_table_at_version`.
+            // First publication of the v2 sections dataset.
+            //
+            // This is **not** a v1 upgrade path and must not be read as one. A
+            // pre-v2 index is refused before this loop runs, by the
+            // `protocol_version` check in `resolve_table_uri` →
+            // `ProtocolMarker::validate`: it cannot reach here with a v1
+            // manifest. So this arm fires only when a v2 index has been marked
+            // active and is opening its sections dataset for the first time —
+            // an initial bootstrap, or the first admission after a v2 rebuild.
+            //
+            // Creating it here — under the owner the caller already holds and
+            // through the same tracking wrapper — keeps the write inside the
+            // closure barrier that will sync it. It is not a silent repair: a
+            // manifest that pins a sections version still fails its pinned
+            // open at `open_table_at_version`.
             Err(lancedb::Error::TableNotFound { .. }) if role == "sections" => {
                 lancedb::table::NativeTable::create_empty(
                     &uri,
@@ -1600,6 +1646,14 @@ pub async fn open_active_tables(
                 });
             }
         };
+        // No schema check here, deliberately. The sections role resolves to
+        // `TABLE_SECTIONS_V2`, so the dataset this build can reach is either
+        // absent — created above with the current schema — or one this build
+        // wrote. A pre-v2 index is refused earlier, by the `FORMAT_VERSION`
+        // check in `ProtocolMarker::validate` and
+        // `GenerationManifest::validate_for_publication`, so there is no
+        // reachable dataset whose schema could disagree with
+        // `sections_v1_schema()`.
         opened.push((role, native));
     }
 
@@ -1693,6 +1747,10 @@ pub async fn open_active_tables_readonly(
         .map_err(|e| ConstellationError::IndexGenerationUnavailable {
             detail: format!("cannot open the {role} table at {uri}: {e}"),
         })?;
+        // Same reasoning as the writer path: the sections role resolves to
+        // `TABLE_SECTIONS_V2`, so no dataset reachable from here can carry a
+        // pre-v2 schema, and a v1 index was refused by the protocol version
+        // before this function ran.
         opened.push((role, native));
     }
 
@@ -2363,6 +2421,8 @@ mod tests {
             "parent_key",
             "parent_display_id",
             "ordinal",
+            "byte_start",
+            "byte_end",
             "heading",
             "level",
             "title",
@@ -2399,6 +2459,45 @@ mod tests {
         assert!(
             schema.field_with_name("heading").unwrap().is_nullable(),
             "the fallback and preamble sections carry no heading"
+        );
+        // The byte range is what makes the window checkable after publication,
+        // so it is non-nullable: a section row with no range cannot be placed
+        // in its parent's body at all.
+        for name in ["byte_start", "byte_end"] {
+            let field = schema
+                .field_with_name(name)
+                .unwrap_or_else(|e| panic!("missing {name}: {e}"));
+            assert_eq!(field.data_type(), &DataType::UInt64, "{name} is a byte offset");
+            assert!(!field.is_nullable(), "{name} cannot be null");
+        }
+    }
+
+    /// [`SECTION_COLUMNS`] and [`sections_v1_schema`] are two statements of
+    /// the same contract, and the row builder is a third.
+    ///
+    /// They are written in three places because each is used in a different
+    /// place, which is exactly why they can drift: adding a column to the
+    /// schema and forgetting the constant leaves a table that is correct and a
+    /// description of it that is not. Asserting the schema declares every name
+    /// the constant claims makes the drift a test failure rather than a
+    /// reviewer noticing.
+    #[test]
+    fn the_sections_column_constant_matches_the_schema_it_describes() {
+        // The schema is bound to a local: `field_names` borrows it, and a
+        // borrow of a temporary would end before the names it returned are
+        // used.
+        let schema = sections_v1_schema();
+        let names = field_names(&schema);
+        for column in SECTION_COLUMNS {
+            assert!(
+                names.contains(column),
+                "`SECTION_COLUMNS` claims `{column}` but the schema does not declare it; the \
+                 constant and the schema are one contract written twice"
+            );
+        }
+        assert!(
+            names.contains(&"byte_start") && names.contains(&"byte_end"),
+            "the byte range is what makes the windows checkable against published data"
         );
     }
 

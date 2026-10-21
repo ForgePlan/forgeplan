@@ -73,11 +73,26 @@ fn a_profile_built_from_measured_digests_resolves_to_this_revision() {
         TOKENIZER_JSON_SHA.to_string(),
         TOKENIZER_CONFIG_SHA.to_string(),
         "tract-onnx-0.23",
+        // BGE-M3's own shape: a declared 8192 clamped by the 512 ceiling, so
+        // the profile's `max_tokens` is the real limit rather than a restated
+        // constant.
+        &forgeplan_core::embed::tokenizer::SectionLayout::from_metadata(
+            TOKENIZER_JSON_SHA.to_string(),
+            TOKENIZER_CONFIG_SHA.to_string(),
+            CONFIG_JSON_SHA.to_string(),
+            Some(8192),
+            2,
+        ),
     )
     .expect("a complete snapshot with real digests resolves");
 
     assert_eq!(profile.weights_revision, MEASURED_REVISION);
     assert_eq!(profile.dimensions, 1024, "from config.json hidden_size");
+    assert_eq!(
+        profile.max_tokens,
+        forgeplan_core::embed::tokenizer::MAX_TOKENS_CEILING,
+        "the declared 8192 is clamped to the ceiling the layout actually allows"
+    );
     assert_eq!(profile.profile_id().len(), 64);
 }
 

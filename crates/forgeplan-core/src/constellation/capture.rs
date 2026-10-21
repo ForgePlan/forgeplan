@@ -186,15 +186,20 @@ impl ParsedArtifact {
 /// Sections exist so semantic coverage is not capped at the body prefix:
 /// the artifact row keeps its `title + body-prefix` vector (one row per
 /// canonical key — unchanged), and the body additionally gets its own rows
-/// in `constellation_sections_v1`, keyed by `"{parent_key}#s{ordinal}"`.
+/// in `constellation_sections_v2`, keyed by `"{parent_key}#s{ordinal}"`.
 ///
 /// A section row borrows its parent's whole binding — `source_digest`,
 /// `incarnation`, `row_revision`, checkout and epoch are read from the
 /// parent's [`SourceEntry`] at publish time — and adds only what is its own:
-/// the section key, ordinal, heading, level, and the digest of the exact
-/// text the tokenizer sees (`title + heading + content prefix`). An empty
-/// heading means the whole-body fallback section (`ordinal == 0`), which is
-/// how a markdown file with no headings still gets exactly one section row.
+/// the section key, ordinal, the UTF-8 byte range it covers, heading, level,
+/// and the digest of the exact text the tokenizer sees. An empty heading means
+/// the whole-body fallback section (`ordinal == 0`), which is how a markdown
+/// file with no headings still gets exactly one section row.
+///
+/// The byte range is not a convenience: it is what makes "these windows
+/// reproduce the body exactly" checkable rather than asserted, and it is what
+/// the durable manifest records so a later pass can verify section membership
+/// against the same immutable layout instead of against a sampling of hits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedSection {
     /// `{parent_key}#s{ordinal}` — positional and deterministic.
@@ -204,7 +209,17 @@ pub struct CapturedSection {
     /// Position in `list_section_spans` order. Reordering sections changes which
     /// content a key binds; `input_digest` detects the change.
     pub ordinal: u32,
+    /// Start of this window inside the **parent's markdown unit**, as a UTF-8
+    /// byte offset. Combined with `byte_end` it names exactly the bytes
+    /// `content` holds.
+    pub byte_start: usize,
+    /// End of this window, exclusive.
+    pub byte_end: usize,
     /// Heading text, or `None` for the no-headings whole-body fallback.
+    ///
+    /// The **full** captured heading. It is what a reader displays and what
+    /// the row records; only the copy that enters the embedding input is
+    /// token-budgeted.
     pub heading: Option<String>,
     /// Markdown heading level (1–6), `None` for the fallback section.
     pub level: Option<u8>,
@@ -213,72 +228,63 @@ pub struct CapturedSection {
     /// `list_sections`' nested fold — a `###` gets its own row).
     /// `Arc`-shared into the artifact body like every other captured text.
     pub content: Arc<str>,
-    /// SHA-256 of `section_input_text(parent title, heading, content)`.
-    /// The section's own input digest — never the parent's.
+    /// SHA-256 of the exact bytes the shared builder handed to the tokenizer
+    /// for this window. The section's own input digest — never the parent's.
     pub input_digest: String,
     /// Parent artifact's input digest, carried so the section row records
     /// which artifact-level input its parent was bound to at capture time.
     pub parent_input_digest: String,
 }
 
-/// Derive the deterministic section set for one captured artifact.
+/// Split one section's content into contiguous **token** windows.
 ///
-/// Derived from the **captured bytes** — `list_section_spans` parses
-/// `artifact.body`, never the filesystem. Three cases:
+/// Windows are cut at token boundaries and then extended so they tile the
+/// content exactly: the end of one window is the start of the next, and the
+/// last one runs to the end of the content. Every byte therefore lands in
+/// exactly one window — including the whitespace and metaspaces between
+/// tokens, which a "start here, stop at the token limit" reading would drop —
+/// and no byte is embedded twice.
 ///
-/// * **No headings at all** — one whole-body section at ordinal 0 with no
-///   heading. Every captured artifact always produces at least one section
-///   row, so an empty `sections` vec can only mean an empty `artifacts` vec.
-/// * **Preamble** — `list_section_spans` drops text before the first heading, so
-///   a body that starts with prose gets one extra synthetic section for it
-///   at ordinal 0 (heading `None`), with the heading sections shifted to
-///   ordinals 1... Without this a long preamble would be the same
-///   not-searchable tail the sections table exists to remove.
-/// * **Headed sections** — in `list_section_spans` order. The split is flat:
-///   every heading opens a new unit, so a nested `###` is its own unit rather
-///   than content inside its parent's. Each unit is then windowed by
-///   [`section_windows`], so a section longer than `body_prefix_chars`
-///   becomes several contiguous rows and none of its tail is invisible.
-///   Coverage is the whole body, not its prefix.
-///
-/// Ordinal keys are positional on purpose: two units that share a heading are
-/// still distinct rows, and reordering the body changes which content a key
-/// binds — `input_digest` detects that the way it does for any edit.
-/// Split one section's content into contiguous windows of at most
-/// `body_prefix_chars` characters.
-///
-/// Every character of the body lands in exactly one window, so the section
-/// index covers the **whole** document rather than its first prefix. Windows
-/// are taken on character boundaries and are pure functions of the content
-/// and the limit, which keeps row keys positional and reproducible.
-fn section_windows(content: &str, limit: usize) -> Vec<&str> {
-    let limit = limit.max(1);
-    let mut windows = Vec::new();
-    let mut start = 0usize;
-    let mut taken = 0usize;
-    for (offset, _) in content.char_indices() {
-        if taken == limit {
-            windows.push(&content[start..offset]);
-            start = offset;
-            taken = 0;
-        }
-        taken += 1;
-    }
-    if start < content.len() {
-        windows.push(&content[start..]);
-    }
-    if windows.is_empty() {
-        windows.push("");
-    }
-    windows
+/// The previous implementation split by **characters** while the engine
+/// truncated by **tokens**, so a 2000-character Russian, CJK or no-space
+/// window routinely lost its tail at encode time while the capture believed
+/// the whole document was covered. This is the one builder capture, digests,
+/// admission and worker recovery all share, so a window's byte range and the
+/// bytes actually handed to the tokenizer cannot drift apart.
+fn section_windows(
+    tokenizer: &crate::embed::tokenizer::MetadataTokenizer,
+    budgets: &crate::embed::tokenizer::TokenBudgets,
+    content: &str,
+) -> Result<Vec<std::ops::Range<usize>>, super::ConstellationError> {
+    tokenizer
+        .token_windows(content, budgets)
+        .map(|ranges| {
+            ranges
+                .into_iter()
+                .map(|range| range.start..range.end)
+                .collect::<Vec<_>>()
+        })
+        .map_err(|e| super::ConstellationError::Io {
+            detail: format!("cannot measure section windows: {e}"),
+        })
 }
 
 /// Emit one row per window of `content`, continuing the shared ordinal.
 ///
 /// The heading and level repeat on every window so a hit deep inside a long
-/// section still names the section it came from. `content` holds the window
-/// itself, which is what makes its `input_digest` describe exactly the bytes
-/// the tokenizer will see.
+/// section still names the section it came from. The **display** heading is
+/// the full captured text in every row: only the embedding input is
+/// header-budgeted, and shortening the stored heading would change what a
+/// reader sees rather than what a vector measured.
+///
+/// # `content_base`
+///
+/// `content_base` is where `content` begins inside `artifact.body`, and it is
+/// what makes the recorded offsets **body-absolute** rather than relative to
+/// whichever markdown unit produced the row. A range that only meant something
+/// relative to its own unit could not be checked against the body at all, so
+/// "the windows reproduce the body" would stay an assertion rather than
+/// something [`body_is_fully_covered`] verifies on published data.
 fn push_section_rows(
     out: &mut Vec<CapturedSection>,
     ordinal: &mut u32,
@@ -286,29 +292,86 @@ fn push_section_rows(
     heading: Option<String>,
     level: Option<u8>,
     content: &str,
-    body_prefix_chars: usize,
-) {
-    for window in section_windows(content, body_prefix_chars) {
+    content_base: usize,
+    tokenizer: &crate::embed::tokenizer::MetadataTokenizer,
+    budgets: &crate::embed::tokenizer::TokenBudgets,
+) -> Result<(), super::ConstellationError> {
+    for range in section_windows(tokenizer, budgets, content)? {
+        // A range is a byte range into `content`; a tokenizer reporting a
+        // non-boundary would make this `None`, and silently skipping the row
+        // would leave part of the body uncovered.
+        let window = content.get(range.clone()).ok_or_else(|| {
+            super::ConstellationError::Io {
+                detail: format!(
+                    "section window {}..{} is not a UTF-8 boundary of the captured content",
+                    range.start, range.end
+                ),
+            }
+        })?;
         out.push(CapturedSection {
             canonical_key: section_key(&artifact.canonical_key, *ordinal),
             parent_key: artifact.canonical_key.clone(),
             ordinal: *ordinal,
+            byte_start: content_base + range.start,
+            byte_end: content_base + range.end,
             heading: heading.clone(),
             level,
             content: Arc::from(window),
+            // Mapped, not converted by a blanket `From`. `section_input_digest`
+            // is `anyhow`-typed because the tokenizer library is, but the row
+            // this lands in is durable: a capture that could not measure its
+            // own input must name the section and the reason in a typed
+            // `ConstellationError`, not lose it in an erased conversion.
             input_digest: section_input_digest(
+                tokenizer,
+                budgets,
                 &artifact.title,
                 heading.as_deref(),
                 window,
-                body_prefix_chars,
-            ),
+            )
+            .map_err(|error| super::ConstellationError::Io {
+                detail: format!(
+                    "cannot build the embedding input for section {} of `{}`: {error:#}",
+                    section_key(&artifact.canonical_key, *ordinal),
+                    artifact.canonical_key
+                ),
+            })?,
             parent_input_digest: artifact.input_digest.clone(),
         });
         *ordinal += 1;
     }
+    Ok(())
 }
 
-pub fn sections_for(artifact: &ParsedArtifact, body_prefix_chars: usize) -> Vec<CapturedSection> {
+/// The deterministic section set for one captured artifact, under `layout`.
+///
+/// Derived from the **captured bytes** — `list_section_spans` parses
+/// `artifact.body`, never the filesystem — and measured by the one tokenizer
+/// the whole capture shares.
+///
+/// Three cases, unchanged in shape from before:
+///
+/// * **No headings at all** — one whole-body section at ordinal 0 with no
+///   heading.
+/// * **Preamble** — `list_section_spans` drops text before the first heading,
+///   so a body that starts with prose gets one extra synthetic section for it
+///   at ordinal 0, with the heading sections shifted to 1...
+/// * **Headed sections** — in `list_section_spans` order, flat: every heading
+///   opens a new unit. Each unit is then windowed by **tokens**, so a section
+///   longer than the token budget becomes several contiguous rows and none of
+///   its tail is invisible.
+///
+/// # Errors
+///
+/// [`super::ConstellationError::Io`] when the tokenizer cannot measure the
+/// content or the budgets are unsatisfiable for this layout. That is a real
+/// failure — a section set that cannot be measured must not be reported as an
+/// empty one, which would read as "this document has no sections".
+pub fn sections_for(
+    artifact: &ParsedArtifact,
+    tokenizer: &crate::embed::tokenizer::MetadataTokenizer,
+    budgets: &crate::embed::tokenizer::TokenBudgets,
+) -> Result<Vec<CapturedSection>, super::ConstellationError> {
     let parsed = crate::artifact::sections::list_section_spans(&artifact.body);
     let mut sections = Vec::new();
     let mut ordinal = 0u32;
@@ -320,14 +383,17 @@ pub fn sections_for(artifact: &ParsedArtifact, body_prefix_chars: usize) -> Vec<
             None,
             None,
             &artifact.body,
-            body_prefix_chars,
-        );
-        return sections;
+            0,
+            tokenizer,
+            budgets,
+        )?;
+        return Ok(sections);
     }
 
     // A preamble section is emitted only for real prose before the first
-    // heading — whitespace or an empty run gets no row.
-    if let Some(preamble) = preamble_text(&artifact.body) {
+    // heading — whitespace or an empty run gets no row. It is `trim`med before
+    // use, so its base is where the trimmed run actually starts.
+    if let Some((preamble_base, preamble)) = preamble_span(&artifact.body) {
         push_section_rows(
             &mut sections,
             &mut ordinal,
@@ -335,8 +401,10 @@ pub fn sections_for(artifact: &ParsedArtifact, body_prefix_chars: usize) -> Vec<
             None,
             None,
             preamble,
-            body_prefix_chars,
-        );
+            preamble_base,
+            tokenizer,
+            budgets,
+        )?;
     }
     for section in &parsed {
         let heading = (!section.heading.is_empty()).then(|| section.heading.clone());
@@ -347,27 +415,142 @@ pub fn sections_for(artifact: &ParsedArtifact, body_prefix_chars: usize) -> Vec<
             heading,
             Some(section.level),
             &section.content,
-            body_prefix_chars,
-        );
+            body_offset_of(&artifact.body, section.content.as_str()),
+            tokenizer,
+            budgets,
+        )?;
     }
-    sections
+    Ok(sections)
 }
 
-/// The raw body bytes before the first markdown heading, if non-whitespace.
+/// Where `unit` sits inside `body`, in bytes.
 ///
-/// Byte offsets come from the same `pulldown-cmark` event stream
+/// `list_section_spans` returns slices **of** the body, so the offset is exact
+/// rather than searched for. The subtraction is guarded because a caller could
+/// pass a string that is not a slice of this body; returning `0` in that case
+/// is only safe because [`verify_section_coverage`] then catches the mismatch
+/// against the stored text.
+fn body_offset_of(body: &str, unit: &str) -> usize {
+    let body_start = body.as_ptr() as usize;
+    let unit_start = unit.as_ptr() as usize;
+    unit_start.checked_sub(body_start).unwrap_or(0)
+}
+
+/// Whether one artifact's section rows reproduce its body exactly.
+///
+/// Concatenating the rows' windows, in ordinal order, must give back the
+/// whole body: every byte, including inter-window whitespace, metaspaces and a
+/// long tail past any former character limit. This is the check ADR-029 §2A.3
+/// makes load-bearing — a window scheme that merely *claims* whole-body
+/// coverage while dropping a tail is the defect this slice exists to remove.
+///
+/// Rows are matched to their body by their recorded absolute range rather than
+/// by re-parsing, so this verifies the ranges the manifest will publish rather
+/// than a second, independent reconstruction.
+///
+/// Public because the claim it verifies is a claim about **published** rows:
+/// the manifest carries the byte ranges, a later pass checks section membership
+/// against them, and the section-window tests need to assert the same
+/// property the publisher relies on rather than a re-implementation of it. An
+/// in-crate-only verifier would leave the integration suite asserting its own
+/// weaker version of the rule.
+pub fn body_is_fully_covered(
+    artifact: &ParsedArtifact,
+    sections: &[CapturedSection],
+) -> Result<(), super::ConstellationError> {
+    let mut rows: Vec<&CapturedSection> = sections
+        .iter()
+        .filter(|row| row.parent_key == artifact.canonical_key)
+        .collect();
+    rows.sort_by_key(|row| row.ordinal);
+
+    let mut cursor = 0usize;
+    let mut rebuilt = String::with_capacity(artifact.body.len());
+    for row in rows {
+        if row.byte_start != cursor {
+            return Err(super::ConstellationError::Io {
+                detail: format!(
+                    "section {} starts at body byte {} but the previous window ended at {cursor}; \
+                     the windows do not tile the body",
+                    row.canonical_key, row.byte_start
+                ),
+            });
+        }
+        let slice = artifact
+            .body
+            .get(row.byte_start..row.byte_end)
+            .ok_or_else(|| super::ConstellationError::Io {
+                detail: format!(
+                    "section {} claims body bytes {}..{}, which are not a UTF-8 boundary of the \
+                     captured body",
+                    row.canonical_key, row.byte_start, row.byte_end
+                ),
+            })?;
+        if slice != &*row.content {
+            return Err(super::ConstellationError::Io {
+                detail: format!(
+                    "section {} stores text that is not the body slice it claims",
+                    row.canonical_key
+                ),
+            });
+        }
+        rebuilt.push_str(slice);
+        cursor = row.byte_end;
+    }
+
+    // `rebuilt` is a `String` and `artifact.body` an `Arc<str>`; there is no
+    // `PartialEq<Arc<str>> for String`, so both sides are compared as `&str`.
+    if cursor != artifact.body.len() || rebuilt.as_str() != artifact.body.as_ref() {
+        return Err(super::ConstellationError::Io {
+            detail: format!(
+                "the section windows of `{}` cover {cursor} of the body's {} bytes and do not \
+                 reproduce it exactly; a tail would be unsearchable",
+                artifact.canonical_key,
+                artifact.body.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Every captured artifact's body is reproduced exactly by its section rows.
+///
+/// Run once over the whole set before the view is returned, so a tokenizer
+/// reporting a bad offset fails the capture instead of publishing a generation
+/// whose section membership silently drops content.
+pub(crate) fn verify_bodies_are_fully_covered(
+    artifacts: &[Arc<ParsedArtifact>],
+    sections: &[CapturedSection],
+) -> Result<(), super::ConstellationError> {
+    for artifact in artifacts {
+        body_is_fully_covered(artifact, sections)?;
+    }
+    Ok(())
+}
+
+/// The raw body bytes before the first markdown heading, if non-whitespace,
+/// with their byte offset in the body.
+///
+/// Offsets come from the same `pulldown-cmark` event stream
 /// `list_section_spans` uses, so "before the first heading" means exactly what
 /// the section parser calls a heading — fenced code blocks still do not
 /// count. Returns `None` when there is no heading or the run is blank.
-fn preamble_text(body: &str) -> Option<&str> {
+///
+/// The **trimmed** run is returned with the offset of its first real byte,
+/// because the section rows have to name the body bytes they actually cover —
+/// leading whitespace was never part of what a preamble row embeds.
+fn preamble_span(body: &str) -> Option<(usize, &str)> {
     use pulldown_cmark::{Event, Options, Parser, Tag};
 
     for (event, range) in Parser::new_ext(body, Options::all()).into_offset_iter() {
         if let Event::Start(Tag::Heading { .. }) = event {
-            return body
-                .get(..range.start)
-                .map(str::trim)
-                .filter(|text| !text.is_empty());
+            let prefix = body.get(..range.start)?;
+            let leading = prefix.len() - prefix.trim_start().len();
+            let trimmed = prefix.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            return Some((leading, trimmed));
         }
     }
     None
@@ -442,7 +625,26 @@ pub struct CapturedSourceView {
     /// length-prefixed sorted `(relativePath, sourceDigest)` pair.
     pub source_set_digest: String,
     pub config_digest: String,
+    /// The section layout this capture measured its windows under.
+    ///
+    /// Held for the capture's life alongside the tokenizer below, and never
+    /// re-derived per artifact. Its `max_tokens == 0` form is the fingerprinted
+    /// `semantic_unavailable` state, and in that state `sections` is exactly
+    /// empty — never a character-window substitute under the previous layout's
+    /// identity.
+    pub layout: crate::embed::tokenizer::SectionLayout,
+    /// The one tokenizer every window in this capture was measured with.
+    ///
+    /// `None` exactly when [`Self::layout`] is unavailable; the two are set
+    /// together by construction, because a section set without a tokenizer
+    /// could not have been produced in the first place.
+    pub tokenizer: Option<Arc<crate::embed::tokenizer::MetadataTokenizer>>,
     /// Prefix budget read from the same confirmed configuration bytes.
+    ///
+    /// **Artifact rows only.** It never clips a section window: those are cut
+    /// in tokens by the layout above. It stays a field because the artifact
+    /// vector is still prefix-bounded and every consumer that builds one needs
+    /// it.
     pub body_prefix_chars: usize,
     /// Parsed artifacts, sorted by canonical key, sharing their bytes by
     /// `Arc`.
@@ -495,20 +697,77 @@ impl CapturedSourceView {
             .filter(move |s| s.parent_key == parent_key)
     }
 
+    /// The token budgets this capture's windows obey.
+    ///
+    /// Resolved once and shared: capture, digests, admission and worker
+    /// recovery all read the same numbers rather than each re-deriving them
+    /// from the layout, which is how a window and the encoder could disagree
+    /// about the limit.
+    pub fn token_budgets(&self) -> Result<crate::embed::tokenizer::TokenBudgets, ConstellationError> {
+        crate::embed::tokenizer::TokenBudgets::resolve(&self.layout).map_err(|e| {
+            ConstellationError::Io {
+                detail: format!(
+                    "the section layout {} has no usable token budget: {e}",
+                    self.layout.fingerprint()
+                ),
+            }
+        })
+    }
+
+    /// The one tokenizer and the budgets together, or why neither exists.
+    ///
+    /// The single accessor every window and input call goes through, so no
+    /// caller can accidentally build a section input against a different
+    /// layout from the one that measured the window.
+    pub fn section_layout(
+        &self,
+    ) -> Result<
+        (
+            &crate::embed::tokenizer::MetadataTokenizer,
+            crate::embed::tokenizer::TokenBudgets,
+        ),
+        ConstellationError,
+    > {
+        let tokenizer = self.tokenizer.as_deref().ok_or_else(|| ConstellationError::Io {
+            detail: format!(
+                "this capture has no tokenizer; its layout is `{}` and it publishes no semantic \
+                 sections",
+                self.layout.fingerprint()
+            ),
+        })?;
+        Ok((tokenizer, self.token_budgets()?))
+    }
+
     /// The captured input text a tokenizer would receive for one section —
-    /// `title + heading + content prefix`, the same string its
-    /// `input_digest` was hashed over.
-    pub fn section_input(&self, section: &CapturedSection, body_prefix_chars: usize) -> String {
+    /// exactly the string its `input_digest` was hashed over.
+    ///
+    /// **No `body_prefix_chars`.** The window arriving here was already cut in
+    /// tokens by this capture's layout; clipping it again by characters would
+    /// reintroduce the second, unrelated budget this contract removes, and the
+    /// mismatch between a capture-time budget and a later re-read of the config
+    /// is the shape of bug that loses a tail silently.
+    pub fn section_input(
+        &self,
+        section: &CapturedSection,
+    ) -> Result<String, ConstellationError> {
+        let (tokenizer, budgets) = self.section_layout()?;
         let title = self
             .artifact(&section.parent_key)
             .map(|a| a.title.as_str())
             .unwrap_or_default();
         section_input_text(
+            tokenizer,
+            &budgets,
             title,
             section.heading.as_deref(),
             &section.content,
-            body_prefix_chars,
         )
+        .map_err(|e| ConstellationError::Io {
+            detail: format!(
+                "cannot build the embedding input for section {}: {e}",
+                section.canonical_key
+            ),
+        })
     }
 
     /// Whether an enumerated path failed to become a current row.
@@ -843,20 +1102,33 @@ struct Pass {
     files: Vec<PassFile>,
     unusable: Vec<UnusableSource>,
     config_digest: String,
-    /// The `embedding.chunk_size` the config resolved to. Sections hash
-    /// their input under exactly this bound, so it travels with the pass
-    /// rather than being re-derived where it was never read.
+    /// The `embedding.chunk_size` the config resolved to. **Artifact rows
+    /// only** — section windows are cut in tokens by `layout_probe`, and a
+    /// window re-clipped by this character budget is the double budget this
+    /// contract removes.
     body_prefix_chars: usize,
+    /// The resolved section layout, carried on the pass so the windows are
+    /// measured against the layout the digest already names.
+    layout_probe: SectionLayoutProbe,
 }
 
 impl Pass {
     /// Whether this pass observed exactly the same source set as `other`.
     ///
-    /// Path sets and **all** digests must agree, plus the config. Parsed
-    /// content is deliberately not compared: identical bytes parse
+    /// Path sets and **all** digests must agree, plus the config and — now —
+    /// the **section layout fingerprint**. The layout check is explicit rather
+    /// than riding on `config_digest` alone so the reason a pass disagreed is
+    /// visible here: a cache that gained or lost tokenizer metadata between
+    /// the two passes is a different observation, not a stable one.
+    ///
+    /// Parsed content is deliberately not compared: identical bytes parse
     /// identically, so a second parse would be pure cost.
     fn agrees_with(&self, other: &Pass) -> bool {
-        if self.config_digest != other.config_digest || self.files.len() != other.files.len() {
+        if self.config_digest != other.config_digest
+            || self.files.len() != other.files.len()
+            || self.layout_probe.layout.fingerprint() != other.layout_probe.layout.fingerprint()
+            || self.body_prefix_chars != other.body_prefix_chars
+        {
             return false;
         }
         self.files.iter().zip(&other.files).all(|(a, b)| {
@@ -951,7 +1223,7 @@ async fn run_pass(workspace: &Path, parse: bool) -> Result<Pass, ConstellationEr
         });
     }
 
-    let (config_digest, body_prefix_chars) = read_config(workspace).await?;
+    let (config_digest, body_prefix_chars, layout_probe) = read_config(workspace).await?;
 
     let mut files: Vec<PassFile> = Vec::new();
     for dir_name in ARTIFACT_DIRS {
@@ -1115,12 +1387,28 @@ async fn run_pass(workspace: &Path, parse: bool) -> Result<Pass, ConstellationEr
         unusable,
         config_digest,
         body_prefix_chars,
+        layout_probe,
     })
 }
 
-/// Read the workspace config and derive both the config digest and the body
-/// prefix length that feeds `inputDigest`.
-async fn read_config(workspace: &Path) -> Result<(String, usize), ConstellationError> {
+/// Read the workspace config and derive the config digest, the artifact-prefix
+/// budget, and the section layout.
+///
+/// The digest is now over **three** things: the raw config bytes, the artifact
+/// directory list, and the domain-separated `section_layout_fingerprint`.
+/// Before, a tokenizer swap or a token-limit change produced the *same*
+/// `config_digest` and the same `source_set_digest` — so two captures that cut
+/// their windows differently agreed, and one capture's `#sN` keys could be
+/// compared against another's rows as if they meant the same thing.
+///
+/// The layout itself is resolved from the **process-wide model cache**, not
+/// from the workspace, so both passes see the same answer as long as the cache
+/// did not change underneath them — and if it did, the fingerprints differ and
+/// the pass is discarded, which is the correct outcome rather than two passes
+/// quietly agreeing on different layouts.
+async fn read_config(
+    workspace: &Path,
+) -> Result<(String, usize, SectionLayoutProbe), ConstellationError> {
     let config_path = workspace.join("config.yaml");
     let bytes = match tokio::fs::read(&config_path).await {
         Ok(bytes) => bytes,
@@ -1132,11 +1420,16 @@ async fn read_config(workspace: &Path) -> Result<(String, usize), ConstellationE
         }
     };
 
+    let probe = SectionLayoutProbe::resolve();
+    let layout_fingerprint = probe.layout.fingerprint();
+
     let mut digest = DigestBuilder::new(SOURCE_SET_DOMAIN);
     digest
         .field(b"config")
         .field(&bytes)
-        .field(ARTIFACT_DIRS.join("\u{1}").as_bytes());
+        .field(ARTIFACT_DIRS.join("\u{1}").as_bytes())
+        .field(b"section_layout")
+        .field(layout_fingerprint.as_bytes());
     let config_digest = digest.finish_hex();
 
     let body_prefix_chars = if bytes.is_empty() {
@@ -1148,7 +1441,41 @@ async fn read_config(workspace: &Path) -> Result<(String, usize), ConstellationE
             .unwrap_or(DEFAULT_BODY_PREFIX_CHARS)
     };
 
-    Ok((config_digest, body_prefix_chars))
+    Ok((config_digest, body_prefix_chars, probe))
+}
+
+/// The resolved section layout for one capture, kept as one value.
+///
+/// `tokenizer` is `None` exactly when the layout is unavailable. Holding both
+/// in one struct is what stops a capture from recording a fingerprint it did
+/// not measure under, or measuring under a layout it did not record.
+#[derive(Debug, Clone)]
+struct SectionLayoutProbe {
+    layout: crate::embed::tokenizer::SectionLayout,
+    tokenizer: Option<Arc<crate::embed::tokenizer::MetadataTokenizer>>,
+}
+
+impl SectionLayoutProbe {
+    /// Resolve the layout from the local model cache. Never downloads.
+    fn resolve() -> Self {
+        let resolution =
+            crate::embed::tokenizer::resolve_layout(crate::constellation::jobs::DEFAULT_MODEL_REPO);
+        let layout = resolution.layout();
+        let tokenizer = resolution.tokenizer().cloned();
+        Self { layout, tokenizer }
+    }
+
+    /// The budgets, or why this layout has none.
+    fn budgets(&self) -> Result<crate::embed::tokenizer::TokenBudgets, ConstellationError> {
+        crate::embed::tokenizer::TokenBudgets::resolve(&self.layout).map_err(|e| {
+            ConstellationError::Io {
+                detail: format!(
+                    "the section layout {} has no usable token budget: {e}",
+                    self.layout.fingerprint()
+                ),
+            }
+        })
+    }
 }
 
 /// Assemble the confirmed capture from the first pass.
@@ -1290,9 +1617,24 @@ fn build_view(
     // Sections derive from the confirmed immutable set, never from a second
     // read. Parent-key order is the artifacts order (already sorted); the
     // ordinal keeps each parent's rows in document order.
+    //
+    // With no usable metadata the set is **exactly empty**, and that emptiness
+    // is the whole signal: the capture publishes zero semantic sections rather
+    // than character windows carrying the previous layout's `#sN` keys. Old
+    // vectors may remain as inert cache rows; nothing here makes them current.
     let mut sections = Vec::new();
-    for artifact in &artifacts {
-        sections.extend(sections_for(artifact, pass.body_prefix_chars));
+    let tokenizer = pass.layout_probe.tokenizer.clone();
+    if let Some(tokenizer) = tokenizer.as_deref() {
+        let budgets = pass.layout_probe.budgets()?;
+        for artifact in &artifacts {
+            let mut rows = sections_for(artifact, tokenizer, &budgets)?;
+            sections.append(&mut rows);
+        }
+        // The invariant that makes "the whole body is covered" a checked fact
+        // rather than a claim about the windowing algorithm: every row's stored
+        // text is exactly the body slice it names, and the ranges tile the
+        // body with no gap.
+        verify_bodies_are_fully_covered(&artifacts, &sections)?;
     }
     entries.sort_by(|a, b| a.relative_path.as_bytes().cmp(b.relative_path.as_bytes()));
     unusable.sort_by(|a, b| a.relative_path.as_bytes().cmp(b.relative_path.as_bytes()));
@@ -1351,6 +1693,8 @@ fn build_view(
         evaluated_at,
         source_set_digest,
         config_digest: pass.config_digest,
+        layout: pass.layout_probe.layout.clone(),
+        tokenizer,
         body_prefix_chars: pass.body_prefix_chars,
         artifacts,
         sections,
@@ -1435,6 +1779,60 @@ mod tests {
             .unwrap()
     }
 
+    // -----------------------------------------------------------------------
+    // Deterministic section layout.
+    //
+    // A capture resolves its layout from the process-wide model cache. That is
+    // right in production and wrong in a unit test: without a downloaded
+    // BGE-M3 the capture publishes **no** sections, so every section assertion
+    // here would either panic or — worse — quietly pass vacuously on a machine
+    // that happens to have one, and fail on one that does not. The same test
+    // would then mean two different things depending on ambient state.
+    //
+    // So every test that asserts anything about sections installs its own
+    // snapshot, built by [`crate::embed::tokenizer::testing`] and owned by the
+    // test. The lock serialises the handful of tests that install one, because
+    // the override is process-global: without it, one test's layout could be
+    // swapped out from under another's capture mid-run.
+    // -----------------------------------------------------------------------
+
+    static LAYOUT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Installs a real tokenizer snapshot for the lifetime of the guard.
+    struct FixtureLayout {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _cache: TempDir,
+    }
+
+    impl Drop for FixtureLayout {
+        fn drop(&mut self) {
+            // Before `_cache` is dropped: the snapshot has to outlive the
+            // override that points at it, not the other way round.
+            crate::embed::tokenizer::clear_test_layout_cache();
+        }
+    }
+
+    /// A cache directory this test owns, holding one metadata-only snapshot.
+    fn fixture_layout(limit: usize) -> FixtureLayout {
+        // Poison-tolerant: a panicking test must not turn every later
+        // layout-dependent test into a cascading failure.
+        let lock = LAYOUT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cache = TempDir::new().unwrap();
+        let snapshot = cache
+            .path()
+            .join(format!("models--{}", super::super::jobs::DEFAULT_MODEL_REPO.replace('/', "--")))
+            .join("snapshots/rev-fixture");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        crate::embed::tokenizer::testing::write_snapshot(&snapshot, limit).unwrap();
+        crate::embed::tokenizer::set_test_layout_cache(Some(cache.path().to_path_buf()));
+        FixtureLayout {
+            _lock: lock,
+            _cache: cache,
+        }
+    }
+
     /// The generation manifest a capture of this workspace would publish.
     ///
     /// This is the shape production capture continues from, so tests that
@@ -1442,7 +1840,7 @@ mod tests {
     /// holding a view would test the `PreviousObservation::Capture` arm and
     /// leave the arm every production call site uses unexercised.
     fn published(captured: &CapturedSourceView) -> GenerationManifest {
-        GenerationManifest::from_capture(captured, "gen-test", TableVersions::new(1, 1))
+        GenerationManifest::from_capture(captured, "gen-test", TableVersions::new(1, 1, 1))
     }
 
     #[tokio::test]
@@ -1797,6 +2195,10 @@ mod tests {
 
     #[tokio::test]
     async fn config_digest_changes_when_config_changes() {
+        // Pinned because `config_digest` now folds in the layout fingerprint:
+        // with an ambient layout this comparison would depend on whether the
+        // machine's cache changed between the two captures.
+        let _layout = fixture_layout(crate::embed::tokenizer::MAX_TOKENS_CEILING);
         let tmp = workspace();
         write_artifact(tmp.path(), "prds", "PRD-001-auth.md", PRD);
         let before = capture(tmp.path()).await;
@@ -1813,6 +2215,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_body_without_headings_gets_exactly_one_whole_body_section() {
+        let _layout = fixture_layout(crate::embed::tokenizer::MAX_TOKENS_CEILING);
         let tmp = workspace();
         write_artifact(tmp.path(), "prds", "PRD-001-auth.md", PRD);
         let view = capture(tmp.path()).await;
@@ -1826,14 +2229,23 @@ mod tests {
         assert_eq!(section.heading, None);
         assert_eq!(section.level, None);
         assert_eq!(&*section.content, "Body A.\n");
-        // The digest covers exactly the string the tokenizer receives. For
-        // the fallback section that string is byte-identical to the
-        // artifact's own input — `title + body prefix` — so the digests
-        // legitimately agree; what keeps the rows distinct is the key
-        // (`PRD-001` vs `PRD-001#s0`), which the binding predicate carries.
+        // The digest covers exactly the string the tokenizer receives, measured
+        // under **this capture's own** layout. For the fallback section that
+        // string is byte-identical to the artifact's own input — `title + body
+        // prefix` — so the digests legitimately agree; what keeps the rows
+        // distinct is the key (`PRD-001` vs `PRD-001#s0`), which the binding
+        // predicate carries.
+        let (tokenizer, budgets) = view.section_layout().unwrap();
         assert_eq!(
             section.input_digest,
-            section_input_digest("Auth", None, &section.content, DEFAULT_BODY_PREFIX_CHARS)
+            section_input_digest(
+                tokenizer,
+                &budgets,
+                "Auth",
+                None,
+                &section.content,
+            )
+            .unwrap()
         );
         assert_eq!(
             section.input_digest, section.parent_input_digest,
@@ -1844,6 +2256,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_preamble_and_headings_map_to_positional_sections() {
+        let _layout = fixture_layout(crate::embed::tokenizer::MAX_TOKENS_CEILING);
         let tmp = workspace();
         let content = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\n---\n\nIntro prose before any heading.\n\n## Problem\nLogin is slow.\n\n### Detail\nSubheading content stays inside Problem.\n\n## Goals\nMake it fast.\n";
         write_artifact(tmp.path(), "prds", "PRD-001-auth.md", content);
@@ -1878,18 +2291,21 @@ mod tests {
         assert!(goals.content.contains("Make it fast."));
 
         // Every section hash covers its own distinct input — `title +
-        // heading + content` — and headed sections hash a string the
-        // artifact input never produced.
+        // heading + content` — measured under this capture's layout, and
+        // headed sections hash a string the artifact input never produced.
+        let (tokenizer, budgets) = view.section_layout().unwrap();
         let mut digests = std::collections::BTreeSet::new();
         for section in &sections {
             assert_eq!(
                 section.input_digest,
                 section_input_digest(
+                    tokenizer,
+                    &budgets,
                     "Auth",
                     section.heading.as_deref(),
                     &section.content,
-                    DEFAULT_BODY_PREFIX_CHARS
                 )
+                .unwrap()
             );
             assert!(
                 digests.insert(section.input_digest.clone()),
@@ -1907,6 +2323,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_heading_only_body_gets_no_preamble_row() {
+        let _layout = fixture_layout(crate::embed::tokenizer::MAX_TOKENS_CEILING);
         let tmp = workspace();
         let content = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\n---\n\n## Problem\nLogin is slow.\n";
         write_artifact(tmp.path(), "prds", "PRD-001-auth.md", content);
@@ -1924,12 +2341,19 @@ mod tests {
 
     #[tokio::test]
     async fn section_sets_are_identical_across_two_captures() {
+        let _layout = fixture_layout(crate::embed::tokenizer::MAX_TOKENS_CEILING);
         let tmp = workspace();
         let content = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\n---\n\nIntro.\n\n## Problem\nSlow.\n\n## Goals\nFast.\n";
         write_artifact(tmp.path(), "prds", "PRD-001-auth.md", content);
 
         let first = capture(tmp.path()).await;
         let second = capture(tmp.path()).await;
+        // Not vacuous: with no tokenizer both captures would produce empty
+        // sets and this would "pass" while proving nothing about derivation.
+        assert!(
+            !first.sections.is_empty(),
+            "the fixture must resolve a real layout, or this comparison is empty == empty"
+        );
         assert_eq!(
             first.sections, second.sections,
             "derivation is a pure function of the bytes"
@@ -1938,6 +2362,7 @@ mod tests {
 
     #[tokio::test]
     async fn content_past_the_body_prefix_is_reachable_through_a_section() {
+        let _layout = fixture_layout(crate::embed::tokenizer::MAX_TOKENS_CEILING);
         let tmp = workspace();
         // The tail marker sits past the artifact row's prefix: an artifact
         // vector alone could never match it. A section vector can, because
@@ -1975,14 +2400,14 @@ mod tests {
             "the long Overview section must span several rows"
         );
         assert!(
-            view.section_input(appendix, DEFAULT_BODY_PREFIX_CHARS)
-                .contains(tail),
+            view.section_input(appendix).unwrap().contains(tail),
             "the section input carries what the artifact input clipped"
         );
     }
 
     #[tokio::test]
     async fn an_invalid_artifact_contributes_no_section_rows() {
+        let _layout = fixture_layout(crate::embed::tokenizer::MAX_TOKENS_CEILING);
         let tmp = workspace();
         write_artifact(tmp.path(), "prds", "PRD-001-auth.md", PRD);
         write_artifact(
@@ -1995,13 +2420,22 @@ mod tests {
 
         assert!(!view.is_complete());
         assert!(
+            !view.sections.is_empty(),
+            "the valid artifact must still own rows, or `all` below is vacuously true"
+        );
+        assert!(
             view.sections.iter().all(|s| s.parent_key == "PRD-001"),
             "an artifact that was never parsed cannot mint section rows"
         );
     }
 
     #[tokio::test]
-    async fn a_section_longer_than_the_prefix_is_windowed_across_rows() {
+    async fn a_section_longer_than_one_token_window_is_windowed_across_rows() {
+        // A small declared limit, so the body budget is a few dozen tokens and
+        // a ~2500-character section is guaranteed to window into many rows
+        // rather than depending on where the 512-token default happens to
+        // divide it.
+        let _layout = fixture_layout(64);
         let tmp = workspace();
         let long = "x".repeat(DEFAULT_BODY_PREFIX_CHARS + 500);
         let content = format!(
@@ -2021,15 +2455,173 @@ mod tests {
             long,
             "the windows must cover every byte of the section exactly once"
         );
-        assert!(
-            rows.iter()
-                .all(|row| row.content.chars().count() <= DEFAULT_BODY_PREFIX_CHARS),
-            "no window may exceed the tokenizer prefix"
-        );
+        // The window budget is in **tokens**, and it is the same budget the
+        // encoder will apply. The old oracle here was
+        // `content.chars().count() <= DEFAULT_BODY_PREFIX_CHARS`, which was
+        // precisely the claim that no longer holds: `body_prefix_chars` is now
+        // an artifact-row-only budget, and a character count said nothing about
+        // what the tokenizer would see. Keeping it would have kept asserting a
+        // property this layout does not promise, while missing the one it does.
+        let (tokenizer, budgets) = view.section_layout().unwrap();
+        for row in &rows {
+            let input = view.section_input(row).unwrap();
+            let counted = tokenizer
+                .count_with_special_tokens(&input)
+                .expect("tokenizing a section input must not fail");
+            assert!(
+                counted <= budgets.max_tokens,
+                "section `{}` produced an input of {counted} tokens against the layout's actual \
+                 limit of {}",
+                row.canonical_key,
+                budgets.max_tokens
+            );
+        }
         assert!(
             rows.windows(2)
                 .all(|pair| pair[0].input_digest != pair[1].input_digest),
             "each window binds its own input"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The offset arithmetic.
+    //
+    // Section rows carry **body-absolute** byte ranges, and two helpers exist
+    // to turn a markdown sub-unit into one. Both are easy to get subtly wrong
+    // and expensive when they are: an offset that is relative to the wrong
+    // unit makes `body_is_fully_covered` reject a correct capture, or — worse
+    // — makes it accept one whose windows do not line up.
+    // -----------------------------------------------------------------------
+
+    /// The preamble is the run before the first heading, reported at the
+    /// offset of its first **real** byte.
+    ///
+    /// The trimming matters: a preamble row's recorded range has to name bytes
+    /// it actually covers, and a body that opens with blank lines would
+    /// otherwise claim a range that starts before its own text.
+    #[test]
+    fn a_preamble_is_reported_at_the_offset_of_its_first_real_byte() {
+        // Leading blank lines, then prose, then a heading.
+        let body = "\n\n  Intro prose before any heading.\n\n## Problem\nLogin is slow.\n";
+        let (offset, text) = preamble_span(body).expect("there is a preamble");
+
+        assert_eq!(text, "Intro prose before any heading.");
+        assert_eq!(
+            &body[offset..offset + text.len()],
+            text,
+            "the reported offset must index the bytes actually returned; a body that starts with \
+             blank lines is exactly where an untrimmed offset goes wrong"
+        );
+        assert!(
+            body[..offset].chars().all(char::is_whitespace),
+            "everything before the offset is whitespace by construction"
+        );
+    }
+
+    #[test]
+    fn a_blank_or_absent_preamble_is_none_rather_than_an_empty_row() {
+        // No heading at all: the whole-body fallback owns the body, so there is
+        // no preamble to mint.
+        assert_eq!(
+            preamble_span("Just prose, no heading anywhere.\n"),
+            None,
+            "without a heading there is no preamble; an empty row here would duplicate the \
+             whole-body fallback under a second key"
+        );
+        // A heading with nothing but whitespace before it.
+        assert_eq!(
+            preamble_span("\n\n   \n## Problem\nbody\n"),
+            None,
+            "a whitespace-only run is not prose and must not become a row"
+        );
+        assert_eq!(preamble_span(""), None);
+    }
+
+    /// A fenced code block is not a heading, so `#` inside it does not end the
+    /// preamble. Both helpers read the same event stream, so if they disagreed
+    /// the two would compute ranges from different parsings of one body.
+    #[test]
+    fn a_fenced_block_does_not_end_the_preamble() {
+        let body = "Intro.\n\n```\n# not a heading\n```\n\n## Real\nbody\n";
+        let (offset, text) = preamble_span(body).expect("the fenced block is prose");
+        assert_eq!(
+            text, "Intro.\n\n```\n# not a heading\n```",
+            "the preamble runs to the first real ATX heading, fence or not"
+        );
+        assert_eq!(&body[offset..offset + text.len()], text);
+    }
+
+    /// [`body_offset_of`] turns a pointer difference into a body-absolute
+    /// offset.
+    ///
+    /// It is pointer arithmetic over two slices of **one** allocation, and the
+    /// guard it carries — a `checked_sub` falling back to `0` — is the whole
+    /// safety story: `body_is_fully_covered` re-checks every range against the
+    /// body, so a wrong offset is caught, but only if the arithmetic is
+    /// exercised on real sub-slices rather than on hand-written numbers.
+    #[test]
+    fn a_sub_unit_resolves_to_its_body_absolute_offset() {
+        let body = "## Problem\n\nLogin is slow.\n\n## Goals\nMake it fast.\n";
+
+        // Take a real sub-slice, the way the parser hands one back.
+        let unit_start = body.find("Login is slow.").expect("the unit exists");
+        let unit_end = unit_start + "Login is slow.".len();
+        let unit = &body[unit_start..unit_end];
+
+        assert_eq!(body_offset_of(body, unit), unit_start);
+        assert!(
+            &body[body_offset_of(body, unit)..body_offset_of(body, unit) + unit.len()] == unit,
+            "slicing the body at the computed offset must give the unit back, byte for byte"
+        );
+
+        // A prefix unit, and a suffix that runs to the end.
+        assert_eq!(body_offset_of(body, &body[..3]), 0);
+        let tail_start = body.find("Make it fast.").expect("the tail exists");
+        let tail = &body[tail_start..];
+        assert_eq!(body_offset_of(body, tail), tail_start);
+        assert_eq!(
+            body_offset_of(body, tail) + tail.len(),
+            body.len(),
+            "the final unit must resolve such that its end is the body's end"
+        );
+    }
+
+    /// The subtraction must not wrap, whatever the allocator did.
+    ///
+    /// `body_offset_of` is pointer arithmetic over two slices that are supposed
+    /// to share one allocation. When they do not, the answer is meaningless —
+    /// but it must be a *bounded* meaningless, never a wrapped `usize` of
+    /// roughly 2^64, which would turn a fixture mistake into an out-of-range
+    /// index far from the body.
+    ///
+    /// Which value comes back genuinely depends on layout: a foreign string
+    /// allocated below `body` makes `checked_sub` fail and yields the `0`
+    /// fallback, while one allocated above it yields a small positive delta.
+    /// Neither is reproducible, so this asserts the invariant that holds for
+    /// both — the result is always inside the body — and then asserts the
+    /// property that makes a wrong answer harmless.
+    #[test]
+    fn a_unit_from_another_allocation_never_produces_a_wrapped_offset() {
+        let body = "## Problem\n\nLogin is slow.\n";
+        let unrelated = String::from("Login is slow.");
+
+        let offset = body_offset_of(body, &unrelated);
+        assert!(
+            offset <= body.len(),
+            "offset {offset} is outside a body of {} bytes; pointer subtraction wrapped instead \
+             of being guarded",
+            body.len()
+        );
+
+        // Bounded or not, the result cannot fabricate a match: the recorded
+        // range has to match the stored text, and `body_is_fully_covered`
+        // compares them. This is why a wrong offset is caught rather than
+        // accepted — the arithmetic is allowed to be wrong, the check is not.
+        let claimed = body.get(offset..offset + unrelated.len().min(body.len() - offset));
+        assert_ne!(
+            claimed,
+            Some(unrelated.as_str()),
+            "a foreign string must never be accepted as a slice of this body"
         );
     }
 }

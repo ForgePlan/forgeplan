@@ -120,8 +120,11 @@ pub(crate) enum DetectionPolicy {
 /// * [`Self::legacy_sink`] → the derived-index sink for a `MutationContext`,
 ///   or `None` on a migrated workspace, where the canonical Markdown write is
 ///   the whole mutation and the reconcile pass publishes the derived row.
-/// * [`Self::require_legacy_projection`] → an explicit refusal for the tools
-///   whose core contract still reads the retired projection.
+///
+/// A read handler does not consult this type at all: it resolves once through
+/// [`ForgeplanServer::resolve_read_source`], which decides the source BEFORE
+/// anything is opened and hands back either a fresh captured view or the legacy
+/// projection.
 pub(crate) struct ResolvedWorkspace {
     /// Path to the `.forgeplan/` directory inside the resolved workspace root.
     pub workspace_dir: PathBuf,
@@ -151,34 +154,6 @@ impl ResolvedWorkspace {
     /// NOT substitute a freshly opened store for `None`.
     pub(crate) fn legacy_sink(&self) -> Option<&LanceStore> {
         self.legacy_store.as_deref()
-    }
-
-    /// The legacy projection, for the tools whose core contract still reads it.
-    ///
-    /// Refusing here is deliberately loud and names the tool: the alternative
-    /// — quietly opening `artifacts.lance` on a migrated workspace — answers
-    /// the question from a retired dataset, or fails with a raw LanceDB
-    /// "table not found". Only callers that genuinely cannot be expressed
-    /// against the canonical source may use this; every canonical mutation
-    /// goes through [`Self::legacy_sink`] and answers `None` honestly.
-    pub(crate) fn require_legacy_projection(
-        &self,
-        tool: &str,
-    ) -> Result<&Arc<LanceStore>, McpError> {
-        self.legacy_store.as_ref().ok_or_else(|| {
-            safe_invalid_params(
-                format!(
-                    "`{tool}` reads the legacy LanceDB projection, which the constellation \
-                     protocol owns for this workspace (no retired `artifacts` table is opened \
-                     for it)."
-                ),
-                Some(serde_json::json!({
-                    "tool": tool,
-                    "workspace": self.workspace_dir.display().to_string(),
-                    "reason": "legacy_projection_retired",
-                })),
-            )
-        })
     }
 }
 
@@ -5488,17 +5463,17 @@ impl ForgeplanServer {
     )]
     async fn forgeplan_health(&self) -> Result<CallToolResult, McpError> {
         // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
-        // no lock). Paramless tool → `None`. Reuse the single resolved store.
-        let resolved = match self.resolve_workspace_read(None).await {
+        // no lock). Paramless tool → `None`.
+        //
+        // One source choice, made before anything is opened: a workspace the
+        // Constellation protocol owns is answered from one fresh captured view
+        // of the canonical Markdown (so an edit made by any writer since the
+        // last call is visible here), and only a workspace that still has no
+        // Constellation index opens the legacy projection.
+        let (ws, _via, read) = match self.resolve_read_source(None).await {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
-        // `health::health_report_with_phase` walks the legacy artifact table.
-        let store = match resolved.require_legacy_projection("forgeplan_health") {
-            Ok(store) => store.clone(),
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
-        let ws = resolved.workspace_dir;
 
         // PROB-051 L-H3 + P-H1 + P-H2 closure: route through
         // `health_report_with_phase` so (a) `list_records` runs once
@@ -5506,10 +5481,22 @@ impl ForgeplanServer {
         // `buffer_unordered(16)` (was sequential per-artifact), и
         // (c) the returned verdict folds phase mismatches the same way
         // the CLI does — eliminating the cross-surface verdict drift.
-        let (report, phase_mismatch_records) =
-            forgeplan_core::health::health_report_with_phase(&store, &ws)
-                .await
-                .map_err(|e| safe_mcp_error_anyhow(&e))?;
+        //
+        // Both branches run the SAME folding; only the record source differs.
+        // A capture that could not be built or is incomplete is an error, never
+        // an empty report that would read as "this workspace is healthy".
+        let (report, phase_mismatch_records) = match &read {
+            ReadSource::Workspace(view) => {
+                forgeplan_core::health::health_report_with_phase_captured(view, &ws)
+                    .await
+                    .map_err(|e| safe_mcp_error_anyhow(&e))?
+            }
+            ReadSource::Legacy(store) => {
+                forgeplan_core::health::health_report_with_phase(store, &ws)
+                    .await
+                    .map_err(|e| safe_mcp_error_anyhow(&e))?
+            }
+        };
 
         // Render as JSON-friendly payload (sanitize titles for hint output).
         let phase_mismatches: Vec<serde_json::Value> = phase_mismatch_records
@@ -5666,26 +5653,23 @@ impl ForgeplanServer {
     ) -> Result<CallToolResult, McpError> {
         // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no
         // `-32602` gate). The journal-write lock below keys on the resolved
-        // `ws`, so per-workspace isolation is preserved. Reuse the single store.
-        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+        // `ws`, so per-workspace isolation is preserved.
+        //
+        // One source choice, before anything is opened: a Constellation-owned
+        // workspace is read from a fresh capture of the canonical Markdown, so
+        // an artifact written since the previous call is visible here.
+        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
-        // `anomalies::detect_anomalies` reads the legacy artifact table.
-        let store = match resolved.require_legacy_projection("forgeplan_anomalies") {
-            Ok(store) => store.clone(),
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
-        let ws = resolved.workspace_dir;
 
-        // Audit-r3 M3 closure: the tool is read-only for the artifact
-        // store but READS+WRITES the anomalies journal at
-        // `.forgeplan/anomalies-journal.jsonl`. Two concurrent MCP
-        // calls would both load the same prior journal, detect
-        // anomalies, and last-writer-wins the save — losing journal
-        // memory for anomalies first observed by the losing writer.
-        // Acquire the workspace lock to serialise journal access with
-        // the same discipline as the write-side tools.
+        // Audit-r3 M3 note, updated: the anomalies scan is now a PURE read.
+        // It loads `.forgeplan/anomalies-journal.jsonl` for observed_at
+        // continuity and writes nothing back — persistence belongs to the
+        // writer (`persist_anomaly_journal`), which MCP deliberately does not
+        // call. So the workspace lock below no longer guards a last-writer-wins
+        // save; it keeps this read from interleaving with a concurrent writer
+        // on the same journal file, and it is the only lock this handler takes.
         let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
             Ok(g) => g,
             Err(e) => return Ok(safe_err_result("workspace lock", e)),
@@ -5746,9 +5730,20 @@ impl ForgeplanServer {
             since: since_filter,
             kind: kind_filter,
         };
-        let report = match forgeplan_core::anomalies::detect_anomalies(&store, &ws, &filter).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("detect_anomalies", e)),
+        let report = match &read {
+            ReadSource::Workspace(view) => {
+                match forgeplan_core::anomalies::detect_anomalies_captured(view, &ws, &filter).await
+                {
+                    Ok(r) => r,
+                    Err(e) => return Ok(safe_err_result("detect_anomalies", e)),
+                }
+            }
+            ReadSource::Legacy(store) => {
+                match forgeplan_core::anomalies::detect_anomalies(store, &ws, &filter).await {
+                    Ok(r) => r,
+                    Err(e) => return Ok(safe_err_result("detect_anomalies", e)),
+                }
+            }
         };
 
         // Audit-r3 HIGH-1 / F3: shared next-action helper so MCP and CLI
@@ -5977,23 +5972,41 @@ impl ForgeplanServer {
     ) -> Result<CallToolResult, McpError> {
         // ADR-016 Phase 3c: read tools resolve via SoftFallback (worktree-aware,
         // no `-32602` gate, no lock). Honours the `workspace` param.
-        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+        //
+        // One source choice, before anything is opened: a Constellation-owned
+        // workspace is read from a fresh capture of the canonical Markdown, so a
+        // decision written since the previous call appears here.
+        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
-        // `journal::build_journal` reads the legacy projection's decision rows.
-        let store = match resolved.require_legacy_projection("forgeplan_journal") {
-            Ok(store) => store.clone(),
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
 
-        let entries = forgeplan_core::journal::build_journal(
-            &store,
-            p.kind.as_ref().map(|k| k.as_str()),
-            p.risk.unwrap_or(false),
-        )
-        .await
-        .map_err(|e| safe_mcp_error_anyhow(&e))?;
+        let entries = match &read {
+            ReadSource::Workspace(view) => {
+                match forgeplan_core::journal::build_journal_captured(
+                    view,
+                    p.kind.as_ref().map(|k| k.as_str()),
+                    p.risk.unwrap_or(false),
+                )
+                .await
+                {
+                    Ok(entries) => entries,
+                    Err(e) => return Ok(safe_err_result("", e)),
+                }
+            }
+            ReadSource::Legacy(store) => {
+                match forgeplan_core::journal::build_journal(
+                    store,
+                    p.kind.as_ref().map(|k| k.as_str()),
+                    p.risk.unwrap_or(false),
+                )
+                .await
+                {
+                    Ok(entries) => entries,
+                    Err(e) => return Ok(safe_err_result("", e)),
+                }
+            }
+        };
 
         let at_risk_count = entries
             .iter()
@@ -6054,18 +6067,24 @@ impl ForgeplanServer {
         )
     )]
     async fn forgeplan_blindspots(&self) -> Result<CallToolResult, McpError> {
-        let resolved = match self.resolve_workspace_read(None).await {
-            Ok(resolved) => resolved,
-            Err(error) => return Ok(safe_err_result("", error)),
-        };
-        let store = match resolved.require_legacy_projection("forgeplan_blindspots") {
-            Ok(store) => Arc::clone(store),
+        // One source choice, before anything is opened: a Constellation-owned
+        // workspace is read from a fresh capture of the canonical Markdown, so a
+        // decision or evidence pack written since the previous call is visible.
+        let (_ws, _via, read) = match self.resolve_read_source(None).await {
+            Ok(r) => r,
             Err(error) => return Ok(safe_err_result("", error)),
         };
 
-        let report = forgeplan_core::health::health_report(&store)
-            .await
-            .map_err(|e| safe_mcp_error_anyhow(&e))?;
+        let report = match &read {
+            ReadSource::Workspace(view) => {
+                forgeplan_core::health::health_report_captured(view)
+                    .await
+                    .map_err(|e| safe_mcp_error_anyhow(&e))?
+            }
+            ReadSource::Legacy(store) => forgeplan_core::health::health_report(store)
+                .await
+                .map_err(|e| safe_mcp_error_anyhow(&e))?,
+        };
 
         let blind_count = report.blind_spots.len();
         let orphan_count = report.orphans.len();
@@ -6968,18 +6987,24 @@ impl ForgeplanServer {
         )
     )]
     async fn forgeplan_decay(&self) -> Result<CallToolResult, McpError> {
-        let resolved = match self.resolve_workspace_read(None).await {
-            Ok(resolved) => resolved,
-            Err(error) => return Ok(safe_err_result("", error)),
-        };
-        let store = match resolved.require_legacy_projection("forgeplan_decay") {
-            Ok(store) => Arc::clone(store),
+        // One source choice, before anything is opened: a Constellation-owned
+        // workspace is read from a fresh capture of the canonical Markdown, so
+        // evidence that expired or landed since the previous call is counted.
+        let (_ws, _via, read) = match self.resolve_read_source(None).await {
+            Ok(r) => r,
             Err(error) => return Ok(safe_err_result("", error)),
         };
 
-        let entries = forgeplan_core::scoring::decay::decay_report(&store)
-            .await
-            .map_err(|e| safe_mcp_error_anyhow(&e))?;
+        let entries = match &read {
+            ReadSource::Workspace(view) => {
+                forgeplan_core::scoring::decay::decay_report_captured(view)
+                    .await
+                    .map_err(|e| safe_mcp_error_anyhow(&e))?
+            }
+            ReadSource::Legacy(store) => forgeplan_core::scoring::decay::decay_report(store)
+                .await
+                .map_err(|e| safe_mcp_error_anyhow(&e))?,
+        };
 
         let total = entries.len();
         let dtos: Vec<DecayEntryDto> = entries
@@ -7752,16 +7777,32 @@ impl ForgeplanServer {
 
         // ADR-016 Phase 3c: read tools resolve via SoftFallback (worktree-aware,
         // no `-32602` gate, no lock). Honours the newly-added `workspace` param.
-        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+        //
+        // The knowledge base is resolved WITHOUT the store step: `resolve_workspace_dir`
+        // is the chain minus the `LanceStore::open`, and opening a store runs schema
+        // migrations — a write-shaped side effect a read of an auxiliary table never
+        // asked for, and one that would recreate retired tables beside a migrated
+        // index.
+        let (ws, _via) = match self
+            .resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::SoftFallback)
+            .await
+        {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match resolved.require_legacy_projection("forgeplan_fpf_rules") {
-            Ok(store) => store.clone(),
-            Err(e) => return Ok(safe_err_result("", e)),
+
+        // The FPF knowledge base is an auxiliary table, not an artifact
+        // projection: it is owned by `fpf ingest` and read by every tool that
+        // needs FPF content, on either index layout. `open_existing` is the read
+        // contract — a workspace that never ingested has no `fpf_spec` table and
+        // must be told so, not have one quietly created by looking. (The previous
+        // refusal string also named `forgeplan_fpf_rules`, the wrong tool.)
+        let fpf = match forgeplan_core::db::auxiliary::AuxiliaryStore::open_existing(&ws).await {
+            Ok(fpf) => fpf,
+            Err(e) => return Ok(safe_err_result("FPF knowledge base", e)),
         };
 
-        if !store.has_fpf() {
+        if !fpf.has_fpf() {
             return Ok(err_result(
                 "FPF knowledge base not loaded. Run `forgeplan fpf ingest` first.",
             ));
@@ -7782,14 +7823,24 @@ impl ForgeplanServer {
                     // never fetch gigabytes. Absence degrades to keyword below,
                     // with the reason reported.
                     Ok(mut model) => match model.embedder.embed(&p.query) {
-                        Ok(qvec) => match store.search_fpf_by_vector(&qvec, limit).await {
+                        Ok(qvec) => match fpf.search_fpf_by_vector(&qvec, limit).await {
                             Ok(r) => r,
                             Err(e) => {
                                 tracing::warn!("FPF vector search failed: {e}");
                                 warning = Some(format!(
                                     "vector search failed ({e}); fell back to keyword search"
                                 ));
-                                store.search_fpf(&p.query, limit).await.unwrap_or_default()
+                                match fpf.search_fpf(&p.query, limit).await {
+                                    Ok(r) => r,
+                                    Err(ke) => {
+                                        // The keyword fallback failed too. An
+                                        // empty hit list here would read as
+                                        // "the knowledge base has nothing on
+                                        // this topic" — a different, false
+                                        // answer.
+                                        return Ok(safe_err_result("FPF search", ke));
+                                    }
+                                }
                             }
                         },
                         Err(e) => {
@@ -7797,7 +7848,10 @@ impl ForgeplanServer {
                             warning = Some(format!(
                                 "failed to encode query ({e}); fell back to keyword search"
                             ));
-                            store.search_fpf(&p.query, limit).await.unwrap_or_default()
+                            match fpf.search_fpf(&p.query, limit).await {
+                                Ok(r) => r,
+                                Err(ke) => return Ok(safe_err_result("FPF search", ke)),
+                            }
                         }
                     },
                     Err(e) => {
@@ -7806,7 +7860,10 @@ impl ForgeplanServer {
                             "no usable cached embedding model ({e}); fell back to keyword \
                              search. Obtain weights explicitly with `forgeplan setup --warm-model`."
                         ));
-                        store.search_fpf(&p.query, limit).await.unwrap_or_default()
+                        match fpf.search_fpf(&p.query, limit).await {
+                            Ok(r) => r,
+                            Err(ke) => return Ok(safe_err_result("FPF search", ke)),
+                        }
                     }
                 }
             }
@@ -7816,16 +7873,18 @@ impl ForgeplanServer {
                     "semantic-search feature not compiled in; falling back to keyword search"
                         .to_string(),
                 );
-                store.search_fpf(&p.query, limit).await.unwrap_or_else(|e| {
-                    tracing::warn!("FPF search failed: {e}");
-                    Vec::new()
-                })
+                match fpf.search_fpf(&p.query, limit).await {
+                    Ok(r) => r,
+                    Err(e) => return Ok(safe_err_result("FPF search", e)),
+                }
             }
         } else {
-            store.search_fpf(&p.query, limit).await.unwrap_or_else(|e| {
-                tracing::warn!("FPF search failed: {e}");
-                Vec::new()
-            })
+            // A keyword search that failed must say so. `unwrap_or_default`
+            // here answered "no matches" for "the query could not be run".
+            match fpf.search_fpf(&p.query, limit).await {
+                Ok(r) => r,
+                Err(e) => return Ok(safe_err_result("FPF search", e)),
+            }
         };
 
         let hits: Vec<FpfSearchHit> = results
@@ -7889,16 +7948,26 @@ impl ForgeplanServer {
     ) -> Result<CallToolResult, McpError> {
         // ADR-016 Phase 3c: read tools resolve via SoftFallback (worktree-aware,
         // no `-32602` gate, no lock). Honours the newly-added `workspace` param.
-        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+        // The chain minus the store open: reading an auxiliary table must not
+        // run schema migrations (see `forgeplan_fpf_search`).
+        let (ws, _via) = match self
+            .resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::SoftFallback)
+            .await
+        {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match resolved.require_legacy_projection("forgeplan_fpf_section") {
-            Ok(store) => store.clone(),
-            Err(e) => return Ok(safe_err_result("", e)),
+
+        // Auxiliary-only read: the FPF knowledge base is not an artifact
+        // projection, so it is opened without creating anything. A workspace
+        // that never ingested reports an explainable state instead of silently
+        // allocating a table by looking for one.
+        let fpf = match forgeplan_core::db::auxiliary::AuxiliaryStore::open_existing(&ws).await {
+            Ok(fpf) => fpf,
+            Err(e) => return Ok(safe_err_result("FPF knowledge base", e)),
         };
 
-        match store.get_fpf_section(&p.id).await {
+        match fpf.get_fpf_section(&p.id).await {
             Ok(Some(chunk)) => {
                 let safe_sid = sanitize_for_hint(&chunk.section_id);
                 let next_action = format!(
@@ -7944,19 +8013,36 @@ impl ForgeplanServer {
         )
     )]
     async fn forgeplan_fpf_list(&self) -> Result<CallToolResult, McpError> {
-        let resolved = match self.resolve_workspace_read(None).await {
-            Ok(resolved) => resolved,
-            Err(error) => return Ok(safe_err_result("", error)),
-        };
-        let store = match resolved.require_legacy_projection("forgeplan_fpf_list") {
-            Ok(store) => Arc::clone(store),
+        // The chain minus the store open: reading an auxiliary table must not
+        // run schema migrations (see `forgeplan_fpf_search`).
+        let (ws, _via) = match self
+            .resolve_workspace_dir(None, DetectionPolicy::SoftFallback)
+            .await
+        {
+            Ok(r) => r,
             Err(error) => return Ok(safe_err_result("", error)),
         };
 
-        let sections = store.list_fpf_sections().await.unwrap_or_else(|e| {
-            tracing::warn!("FPF list failed: {e}");
+        // Auxiliary-only read — the knowledge base is not an artifact
+        // projection, and looking for it must never create it.
+        let fpf = match forgeplan_core::db::auxiliary::AuxiliaryStore::open_existing(&ws).await {
+            Ok(fpf) => fpf,
+            Err(e) => return Ok(safe_err_result("FPF knowledge base", e)),
+        };
+
+        // A workspace that never ingested has no `fpf_spec` table at all: that
+        // is an empty catalog, not a read failure, and the response says so.
+        let sections = if fpf.has_fpf() {
+            match fpf.list_fpf_sections().await {
+                Ok(sections) => sections,
+                Err(e) => {
+                    tracing::warn!("FPF list failed: {e}");
+                    return Ok(safe_err_result("FPF knowledge base", e));
+                }
+            }
+        } else {
             Vec::new()
-        });
+        };
 
         let total = sections.len();
         // PRD-071: single primary action with a real section id when any
@@ -8133,14 +8219,13 @@ impl ForgeplanServer {
 
         // ADR-016 Phase 3c: read tools resolve via SoftFallback (worktree-aware,
         // no `-32602` gate, no lock). Honours the `workspace` param.
-        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+        //
+        // One source choice, before anything is opened: the artifact under check
+        // comes from a fresh capture of the canonical Markdown on a
+        // Constellation-owned workspace, so a decision written since the
+        // previous call is checked as it is NOW.
+        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
             Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
-        let ws = resolved.workspace_dir.clone();
-        // `fpf::check_artifact_against_rules` reads the legacy projection.
-        let store = match resolved.require_legacy_projection("forgeplan_fpf_check") {
-            Ok(store) => store.clone(),
             Err(e) => return Ok(safe_err_result("", e)),
         };
 
@@ -8154,16 +8239,37 @@ impl ForgeplanServer {
         let ws_config = workspace::load_config(&ws).ok();
         let fpf_cfg = ws_config.as_ref().and_then(|c| c.fpf.as_ref());
 
-        let result = match fpf::check_artifact_against_rules(&store, &p.id, fpf_cfg).await {
-            Ok(Some(r)) => r,
-            Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(_) => {
-                let safe = sanitize_for_hint(&p.id);
-                return Ok(err_hinted(
-                    &format!("Failed to check artifact '{safe}' against FPF rules."),
-                    "Verify the artifact exists (`forgeplan_get <id>`). If it does, the FPF \
-                     store may need re-ingest: run `forgeplan fpf ingest` from CLI.",
-                ));
+        // One enrichment engine over the same rules; only the record source
+        // differs. A capture that cannot be read is an error, not a "no rules
+        // match" verdict.
+        let result = match &read {
+            ReadSource::Workspace(view) => {
+                match fpf::check_artifact_against_rules_captured(view, &p.id, fpf_cfg).await {
+                    Ok(Some(r)) => r,
+                    Ok(None) => return Ok(artifact_not_found(&p.id)),
+                    Err(_) => {
+                        let safe = sanitize_for_hint(&p.id);
+                        return Ok(err_hinted(
+                            &format!("Failed to check artifact '{safe}' against FPF rules."),
+                            "Verify the artifact exists (`forgeplan_get <id>`). If it does, the \
+                             FPF store may need re-ingest: run `forgeplan fpf ingest` from CLI.",
+                        ));
+                    }
+                }
+            }
+            ReadSource::Legacy(store) => {
+                match fpf::check_artifact_against_rules(store, &p.id, fpf_cfg).await {
+                    Ok(Some(r)) => r,
+                    Ok(None) => return Ok(artifact_not_found(&p.id)),
+                    Err(_) => {
+                        let safe = sanitize_for_hint(&p.id);
+                        return Ok(err_hinted(
+                            &format!("Failed to check artifact '{safe}' against FPF rules."),
+                            "Verify the artifact exists (`forgeplan_get <id>`). If it does, the \
+                             FPF store may need re-ingest: run `forgeplan fpf ingest` from CLI.",
+                        ));
+                    }
+                }
             }
         };
 
@@ -8240,21 +8346,33 @@ impl ForgeplanServer {
     )]
     async fn forgeplan_drift(&self) -> Result<CallToolResult, McpError> {
         // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
-        // no lock). Paramless tool → `None`. One resolve yields both store and ws.
-        let resolved = match self.resolve_workspace_read(None).await {
+        // no lock). Paramless tool → `None`.
+        //
+        // One source choice, before anything is opened: a Constellation-owned
+        // workspace is read from a fresh capture of the canonical Markdown, so
+        // `affected_files` added since the previous call are checked here.
+        let (ws, _via, read) = match self.resolve_read_source(None).await {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match resolved.require_legacy_projection("forgeplan_drift") {
-            Ok(store) => store.clone(),
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
-        let ws = resolved.workspace_dir;
         let workspace_root = ws.parent().unwrap_or(&ws).to_path_buf();
 
-        let reports = forgeplan_core::drift::check_drift(&store, &workspace_root)
-            .await
-            .unwrap_or_default();
+        // The same git comparison over the same record source. A capture that
+        // cannot be read is an error, never "nothing drifted".
+        let reports = match &read {
+            ReadSource::Workspace(view) => {
+                match forgeplan_core::drift::check_drift_captured(view, &workspace_root).await {
+                    Ok(reports) => reports,
+                    Err(e) => return Ok(safe_err_result("check_drift", e)),
+                }
+            }
+            ReadSource::Legacy(store) => {
+                match forgeplan_core::drift::check_drift(store, &workspace_root).await {
+                    Ok(reports) => reports,
+                    Err(e) => return Ok(safe_err_result("check_drift", e)),
+                }
+            }
+        };
 
         let total = reports.len();
         let stale_count = reports.iter().filter(|r| r.is_stale).count();
@@ -8300,30 +8418,36 @@ impl ForgeplanServer {
     )]
     async fn forgeplan_coverage(&self) -> Result<CallToolResult, McpError> {
         // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
-        // no lock). Paramless tool → `None`. One resolve yields both store and ws.
-        let resolved = match self.resolve_workspace_read(None).await {
+        // no lock). Paramless tool → `None`.
+        //
+        // One source choice, before anything is opened: a Constellation-owned
+        // workspace contributes its decisions from a fresh capture of the
+        // canonical Markdown, so a decision that names a module since the
+        // previous call is counted here.
+        let (ws, _via, read) = match self.resolve_read_source(None).await {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
-        let store = match resolved.require_legacy_projection("forgeplan_coverage") {
-            Ok(store) => store.clone(),
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
-        let ws = resolved.workspace_dir;
         let project_root = ws.parent().unwrap_or(&ws).to_path_buf();
 
-        let mut modules = forgeplan_core::coverage::scan_modules(&project_root)
-            .await
-            .unwrap_or_default();
-        let report = forgeplan_core::coverage::build_coverage(&mut modules, &store)
-            .await
-            .unwrap_or_else(|_| forgeplan_core::coverage::CoverageReport {
-                total_modules: 0,
-                covered_modules: 0,
-                uncovered_modules: 0,
-                coverage_percent: 0.0,
-                modules: vec![],
-            });
+        // A failed module scan is not an empty codebase. Defaulting it produced
+        // a report claiming "no code modules detected" for a directory the scan
+        // could not read — a confident answer to a question nobody answered.
+        let mut modules = match forgeplan_core::coverage::scan_modules(&project_root).await {
+            Ok(modules) => modules,
+            Err(e) => return Ok(safe_err_result("coverage: module scan", e)),
+        };
+        // ONE coverage engine over ONE record set. A source that cannot be read
+        // is an error: an all-zero coverage report would read as "this codebase
+        // has no architectural decisions at all", which is a different fact.
+        let records = match &read {
+            ReadSource::Workspace(view) => view.list_records(None),
+            ReadSource::Legacy(store) => match store.list_records(None).await {
+                Ok(records) => records,
+                Err(e) => return Ok(safe_err_result("coverage", e)),
+            },
+        };
+        let report = forgeplan_core::coverage::build_coverage_from_records(&mut modules, &records);
 
         // PRD-071: single primary action.
         let next_action = if report.total_modules == 0 {
@@ -9469,18 +9593,15 @@ impl ForgeplanServer {
         Parameters(p): Parameters<ReleaseNotesParams>,
     ) -> Result<CallToolResult, McpError> {
         // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
-        // no lock). One resolve yields both store and ws.
-        let resolved = match self.resolve_workspace_read(p.workspace.as_deref()).await {
+        // no lock).
+        //
+        // One source choice, before anything is opened: the artifacts a git
+        // range touched are looked up in a fresh capture of the canonical
+        // Markdown on a Constellation-owned workspace.
+        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
-        // `release_notes::generate` walks the legacy artifact table for the
-        // artifacts a git range touched.
-        let store = match resolved.require_legacy_projection("forgeplan_release_notes") {
-            Ok(store) => store.clone(),
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
-        let ws = resolved.workspace_dir;
 
         // The resolved `ws` is the `.forgeplan/` dir; git operations
         // need the repository root (its parent).
@@ -9488,17 +9609,36 @@ impl ForgeplanServer {
             Some(p) => p.to_path_buf(),
             None => return Ok(err_result("workspace has no parent (bad .forgeplan/ path)")),
         };
-        let notes = match forgeplan_core::release_notes::generate(
-            &store,
-            &repo_root,
-            p.since.as_deref(),
-            p.until.as_deref(),
-            p.draft,
-        )
-        .await
-        {
-            Ok(n) => n,
-            Err(e) => return Ok(safe_err_result("release-notes failed", e)),
+        // Same git range, same classification; only the record source differs.
+        let notes = match &read {
+            ReadSource::Workspace(view) => {
+                match forgeplan_core::release_notes::generate_captured(
+                    view,
+                    &repo_root,
+                    p.since.as_deref(),
+                    p.until.as_deref(),
+                    p.draft,
+                )
+                .await
+                {
+                    Ok(n) => n,
+                    Err(e) => return Ok(safe_err_result("release-notes failed", e)),
+                }
+            }
+            ReadSource::Legacy(store) => {
+                match forgeplan_core::release_notes::generate(
+                    store,
+                    &repo_root,
+                    p.since.as_deref(),
+                    p.until.as_deref(),
+                    p.draft,
+                )
+                .await
+                {
+                    Ok(n) => n,
+                    Err(e) => return Ok(safe_err_result("release-notes failed", e)),
+                }
+            }
         };
 
         let value = forgeplan_core::release_notes::format_json(&notes);
@@ -11422,6 +11562,15 @@ impl ForgeplanServer {
             .await
             {
                 Ok(o) => {
+                    // `pinned_sections_version` is always a number: the pinned
+                    // generation always names the sections version it read.
+                    // A generation with no semantic sections pins the version
+                    // its empty commit produced, so this key is no longer a
+                    // "did this generation predate sections table" probe —
+                    // `semantic_scope` is what says whether section rows were
+                    // in the candidate set, and it is decided by the
+                    // generation's recorded section membership rather than by
+                    // whether a sections table happened to be open.
                     return hinted_result(
                         &serde_json::json!({
                             "mode": "semantic",
@@ -15984,51 +16133,6 @@ mod resolve_workspace_tests {
         );
     }
 
-    /// The refusal seam names the tool and carries a machine-readable reason,
-    /// rather than silently opening the retired projection or failing with a
-    /// raw LanceDB error.
-    #[tokio::test]
-    #[serial(env_forgeplan_workspace)]
-    async fn the_legacy_projection_seam_names_the_tool_and_the_reason() {
-        let ws = mk_fake_workspace();
-        let capability =
-            forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
-                ws.path().canonicalize().unwrap(),
-            );
-        forgeplan_core::constellation::facade::maintain_index(
-            &capability,
-            forgeplan_core::constellation::capture::CaptureLimits::default(),
-            std::time::Instant::now() + std::time::Duration::from_secs(120),
-        )
-        .await
-        .expect("publish the workspace");
-
-        let server = make_server(ws.path()).await;
-        // SAFETY: serialised with `#[serial(env_forgeplan_workspace)]`.
-        unsafe { std::env::remove_var("FORGEPLAN_WORKSPACE") };
-
-        let resolved = server
-            .resolve_workspace(Some(ws.path().to_str().unwrap()))
-            .await
-            .expect("resolves");
-
-        // Match rather than `expect_err`: a `Debug` bound on `Arc<LanceStore>`
-        // would exist only to satisfy this assertion.
-        let Err(err) = resolved.require_legacy_projection("forgeplan_health") else {
-            panic!("a migrated workspace must refuse the legacy-projection seam");
-        };
-        assert!(
-            err.message.contains("forgeplan_health"),
-            "the refusal must name the tool that asked, got: {}",
-            err.message
-        );
-        assert!(
-            err.message.contains("constellation"),
-            "the refusal must say which protocol owns the index, got: {}",
-            err.message
-        );
-    }
-
     /// An unindexed workspace keeps the legacy store, so nothing regresses for
     /// every workspace that has not been migrated.
     ///
@@ -16061,12 +16165,6 @@ mod resolve_workspace_tests {
         assert!(
             resolved.legacy_sink().is_some(),
             "a legacy workspace must still hand its mutation a derived sink"
-        );
-        assert!(
-            resolved
-                .require_legacy_projection("forgeplan_health")
-                .is_ok(),
-            "a legacy workspace must not be refused by the seam"
         );
     }
 

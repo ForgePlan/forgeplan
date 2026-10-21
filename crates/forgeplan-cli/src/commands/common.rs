@@ -245,6 +245,75 @@ pub async fn workspace_read(
     .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// The read source one report command answers from, chosen ONCE from the
+/// filesystem before any index is opened.
+///
+/// Two variants, no third:
+/// - [`ReadSource::Legacy`] — the workspace still has a legacy `artifacts.lance`
+///   that owns `.forgeplan/lance/`. The report is computed from it exactly as
+///   before the cutover.
+/// - [`ReadSource::Captured`] — the Constellation protocol owns the index, so
+///   one fresh [`WorkspaceRead`] capture answers the question. No `LanceStore`
+///   is opened, no retired table is recreated, no schema migration runs.
+///
+/// The decision is deliberately NOT `try open, then fall back`: `LanceStore::open`
+/// runs migrations against a live connection, so asking the question by opening
+/// is what recreates the tables a migrated workspace must never grow again.
+pub enum ReadSource {
+    Legacy(LanceStore),
+    Captured(forgeplan_core::constellation::workspace_read::WorkspaceRead),
+}
+
+/// Open the read source for a reporting command: legacy store or one fresh
+/// capture, decided from the index owner before anything is opened.
+///
+/// Read-only — no `WorkspaceLock`, no index write, no reconcile. Callers that
+/// mutate use [`open_store_locked_tolerating_constellation`] instead.
+pub async fn open_read_source() -> anyhow::Result<(PathBuf, ReadSource)> {
+    let cwd = std::env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    // Same validation every other open performs — a broken IntegrityConfig must
+    // still fail here rather than surfacing later as a partial report.
+    let _config = workspace::load_config(&ws)?;
+    // `source` is bound BEFORE the tuple, because moving `ws` into the tuple
+    // and then borrowing it for the capture in the same expression would be a
+    // use-after-move.
+    let source = if index_migrated(&ws) {
+        ReadSource::Captured(workspace_read(&ws).await?)
+    } else {
+        ReadSource::Legacy(LanceStore::open(&ws).await?)
+    };
+    Ok((ws, source))
+}
+
+/// The `.forgeplan/` directory for commands that only need workspace state
+/// (session files, config, locks) and must NOT open an artifact index at all.
+///
+/// Used by the discovery/session surfaces: their entire state lives in
+/// `.forgeplan/discover/*.json`, so opening the index would be a second writer
+/// on the read path for nothing.
+pub fn find_workspace_path() -> anyhow::Result<PathBuf> {
+    let cwd = std::env::current_dir()?;
+    workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))
+}
+
+/// Workspace path + the exclusive workspace lock, WITHOUT opening an artifact
+/// index.
+///
+/// Same lock discipline as [`open_store_locked`] (lock acquired before anything
+/// else could be opened) for commands that write workspace-owned files —
+/// session state — where there is no store to guard at all. Opens no
+/// `LanceStore`, so it is the correct path on a constellation-managed
+/// workspace instead of a refusal.
+pub async fn open_workspace_locked() -> anyhow::Result<(PathBuf, WorkspaceLock)> {
+    let ws = find_workspace_path()?;
+    let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws).await?;
+    let _config = workspace::load_config(&ws)?;
+    Ok((ws, lock))
+}
+
 /// Run one constellation `maintain_index` pass after a file-first mutation
 /// so the change lands in the `constellation_*_v1` tables immediately — the
 /// same generation pipeline a `forgeplan watch` file edit triggers.

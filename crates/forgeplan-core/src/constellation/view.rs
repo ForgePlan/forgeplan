@@ -77,13 +77,10 @@ pub enum ReadView {
         manifest: Arc<GenerationManifest>,
         /// The `CURRENT.json` descriptor this generation was selected by.
         ///
-        /// Kept because it, and not the manifest, is what records the
-        /// **embedding heads**: `embedding_artifacts_head` and
-        /// `embedding_sections_head` are written by a drain that republishes
-        /// the descriptor without rewriting the immutable manifest. A reader
-        /// that only carried the manifest would answer every semantic question
-        /// against the generation's pre-drain heads, which is exactly the
-        /// generation's first embedding batch.
+        /// Kept for the checksum binding and the claimed embedding space. It
+        /// carries **no table versions**: those live only in the manifest, and
+        /// a descriptor that could name a head the manifest never pinned is
+        /// how a reader ended up serving a row set `CURRENT` never claimed.
         descriptor: CurrentDescriptor,
         /// The shared lock on that generation's manifest file, held for as
         /// long as this view lives.
@@ -258,21 +255,25 @@ impl ReadView {
         }
     }
 
-    /// The embedding heads this view serves.
+    /// The exact triple this view serves: `(artifacts, relations, sections)`.
     ///
-    /// Taken from the **descriptor**, not from the manifest: a drain that
-    /// completes embeddings republishes `CURRENT` with the new heads and
-    /// leaves the immutable manifest alone, so the manifest's own table
-    /// versions are the generation's pre-drain values. Reading them from there
-    /// is how a reader serves `pending` rows as though nothing had completed.
+    /// Read from the **manifest**, which is the only place table versions live
+    /// now. An embedding drain that used to move the heads republished `CURRENT`
+    /// and left the immutable manifest alone, so a reader taking them from the
+    /// manifest served `pending` rows as though nothing had completed — and a
+    /// reader taking them from the descriptor served rows the manifest never
+    /// claimed. A drain now publishes a new generation, and there is one
+    /// answer.
     ///
-    /// `None` on an ephemeral view: there is no descriptor, and guessing one
-    /// would be inventing an index identity a capture never had.
-    pub fn embedding_heads(&self) -> Option<(Option<u64>, Option<u64>)> {
+    /// `None` on an ephemeral view: there is no published generation, and
+    /// inventing an index identity for a capture is exactly what the ephemeral
+    /// tag exists to prevent.
+    pub fn pinned_versions(&self) -> Option<(u64, u64, u64)> {
         match self {
-            Self::Persisted { descriptor, .. } => Some((
-                descriptor.embedding_artifacts_head,
-                descriptor.embedding_sections_head,
+            Self::Persisted { table_versions, .. } => Some((
+                table_versions.artifacts,
+                table_versions.relations,
+                table_versions.sections,
             )),
             Self::Ephemeral { .. } => None,
         }
@@ -425,13 +426,13 @@ impl<T> ReadResult<T> {
             evaluated_at: view.evaluated_at().to_string(),
             coverage,
             freshness: FreshnessReport { lexical, semantic },
-            // The scope marker names the widest honest claim: `prefix`
-            // alone when the view predates or lacks the sections table,
-            // `prefix+sections` once the generation pins a sections version.
+            // The scope marker names the widest honest claim, and it is
+            // decided by whether there are **section members** — not by whether
+            // a sections table exists. Every generation now pins that table, so
+            // "the table is open" would claim section coverage for a capture
+            // that published an empty set because its metadata was absent.
             semantic_scope: match view {
-                ReadView::Persisted { manifest, .. }
-                    if manifest.table_versions.sections.is_some() =>
-                {
+                ReadView::Persisted { manifest, .. } if !manifest.section_bindings.is_empty() => {
                     super::jobs::SEMANTIC_SCOPE_WITH_SECTIONS.to_string()
                 }
                 ReadView::Ephemeral { captured, .. } if !captured.sections.is_empty() => {
@@ -495,6 +496,14 @@ mod tests {
             evaluated_at: "2026-10-17T00:00:00.000Z".to_string(),
             source_set_digest: "srcset".to_string(),
             config_digest: "cfg".to_string(),
+            layout: crate::embed::tokenizer::SectionLayout::from_metadata(
+                "tok".to_string(),
+                "tokcfg".to_string(),
+                "cfgjson".to_string(),
+                Some(crate::embed::tokenizer::MAX_TOKENS_CEILING),
+                2,
+            ),
+            tokenizer: None,
             body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
             sections: Vec::new(),
@@ -553,34 +562,40 @@ mod tests {
              one cannot answer a semantic question about them"
         );
         assert!(view.pin().is_some());
-        assert_eq!(view.embedding_heads(), Some((None, None)));
+        assert_eq!(
+            view.pinned_versions(),
+            Some((4, 2, 6)),
+            "the triple is exactly what the manifest pins; the descriptor adds nothing to it"
+        );
     }
 
-    /// The embedding heads a persisted view serves come from `CURRENT`, not
-    /// from the manifest.
+    /// The versions a persisted view serves come from the manifest alone.
     ///
-    /// The manifest is immutable, so a completion drain cannot move its table
-    /// versions; it republishes the **descriptor** with the new heads instead.
-    /// A reader that took the heads from the manifest would answer `pending`
-    /// about rows a previous process already published — and every field it
-    /// reported would be internally consistent, which is what makes this
-    /// expensive to notice.
+    /// `CURRENT` used to carry `embedding_artifacts_head` /
+    /// `embedding_sections_head` so a completion drain could move the heads
+    /// without rewriting the immutable manifest. That made the descriptor a
+    /// second, weaker source of table versions: it could name a sections head
+    /// the manifest never pinned, and a reader could serve a row set `CURRENT`
+    /// never claimed as current. A drain now publishes a **new generation**, so
+    /// the descriptor carries only the checksum binding and the manifest's
+    /// triple is the one answer.
+    ///
+    /// The fixture's manifest pins a complete triple, so this also pins that
+    /// the sections leg is served from the manifest rather than reconstructed.
     #[test]
-    fn a_persisted_view_serves_the_heads_the_descriptor_published() {
-        let (_tmp, root, mut descriptor) = pinned_fixture();
-        descriptor.embedding_artifacts_head = Some(9);
-        descriptor.embedding_sections_head = Some(4);
+    fn a_persisted_view_serves_the_manifests_own_triple_and_nothing_else() {
+        let (_tmp, root, descriptor) = pinned_fixture();
         let pin = Arc::new(
             crate::constellation::storage::pin_generation_read(&root, &descriptor).unwrap(),
         );
         let view = ReadView::from_manifest(pin.manifest_arc(), descriptor.clone(), pin).unwrap();
 
-        assert_eq!(view.embedding_heads(), Some((Some(9), Some(4))));
-        assert_ne!(
-            view.manifest().unwrap().table_versions.artifacts,
-            9,
-            "the manifest is immutable and still names its own versions; that is exactly why the \
-             heads have to come from somewhere else"
+        assert_eq!(view.pinned_versions(), Some((4, 2, 6)));
+        let versions = view.manifest().unwrap().table_versions;
+        assert_eq!(
+            (versions.artifacts, versions.relations, versions.sections),
+            (4, 2, 6),
+            "the served triple is the manifest's own; no second source of versions survives"
         );
     }
 
@@ -705,9 +720,9 @@ mod tests {
         assert!(view.descriptor().is_none());
         assert!(view.pin().is_none());
         assert!(
-            view.embedding_heads().is_none(),
+            view.pinned_versions().is_none(),
             "there is no index identity behind a capture; inventing one would let a caller read \
-             embedding heads for a generation that was never published"
+             table versions for a generation that was never published"
         );
     }
 
@@ -727,14 +742,15 @@ mod tests {
         std::fs::create_dir_all(root.join(crate::constellation::storage::GENERATIONS_DIR))
             .expect("generations dir");
         let manifest = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": crate::constellation::FORMAT_VERSION,
             "generation_id": "gen-7",
             "checkout_id": "local-test",
             "index_epoch": 3,
             "source_set_digest": "d",
             "config_digest": "c",
-            "table_versions": {"artifacts": 4, "relations": 2},
+            "table_versions": {"artifacts": 4, "relations": 2, "sections": 6},
             "source_entries": [],
+            "section_bindings": [],
             "tombstones": [],
             "pending_jobs": {},
             "coverage": {"expected":0,"read":0,"invalid":0,"unavailable":0,"excluded":0},
@@ -749,7 +765,7 @@ mod tests {
         )
         .expect("write manifest");
         let descriptor: CurrentDescriptor = serde_json::from_value(serde_json::json!({
-            "format_version": 1,
+            "format_version": crate::constellation::FORMAT_VERSION,
             "index_epoch": 3,
             "checkout_id": "local-test",
             "generation_id": "gen-7",

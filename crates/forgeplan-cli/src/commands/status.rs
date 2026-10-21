@@ -8,10 +8,16 @@ use forgeplan_core::workspace::load_config;
 use crate::commands::common;
 
 pub async fn run() -> Result<()> {
-    let (workspace, store) = common::open_store().await?;
+    let (workspace, source) = common::open_read_source().await?;
 
     let config = load_config(&workspace)?;
-    let artifacts = store.list_artifacts(None).await?;
+    // Counting is over artifact summaries, which the capture produces with the
+    // same `to_summary` projection the store path used — same dashboard, no
+    // retired table opened on a migrated workspace.
+    let artifacts = match &source {
+        common::ReadSource::Legacy(store) => store.list_artifacts(None).await?,
+        common::ReadSource::Captured(read) => read.list_artifacts(None),
+    };
 
     // Count by kind
     let mut by_kind: BTreeMap<String, u32> = BTreeMap::new();
