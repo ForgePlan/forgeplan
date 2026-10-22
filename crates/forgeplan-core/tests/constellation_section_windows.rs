@@ -157,11 +157,35 @@ fn a_no_space_run_keeps_its_tail() {
     let body = format!("# Heading\n\n{line}\n");
     let parsed = artifact(&body);
     let sections = sections_for(&parsed, &tokenizer, &budgets).expect("sections");
+    // The tail survives because the windows tile the body — that is the whole
+    // claim, and it is the production verifier's, not this file's.
     assert_body_is_reproduced(&parsed, &sections);
-    assert!(
-        sections.iter().any(|row| row.content.contains(&line[..2_000])),
-        "the long run must be present in the window set"
-    );
+
+    // What a 32-token body budget actually promises is that each **input**
+    // fits, not that any single row holds a given number of characters: a row
+    // covering half of a 4 000-character run is 31 tokens, and a row holding
+    // 2 000 characters would be 2 000 tokens. Asserting a character count here
+    // asserted a property this layout never had, and would have failed for a
+    // capture that was entirely correct.
+    for row in &sections {
+        let input = tokenizer
+            .build_section_input(
+                &parsed.title,
+                row.heading.as_deref(),
+                &row.content,
+                &budgets,
+            )
+            .expect("a workable profile must build an input");
+        let counted = tokenizer
+            .count_with_special_tokens(&input)
+            .expect("tokenizing a section input must not fail");
+        assert!(
+            counted <= budgets.max_tokens,
+            "section `{}` produced an input of {counted} tokens against a limit of {}",
+            row.canonical_key,
+            budgets.max_tokens
+        );
+    }
 }
 
 #[test]
@@ -203,6 +227,169 @@ fn a_whitespace_only_body_is_preserved_exactly() {
     let (_tmp, tokenizer, budgets) = tokenizer(64);
     let parsed = artifact("   \n\n\t\n   ");
     let sections = sections_for(&parsed, &tokenizer, &budgets).expect("sections");
+    assert_body_is_reproduced(&parsed, &sections);
+}
+
+// ---------------------------------------------------------------------------
+// Published byte ranges
+//
+// The exact `byte_start..byte_end` of each published row.
+//
+// The production verifier is not weak — it requires the rows to tile the body
+// from byte 0 to `body.len()`, and it compares every row's stored text against
+// the body slice that row's range names. What it cannot do is choose between
+// two different tilings of the same body: every split that assigns each byte
+// to exactly one window passes it, including one that gives the leading
+// whitespace its own row, or starts a section at the byte before its `#`.
+//
+// These cases therefore pin the **particular** split the layout is supposed to
+// produce. They are not a substitute for the verifier; they fix which of the
+// several valid splits is the one that ships.
+// ---------------------------------------------------------------------------
+
+/// Every published row's range, in ordinal order.
+fn published_ranges(sections: &[CapturedSection]) -> Vec<(usize, usize)> {
+    let mut rows: Vec<&CapturedSection> = sections.iter().collect();
+    rows.sort_by_key(|row| row.ordinal);
+    rows.iter()
+        .map(|row| (row.byte_start, row.byte_end))
+        .collect()
+}
+
+/// Each row stores exactly the body bytes its range names.
+fn ranges_name_their_own_bytes(parsed: &ParsedArtifact, sections: &[CapturedSection]) {
+    for row in sections {
+        let slice = parsed
+            .body
+            .get(row.byte_start..row.byte_end)
+            .unwrap_or_else(|| {
+                panic!(
+                    "row `{}` claims bytes {}..{} of a {}-byte body",
+                    row.canonical_key,
+                    row.byte_start,
+                    row.byte_end,
+                    parsed.body.len()
+                )
+            });
+        assert_eq!(
+            slice,
+            row.content.as_ref(),
+            "row `{}` stores text that is not the body slice it claims",
+            row.canonical_key
+        );
+    }
+}
+
+#[test]
+fn a_repeated_body_publishes_both_sections_at_their_exact_offsets() {
+    let (_tmp, tokenizer, budgets) = tokenizer(256);
+    let body = "## A\n\nalpha\n\n## B\n\nalpha\n";
+    let parsed = artifact(body);
+    let sections = sections_for(&parsed, &tokenizer, &budgets).expect("sections");
+
+    assert_eq!(
+        published_ranges(&sections),
+        vec![(0, 13), (13, 25)],
+        "each section must be published at the byte offset it really occupies"
+    );
+    assert_eq!(sections[0].content.as_ref(), "## A\n\nalpha\n\n");
+    assert_eq!(sections[1].content.as_ref(), "## B\n\nalpha\n");
+    assert_eq!(
+        sections
+            .iter()
+            .filter(|row| row.content.contains("alpha"))
+            .count(),
+        2,
+        "both occurrences of the same text must survive as separate windows"
+    );
+    ranges_name_their_own_bytes(&parsed, &sections);
+    assert_body_is_reproduced(&parsed, &sections);
+}
+
+#[test]
+fn two_identical_sections_get_distinct_keys_at_the_same_digest() {
+    // The digest is a function of the embedding **input**, and two sections
+    // with the same heading and the same body are the same input. Two rows with
+    // one digest and two keys are correct; two rows with one key would not be.
+    let (_tmp, tokenizer, budgets) = tokenizer(256);
+    let body = "## Same\n\nalpha\n\n## Same\n\nalpha\n\n";
+    let parsed = artifact(body);
+    let sections = sections_for(&parsed, &tokenizer, &budgets).expect("sections");
+
+    assert_eq!(
+        published_ranges(&sections),
+        vec![(0, 16), (16, 32)],
+        "identical sections still occupy different byte ranges"
+    );
+    assert_ne!(
+        sections[0].canonical_key, sections[1].canonical_key,
+        "position, not content, names a window"
+    );
+    assert_eq!(
+        sections[0].input_digest, sections[1].input_digest,
+        "identical heading and body produce the identical embedding input"
+    );
+    ranges_name_their_own_bytes(&parsed, &sections);
+    assert_body_is_reproduced(&parsed, &sections);
+}
+
+#[test]
+fn a_whitespace_only_prefix_is_published_once_with_the_first_section() {
+    let (_tmp, tokenizer, budgets) = tokenizer(256);
+    let body = "\n \t\n## A\nx\n";
+    let parsed = artifact(body);
+    let sections = sections_for(&parsed, &tokenizer, &budgets).expect("sections");
+
+    assert_eq!(
+        published_ranges(&sections),
+        vec![(0, 11)],
+        "the blank prefix belongs to the first section, and it starts at byte 0"
+    );
+    assert_eq!(
+        sections.len(),
+        1,
+        "a whitespace-only prefix is not prose and gets no row of its own"
+    );
+    assert_eq!(sections[0].content.as_ref(), body);
+    ranges_name_their_own_bytes(&parsed, &sections);
+    assert_body_is_reproduced(&parsed, &sections);
+}
+
+#[test]
+fn a_real_preamble_is_published_raw_before_the_first_section() {
+    let (_tmp, tokenizer, budgets) = tokenizer(256);
+    let body = "\n \t\nIntro.\n\n## A\nx\n";
+    let parsed = artifact(body);
+    let sections = sections_for(&parsed, &tokenizer, &budgets).expect("sections");
+
+    assert_eq!(
+        published_ranges(&sections),
+        vec![(0, 12), (12, 19)],
+        "the preamble is published raw, leading blank lines included"
+    );
+    assert_eq!(sections[0].heading, None, "a preamble has no heading");
+    assert_eq!(sections[1].heading.as_deref(), Some("A"));
+    ranges_name_their_own_bytes(&parsed, &sections);
+    assert_body_is_reproduced(&parsed, &sections);
+}
+
+#[test]
+fn a_multibyte_body_is_published_on_character_boundaries() {
+    // U+2003 EM SPACE is three bytes and `é` is two. An offset computed in
+    // characters rather than bytes would land mid-character here, and slicing
+    // the body at it would fail outright.
+    let (_tmp, tokenizer, budgets) = tokenizer(256);
+    let body = "## A\n\n\u{2003}é\n";
+    let parsed = artifact(body);
+    let sections = sections_for(&parsed, &tokenizer, &budgets).expect("sections");
+
+    assert_eq!(
+        published_ranges(&sections),
+        vec![(0, 12)],
+        "ranges are byte offsets, and this body is not ASCII"
+    );
+    assert_eq!(sections[0].content.as_ref(), body);
+    ranges_name_their_own_bytes(&parsed, &sections);
     assert_body_is_reproduced(&parsed, &sections);
 }
 
@@ -254,11 +441,34 @@ fn the_display_heading_is_never_shortened_even_though_the_input_is() {
     let parsed = artifact(&body);
     let sections = sections_for(&parsed, &tokenizer, &budgets).expect("sections");
     assert_body_is_reproduced(&parsed, &sections);
+
+    // The expectation is the heading **as Markdown defines it**, which is not
+    // the string written after `#`. CommonMark trims trailing whitespace from
+    // ATX heading text (`pulldown-cmark` ends the heading at the last byte that
+    // is neither space nor newline), and the fixture's heading ends with one
+    // because the repeated unit does. Production stores what the parser
+    // produced, which is correct: a heading's identity is its text, and the
+    // trailing space was never part of it.
+    let markdown_heading = long_heading.trim_end();
     assert!(
         sections
             .iter()
-            .all(|row| row.heading.as_deref() == Some(long_heading.as_str())),
-        "the row keeps the FULL display heading; only the embedding input is budgeted"
+            .all(|row| row.heading.as_deref() == Some(markdown_heading)),
+        "the row keeps the FULL display heading; only the embedding input is budgeted. \
+         got {:?}",
+        sections.iter().map(|r| r.heading.as_deref()).collect::<Vec<_>>()
+    );
+
+    // Non-vacuity: without this the comparison above would also pass against a
+    // heading the budget had truncated to its first few tokens, which is
+    // precisely the regression the test exists to catch. The stored heading
+    // must be far larger than the context budget the input is capped to.
+    assert!(
+        markdown_heading.len() > budgets.header_context_tokens,
+        "the fixture heading is {} chars against a {}-token context budget, so a budget-truncated \
+         heading would be indistinguishable from a full one",
+        markdown_heading.len(),
+        budgets.header_context_tokens
     );
 }
 

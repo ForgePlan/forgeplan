@@ -55,6 +55,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
+// `added_tokens` is a method of the trait, not an inherent one on `Tokenizer`;
+// the handle `get_post_processor` returns is `&dyn PostProcessor`, so without
+// this the call does not resolve.
+use tokenizers::tokenizer::PostProcessor as _;
 
 /// Version tag of the windowing + input-building algorithm.
 ///
@@ -62,7 +66,7 @@ use sha2::{Digest, Sha256};
 /// identity of the layout rather than silently reusing `#sN` keys under a
 /// previous one. Bump this on any change to window boundaries, header
 /// budgeting, or the assembled input shape.
-pub const SECTION_LAYOUT_ALGORITHM: &str = "s1-token-layout-v1";
+pub const SECTION_LAYOUT_ALGORITHM: &str = "s1-token-layout-v2";
 
 /// Wire string for the versioned domain separator of the layout fingerprint.
 pub const SECTION_LAYOUT_DOMAIN: &str = "forgeplan.constellation.section-layout.v1";
@@ -330,23 +334,27 @@ impl MetadataTokenizer {
         let tokenizer_config = read_json(&snapshot.join("tokenizer_config.json"))?;
         let config = read_json(&snapshot.join("config.json"))?;
 
-        // Probe the special-token budget before building the layout, because
-        // it is part of the layout's identity: the difference between
-        // encoding with and without the wrapper is exactly the tokens the
-        // tokenizer adds around every sequence.
+        // Read the special-token budget straight off the post-processor, because
+        // it is part of the layout's identity: the tokens the processor adds
+        // around every sequence are exactly what the window budget must
+        // reserve.
         //
-        // Probed on a single space rather than on `""`. An empty input is
-        // degenerate — some post-processors treat "nothing to process" as
-        // "no template to apply" and return zero tokens, which would record a
-        // budget of zero and silently understate every window by however many
-        // tokens the engine really adds. A space is the most neutral content
-        // there is: one ordinary character, not a special token, not empty.
+        // Read from the template rather than measured by encoding a probe
+        // string. An encode-and-count probe reports the wrapper **plus the
+        // probe's own tokens** — a single space costs one ordinary token, so
+        // the probe reported one token more than the wrapper actually adds,
+        // and every window was understated by that much. It also conflated two
+        // questions: how many tokens does the post-processor add, and how does
+        // this pre-tokenizer treat a particular character. Only the first is the
+        // budget.
+        //
+        // A tokenizer with no post-processor adds nothing, and `map_or` gives
+        // that the same honest `0` the old probe gave a degenerate tokenizer.
         let tokenizer = tokenizers::Tokenizer::from_file(snapshot.join("tokenizer.json"))
             .map_err(|e| anyhow::anyhow!("cannot load tokenizer.json: {e}"))?;
         let special_tokens = tokenizer
-            .encode(" ", true)
-            .map(|encoding| encoding.get_ids().len())
-            .unwrap_or(0);
+            .get_post_processor()
+            .map_or(0, |processor| processor.added_tokens(false));
 
         let model_max_length = tokenizer_config
             .get("model_max_length")
@@ -471,7 +479,12 @@ impl MetadataTokenizer {
         let mut index = 0usize;
         while index < starts.len() {
             let next = (index + body_tokens).min(starts.len());
-            let start = starts[index];
+            // The **first** window starts at 0, not at the first token's
+            // offset: a tokenizer that drops leading whitespace — or a normalizer
+            // that rewrites it — would otherwise leave the gap between byte 0
+            // and `starts[0]` owned by no window at all, and the body could not
+            // be reproduced.
+            let start = if index == 0 { 0 } else { starts[index] };
             // Each window ends where the next one begins, so the windows tile
             // the input exactly: no gap loses the whitespace or metaspaces
             // between them, and no overlap double-embeds a byte.
@@ -820,6 +833,7 @@ pub mod testing {
     use std::path::Path;
     use tokenizers::models::wordlevel::WordLevel;
     use tokenizers::pre_tokenizers::split::{Split, SplitPattern};
+    use tokenizers::pre_tokenizers::whitespace::WhitespaceSplit;
     use tokenizers::processors::template::TemplateProcessing;
     use tokenizers::tokenizer::{AddedToken, Tokenizer};
     use tokenizers::SplitDelimiterBehavior;
@@ -976,6 +990,15 @@ pub mod testing {
             .save(dir.join("tokenizer.json"), false)
             .map_err(|e| anyhow::anyhow!("cannot write tokenizer.json: {e}"))?;
 
+        write_snapshot_metadata(dir, model_max_length)
+    }
+
+    /// The two metadata files beside a saved `tokenizer.json`.
+    ///
+    /// Split out of [`write_snapshot`] so the whitespace-splitting variant
+    /// below writes byte-identical metadata and differs from the per-character
+    /// fixture in exactly one variable: its pre-tokenizer.
+    fn write_snapshot_metadata(dir: &Path, model_max_length: usize) -> anyhow::Result<()> {
         std::fs::write(
             dir.join("tokenizer_config.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -991,6 +1014,105 @@ pub mod testing {
             }))?,
         )?;
         Ok(())
+    }
+
+    /// The vocabulary a whitespace-splitting fixture knows: whole words.
+    ///
+    /// `WordLevel` resolves a pre-token **whole** — a hit is one token spanning
+    /// the word, a miss is `[UNK]` spanning the same bytes — so one word is
+    /// always exactly one token. That is the property the window test needs:
+    /// the boundaries are the word boundaries, and the only way a window can
+    /// fail to start at byte 0 is if the leading whitespace is dropped.
+    fn whitespace_fixture_vocabulary() -> Vec<String> {
+        vec![
+            "[UNK]".to_string(),
+            "[CLS]".to_string(),
+            "[SEP]".to_string(),
+            "alpha".to_string(),
+            "beta".to_string(),
+        ]
+    }
+
+    /// The per-character fixture with its pre-tokenizer swapped for
+    /// [`WhitespaceSplit`].
+    ///
+    /// Same model, same vocabulary shape, same post-processor, same ids — one
+    /// variable changed, so a test that distinguishes them is attributing the
+    /// difference to the pre-tokenizer and nothing else.
+    fn build_whitespace_fixture_tokenizer() -> anyhow::Result<Tokenizer> {
+        let tokens = whitespace_fixture_vocabulary();
+        let mut vocab = serde_json::Map::with_capacity(tokens.len());
+        for (id, token) in tokens.iter().enumerate() {
+            vocab.insert(token.clone(), serde_json::Value::from(id as u32));
+        }
+        let vocab_dir = tempfile::TempDir::new()?;
+        let vocab_path = vocab_dir.path().join("vocab.json");
+        std::fs::write(
+            &vocab_path,
+            serde_json::to_vec(&serde_json::Value::Object(vocab))?,
+        )?;
+
+        let model = WordLevel::builder()
+            .files(vocab_path.to_string_lossy().into_owned())
+            .unk_token("[UNK]".to_string())
+            .build()
+            .map_err(|e| {
+                anyhow::anyhow!("cannot build the whitespace fixture WordLevel model: {e}")
+            })?;
+
+        let post_processor = TemplateProcessing::builder()
+            .try_single("[CLS] $A [SEP]")
+            .map_err(|e| anyhow::anyhow!("cannot build the whitespace fixture template: {e}"))?
+            .special_tokens(vec![
+                ("[CLS]".to_string(), CLS_ID),
+                ("[SEP]".to_string(), SEP_ID),
+            ])
+            .build()
+            .map_err(|e| {
+                anyhow::anyhow!("cannot build the whitespace fixture post-processor: {e}")
+            })?;
+
+        let mut tokenizer = Tokenizer::new(model);
+        tokenizer
+            .with_pre_tokenizer(Some(WhitespaceSplit))
+            .with_post_processor(Some(post_processor));
+        tokenizer
+            .add_special_tokens([
+                AddedToken::from("[CLS]", true),
+                AddedToken::from("[SEP]", true),
+            ])
+            .map_err(|e| anyhow::anyhow!("cannot register the whitespace fixture tokens: {e}"))?;
+        Ok(tokenizer)
+    }
+
+    /// Write a **whitespace-splitting** snapshot: the per-character fixture's
+    /// twin whose pre-tokenizer drops whitespace between words.
+    ///
+    /// Kept beside [`write_snapshot`] rather than folded into it, because the
+    /// per-character fixture is what every windowing test measures against and
+    /// its byte-level boundaries must not move.
+    pub fn write_whitespace_snapshot(dir: &Path, model_max_length: usize) -> anyhow::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        build_whitespace_fixture_tokenizer()?
+            .save(dir.join("tokenizer.json"), false)
+            .map_err(|e| anyhow::anyhow!("cannot write whitespace tokenizer.json: {e}"))?;
+
+        write_snapshot_metadata(dir, model_max_length)
+    }
+
+    /// A loaded whitespace-splitting fixture tokenizer and its budgets.
+    ///
+    /// Written to disk and read back through the production
+    /// [`MetadataTokenizer::load`], exactly like the per-character fixture, so
+    /// what the window test exercises is the value a real capture would hold.
+    pub fn whitespace_fixture_tokenizer(
+        model_max_length: usize,
+    ) -> anyhow::Result<(tempfile::TempDir, MetadataTokenizer, TokenBudgets)> {
+        let dir = tempfile::TempDir::new()?;
+        write_whitespace_snapshot(dir.path(), model_max_length)?;
+        let tokenizer = MetadataTokenizer::load(dir.path())?;
+        let budgets = TokenBudgets::resolve(tokenizer.layout())?;
+        Ok((dir, tokenizer, budgets))
     }
 
     /// The layout a fixture snapshot resolves to.
@@ -1120,13 +1242,108 @@ mod tests {
 
     #[test]
     fn an_empty_body_still_yields_exactly_one_empty_window() {
-        // Constructed directly: `token_windows` needs a real tokenizer, and the
-        // empty-input contract is about the shape of the answer, not the
-        // tokenizer's agreement.
+        // Through the real `token_windows`, not a hand-built `ByteRange`: the
+        // contract is what the function returns, and constructing the answer
+        // by hand would pass even if the function stopped returning it.
+        let (_dir, tokenizer, budgets) = testing::fixture_tokenizer(MAX_TOKENS_CEILING).unwrap();
+        let windows = tokenizer
+            .token_windows("", &budgets)
+            .expect("empty windows");
+
+        assert_eq!(windows.len(), 1, "an empty body yields exactly one window");
+        assert!(windows[0].is_empty(), "and that window covers no bytes");
+        assert_eq!(windows[0].start, 0);
+        assert_eq!(windows[0].end, 0);
+
+        // The range helpers the capture relies on, kept next to it because
+        // they are what turns a window into body bytes.
         assert!(ByteRange { start: 0, end: 0 }.is_empty());
         assert_eq!(ByteRange { start: 0, end: 0 }.len(), 0);
         assert_eq!(ByteRange { start: 3, end: 9 }.slice("abcdefghij"), Some("defghi"));
         assert_eq!(ByteRange { start: 0, end: 99 }.slice("abc"), None);
+    }
+
+    /// The first window starts at byte **0**, not at the first token's offset.
+    ///
+    /// The per-character fixture cannot catch this: it splits on `.` with
+    /// `Isolated`, so it preserves leading whitespace and its first token
+    /// already begins at byte 0. A fixture whose pre-tokenizer *drops*
+    /// whitespace is the only one where `starts[0] != 0`, and that is the
+    /// whole difference the assertion turns on — with the old
+    /// `start = starts[index]`, the two leading spaces here would have been
+    /// owned by no window and the body could not have been reproduced.
+    #[test]
+    fn a_tokenizer_that_drops_leading_whitespace_still_windows_from_byte_zero() {
+        // 64 leaves a one-token body budget (64 − 2 special − 8 reserve = 54
+        // available, header takes 53), so each word becomes exactly one window
+        // and the boundaries below are the word boundaries.
+        let (_dir, tokenizer, budgets) = testing::whitespace_fixture_tokenizer(64).unwrap();
+        assert!(
+            tokenizer.layout().is_available(),
+            "fixture precondition: the whitespace snapshot resolves a real layout"
+        );
+        assert_eq!(
+            budgets.body_tokens, 1,
+            "the fixture must give a one-token body budget, or the expected boundaries would not \
+             be the word boundaries"
+        );
+
+        // The premise, asserted rather than assumed: this tokenizer really does
+        // start its first token at byte 2, which is what makes the window
+        // boundaries below a real test instead of a tautology.
+        let measured = tokenizer.measure("  alpha  beta \n").expect("measure");
+        assert_eq!(
+            measured.offsets,
+            vec![(2, 7), (9, 13)],
+            "`WhitespaceSplit` must drop the leading spaces and start at `alpha`"
+        );
+
+        let windows = tokenizer
+            .token_windows("  alpha  beta \n", &budgets)
+            .expect("windows");
+        let actual: Vec<(usize, usize)> = windows.iter().map(|w| (w.start, w.end)).collect();
+        assert_eq!(
+            actual,
+            vec![(0, 9), (9, 15)],
+            "the first window must begin at byte 0; `2..9` would leave the two leading spaces \
+             owned by nobody"
+        );
+        assert_eq!(
+            windows[0].end, windows[1].start,
+            "the windows must abut exactly — no gap, no overlap"
+        );
+
+        // A whitespace-only input tokenizes to nothing usable, and still has to
+        // be covered exactly once, from 0 to its end.
+        let blank = tokenizer
+            .token_windows("\n \t\n", &budgets)
+            .expect("blank windows");
+        assert_eq!(
+            blank.iter().map(|w| (w.start, w.end)).collect::<Vec<_>>(),
+            vec![(0, 4)],
+            "content that tokenizes to nothing must still be covered in full"
+        );
+
+        // And an empty input stays one empty window, the case the sibling test
+        // above pins through the per-character fixture.
+        let empty = tokenizer
+            .token_windows("", &budgets)
+            .expect("empty windows");
+        assert_eq!(
+            empty.iter().map(|w| (w.start, w.end)).collect::<Vec<_>>(),
+            vec![(0, 0)]
+        );
+
+        // The loaded tokenizer is measured, never reconfigured: two identical
+        // reads give identical offsets, which a mutated one could not.
+        assert_eq!(
+            tokenizer
+                .measure("  alpha  beta \n")
+                .expect("measure")
+                .offsets,
+            measured.offsets,
+            "measuring must not reconfigure the shared tokenizer"
+        );
     }
 
     #[test]
@@ -1199,10 +1416,15 @@ mod tests {
         assert!(tokenizer.layout().is_available());
         assert_eq!(tokenizer.layout().max_tokens, MAX_TOKENS_CEILING);
         assert_eq!(budgets.max_tokens, MAX_TOKENS_CEILING);
-        assert!(
-            tokenizer.layout().special_tokens > 0,
-            "the fixture must actually wrap sequences, or every budget calculation that \
-             reserves room for special tokens would be untested"
+        // Exactly the two the fixture's template adds. The loader reads this from the
+        // post-processor's own `added_tokens`, so a value here that disagreed
+        // with the template would mean the reserved budget and the real
+        // wrapper had come apart — which is precisely the drift that made
+        // every window one token too large.
+        assert_eq!(
+            tokenizer.layout().special_tokens,
+            2,
+            "the fixture template is `[CLS] $A [SEP]`: two added tokens"
         );
         // The special tokens really are added when asked for, and not when not
         // asked for: that difference is what makes `measure` and

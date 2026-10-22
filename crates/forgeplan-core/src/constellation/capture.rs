@@ -209,9 +209,9 @@ pub struct CapturedSection {
     /// Position in `list_section_spans` order. Reordering sections changes which
     /// content a key binds; `input_digest` detects the change.
     pub ordinal: u32,
-    /// Start of this window inside the **parent's markdown unit**, as a UTF-8
-    /// byte offset. Combined with `byte_end` it names exactly the bytes
-    /// `content` holds.
+    /// Start of this window inside the **parent's body**, as a UTF-8 byte
+    /// offset. Body-absolute, never relative to the section: combined with
+    /// `byte_end` it names exactly the bytes `content` holds.
     pub byte_start: usize,
     /// End of this window, exclusive.
     pub byte_end: usize,
@@ -223,9 +223,16 @@ pub struct CapturedSection {
     pub heading: Option<String>,
     /// Markdown heading level (1–6), `None` for the fallback section.
     pub level: Option<u8>,
-    /// Exact section bytes as captured — the text between this heading and
+    /// Exact bytes of **one window** of this section, as captured.
+    ///
+    /// The unit a section is cut from is the raw run from this heading's `#` to
     /// the next heading of **any** level (`list_section_spans` semantics, not
-    /// `list_sections`' nested fold — a `###` gets its own row).
+    /// `list_sections`' nested fold — a `###` gets its own row), so the
+    /// heading's own bytes are part of the section rather than sitting in front
+    /// of it. A section longer than the body token budget is split across
+    /// several rows, however, and so is a heading too long to fit one window:
+    /// `content` holds a single window, not the whole section, and a reader
+    /// that wants the section assembles the rows by `byte_start..byte_end`.
     /// `Arc`-shared into the artifact body like every other captured text.
     pub content: Arc<str>,
     /// SHA-256 of the exact bytes the shared builder handed to the tokenizer
@@ -349,17 +356,24 @@ fn push_section_rows(
 /// `artifact.body`, never the filesystem — and measured by the one tokenizer
 /// the whole capture shares.
 ///
-/// Three cases, unchanged in shape from before:
+/// Three cases:
 ///
 /// * **No headings at all** — one whole-body section at ordinal 0 with no
 ///   heading.
-/// * **Preamble** — `list_section_spans` drops text before the first heading,
-///   so a body that starts with prose gets one extra synthetic section for it
-///   at ordinal 0, with the heading sections shifted to 1...
+/// * **Preamble** — the bytes before the first heading, published **raw** at
+///   base `0` when they contain real prose. A whitespace-only prefix gets no
+///   row of its own; it joins the first section, whose published range then
+///   starts at `0` too.
 /// * **Headed sections** — in `list_section_spans` order, flat: every heading
-///   opens a new unit. Each unit is then windowed by **tokens**, so a section
-///   longer than the token budget becomes several contiguous rows and none of
-///   its tail is invisible.
+///   opens a new unit, **including its own heading bytes**. Each unit is then
+///   windowed by **tokens**, so a section longer than the token budget becomes
+///   several contiguous rows and none of its tail is invisible.
+///
+/// Every byte of the body belongs to exactly one unit, and every unit is
+/// published at its body-absolute offset — the verifier
+/// [`body_is_fully_covered`] requires that the rows tile the body with no gap
+/// and no overlap, and a range derived from a copy of the text could not
+/// satisfy it.
 ///
 /// # Errors
 ///
@@ -390,50 +404,50 @@ pub fn sections_for(
         return Ok(sections);
     }
 
+    let first_heading_start = parsed.first().map(|section| section.raw_range.start);
     // A preamble section is emitted only for real prose before the first
-    // heading — whitespace or an empty run gets no row. It is `trim`med before
-    // use, so its base is where the trimmed run actually starts.
-    if let Some((preamble_base, preamble)) = preamble_span(&artifact.body) {
+    // heading. It is published **untrimmed** at base `0`, because the blank
+    // lines in front of it are body bytes like any other and the windows must
+    // tile the body from its very first byte.
+    let has_preamble = preamble_span(&artifact.body, first_heading_start).is_some();
+    if has_preamble {
+        let start = first_heading_start.unwrap_or(0);
         push_section_rows(
             &mut sections,
             &mut ordinal,
             artifact,
             None,
             None,
-            preamble,
-            preamble_base,
+            &artifact.body[..start],
+            0,
             tokenizer,
             budgets,
         )?;
     }
-    for section in &parsed {
+
+    for (index, section) in parsed.iter().enumerate() {
         let heading = (!section.heading.is_empty()).then(|| section.heading.clone());
+        // With no preamble row of its own, the leading blank run belongs to
+        // the first section: its published start is `0`, not the offset of its
+        // `#`, so nothing falls between the previous window and this one.
+        let base = if index == 0 && !has_preamble {
+            0
+        } else {
+            section.raw_range.start
+        };
         push_section_rows(
             &mut sections,
             &mut ordinal,
             artifact,
             heading,
             Some(section.level),
-            &section.content,
-            body_offset_of(&artifact.body, section.content.as_str()),
+            &artifact.body[base..section.raw_range.end],
+            base,
             tokenizer,
             budgets,
         )?;
     }
     Ok(sections)
-}
-
-/// Where `unit` sits inside `body`, in bytes.
-///
-/// `list_section_spans` returns slices **of** the body, so the offset is exact
-/// rather than searched for. The subtraction is guarded because a caller could
-/// pass a string that is not a slice of this body; returning `0` in that case
-/// is only safe because [`verify_section_coverage`] then catches the mismatch
-/// against the stored text.
-fn body_offset_of(body: &str, unit: &str) -> usize {
-    let body_start = body.as_ptr() as usize;
-    let unit_start = unit.as_ptr() as usize;
-    unit_start.checked_sub(body_start).unwrap_or(0)
 }
 
 /// Whether one artifact's section rows reproduce its body exactly.
@@ -529,31 +543,29 @@ pub(crate) fn verify_bodies_are_fully_covered(
 }
 
 /// The raw body bytes before the first markdown heading, if non-whitespace,
-/// with their byte offset in the body.
+/// with the offset of their first real byte in the body.
 ///
-/// Offsets come from the same `pulldown-cmark` event stream
-/// `list_section_spans` uses, so "before the first heading" means exactly what
-/// the section parser calls a heading — fenced code blocks still do not
-/// count. Returns `None` when there is no heading or the run is blank.
+/// The boundary comes from the caller — `list_section_spans` already knows
+/// where the first heading starts, and reparsing the body here would mean a
+/// second `pulldown-cmark` walk of every artifact on every capture. "Before
+/// the first heading" therefore means exactly what the section parser calls a
+/// heading: fenced code blocks still do not count.
 ///
 /// The **trimmed** run is returned with the offset of its first real byte,
-/// because the section rows have to name the body bytes they actually cover —
-/// leading whitespace was never part of what a preamble row embeds.
-fn preamble_span(body: &str) -> Option<(usize, &str)> {
-    use pulldown_cmark::{Event, Options, Parser, Tag};
-
-    for (event, range) in Parser::new_ext(body, Options::all()).into_offset_iter() {
-        if let Event::Start(Tag::Heading { .. }) = event {
-            let prefix = body.get(..range.start)?;
-            let leading = prefix.len() - prefix.trim_start().len();
-            let trimmed = prefix.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            return Some((leading, trimmed));
-        }
+/// because that is the description a reader wants: where the preamble's prose
+/// begins, not where the blank lines in front of it do. The section rows
+/// publish the untrimmed prefix regardless — the blank lines are body bytes
+/// too — so the two deliberately answer different questions.
+///
+/// Returns `None` when there is no heading or the whole prefix is blank.
+fn preamble_span(body: &str, first_heading_start: Option<usize>) -> Option<(usize, &str)> {
+    let prefix = body.get(..first_heading_start?)?;
+    let leading = prefix.len() - prefix.trim_start().len();
+    let trimmed = prefix.trim();
+    if trimmed.is_empty() {
+        return None;
     }
-    None
+    Some((leading, trimmed))
 }
 
 /// Per-artifact durable source record carried by a [`GenerationManifest`].
@@ -2450,10 +2462,18 @@ mod tests {
             "a section longer than the prefix must become several rows, got {rows:?}"
         );
         let joined: String = rows.iter().map(|row| row.content.as_ref()).collect();
+        // The whole artifact body, heading included: a window set that covered
+        // only the section's prose would leave `## Body` uncovered, and
+        // trimming here would hide exactly that loss.
+        let expected = view
+            .artifact("PRD-900")
+            .expect("the captured artifact")
+            .body
+            .as_ref()
+            .to_string();
         assert_eq!(
-            joined.trim_end(),
-            long,
-            "the windows must cover every byte of the section exactly once"
+            joined, expected,
+            "the windows must cover every byte of the artifact body exactly once, heading included"
         );
         // The window budget is in **tokens**, and it is the same budget the
         // encoder will apply. The old oracle here was
@@ -2476,34 +2496,66 @@ mod tests {
                 budgets.max_tokens
             );
         }
+        // Windows are distinguished by their **ranges**, not by their input
+        // digests. A run of `x` cut into several windows produces windows whose
+        // embedding inputs are byte-identical, so their digests are equal and
+        // a pairwise-digest assertion would be asserting the opposite of the
+        // point: it would pass only for a body with no repeated content, and
+        // fail for every legitimately uniform one. What must hold instead is
+        // that consecutive rows carry different ranges, different keys, and
+        // abut exactly.
         assert!(
-            rows.windows(2)
-                .all(|pair| pair[0].input_digest != pair[1].input_digest),
-            "each window binds its own input"
+            rows.windows(2).all(|pair| {
+                pair[0].byte_start != pair[1].byte_start
+                    && pair[0].byte_end != pair[1].byte_end
+                    && pair[0].canonical_key != pair[1].canonical_key
+                    && pair[0].byte_end == pair[1].byte_start
+            }),
+            "each window must own its own contiguous byte range and key; got {:?}",
+            rows.iter()
+                .map(|row| (
+                    row.canonical_key.as_str(),
+                    row.byte_start,
+                    row.byte_end,
+                    row.input_digest.as_str()
+                ))
+                .collect::<Vec<_>>()
         );
     }
 
     // -----------------------------------------------------------------------
-    // The offset arithmetic.
+    // The preamble boundary.
     //
-    // Section rows carry **body-absolute** byte ranges, and two helpers exist
-    // to turn a markdown sub-unit into one. Both are easy to get subtly wrong
-    // and expensive when they are: an offset that is relative to the wrong
-    // unit makes `body_is_fully_covered` reject a correct capture, or — worse
-    // — makes it accept one whose windows do not line up.
+    // A preamble is the run before the first heading. Its boundary comes from
+    // `list_section_spans` — the same parse that produces the sections — so a
+    // disagreement between the two would compute ranges from two readings of
+    // one body.
     // -----------------------------------------------------------------------
+
+    /// The first heading's byte offset, read from the section parse that
+    /// production also uses.
+    ///
+    /// Production takes this boundary from `list_section_spans` rather than
+    /// from a second parse, so a test that computed it any other way would
+    /// check a different code path than the one that ships.
+    fn first_heading_start(body: &str) -> Option<usize> {
+        crate::artifact::sections::list_section_spans(body)
+            .first()
+            .map(|section| section.raw_range.start)
+    }
 
     /// The preamble is the run before the first heading, reported at the
     /// offset of its first **real** byte.
     ///
-    /// The trimming matters: a preamble row's recorded range has to name bytes
-    /// it actually covers, and a body that opens with blank lines would
-    /// otherwise claim a range that starts before its own text.
+    /// The trimming matters for the *description*: a reader asking where the
+    /// prose begins should not be answered with the offset of a blank line.
+    /// The rows themselves publish the untrimmed prefix.
     #[test]
     fn a_preamble_is_reported_at_the_offset_of_its_first_real_byte() {
         // Leading blank lines, then prose, then a heading.
         let body = "\n\n  Intro prose before any heading.\n\n## Problem\nLogin is slow.\n";
-        let (offset, text) = preamble_span(body).expect("there is a preamble");
+        let (offset, text) =
+            preamble_span(body, first_heading_start(body)).expect("there is a preamble");
 
         assert_eq!(text, "Intro prose before any heading.");
         assert_eq!(
@@ -2523,27 +2575,29 @@ mod tests {
         // No heading at all: the whole-body fallback owns the body, so there is
         // no preamble to mint.
         assert_eq!(
-            preamble_span("Just prose, no heading anywhere.\n"),
+            preamble_span("Just prose, no heading anywhere.\n", None),
             None,
             "without a heading there is no preamble; an empty row here would duplicate the \
              whole-body fallback under a second key"
         );
         // A heading with nothing but whitespace before it.
+        let blank = "\n\n   \n## Problem\nbody\n";
         assert_eq!(
-            preamble_span("\n\n   \n## Problem\nbody\n"),
+            preamble_span(blank, first_heading_start(blank)),
             None,
             "a whitespace-only run is not prose and must not become a row"
         );
-        assert_eq!(preamble_span(""), None);
+        assert_eq!(preamble_span("", None), None);
     }
 
     /// A fenced code block is not a heading, so `#` inside it does not end the
-    /// preamble. Both helpers read the same event stream, so if they disagreed
-    /// the two would compute ranges from different parsings of one body.
+    /// preamble. Both helpers read the same parse, so if they disagreed the two
+    /// would compute ranges from different readings of one body.
     #[test]
     fn a_fenced_block_does_not_end_the_preamble() {
         let body = "Intro.\n\n```\n# not a heading\n```\n\n## Real\nbody\n";
-        let (offset, text) = preamble_span(body).expect("the fenced block is prose");
+        let (offset, text) =
+            preamble_span(body, first_heading_start(body)).expect("the fenced block is prose");
         assert_eq!(
             text, "Intro.\n\n```\n# not a heading\n```",
             "the preamble runs to the first real ATX heading, fence or not"
@@ -2551,77 +2605,25 @@ mod tests {
         assert_eq!(&body[offset..offset + text.len()], text);
     }
 
-    /// [`body_offset_of`] turns a pointer difference into a body-absolute
-    /// offset.
+    /// A whitespace-only prefix belongs to the **first section**, not to a row
+    /// of its own, and the first section's published range therefore starts at
+    /// byte `0`.
     ///
-    /// It is pointer arithmetic over two slices of **one** allocation, and the
-    /// guard it carries — a `checked_sub` falling back to `0` — is the whole
-    /// safety story: `body_is_fully_covered` re-checks every range against the
-    /// body, so a wrong offset is caught, but only if the arithmetic is
-    /// exercised on real sub-slices rather than on hand-written numbers.
+    /// This is the ownership rule that makes the tiling verifier satisfiable:
+    /// a prefix cannot belong to both a preamble row and the first section, or
+    /// to neither.
     #[test]
-    fn a_sub_unit_resolves_to_its_body_absolute_offset() {
-        let body = "## Problem\n\nLogin is slow.\n\n## Goals\nMake it fast.\n";
-
-        // Take a real sub-slice, the way the parser hands one back.
-        let unit_start = body.find("Login is slow.").expect("the unit exists");
-        let unit_end = unit_start + "Login is slow.".len();
-        let unit = &body[unit_start..unit_end];
-
-        assert_eq!(body_offset_of(body, unit), unit_start);
-        assert!(
-            &body[body_offset_of(body, unit)..body_offset_of(body, unit) + unit.len()] == unit,
-            "slicing the body at the computed offset must give the unit back, byte for byte"
-        );
-
-        // A prefix unit, and a suffix that runs to the end.
-        assert_eq!(body_offset_of(body, &body[..3]), 0);
-        let tail_start = body.find("Make it fast.").expect("the tail exists");
-        let tail = &body[tail_start..];
-        assert_eq!(body_offset_of(body, tail), tail_start);
+    fn a_whitespace_only_prefix_joins_the_first_section() {
+        let body = "\n \t\n## A\nx\n";
         assert_eq!(
-            body_offset_of(body, tail) + tail.len(),
-            body.len(),
-            "the final unit must resolve such that its end is the body's end"
+            first_heading_start(body),
+            Some(4),
+            "the leading run is whitespace, so the preamble helper declines it"
         );
-    }
-
-    /// The subtraction must not wrap, whatever the allocator did.
-    ///
-    /// `body_offset_of` is pointer arithmetic over two slices that are supposed
-    /// to share one allocation. When they do not, the answer is meaningless —
-    /// but it must be a *bounded* meaningless, never a wrapped `usize` of
-    /// roughly 2^64, which would turn a fixture mistake into an out-of-range
-    /// index far from the body.
-    ///
-    /// Which value comes back genuinely depends on layout: a foreign string
-    /// allocated below `body` makes `checked_sub` fail and yields the `0`
-    /// fallback, while one allocated above it yields a small positive delta.
-    /// Neither is reproducible, so this asserts the invariant that holds for
-    /// both — the result is always inside the body — and then asserts the
-    /// property that makes a wrong answer harmless.
-    #[test]
-    fn a_unit_from_another_allocation_never_produces_a_wrapped_offset() {
-        let body = "## Problem\n\nLogin is slow.\n";
-        let unrelated = String::from("Login is slow.");
-
-        let offset = body_offset_of(body, &unrelated);
-        assert!(
-            offset <= body.len(),
-            "offset {offset} is outside a body of {} bytes; pointer subtraction wrapped instead \
-             of being guarded",
-            body.len()
-        );
-
-        // Bounded or not, the result cannot fabricate a match: the recorded
-        // range has to match the stored text, and `body_is_fully_covered`
-        // compares them. This is why a wrong offset is caught rather than
-        // accepted — the arithmetic is allowed to be wrong, the check is not.
-        let claimed = body.get(offset..offset + unrelated.len().min(body.len() - offset));
-        assert_ne!(
-            claimed,
-            Some(unrelated.as_str()),
-            "a foreign string must never be accepted as a slice of this body"
+        assert_eq!(
+            preamble_span(body, first_heading_start(body)),
+            None,
+            "no prose, no preamble row"
         );
     }
 }

@@ -34,6 +34,28 @@
 //! Cargo target: `constellation_local_compat` (see RuntimeProof's S1 phase
 //! inventory). ALL of these checks are NOT_RUN: no Cargo command was executed
 //! while writing them.
+//!
+//! # Every test here is serialised
+//!
+//! `#[serial_test::serial(env_model_cache)]` is on **all nineteen** tests, not
+//! only on the one that writes the variable.
+//!
+//! One test has to point `FORGEPLAN_MODEL_CACHE` at an empty directory to
+//! create its "no model available" condition. A serial group containing only
+//! that test does not exclude **readers**, and every other test here is a
+//! reader: `migrated_workspace()` publishes through `maintain_index`, and every
+//! MCP tool call that goes through capture resolves a layout, and both land in
+//! `embed::resolve_cache_dir`, which reads that variable. A swap landing between
+//! another test's two capture passes would change its layout identity — from
+//! `s1-token-layout-v2` under a real cache to `unavailable` under the swap —
+//! and hand that test a result that depends on thread timing.
+//!
+//! Rust 2024 makes `set_var` `unsafe` for exactly this reason, and `forgeplan-
+//! core`'s own resolver documents that env-mutating tests elsewhere in the
+//! suite already make them flaky. Serialising every test in this file is the
+//! narrowest fix that removes the race rather than narrowing its window: it
+//! costs parallelism *inside this binary only* — each integration test file is
+//! its own process, so no other target is affected.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -252,11 +274,14 @@ async fn migrated_workspace() -> (TempDir, PathBuf, PathBuf, String) {
 /// un-awaited call builds a future that never runs, so the workspace would
 /// still be unmigrated when the next line asserts otherwise.
 async fn publish(ws: &Path) {
+    // The **workspace** directory, not its parent. `for_strict_maintenance`
+    // takes the markdown workspace and derives `index_root` as
+    // `workspace.join("lance")` itself; handed the parent it published into
+    // `<root>/lance`, beside the `.forgeplan/` it was supposed to publish into,
+    // and every migration assertion downstream then read a workspace that was
+    // still legacy.
     let capability = MaintainCapability::for_strict_maintenance(
-        ws.parent()
-            .expect("workspace parent")
-            .canonicalize()
-            .expect("workspace root canonicalizes"),
+        ws.canonicalize().expect("workspace canonicalizes"),
     );
     maintain_index(
         &capability,
@@ -399,6 +424,7 @@ fn args_for(tool: &str) -> Value {
 /// the corpus is counted, the un-evidenced active ADR is a blind spot and an
 /// orphan, the expired pack makes the PRD at risk and the workspace stale.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn health_reports_the_real_corpus_on_a_legacy_workspace() {
     let (_tmp, root, _ws, _base) = legacy_workspace().await;
     let server = server_at(&root).await;
@@ -448,6 +474,7 @@ async fn health_reports_the_real_corpus_on_a_legacy_workspace() {
 /// The same corpus on a published workspace produces the SAME report, and the
 /// twelve reads create no retired table while doing it.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn health_reports_the_same_corpus_on_a_migrated_workspace() {
     let (_tmp, root, ws, _base) = migrated_workspace().await;
     assert!(legacy_tables(&ws).is_empty(), "precondition: no legacy tables");
@@ -496,6 +523,7 @@ async fn health_reports_the_same_corpus_on_a_migrated_workspace() {
 /// `forgeplan_blindspots` names the same artifact and the same issue on both
 /// projections.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn blindspots_name_the_same_artifact_on_both_layouts() {
     let (_legacy_tmp, legacy_root, _, _) = legacy_workspace().await;
     let legacy = server_at(&legacy_root)
@@ -524,6 +552,7 @@ async fn blindspots_name_the_same_artifact_on_both_layouts() {
 /// `forgeplan_journal` scores the PRD against its linked pack on both
 /// projections: one evidence, expired, flagged stale.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn journal_scores_linked_evidence_the_same_on_both_layouts() {
     let (_legacy_tmp, legacy_root, _, _) = legacy_workspace().await;
     let legacy = server_at(&legacy_root)
@@ -605,6 +634,7 @@ async fn journal_scores_linked_evidence_the_same_on_both_layouts() {
 /// `forgeplan_decay` names the decayed artifact and the expired pack on both
 /// projections, and shows a real current-vs-fresh gap.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn decay_names_the_decayed_artifact_on_both_layouts() {
     let (_legacy_tmp, legacy_root, _, _) = legacy_workspace().await;
     let legacy = server_at(&legacy_root)
@@ -646,6 +676,7 @@ async fn decay_names_the_decayed_artifact_on_both_layouts() {
 /// `forgeplan_anomalies` finds the mistyped evidence link on both
 /// projections, with the same kind and severity.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn anomalies_find_the_mistyped_link_on_both_layouts() {
     let (_legacy_tmp, legacy_root, legacy_ws, _) = legacy_workspace().await;
     let legacy = server_at(&legacy_root)
@@ -738,6 +769,7 @@ async fn anomalies_find_the_mistyped_link_on_both_layouts() {
 /// both projections — the section parsing is the thing under test, not the
 /// git verdict, which depends on the fixture repository's history.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn drift_reports_the_affected_files_on_both_layouts() {
     let (_legacy_tmp, legacy_root, _, _) = legacy_workspace().await;
     let legacy = server_at(&legacy_root)
@@ -768,6 +800,7 @@ async fn drift_reports_the_affected_files_on_both_layouts() {
 /// `forgeplan_coverage` maps the active ADR onto the real scanned module on
 /// both projections — same module count, same coverage numbers.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn coverage_maps_the_active_adr_onto_the_module_on_both_layouts() {
     let (_legacy_tmp, legacy_root, _, _) = legacy_workspace().await;
     let legacy = server_at(&legacy_root)
@@ -805,6 +838,7 @@ async fn coverage_maps_the_active_adr_onto_the_module_on_both_layouts() {
 /// The range is the base commit's sha → HEAD. `validate_git_ref` refuses `~`,
 /// so a symbolic `HEAD~1` cannot be passed through the tool's own parameter.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn release_notes_classify_the_committed_corpus_on_both_layouts() {
     let (_legacy_tmp, legacy_root, _, legacy_base) = legacy_workspace().await;
     let legacy = server_at(&legacy_root)
@@ -846,6 +880,7 @@ async fn release_notes_classify_the_committed_corpus_on_both_layouts() {
 /// workspace and runs the default rules over it. ADR-002 is active, has no
 /// evidence (R_eff 0) and no links, so `weak-evidence` wins on priority.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn fpf_check_evaluates_the_artifact_on_both_layouts() {
     let (_legacy_tmp, legacy_root, _, _) = legacy_workspace().await;
     let legacy = server_at(&legacy_root)
@@ -884,6 +919,7 @@ async fn fpf_check_evaluates_the_artifact_on_both_layouts() {
 /// and `fpf_section` return its real sections on a MIGRATED workspace, and the
 /// artifact reads still create no retired table.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn fpf_reads_return_the_ingested_knowledge_base_on_a_migrated_workspace() {
     let (_tmp, root, ws, _base) = migrated_workspace().await;
     ingest_fpf(&ws).await;
@@ -948,6 +984,7 @@ async fn fpf_reads_return_the_ingested_knowledge_base_on_a_migrated_workspace() 
 /// must say so and leave the workspace exactly as they found it — a read is
 /// not allowed to allocate the table it was looking for.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn fpf_reads_of_a_missing_knowledge_base_create_no_table() {
     let (_tmp, root, ws, _base) = migrated_workspace().await;
     let fpf_table = ws.join("lance").join("fpf_spec.lance");
@@ -1000,6 +1037,7 @@ async fn fpf_reads_of_a_missing_knowledge_base_create_no_table() {
 /// each a real section id, and the response says the answer was cut so a caller
 /// never reads "3 results" as "3 results exist".
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn fpf_search_returns_exactly_the_limit_against_a_larger_knowledge_base() {
     let (_tmp, root, ws, _base) = migrated_workspace().await;
     ingest_fpf_sections(&ws, 12).await;
@@ -1041,22 +1079,81 @@ async fn fpf_search_returns_exactly_the_limit_against_a_larger_knowledge_base() 
     assert_eq!(all.assert_ok()["count"], 12, "no section may be lost");
 }
 
+/// Restores `FORGEPLAN_MODEL_CACHE` on the way out of scope, however the scope
+/// is left.
+///
+/// A guard rather than a restore statement after the await, because
+/// `call_tool_json` panics on timeout and on RPC error — the panic unwinds
+/// straight past any code written after the `.await`, so a statement there
+/// would never run. The variable would then stay pointing at a `TempDir` that
+/// is deleted as the stack unwinds, and every later test in this binary would
+/// resolve an absent model cache. `Drop` runs on both the normal and the
+/// unwinding path, so the restore happens exactly once either way.
+struct ModelCacheGuard {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl ModelCacheGuard {
+    /// Point `FORGEPLAN_MODEL_CACHE` at `path`, remembering the old value.
+    ///
+    /// SAFETY of the write: every test in this binary that can read the
+    /// variable — which is all of them, see the module header — carries
+    /// `#[serial_test::serial(env_model_cache)]`, so no other thread in this
+    /// process reads it concurrently. Rust 2024 makes `set_var` `unsafe`
+    /// precisely because that is not guaranteed by default, and here it is.
+    fn set(path: &Path) -> Self {
+        let previous = std::env::var_os("FORGEPLAN_MODEL_CACHE");
+        // SAFETY: see the note above.
+        unsafe { std::env::set_var("FORGEPLAN_MODEL_CACHE", path) };
+        Self { previous }
+    }
+}
+
+impl Drop for ModelCacheGuard {
+    fn drop(&mut self) {
+        // SAFETY: the same serialised region that justified the write in
+        // `set` still holds — the guard is dropped inside it.
+        unsafe {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("FORGEPLAN_MODEL_CACHE", value),
+                None => std::env::remove_var("FORGEPLAN_MODEL_CACHE"),
+            }
+        }
+    }
+}
+
 /// A semantic request that cannot run the vector channel must be LABELLED as a
 /// keyword fallback, never reported as a semantic positive. A caller that sees
 /// `semantic: true` and no warning would conclude the vectors decided the
 /// ranking — they did not.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn a_semantic_request_without_a_model_is_labelled_as_a_keyword_fallback() {
     let (_tmp, root, ws, _base) = migrated_workspace().await;
     ingest_fpf(&ws).await;
     let server = server_at(&root).await;
 
-    let env = server
-        .call_tool_json(
-            "forgeplan_fpf_search",
-            json!({"query": "trust boundary", "semantic": true}),
-        )
-        .await;
+    // "Without a model" has to be *created*, not assumed. `resolve_cache_dir`
+    // falls back to `~/.forgeplan/models` when this is unset, and on a machine
+    // with a cached BGE-M3 snapshot the semantic branch would open the ONNX
+    // graph and 2.1 GB of weights instead of degrading — which is both slower
+    // than the tool's timeout and not the state this test is about. An empty
+    // cache makes `CachedSnapshot::open` miss, which is the real condition.
+    let empty_cache = TempDir::new().expect("temp cache dir");
+
+    // The guard is scoped to the call, not the test: the variable is back to
+    // its previous value before any assertion runs, and a panic inside
+    // `call_tool_json` unwinds through here and still restores it.
+    let env = {
+        let _guard = ModelCacheGuard::set(empty_cache.path());
+        server
+            .call_tool_json(
+                "forgeplan_fpf_search",
+                json!({"query": "trust boundary", "semantic": true}),
+            )
+            .await
+    };
+
     let payload = env.assert_ok();
 
     // The response still answers — degrading is correct — but it must not
@@ -1088,6 +1185,7 @@ async fn a_semantic_request_without_a_model_is_labelled_as_a_keyword_fallback() 
 /// table behind. Checked on disk after the fact, because "answered correctly
 /// AND migrated the index" is the failure this catches.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn the_twelve_reads_on_a_migrated_workspace_create_no_retired_tables() {
     let (_tmp, root, ws, _base) = migrated_workspace().await;
     ingest_fpf(&ws).await;
@@ -1118,6 +1216,7 @@ async fn the_twelve_reads_on_a_migrated_workspace_create_no_retired_tables() {
 /// as an error — an empty report would read as "this workspace is healthy",
 /// which is a different fact.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn a_corrupt_current_pointer_is_a_typed_error_not_an_empty_report() {
     let (_tmp, root, ws, _base) = migrated_workspace().await;
     let server = server_at(&root).await;
@@ -1188,6 +1287,7 @@ async fn a_corrupt_current_pointer_is_a_typed_error_not_an_empty_report() {
 /// would omit the artifact, and a caller would conclude the decision was never
 /// written. Every artifact-reading surface must refuse instead.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn a_damaged_canonical_source_is_refused_not_silently_dropped() {
     let (_tmp, root, ws, _base) = migrated_workspace().await;
 
@@ -1296,6 +1396,7 @@ async fn run_cli(root: &Path, args: &[&str]) -> String {
 /// process AND nothing regenerates the index, so only a genuinely fresh read
 /// per request can answer correctly.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn a_running_server_sees_a_write_made_by_the_real_cli_process() {
     if cli_binary().is_none() {
         eprintln!(
@@ -1348,6 +1449,7 @@ async fn a_running_server_sees_a_write_made_by_the_real_cli_process() {
 /// `forgeplan` child process, so the server learns about the migration only by
 /// re-reading the workspace's own state on the next call.
 #[tokio::test]
+#[serial_test::serial(env_model_cache)]
 async fn a_running_server_follows_an_external_cli_index_migration() {
     if cli_binary().is_none() {
         eprintln!(
@@ -1377,6 +1479,18 @@ async fn a_running_server_follows_an_external_cli_index_migration() {
         "precondition: the external `forgeplan index` really migrated the workspace"
     );
 
+    // Snapshot AFTER the publish and BEFORE the first post-migration read.
+    // Taken earlier it would compare the pre-migration layout against the
+    // post-migration one and say nothing about what the reads did; taken later
+    // it would already contain whatever the reads created.
+    //
+    // At this point `artifacts` and `relations` have been renamed to
+    // `.legacy-backup.lance` by the publish, while `evidence` and `change_log`
+    // were never retired at all — they are not in `LEGACY_TABLES`, and this
+    // workspace started with a legacy index, so `LanceStore::init` created
+    // them. Their presence is the fixture's, not a table coming back.
+    let before_reads = legacy_tables(&ws);
+
     let after = server.call_tool_json("forgeplan_health", json!({})).await;
     let payload = after.assert_ok();
     assert_eq!(
@@ -1386,8 +1500,8 @@ async fn a_running_server_follows_an_external_cli_index_migration() {
         after.raw_text
     );
 
-    // The retired table was renamed aside by the publish, and no read brought
-    // it back or created a replacement.
+    // The retired tables were renamed aside by the publish, and no read brought
+    // either back or created a replacement.
     assert!(
         !ws.join("lance").join("artifacts.lance").exists(),
         "the retired table must stay retired"
@@ -1396,9 +1510,28 @@ async fn a_running_server_follows_an_external_cli_index_migration() {
         ws.join("lance").join("artifacts.legacy-backup.lance").exists(),
         "the external index run is what renamed it aside"
     );
+    // `relations` is retired by the same publish, on the same terms as
+    // `artifacts`: absence is only meaningful next to the backup that proves
+    // the rename happened rather than the table never having existed.
     assert!(
-        legacy_tables(&ws).is_empty(),
-        "the post-migration reads must not recreate any retired table: {:?}",
+        !ws.join("lance").join("relations.lance").exists(),
+        "relations must stay retired too"
+    );
+    assert!(
+        ws.join("lance")
+            .join("relations.legacy-backup.lance")
+            .exists(),
+        "the external index run is what renamed relations aside"
+    );
+    // The general form of the check: the reads must not have created anything.
+    // "No legacy table exists" was never true here and cannot distinguish a
+    // read that resurrected one from a fixture that always had it.
+    assert!(
         legacy_tables(&ws)
+            .iter()
+            .all(|name| before_reads.contains(name)),
+        "the post-migration reads must not create any table: {:?} (before the reads: {:?})",
+        legacy_tables(&ws),
+        before_reads
     );
 }

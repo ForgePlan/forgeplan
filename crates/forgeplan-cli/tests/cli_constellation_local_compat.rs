@@ -83,13 +83,35 @@ fn run_json(root: &std::path::Path, args: &[&str]) -> serde_json::Value {
         .unwrap_or_else(|e| panic!("`forgeplan {}` did not emit JSON ({e}): {stdout}", args.join(" ")))
 }
 
-/// A migrated workspace must not have grown a legacy artifact table.
-fn assert_no_retired_tables(root: &std::path::Path) {
+/// The tables under `.forgeplan/lance` as they stand right now.
+///
+/// Taken **before** a command so the retired-table check can be "did this
+/// command add one", not "does one exist". `init -y` runs `LanceStore::init`,
+/// which creates `evidence.lance` before `forgeplan index` ever runs, and the
+/// Constellation migration only renames aside the tables in `LEGACY_TABLES`
+/// (`artifacts`, `relations`, the old `sections`), so `evidence.lance`
+/// legitimately outlives the cutover. The absolute form of the assertion —
+/// "no retired table exists" — was therefore false in the fixture itself,
+/// before any command ran, and could not distinguish a command that reopened
+/// the legacy store from one that did not.
+fn lance_tables(root: &std::path::Path) -> Vec<String> {
+    inventory(&ws_of(root).join("lance"))
+}
+
+/// No command under test added a legacy table to a migrated workspace.
+///
+/// The forbidden set is unchanged — `artifacts.lance`, `evidence.lance`,
+/// `relations.lance` — because the regression being guarded against is a
+/// command *creating* one of them, not the fixture having one already. A table
+/// present in `before` is the fixture's; a table present now and absent from
+/// `before` is the command's.
+fn assert_no_retired_tables_added(root: &std::path::Path, before: &[String]) {
     let lance = ws_of(root).join("lance");
     for legacy in ["artifacts.lance", "evidence.lance", "relations.lance"] {
         assert!(
-            !lance.join(legacy).exists(),
-            "{legacy} was recreated on a constellation-managed workspace: {:?}",
+            !lance.join(legacy).exists() || before.iter().any(|name| name == legacy),
+            "{legacy} appeared under {} while the command ran; baseline was {before:?}, now {:?}",
+            lance.display(),
             inventory(&lance)
         );
     }
@@ -156,7 +178,7 @@ fn init_git_history(root: &std::path::Path) {
 fn seed_artifacts(root: &std::path::Path) {
     artifact(
         root,
-        "prds/PRD-001-auth.md",
+        "prds/PRD-001-auth-rewrite.md",
         "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth rewrite\n\
          slug: prd-auth-rewrite\ndepth: standard\n\
          links:\n  - target: EVID-001\n    relation: informs\n---\n\n\
@@ -164,14 +186,14 @@ fn seed_artifacts(root: &std::path::Path) {
     );
     artifact(
         root,
-        "evidence/EVID-001-stress.md",
+        "evidence/EVID-001-stress-run.md",
         "---\nid: EVID-001\nkind: evidence\nstatus: active\ntitle: Stress run\n\
          depth: standard\n---\n\nverdict: supports\ncongruence_level: 3\n\
          evidence_type: measurement\n",
     );
     artifact(
         root,
-        "rfcs/RFC-002-wire.md",
+        "rfcs/RFC-002-wire-format.md",
         "---\nid: RFC-002\nkind: rfc\nstatus: draft\ntitle: Wire format\ndepth: standard\n---\n\n## Summary\n\nUnrelated.\n",
     );
     populate_legacy_index(root);
@@ -187,8 +209,23 @@ fn populate_legacy_index(root: &std::path::Path) {
     if ws_of(root).join("lance/CURRENT.json").exists() {
         return;
     }
-    let (ok, _out, stderr) = run(root, &["reindex"]);
+    let (ok, stdout, stderr) = run(root, &["reindex"]);
     assert!(ok, "reindex failed while seeding: {stderr}");
+    // A zero exit code is not proof the legacy rows exist: `reindex` reports a
+    // per-artifact failure as a `WARN … create failed` line, counts it, and
+    // still exits 0. That is the right behaviour for a bulk command and the
+    // wrong thing for a fixture to treat as success — an unpopulated legacy
+    // side then reads as "the two layouts disagree" instead of "the seed never
+    // worked". Checked here so the fixture fails where the cause is.
+    assert!(
+        !stdout.contains("create failed"),
+        "reindex reported a failed projection, so the legacy side is empty and every parity \
+         assertion below would compare against nothing. stdout: {stdout}"
+    );
+    assert!(
+        !stderr.contains("create failed"),
+        "reindex reported a failed projection on stderr. stderr: {stderr}"
+    );
 }
 
 /// The same fixture plus one relation whose target does not exist — an
@@ -197,7 +234,7 @@ fn populate_legacy_index(root: &std::path::Path) {
 fn seed_artifacts_with_dangling_link(root: &std::path::Path) {
     artifact(
         root,
-        "prds/PRD-001-auth.md",
+        "prds/PRD-001-auth-rewrite.md",
         "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth rewrite\n\
          slug: prd-auth-rewrite\ndepth: standard\n\
          links:\n  - target: EVID-001\n    relation: informs\n\
@@ -205,14 +242,14 @@ fn seed_artifacts_with_dangling_link(root: &std::path::Path) {
     );
     artifact(
         root,
-        "evidence/EVID-001-stress.md",
+        "evidence/EVID-001-stress-run.md",
         "---\nid: EVID-001\nkind: evidence\nstatus: active\ntitle: Stress run\n\
          depth: standard\n---\n\nverdict: supports\ncongruence_level: 3\n\
          evidence_type: measurement\n",
     );
     artifact(
         root,
-        "rfcs/RFC-002-wire.md",
+        "rfcs/RFC-002-wire-format.md",
         "---\nid: RFC-002\nkind: rfc\nstatus: draft\ntitle: Wire format\ndepth: standard\n\
          links:\n  - target: PRD-404\n    relation: refines\n---\n\n## Summary\n\nPoints at an artifact that is not there.\n",
     );
@@ -253,6 +290,7 @@ fn health_reports_the_same_verdict_before_and_after_index() {
         seed_artifacts(root);
     }
 
+    let baseline = lance_tables(migrated.path());
     let before = run_json(legacy.path(), &["health", "--json"]);
     let after = run_json(migrated.path(), &["health", "--json"]);
 
@@ -287,7 +325,7 @@ fn health_reports_the_same_verdict_before_and_after_index() {
     };
     assert_eq!(prd_count(&after), 1, "by_kind: {}", after["by_kind"]);
     assert_eq!(prd_count(&before), prd_count(&after));
-    assert_no_retired_tables(migrated.path());
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 }
 
 #[test]
@@ -315,6 +353,7 @@ fn health_strict_still_fires_on_a_migrated_workspace() {
 fn journal_lists_the_linked_decision_after_index() {
     let migrated = init_migrated();
     seed_decision_artifacts(migrated.path());
+    let baseline = lance_tables(migrated.path());
 
     let stdout = run_ok(&migrated.path(), &["journal"]);
     assert!(
@@ -325,7 +364,7 @@ fn journal_lists_the_linked_decision_after_index() {
         !stdout.contains("RFC-002"),
         "an RFC is not a journal decision kind, got: {stdout}"
     );
-    assert_no_retired_tables(&migrated.path());
+    assert_no_retired_tables_added(&migrated.path(), &baseline);
 }
 
 #[test]
@@ -346,13 +385,14 @@ fn journal_kind_filter_matches_the_same_records_after_index() {
 fn blindspots_sees_the_orphan_after_index() {
     let migrated = init_migrated();
     seed_artifacts(migrated.path());
+    let baseline = lance_tables(migrated.path());
 
     let stdout = run_ok(&migrated.path(), &["blindspots"]);
     assert!(
         stdout.contains("RFC-002"),
         "the unlinked RFC must be reported as an orphan, got: {stdout}"
     );
-    assert_no_retired_tables(&migrated.path());
+    assert_no_retired_tables_added(&migrated.path(), &baseline);
 }
 
 #[test]
@@ -381,6 +421,7 @@ fn drift_runs_after_index_and_reports_the_decision_it_checked() {
          ---\n\n## Affected Files\n\n- src/db.rs\n",
     );
 
+    let baseline = lance_tables(migrated.path());
     let payload = run_json(&migrated.path(), &["drift", "--json"]);
     let reports = payload["reports"].as_array().expect("reports array");
     let ids: Vec<&str> = reports
@@ -400,7 +441,7 @@ fn drift_runs_after_index_and_reports_the_decision_it_checked() {
             .is_some(),
         "the report must state staleness explicitly, got {payload}"
     );
-    assert_no_retired_tables(&migrated.path());
+    assert_no_retired_tables_added(&migrated.path(), &baseline);
 }
 
 #[test]
@@ -408,13 +449,33 @@ fn anomalies_run_after_index_and_detect_the_same_thing_as_before_index() {
     // The comparison is against the LEGACY workspace, not a hard-coded count:
     // what matters is that the migrated layout computes the same detection.
     let legacy = init_legacy();
-    let migrated = init_migrated();
+let migrated = init_migrated();
     for root in [legacy.path(), migrated.path()] {
         seed_artifacts_with_dangling_link(root);
     }
 
-    let before = run_json(&legacy.path(), &["anomalies", "--json"]);
-    let after = run_json(&migrated.path(), &["anomalies", "--json"]);
+    // The dangling edge exists on **both** sides in the markdown, but only the
+    // legacy side can hold it in its rows: `reindex` prunes a relation whose
+    // target is absent, while the migrated capture publishes `links:`
+    // verbatim and flags the orphan. So the legacy fixture has to be given the
+    // edge back after `populate_legacy_index` — before that, a repeat `reindex`
+    // would cut it again, which is why this runs here and not inside the seed
+    // helper. Without it the legacy side reports no `orphan_link` and the
+    // comparison below fails on a real, intended difference between the two
+    // layouts rather than on a defect.
+    //
+    // Gated on the same predicate `populate_legacy_index` uses, so it applies
+    // to the legacy workspace only and leaves the migrated one untouched.
+    if !ws_of(legacy.path()).join("lance/CURRENT.json").exists() {
+        run_ok(
+            legacy.path(),
+            &["link", "RFC-002", "PRD-404", "--relation", "refines", "--replace"],
+        );
+    }
+
+    let baseline = lance_tables(migrated.path());
+    let before = run_json(legacy.path(), &["anomalies", "--json"]);
+    let after = run_json(migrated.path(), &["anomalies", "--json"]);
 
     for field in ["anomalies", "total", "by_severity", "by_tier"] {
         assert!(
@@ -441,7 +502,7 @@ fn anomalies_run_after_index_and_detect_the_same_thing_as_before_index() {
         kinds(&after).iter().any(|k| k == "orphan_link"),
         "a relation to PRD-404, which does not exist, must be detected, got {after}"
     );
-    assert_no_retired_tables(&migrated.path());
+    assert_no_retired_tables_added(&migrated.path(), &baseline);
 }
 
 #[test]
@@ -452,6 +513,7 @@ fn status_counts_the_same_artifacts_after_index() {
         seed_artifacts(root);
     }
 
+    let baseline = lance_tables(migrated.path());
     let before = run_ok(&legacy.path(), &["status"]);
     let after = run_ok(&migrated.path(), &["status"]);
 
@@ -464,7 +526,7 @@ fn status_counts_the_same_artifacts_after_index() {
     };
     assert_eq!(count(&after), count(&before));
     assert!(after.contains("prd"), "by-kind breakdown missing: {after}");
-    assert_no_retired_tables(&migrated.path());
+    assert_no_retired_tables_added(&migrated.path(), &baseline);
 }
 
 #[test]
@@ -479,14 +541,18 @@ fn release_notes_build_real_classifications_after_index() {
     // v0.1.0..HEAD now contains a real change to a real artifact.
     artifact(
         migrated.path(),
-        "rfcs/RFC-002-wire.md",
+        "rfcs/RFC-002-wire-format.md",
         "---\nid: RFC-002\nkind: rfc\nstatus: active\ntitle: Wire format\ndepth: standard\n\
          ---\n\n## Summary\n\nChanged after the tag.\n",
     );
     git(migrated.path(), &["add", "-A"]);
     git(migrated.path(), &["commit", "-q", "-m", "wire format"]);
 
-    let payload = run_json(migrated.path(), &["release-notes", "--since", "v0.1.0", "--json"]);
+    let baseline = lance_tables(migrated.path());
+    let payload = run_json(
+        migrated.path(),
+        &["release-notes", "--since", "v0.1.0", "--output", "json"],
+    );
     assert_eq!(
         payload["since"], "v0.1.0",
         "the explicit --since range must be echoed, got {payload}"
@@ -507,7 +573,7 @@ fn release_notes_build_real_classifications_after_index() {
         !stderr_mentions_retired_store(migrated.path()),
         "release-notes fell back to the retired store"
     );
-    assert_no_retired_tables(migrated.path());
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 }
 
 /// Run release-notes once and report whether its stderr names the retired
@@ -599,6 +665,9 @@ fn a_corrupt_current_pointer_is_an_error_not_an_empty_report() {
 #[test]
 fn discover_sessions_start_list_and_complete_on_a_migrated_workspace() {
     let migrated = init_migrated();
+    // Taken before any command: `init -y` already created `evidence.lance`, so
+    // "no retired table exists" is false here before `discover` runs anything.
+    let baseline = lance_tables(migrated.path());
 
     run_ok(migrated.path(), &["discover", "start", "demo"]);
     let listed = run_ok(migrated.path(), &["discover", "list"]);
@@ -606,7 +675,7 @@ fn discover_sessions_start_list_and_complete_on_a_migrated_workspace() {
         listed.contains("demo"),
         "the started session must be listed, got: {listed}"
     );
-    assert_no_retired_tables(&migrated.path());
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 
     // `show` / `complete` need the session id the start printed.
     let id = listed
@@ -624,7 +693,7 @@ fn discover_sessions_start_list_and_complete_on_a_migrated_workspace() {
     let shown = run_ok(migrated.path(), &["discover", "show", &id]);
     assert!(shown.contains("demo"), "got: {shown}");
     run_ok(migrated.path(), &["discover", "complete", &id]);
-    assert_no_retired_tables(&migrated.path());
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 }
 
 // ── scan-import on the migrated layout ─────────────────────────────────────
@@ -656,6 +725,10 @@ fn a_dry_run_takes_no_lock_and_opens_no_store_on_a_legacy_workspace() {
 #[test]
 fn scan_import_dry_run_changes_nothing_on_a_migrated_workspace() {
     let migrated = init_migrated();
+    // Before the command: the fixture already owns the `evidence.lance` that
+    // `init -y`'s `LanceStore::init` created, so the check is "the dry run
+    // added no retired table", not "none exists".
+    let baseline = lance_tables(migrated.path());
     let source = migrated.path().join("docs/external.md");
     std::fs::create_dir_all(source.parent().unwrap()).unwrap();
     let original = "---\nkind: adr\nid: ADR-050\ntitle: External doc\nstatus: accepted\n\
@@ -687,7 +760,7 @@ fn scan_import_dry_run_changes_nothing_on_a_migrated_workspace() {
         original,
         "dry-run rewrote its input"
     );
-    assert_no_retired_tables(&migrated.path());
+    assert_no_retired_tables_added(&migrated.path(), &baseline);
 }
 
 #[test]
@@ -702,6 +775,7 @@ fn scan_import_apply_then_repeat_is_idempotent_and_preserves_the_document() {
                      ---\n## Decision\n\nUse the capture.\n";
     std::fs::write(&source, original).unwrap();
 
+    let baseline = lance_tables(migrated.path());
     let first = run_ok(migrated.path(), &["scan-import"]);
     assert!(
         first.contains("1 imported"),
@@ -751,13 +825,18 @@ fn scan_import_apply_then_repeat_is_idempotent_and_preserves_the_document() {
         original,
         "the repeat run touched the external source"
     );
-    assert_no_retired_tables(&migrated.path());
+    assert_no_retired_tables_added(&migrated.path(), &baseline);
 }
 
 #[test]
 fn init_scan_imports_on_a_migrated_workspace_without_retired_tables() {
     let migrated = init_migrated();
     seed_artifacts(migrated.path());
+    // Before `init --force --scan`: the forbidden set is what the command may
+    // not *add*. `init -y` already ran `LanceStore::init` and left
+    // `evidence.lance` behind, so its presence is the fixture's, not a
+    // regression.
+    let baseline = lance_tables(migrated.path());
     std::fs::create_dir_all(migrated.path().join("docs")).unwrap();
     std::fs::write(
         migrated.path().join("docs/brownfield.md"),
@@ -766,7 +845,10 @@ fn init_scan_imports_on_a_migrated_workspace_without_retired_tables() {
     .unwrap();
 
     let (ok, stdout, stderr) = run(migrated.path(), &["init", "-y", "--force", "--scan"]);
-    assert!(ok, "init --force --scan failed on a migrated workspace: {stderr}");
+    assert!(
+        ok,
+        "init --force --scan failed on a migrated workspace: {stderr}"
+    );
     assert!(
         !stdout.contains("Skipped: scan-import needs the legacy store"),
         "init --scan must not report the retired skip any more, got: {stdout}"
@@ -778,5 +860,5 @@ fn init_scan_imports_on_a_migrated_workspace_without_retired_tables() {
             .any(|n| n.starts_with("PROB-070-")),
         "init --scan must actually import the document, got {problems:?}"
     );
-    assert_no_retired_tables(&migrated.path());
+    assert_no_retired_tables_added(&migrated.path(), &baseline);
 }

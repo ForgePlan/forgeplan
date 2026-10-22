@@ -93,6 +93,10 @@ fn refs_main_selects_the_revision_and_a_scan_finds_one_without_it() {
     std::fs::create_dir_all(revision_dir.join("snapshots")).expect("dirs");
     testing::write_snapshot(&revision_dir.join("snapshots/rev-main"), MAX_TOKENS_CEILING)
         .expect("write fixture");
+    // `refs/` is created explicitly: writing the file creates the file, not
+    // the directory, and the fixture that never made it failed on the write
+    // rather than on the lookup it was meant to exercise.
+    std::fs::create_dir_all(revision_dir.join("refs")).expect("refs dir");
     std::fs::write(revision_dir.join("refs/main"), "rev-main\n").expect("write refs/main");
     assert_eq!(
         find_metadata_snapshot(with_ref.path(), "BAAI/bge-m3"),
@@ -133,7 +137,12 @@ fn an_absent_cache_resolves_to_the_fingerprinted_unavailable_state() {
 #[test]
 fn a_present_and_an_absent_layout_never_hash_equal() {
     let tmp = tempfile::TempDir::new().expect("temp dir");
-    testing::write_snapshot(tmp.path(), MAX_TOKENS_CEILING).expect("write fixture");
+    // Under the cache layout, so `resolve_layout_in` finds it: metadata written
+    // straight into the cache root is not a snapshot, and the "present" side of
+    // this comparison was silently an absence.
+    let snapshot = tmp.path().join("models--BAAI--bge-m3/snapshots/rev-a");
+    std::fs::create_dir_all(&snapshot).expect("dirs");
+    testing::write_snapshot(&snapshot, MAX_TOKENS_CEILING).expect("write fixture");
     let present = resolve_layout_in(tmp.path(), "BAAI/bge-m3");
     let absent = resolve_layout_in(Path::new("/nonexistent-cache"), "BAAI/bge-m3");
 
@@ -171,11 +180,30 @@ fn the_fingerprint_binds_the_actual_limit_and_the_tokenizer_bytes() {
 fn the_fingerprint_is_stable_across_two_loads_of_the_same_bytes() {
     let tmp_a = tempfile::TempDir::new().expect("temp dir");
     let tmp_b = tempfile::TempDir::new().expect("temp dir");
-    testing::write_snapshot(tmp_a.path(), MAX_TOKENS_CEILING).expect("write a");
-    testing::write_snapshot(tmp_b.path(), MAX_TOKENS_CEILING).expect("write b");
+    // Both snapshots go under the **cache layout** (`models--…/snapshots/<rev>`),
+    // because that is where `resolve_layout_in` looks. A fixture that wrote the
+    // metadata straight into the cache root resolved to the *unavailable*
+    // layout both times — and two absences do hash equal, so the assertion
+    // passed while proving nothing about a loaded tokenizer.
+    let cache_a = tmp_a.path().join("models--BAAI--bge-m3/snapshots/rev-a");
+    let cache_b = tmp_b.path().join("models--BAAI--bge-m3/snapshots/rev-b");
+    std::fs::create_dir_all(&cache_a).expect("dirs");
+    std::fs::create_dir_all(&cache_b).expect("dirs");
+    testing::write_snapshot(&cache_a, MAX_TOKENS_CEILING).expect("write a");
+    testing::write_snapshot(&cache_b, MAX_TOKENS_CEILING).expect("write b");
 
     let first = resolve_layout_in(tmp_a.path(), "BAAI/bge-m3");
     let second = resolve_layout_in(tmp_b.path(), "BAAI/bge-m3");
+    assert!(
+        first.layout().is_available(),
+        "fixture precondition: a is a resolved layout, got {:?}",
+        first.layout()
+    );
+    assert!(
+        second.layout().is_available(),
+        "fixture precondition: b is a resolved layout, got {:?}",
+        second.layout()
+    );
     assert_eq!(
         first.fingerprint(),
         second.fingerprint(),
@@ -299,6 +327,10 @@ fn the_display_title_and_heading_are_never_shortened_in_the_row_but_the_input_is
     let long_title = "the title ".repeat(400);
     let long_heading = "section ".repeat(400);
     let body = "body ".repeat(2_000);
+    // What the builder was handed, so "unchanged" can be checked against
+    // something rather than against a restatement of the same expression.
+    let original_title = long_title.clone();
+    let original_heading = long_heading.clone();
 
     let input = section_input_text(
         &tokenizer,
@@ -318,10 +350,22 @@ fn the_display_title_and_heading_are_never_shortened_in_the_row_but_the_input_is
     // The builder returns only the input; the display strings are the caller's
     // to keep. This asserts the cap is applied to the *text*, not by rewriting
     // what the caller still holds.
+    //
+    // Compared against the saved values, not against a length: `"the title "`
+    // is exactly 10 bytes, so `repeat(400)` is exactly 4 000 — and an
+    // `assert!(long_title.len() > 4_000)` was therefore false on every run, for
+    // every title, and said nothing.
     assert_eq!(
-        long_title.len() > 4_000,
-        true,
+        long_title, original_title,
         "the caller's display title is untouched by the builder"
+    );
+    assert_eq!(
+        long_heading, original_heading,
+        "the caller's display heading is untouched by the builder"
+    );
+    assert!(
+        input.len() < original_title.len() + original_heading.len() + body.len(),
+        "the assembled input must be shorter than its parts, or nothing was capped"
     );
 }
 

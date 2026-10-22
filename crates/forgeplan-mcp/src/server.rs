@@ -7809,6 +7809,17 @@ impl ForgeplanServer {
         }
 
         let limit = p.limit.unwrap_or(5).min(50);
+        // Overfetch by exactly one row, so "there are more matches" is a fact
+        // this handler observed rather than something it infers from having
+        // reached the limit — the distinction between "3 matches exist" and
+        // "3 of 12 exist" is invisible to a consumer that only sees a capped
+        // list. `search_fpf` discards the total, so the extra row is the only
+        // signal available without changing its signature.
+        //
+        // 51 stays inside `AuxiliaryStore::search_fpf`'s accepted range; the
+        // cap the caller asked for is applied to the answer below, never to
+        // the query.
+        let fetch = limit.saturating_add(1);
         let semantic = p.semantic.unwrap_or(false);
         let mut warning: Option<String> = None;
 
@@ -7823,14 +7834,14 @@ impl ForgeplanServer {
                     // never fetch gigabytes. Absence degrades to keyword below,
                     // with the reason reported.
                     Ok(mut model) => match model.embedder.embed(&p.query) {
-                        Ok(qvec) => match fpf.search_fpf_by_vector(&qvec, limit).await {
+                        Ok(qvec) => match fpf.search_fpf_by_vector(&qvec, fetch).await {
                             Ok(r) => r,
                             Err(e) => {
                                 tracing::warn!("FPF vector search failed: {e}");
                                 warning = Some(format!(
                                     "vector search failed ({e}); fell back to keyword search"
                                 ));
-                                match fpf.search_fpf(&p.query, limit).await {
+                                match fpf.search_fpf(&p.query, fetch).await {
                                     Ok(r) => r,
                                     Err(ke) => {
                                         // The keyword fallback failed too. An
@@ -7848,7 +7859,7 @@ impl ForgeplanServer {
                             warning = Some(format!(
                                 "failed to encode query ({e}); fell back to keyword search"
                             ));
-                            match fpf.search_fpf(&p.query, limit).await {
+                            match fpf.search_fpf(&p.query, fetch).await {
                                 Ok(r) => r,
                                 Err(ke) => return Ok(safe_err_result("FPF search", ke)),
                             }
@@ -7860,7 +7871,7 @@ impl ForgeplanServer {
                             "no usable cached embedding model ({e}); fell back to keyword \
                              search. Obtain weights explicitly with `forgeplan setup --warm-model`."
                         ));
-                        match fpf.search_fpf(&p.query, limit).await {
+                        match fpf.search_fpf(&p.query, fetch).await {
                             Ok(r) => r,
                             Err(ke) => return Ok(safe_err_result("FPF search", ke)),
                         }
@@ -7873,7 +7884,7 @@ impl ForgeplanServer {
                     "semantic-search feature not compiled in; falling back to keyword search"
                         .to_string(),
                 );
-                match fpf.search_fpf(&p.query, limit).await {
+                match fpf.search_fpf(&p.query, fetch).await {
                     Ok(r) => r,
                     Err(e) => return Ok(safe_err_result("FPF search", e)),
                 }
@@ -7881,14 +7892,19 @@ impl ForgeplanServer {
         } else {
             // A keyword search that failed must say so. `unwrap_or_default`
             // here answered "no matches" for "the query could not be run".
-            match fpf.search_fpf(&p.query, limit).await {
+            match fpf.search_fpf(&p.query, fetch).await {
                 Ok(r) => r,
                 Err(e) => return Ok(safe_err_result("FPF search", e)),
             }
         };
 
+        // A row beyond the cap means the answer was bounded. Drop it — `count` is the
+        // number of results actually returned, which is what a consumer counts
+        // — and say so in words below.
+        let truncated = results.len() > limit;
         let hits: Vec<FpfSearchHit> = results
             .iter()
+            .take(limit)
             .map(|c| FpfSearchHit {
                 id: c.id.clone(),
                 section_id: c.section_id.clone(),
@@ -7907,27 +7923,42 @@ impl ForgeplanServer {
             .collect();
 
         let count = hits.len();
+        debug_assert!(count <= limit, "the cap must bound the returned rows");
         let first_section = hits.first().map(|h| sanitize_for_hint(&h.section_id));
         let response = FpfSearchResponse {
             query: p.query.clone(),
             semantic,
             count,
             results: hits,
+            // `warning` is not reused here: by contract it means the semantic
+            // channel did not run and keyword search answered instead. FPF-095
+            // asserts exactly that, and overloading the field would make a
+            // perfectly healthy truncated answer indistinguishable from a
+            // degraded one.
             warning,
+        };
+        let truncation_note = if truncated {
+            format!(
+                " More matches exist than the {limit} returned — raise `limit` (max 50) to see \
+                 more of them."
+            )
+        } else {
+            String::new()
         };
         let next_action = if count == 0 {
             format!(
                 "No FPF matches for `{}`. Try broader terms or `forgeplan_fpf_list` for section \
-                 catalog.",
+                 catalog.{truncation_note}",
                 sanitize_for_hint(&p.query)
             )
         } else if let Some(sid) = first_section {
             format!(
                 "{count} section(s) found. Read full section: `forgeplan_fpf_section {sid}`. \
-                 Top hits show chapter IDs (A.x kernel, B.x reasoning, C.x specifications)."
+                 Top hits show chapter IDs (A.x kernel, B.x reasoning, C.x \
+                 specifications).{truncation_note}"
             )
         } else {
-            format!("{count} hit(s). `forgeplan_fpf_section <id>` for full text.")
+            format!("{count} hit(s). `forgeplan_fpf_section <id>` for full text.{truncation_note}")
         };
         hinted_result(&response, next_action)
     }
@@ -15908,9 +15939,12 @@ mod resolve_workspace_tests {
         let default_ws = mk_fake_workspace();
         let param_ws = mk_fake_workspace();
 
+        // The capability takes the **markdown workspace**, not the project root —
+        // see the note on the sibling test. From the root it would publish into
+        // `<root>/lance` and the migrated precondition below would never hold.
         let capability =
             forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
-                param_ws.path().canonicalize().unwrap(),
+                param_ws.path().join(".forgeplan").canonicalize().unwrap(),
             );
         forgeplan_core::constellation::facade::maintain_index(
             &capability,
@@ -15928,6 +15962,17 @@ mod resolve_workspace_tests {
              otherwise this test would exercise the legacy branch"
         );
 
+        // The legacy branch is only observable on a workspace that actually HAS a
+        // legacy index: `resolve_read_source` on a non-migrated workspace opens
+        // the store, and a bare `.forgeplan/` with no tables would fail that
+        // open with "Table 'artifacts' was not found" — a fixture error that
+        // looks like the branch under test is broken. `make_server` would build
+        // the store too, but doing it here names the precondition instead of
+        // relying on it.
+        forgeplan_core::db::store::LanceStore::init(&default_ws.path().join(".forgeplan"))
+            .await
+            .expect("give the default workspace a real legacy index");
+
         let server = make_server(default_ws.path()).await;
         // SAFETY: serialised with `#[serial(env_forgeplan_workspace)]`; no
         // concurrent thread in this serial group touches FORGEPLAN_WORKSPACE.
@@ -15940,11 +15985,21 @@ mod resolve_workspace_tests {
             .expect("the param workspace resolves");
 
         assert_eq!(via, ResolutionSource::Param);
+        // Canonicalize the **expectation**, exactly as the sibling precedence
+        // test does for its `y`/`z`. `resolve_read_source` returns a
+        // canonicalized path, while `TempDir::path()` is unresolved — on macOS
+        // `/private/var/...` against `/var/...` — so `starts_with` would fail on
+        // the prefix alone and would fail for a correct resolution too.
+        let expected_param_ws = param_ws
+            .path()
+            .join(".forgeplan")
+            .canonicalize()
+            .expect("the param workspace canonicalizes");
         assert!(
-            resolved_dir.starts_with(param_ws.path()),
+            resolved_dir.starts_with(&expected_param_ws),
             "the branch must key on the PARAM workspace {:?}, got {:?} \
              (server default is {:?})",
-            param_ws.path(),
+            expected_param_ws,
             resolved_dir,
             default_ws.path(),
         );
@@ -16097,9 +16152,15 @@ mod resolve_workspace_tests {
     async fn a_migrated_workspace_resolves_with_no_legacy_store() {
         let ws = mk_fake_workspace();
 
+        // The capability takes the **markdown workspace**, not the project
+        // root: it derives `index_root = workspace.join("lance")` itself.
+        // Handed the root it publishes into `<root>/lance`, beside the
+        // `.forgeplan/` this test then resolves — so `workspace_is_migrated`
+        // reads a workspace that was never migrated and the test silently
+        // exercises the legacy branch it exists to rule out.
         let capability =
             forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
-                ws.path().canonicalize().unwrap(),
+                ws.path().join(".forgeplan").canonicalize().unwrap(),
             );
         forgeplan_core::constellation::facade::maintain_index(
             &capability,
@@ -16184,6 +16245,14 @@ mod resolve_workspace_tests {
         forgeplan_core::workspace::init_workspace(z_root.path(), "explicit-z").expect("init Z");
         let y = y_root.path().join(".forgeplan");
         let z = z_root.path().join(".forgeplan");
+        // `TempDir` hands back an unresolved path (`/var/...` on macOS), while
+        // `resolve_workspace` canonicalizes what it returns. Comparing a
+        // canonical result against an unresolved expectation failed on the
+        // prefix alone, and would have failed for a correct precedence too. The
+        // production canonicalization is what is under test here; only the
+        // expectation is normalized.
+        let y = y.canonicalize().expect("Y canonicalizes");
+        let z = z.canonicalize().expect("Z canonicalizes");
         for ws in [&y, &z] {
             forgeplan_core::db::store::LanceStore::init(ws)
                 .await

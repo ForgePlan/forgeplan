@@ -64,17 +64,26 @@ async fn find_source_directories(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let dir_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if dir_name.starts_with('.')
-            || dir_name == "target"
-            || dir_name == "node_modules"
-            || dir_name == "vendor"
-            || dir_name == "sources"
-            || dir_name == "research"
-            || dir_name == "docs"
-            || dir_name == "templates"
-        {
-            continue;
+        // The exclusion list is about what a project keeps *inside* itself —
+        // `.git`, `.forgeplan`, `target`, vendored trees. It is not a judgement
+        // on the directory the caller nominated as the scan root: excluding the
+        // root by name discards the entire walk, and whether it fires depends
+        // on an accident of where the project sits (`/tmp/.tmpXXXX`, a dotfile
+        // checkout). The root is compared as a path; everything below it is
+        // compared by name.
+        if dir != root {
+            let dir_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if dir_name.starts_with('.')
+                || dir_name == "target"
+                || dir_name == "node_modules"
+                || dir_name == "vendor"
+                || dir_name == "sources"
+                || dir_name == "research"
+                || dir_name == "docs"
+                || dir_name == "templates"
+            {
+                continue;
+            }
         }
 
         let mut has_source = false;
