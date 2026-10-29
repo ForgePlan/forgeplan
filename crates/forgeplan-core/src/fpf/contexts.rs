@@ -28,7 +28,10 @@ pub struct BoundedContext {
 /// Each connected component = one bounded context.
 /// Singletons (no links) are grouped into an "Unlinked" context.
 pub fn detect(records: &[ArtifactRecord], edges: &[(String, String)]) -> Vec<BoundedContext> {
-    let all_ids: BTreeSet<String> = records.iter().map(|r| r.id.clone()).collect();
+    // The edge endpoints are canonical keys (ADR-030); `r.id` is the display
+    // alias, which may repeat. Matching the two would silently empty the
+    // adjacency list and collapse every cluster into "Unlinked".
+    let all_ids: BTreeSet<String> = records.iter().map(|r| r.canonical_key.clone()).collect();
 
     // Build adjacency list (undirected)
     let mut adj: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();

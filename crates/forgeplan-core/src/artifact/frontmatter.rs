@@ -164,14 +164,96 @@ pub fn author_from_frontmatter(fm: &Frontmatter) -> Option<String> {
 /// Extract `slug` field from frontmatter (PROB-060 / SPEC-005).
 ///
 /// Returns `Some(&str)` if the field is present and string-valued, `None`
-/// otherwise. Slug is the canonical identity per ADR-012 — used for refs
-/// in commits and cross-artifact relations until a display number is
-/// assigned at merge.
+/// otherwise. The slug is the canonical identity per ADR-030 (which
+/// supersedes ADR-012 for the identity contract): it is the document's
+/// permanent key — the value a reference resolves to. A document that
+/// declares no valid slug keeps its display id as the key.
 ///
-/// Backward compat: legacy artifacts without this field return `None`;
-/// callers must fall back to filename-derived id.
+/// Backward compat: a document that declares no valid slug returns `None`;
+/// the caller falls back to the display id (ADR-030), or to the filename
+/// stem when the document declares no id either.
 pub fn slug_from_frontmatter(fm: &Frontmatter) -> Option<&str> {
     fm.get("slug").and_then(|v| v.as_str())
+}
+
+/// Every canonical key a document declares, across all of its frontmatter
+/// layers.
+///
+/// A document may carry more than one frontmatter block: the projection
+/// wrapper plus the original artifact body. A key that arrives through a
+/// nested block is still a declaration — an ordinary update must not
+/// change it, so it has to be seen before the update is written.
+///
+/// Layers are read with the same rule the merge uses: a nested block is
+/// followed only while it is another frontmatter block. A body that merely
+/// contains a horizontal rule does not parse as frontmatter and stops the
+/// walk.
+pub fn declared_canonical_keys(content: &str) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    let mut remaining = content.trim_start();
+    // Bounded walk: a document has a handful of frontmatter layers at most.
+    for _ in 0..8 {
+        let Ok((fm, next)) = parse_frontmatter_slice(remaining) else {
+            break;
+        };
+        if let Some(slug) = slug_from_frontmatter(&fm) {
+            let slug = slug.trim().to_string();
+            if !slug.is_empty() && !keys.contains(&slug) {
+                keys.push(slug);
+            }
+        }
+        let trimmed = next.trim_start();
+        if !trimmed.starts_with("---") {
+            break;
+        }
+        remaining = trimmed;
+    }
+    keys
+}
+
+/// Write a canonical key into a document's frontmatter.
+///
+/// The key is written into the document's first frontmatter block. A
+/// document without one gets a block of its own — a document that does not
+/// declare its identity has no identity to resolve.
+///
+/// This is the creation path: the key is minted here, so a block that
+/// declares another key is replaced. An ordinary update never comes here —
+/// it goes through [`refuse_canonical_key_change`].
+pub fn ensure_canonical_key(content: &str, canonical_key: &str) -> anyhow::Result<String> {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return Ok(format!("---\nslug: {canonical_key}\n---\n\n{content}"));
+    }
+    let (mut fm, body) = parse_frontmatter_slice(trimmed)?;
+    fm.insert(
+        "slug".to_string(),
+        serde_yaml::Value::String(canonical_key.to_string()),
+    );
+    let yaml = serde_yaml::to_string(&fm)?;
+    Ok(format!("---\n{yaml}---\n\n{body}"))
+}
+
+/// Refuse an ordinary update that would change the document's canonical key.
+///
+/// `current_key` is the canonical key the document carries today (see
+/// [`crate::artifact::canonical_key::canonical_key_from_document`]);
+/// `incoming` is the content an ordinary update wants to write. A key that
+/// arrives through nested or external frontmatter counts as a declaration:
+/// any declared key that differs from `current_key` is refused.
+///
+/// Only the verified identity-repair operation may change a key — it does
+/// not come through this path.
+pub fn refuse_canonical_key_change(current_key: &str, incoming: &str) -> anyhow::Result<()> {
+    for key in declared_canonical_keys(incoming) {
+        if key != current_key {
+            anyhow::bail!(
+                "canonical key change refused: the document is '{current_key}', \
+                 but the update declares '{key}'"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Sane upper bound on artifact numbers (MED-1, CWE-1284 — Round-1 audit).
@@ -410,6 +492,102 @@ pub fn has_tag_in(tags: &[String], key: &str, value: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ensure_canonical_key_writes_the_key_into_the_document() {
+        let key = "prd-auth-system-k0123456789abcdef0123456789abcdef";
+        // A document with frontmatter keeps its block and gains the key.
+        let with_fm = ensure_canonical_key(
+            "---\nid: PRD-001\nkind: prd\ntitle: Auth\n---\n\nBody.\n",
+            key,
+        )
+        .unwrap();
+        let (fm, body) = parse_frontmatter(&with_fm).unwrap();
+        assert_eq!(fm.get("slug").and_then(|v| v.as_str()), Some(key));
+        assert_eq!(fm.get("id").and_then(|v| v.as_str()), Some("PRD-001"));
+        assert_eq!(body.trim(), "Body.");
+
+        // A document without frontmatter gets a block of its own.
+        let without_fm = ensure_canonical_key("Just a body.\n", key).unwrap();
+        let (fm, body) = parse_frontmatter(&without_fm).unwrap();
+        assert_eq!(fm.get("slug").and_then(|v| v.as_str()), Some(key));
+        assert_eq!(body.trim(), "Just a body.");
+
+        // A block that declares another key is replaced — this is the
+        // creation path, where the key is minted.
+        let replaced = ensure_canonical_key(
+            "---\nid: PRD-002\nslug: prd-other\n---\n\nBody.\n",
+            key,
+        )
+        .unwrap();
+        let (fm, _body) = parse_frontmatter(&replaced).unwrap();
+        assert_eq!(fm.get("slug").and_then(|v| v.as_str()), Some(key));
+    }
+
+    #[test]
+    fn declared_canonical_keys_sees_nested_and_outer_layers() {
+        let content = "---\nid: PRD-001\nkind: prd\n---\n\n\
+                        ---\nslug: prd-auth-system\nid: PRD-001\n---\n\nBody.\n";
+        let keys = declared_canonical_keys(content);
+        assert_eq!(
+            keys,
+            vec!["prd-auth-system".to_string()],
+            "the nested block declares the key"
+        );
+
+        let outer = "---\nid: PRD-001\nkind: prd\nslug: prd-auth-system\n---\n\nBody.\n";
+        assert_eq!(
+            declared_canonical_keys(outer),
+            vec!["prd-auth-system".to_string()]
+        );
+
+        // A body without any frontmatter declares nothing.
+        assert!(declared_canonical_keys("Just a body.\n").is_empty());
+    }
+
+    #[test]
+    fn refuse_canonical_key_change_accepts_the_same_key() {
+        let content = "---\nid: PRD-001\nkind: prd\nslug: prd-auth-system\n---\n\nBody.\n";
+        refuse_canonical_key_change("prd-auth-system", content).unwrap();
+    }
+
+    #[test]
+    fn refuse_canonical_key_change_rejects_a_changed_key() {
+        let content = "---\nid: PRD-001\nkind: prd\nslug: prd-other-system\n---\n\nBody.\n";
+        let err = refuse_canonical_key_change("prd-auth-system", content)
+            .expect_err("a changed canonical key must be refused");
+        assert!(
+            err.to_string().contains("canonical key change refused"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn refuse_canonical_key_change_rejects_a_key_arriving_through_nested_frontmatter() {
+        // The outer block keeps the identity; the nested block smuggles in
+        // a different key.
+        let content = "---\nid: PRD-001\nkind: prd\nslug: prd-auth-system\n---\n\n\
+                        ---\nslug: prd-other-system\n---\n\nBody.\n";
+        let err = refuse_canonical_key_change("prd-auth-system", content)
+            .expect_err("a nested key change must be refused");
+        assert!(
+            err.to_string().contains("prd-other-system"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn refuse_canonical_key_change_rejects_a_key_that_appears_for_the_first_time() {
+        // The document has no key of its own yet — its canonical key is its
+        // display id. An update that introduces a key changes the identity.
+        let content = "---\nid: PRD-001\nkind: prd\nslug: prd-auth-system\n---\n\nBody.\n";
+        let err = refuse_canonical_key_change("PRD-001", content)
+            .expect_err("introducing a key must be refused");
+        assert!(
+            err.to_string().contains("canonical key change refused"),
+            "unexpected error: {err:#}"
+        );
+    }
 
     #[test]
     fn legacy_projection_preserves_identity_metadata_and_unmodified_body() {

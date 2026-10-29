@@ -232,6 +232,7 @@ pub async fn scan_and_import_to_workspace(
 }
 
 /// What one source document contributes to the canonical artifact.
+#[derive(Debug, Clone)]
 struct ParsedDocument {
     /// Complete frontmatter map, unknown keys included. Preserved verbatim on
     /// the canonical write so an imported document keeps whatever its author
@@ -244,6 +245,23 @@ struct ParsedDocument {
     tags: Vec<String>,
     author: String,
     links: Vec<(String, String)>,
+}
+
+/// The canonical key an imported document carries.
+///
+/// ADR-030: the key is the slug the frontmatter declares when that slug is
+/// valid, and the display id when it declares none. An import never mints a
+/// key — the document keeps the identity it was written with.
+fn canonical_key_for_import(artifact_id: &str, document: &ParsedDocument) -> String {
+    document
+        .frontmatter
+        .get("slug")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|slug| !slug.is_empty())
+        .filter(|slug| crate::artifact::types::validate_slug(slug).is_ok())
+        .unwrap_or(artifact_id)
+        .to_string()
 }
 
 /// Parse one discovered document into the fields the canonical write needs,
@@ -374,8 +392,13 @@ async fn process_detected_file(
     // Checking the projection first is what makes a repeat run a no-op on a
     // migrated workspace, where there is no row to ask.
     let canonical_exists = projection_exists(workspace, &detection.kind, &artifact_id).await;
+    // ADR-030: an imported document never mints a key. The key is the slug
+    // its frontmatter declares when that slug is valid, and its display id
+    // when it declares none — the same rule every other writer uses.
+    let canonical_key = canonical_key_for_import(&artifact_id, &document);
+
     let legacy_row = match legacy {
-        Some(store) => match store.get_artifact(&artifact_id).await {
+        Some(store) => match store.get_artifact(&canonical_key).await {
             Ok(row) => row,
             Err(e) => {
                 return ScanImportEntry {
@@ -403,7 +426,7 @@ async fn process_detected_file(
             }
             if let Some(store) = legacy {
                 for (target, relation) in &document.links {
-                    if let Err(e) = store.add_relation(&artifact_id, target, relation).await {
+                    if let Err(e) = store.add_relation(&canonical_key, target, relation).await {
                         warnings.push(format!(
                             "scan-import: could not restore relation {artifact_id}→{target} ({relation}): {e}"
                         ));
@@ -436,13 +459,8 @@ async fn process_detected_file(
         let new_artifact = NewArtifact {
             // ADR-030: the canonical key of a document is the slug its
             // frontmatter declares, and its display id when it declares none.
-            canonical_key: document
-                .frontmatter
-                .get("slug")
-                .and_then(|v| v.as_str())
-                .filter(|slug| crate::artifact::types::validate_slug(slug).is_ok())
-                .unwrap_or(&artifact_id)
-                .to_string(),
+            // An import never mints a key.
+            canonical_key: canonical_key.clone(),
             id: artifact_id.clone(),
             kind: detection.kind.template_key().to_string(),
             status: document.status.clone(),
@@ -462,7 +480,7 @@ async fn process_detected_file(
             };
         }
         for (target, relation) in &document.links {
-            if let Err(e) = store.add_relation(&artifact_id, target, relation).await {
+            if let Err(e) = store.add_relation(&canonical_key, target, relation).await {
                 write_warnings.push(format!(
                     "scan-import: could not restore relation {artifact_id}→{target} ({relation}): {e}"
                 ));
@@ -1490,6 +1508,61 @@ mod tests {
         assert!(
             warnings.iter().any(|w| w.contains("wip")),
             "the warning must name the offending value, got {warnings:?}"
+        );
+    }
+
+    /// ADR-030: an imported document keeps the key it was written with — the
+    /// slug its frontmatter declares, and its display id when it declares
+    /// none. An import never mints a key.
+    #[test]
+    fn an_imported_document_keeps_the_key_it_declares() {
+        let mut frontmatter: BTreeMap<String, serde_yaml::Value> = BTreeMap::new();
+        frontmatter.insert(
+            "slug".to_string(),
+            serde_yaml::Value::String("prd-auth-system".to_string()),
+        );
+        let document = ParsedDocument {
+            frontmatter: frontmatter.clone(),
+            body: "body".to_string(),
+            title: "Auth".to_string(),
+            status: "draft".to_string(),
+            tags: Vec::new(),
+            author: "ada".to_string(),
+            links: Vec::new(),
+        };
+        assert_eq!(
+            canonical_key_for_import("PRD-001", &document),
+            "prd-auth-system",
+            "the declared slug is the key"
+        );
+
+        // A document without a slug keeps its display id.
+        let without_slug = ParsedDocument {
+            frontmatter: BTreeMap::new(),
+            ..document.clone()
+        };
+        assert_eq!(
+            canonical_key_for_import("PRD-002", &without_slug),
+            "PRD-002",
+            "a document without a slug keeps its display id"
+        );
+
+        // An invalid slug is not a slug: the display id is the key.
+        let invalid = ParsedDocument {
+            frontmatter: {
+                let mut frontmatter = frontmatter.clone();
+                frontmatter.insert(
+                    "slug".to_string(),
+                    serde_yaml::Value::String("Not A Slug".to_string()),
+                );
+                frontmatter
+            },
+            ..document
+        };
+        assert_eq!(
+            canonical_key_for_import("PRD-003", &invalid),
+            "PRD-003",
+            "an invalid slug does not become a key"
         );
     }
 }

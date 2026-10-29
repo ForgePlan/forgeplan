@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -10,11 +10,11 @@ use chrono::Utc;
 use futures::StreamExt;
 use lancedb::Table;
 use lancedb::connection::Connection;
-use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::query::{ExecutableQuery, QueryBase, Select};
 
 use crate::projection::MutationError;
 
-use crate::artifact::canonical_key::canonical_key_from_document;
+use crate::artifact::canonical_key::{ArtifactCandidate, canonical_key_from_document, resolve_artifact};
 use crate::artifact::store::ArtifactSummary;
 use crate::changelog::ChangeLogEntry;
 use crate::db::auxiliary::verify_table_manifests;
@@ -108,6 +108,28 @@ pub struct ListFilter {
 #[allow(dead_code)]
 pub type ArtifactFilter = ListFilter;
 
+/// The canonical key a row is stored under.
+///
+/// ADR-030: a document's key is the slug its frontmatter declares when that
+/// slug is valid, and its display id when it declares none. A caller that
+/// already knows the key passes it; a caller that does not gets the rule
+/// applied to the document the row carries.
+///
+/// The result is never empty: a row without a key cannot be addressed, so an
+/// absent key falls back to the display id rather than to "".
+pub fn canonical_key_of(canonical_key: &str, display_id: &str, document: &str) -> String {
+    let prepared = canonical_key.trim();
+    if !prepared.is_empty() {
+        return prepared.to_string();
+    }
+    let derived = canonical_key_from_document(display_id, document);
+    if derived.is_empty() {
+        display_id.to_string()
+    } else {
+        derived
+    }
+}
+
 /// Minimal artifact data for creation.
 #[derive(Debug, Default)]
 pub struct NewArtifact {
@@ -118,11 +140,10 @@ pub struct NewArtifact {
     /// alias that may repeat inside a workspace and across projects. This
     /// field is the identity a row is keyed by and a reference resolves to.
     ///
-    /// Wave 1 carries the key in the value only; the legacy index has no
-    /// `canonical_key` column yet (schema v5 is Slice B's), so a row written
-    /// today still stores the key in the document's own frontmatter and the
-    /// value here is what the caller prepared. It is never empty by
-    /// construction: every builder derives it from the document.
+    /// Schema v5 stores the key in its own `canonical_key` column, and that
+    /// column is the merge key of every upsert. A caller that leaves the
+    /// field empty gets the ADR-030 rule applied to `body` — see
+    /// [`canonical_key_of`].
     pub canonical_key: String,
     pub kind: String,
     pub status: String,
@@ -219,11 +240,35 @@ impl ArtifactRecord {
     }
 
     /// Reconstruct YAML frontmatter fields as a BTreeMap for serialization.
+    ///
+    /// ADR-030: `id` stays the display alias and `slug` carries the
+    /// canonical key — the identity a reference resolves to. The two are
+    /// distinct on purpose: the alias may repeat, the key may not.
+    ///
+    /// The terms are the ones the rest of the codebase uses:
+    /// [`crate::artifact::frontmatter::slug_from_frontmatter`] reads the
+    /// `slug` field as the canonical key, and
+    /// [`crate::artifact::canonical_key::canonical_key_from_document`]
+    /// derives the same key from a document that declares it. A round trip
+    /// through [`crate::artifact::frontmatter::render_frontmatter`] and
+    /// back therefore hands the same key over — it never rewrites it.
+    ///
+    /// This map is a reconstruction for validation and comparison; it is
+    /// never rendered into a Markdown file, so no document is rewritten by
+    /// it.
     pub fn frontmatter_map(&self) -> BTreeMap<String, serde_yaml::Value> {
         use serde_yaml::Value;
 
         let mut map = BTreeMap::new();
         map.insert("id".to_string(), Value::String(self.id.clone()));
+        map.insert(
+            "slug".to_string(),
+            Value::String(canonical_key_of(
+                &self.canonical_key,
+                &self.id,
+                &self.body,
+            )),
+        );
         map.insert("kind".to_string(), Value::String(self.kind.clone()));
         map.insert("status".to_string(), Value::String(self.status.clone()));
         map.insert("title".to_string(), Value::String(self.title.clone()));
@@ -585,21 +630,27 @@ impl LanceStore {
         .execute()
         .await?;
 
+        // Schema v5 (ADR-030): a workspace whose identity-v5 migration has
+        // been published keeps its rows in the three tables the readiness
+        // marker names. A damaged marker is an explicit error — the store
+        // never falls back to the pre-migration index.
+        let names = migrate::resolve_legacy_table_names(&lance_dir)?;
+
         verify_manifests(
             &lance_dir,
             &[
-                "artifacts",
-                "evidence",
-                "relations",
+                names.artifacts.as_str(),
+                names.evidence.as_str(),
+                names.relations.as_str(),
                 "fpf_spec",
                 "change_log",
             ],
         )
         .await?;
 
-        let artifacts = db.open_table("artifacts").execute().await?;
-        let evidence = db.open_table("evidence").execute().await?;
-        let relations = db.open_table("relations").execute().await?;
+        let artifacts = db.open_table(&names.artifacts).execute().await?;
+        let evidence = db.open_table(&names.evidence).execute().await?;
+        let relations = db.open_table(&names.relations).execute().await?;
         let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
 
         // Ensure change_log table exists (migration for older workspaces)
@@ -643,25 +694,36 @@ impl LanceStore {
         .await?;
         let existing_tables = db.table_names().execute().await?;
 
+        // Schema v5 (ADR-030): the tables this workspace owns are the ones
+        // the readiness marker names, so `init` on a migrated workspace does
+        // not resurrect the pre-migration tables it stopped using.
+        let names = migrate::resolve_legacy_table_names(&lance_dir)?;
+
         // Create artifacts table if not present
-        if !existing_tables.contains(&"artifacts".to_string()) {
+        if !existing_tables.contains(&names.artifacts) {
             let schema = schema::artifacts_schema();
             let batch = empty_artifacts_batch(schema.clone())?;
-            db.create_table("artifacts", vec![batch]).execute().await?;
+            db.create_table(&names.artifacts, vec![batch])
+                .execute()
+                .await?;
         }
 
         // Create evidence table if not present
-        if !existing_tables.contains(&"evidence".to_string()) {
+        if !existing_tables.contains(&names.evidence) {
             let schema = schema::evidence_schema();
             let batch = empty_evidence_batch(schema.clone())?;
-            db.create_table("evidence", vec![batch]).execute().await?;
+            db.create_table(&names.evidence, vec![batch])
+                .execute()
+                .await?;
         }
 
         // Create relations table if not present
-        if !existing_tables.contains(&"relations".to_string()) {
+        if !existing_tables.contains(&names.relations) {
             let schema = schema::relations_schema();
             let batch = empty_relations_batch(schema.clone())?;
-            db.create_table("relations", vec![batch]).execute().await?;
+            db.create_table(&names.relations, vec![batch])
+                .execute()
+                .await?;
         }
 
         // Create fpf_spec table if not present
@@ -681,18 +743,18 @@ impl LanceStore {
         verify_manifests(
             &lance_dir,
             &[
-                "artifacts",
-                "evidence",
-                "relations",
+                names.artifacts.as_str(),
+                names.evidence.as_str(),
+                names.relations.as_str(),
                 "fpf_spec",
                 "change_log",
             ],
         )
         .await?;
 
-        let artifacts = db.open_table("artifacts").execute().await?;
-        let evidence = db.open_table("evidence").execute().await?;
-        let relations = db.open_table("relations").execute().await?;
+        let artifacts = db.open_table(&names.artifacts).execute().await?;
+        let evidence = db.open_table(&names.evidence).execute().await?;
+        let relations = db.open_table(&names.relations).execute().await?;
         let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
         let change_log = db.open_table("change_log").execute().await.ok();
 
@@ -1074,7 +1136,10 @@ impl LanceStore {
         if self.get_record(id).await?.is_none() {
             anyhow::bail!("Cannot set created_at: artifact '{}' not found", id);
         }
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let Some(key) = self.resolve_canonical_key(id).await? else {
+            anyhow::bail!("Cannot set created_at: artifact '{}' not found", id);
+        };
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         self.artifacts
             .update()
             .only_if(predicate)
@@ -1087,7 +1152,75 @@ impl LanceStore {
         Ok(())
     }
 
+    /// Resolve a selector to the canonical key of the one row it names.
+    ///
+    /// ADR-030 makes the display id an *alias*: a repeatable, human-facing
+    /// name. The legacy index therefore resolves an alias through the shared
+    /// resolver ([`crate::artifact::canonical_key::resolve_artifact`]) fed
+    /// with this index's own rows, and every filter, upsert and mutation
+    /// then addresses the row by `canonical_key = '…'`.
+    ///
+    /// The resolver is the one the capture side uses too, so both layouts
+    /// agree on which document a selector names — including the rule that a
+    /// numeric-shaped key does not outrank a competing display alias.
+    ///
+    /// `Ok(None)` means the selector names no row **or** names more than
+    /// one. An ambiguity is never resolved into a winner: the caller gets
+    /// "not found", and the reason is logged.
+    pub async fn resolve_canonical_key(&self, selector: &str) -> anyhow::Result<Option<String>> {
+        let candidates = self.alias_candidates().await?;
+        match resolve_artifact(selector, &candidates) {
+            Ok(Some(resolved)) => Ok(Some(resolved.identity.canonical_key)),
+            Ok(None) => Ok(None),
+            Err(problem) => {
+                tracing::warn!(
+                    selector = %selector,
+                    problem = ?problem,
+                    "selector does not name exactly one artifact; no row was chosen"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// This index's own rows as resolver candidates.
+    ///
+    /// Only the three columns the resolver reads are pulled: a resolution
+    /// must not drag every document body through the pipe.
+    async fn alias_candidates(&self) -> anyhow::Result<Vec<ArtifactCandidate>> {
+        // A schema-4 table has no `canonical_key` column yet. Reading it
+        // with the projection would fail, so fall back to a full scan and
+        // derive each key from the document the row carries — the same rule
+        // the writers use. The fallback is the *only* place a legacy row's
+        // key is guessed; a v5 table always takes the column.
+        let projected = self
+            .artifacts
+            .query()
+            .select(Select::columns(&["id", "canonical_key", "title"]))
+            .execute()
+            .await;
+        match projected {
+            Ok(stream) => {
+                let batches = collect_batches(stream).await?;
+                Ok(candidates_from_batches(&batches, false))
+            }
+            Err(projection_error) => {
+                tracing::warn!(
+                    error = %projection_error,
+                    "artifacts table has no canonical_key column; deriving keys from the stored documents"
+                );
+                let batches = collect_batches(self.artifacts.query().execute().await?).await?;
+                Ok(candidates_from_batches(&batches, true))
+            }
+        }
+    }
+
     /// Insert a new artifact, returning its ID.
+    ///
+    /// Schema v5: the row is keyed by its canonical key. The insert is an
+    /// upsert on that key (`merge_insert(&["canonical_key"])`) and the
+    /// duplicate guard asks the key, not the display id — two documents may
+    /// share a display alias, none may share a key.
     pub(crate) async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
         // Validate ID format — prevent path traversal and SQL injection
         if !artifact
@@ -1101,19 +1234,43 @@ impl LanceStore {
             );
         }
 
-        // Guard: check for duplicate ID
-        if self.get_artifact(&artifact.id).await?.is_some() {
-            anyhow::bail!("Artifact '{}' already exists", artifact.id);
+        // The key the row is stored under. Never empty.
+        let canonical_key = canonical_key_of(&artifact.canonical_key, &artifact.id, &artifact.body);
+
+        // Guard: a canonical key is taken. The display id may repeat; the
+        // key may not.
+        if self.resolve_canonical_key(&canonical_key).await?.is_some() {
+            anyhow::bail!(
+                "Artifact '{}' already exists (canonical key '{}')",
+                artifact.id,
+                canonical_key
+            );
         }
 
         let now = Utc::now().to_rfc3339();
         let batch = convert::artifact_to_batch(artifact, &now)?;
-
-        self.artifacts.add(vec![batch]).execute().await?;
+        let schema = schema::artifacts_schema();
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
+        let mut builder = self.artifacts.merge_insert(&["canonical_key"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder.execute(reader).await.map_err(|e| {
+            anyhow::anyhow!(
+                "create_artifact: merge_insert failed for canonical key '{}': {}",
+                canonical_key,
+                e
+            )
+        })?;
         Ok(artifact.id.clone())
     }
 
     /// Get a single artifact by ID. Returns None if not found.
+    ///
+    /// The `id` argument is a *selector*: a canonical key, a display alias,
+    /// or a legacy slug. It is resolved to the row's canonical key first
+    /// (see [`Self::resolve_canonical_key`]) and the row is then read by
+    /// `canonical_key = '…'` — the display id is an alias, never the key.
     ///
     /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so the
     /// `forgeplan_link` MCP path (which calls this to validate source
@@ -1121,8 +1278,11 @@ impl LanceStore {
     /// error when an external `forgeplan reindex` invalidated the handle
     /// between MCP-server startup and this call.
     pub async fn get_artifact(&self, id: &str) -> anyhow::Result<Option<ArtifactSummary>> {
-        let filter = format!("id = '{}'", id.replace('\'', "''"));
         self.with_retry_on_stale(|| async {
+            let Some(key) = self.resolve_canonical_key(id).await? else {
+                return Ok(None);
+            };
+            let filter = format!("canonical_key = '{}'", key.replace('\'', "''"));
             let batches = collect_batches(
                 self.artifacts
                     .query()
@@ -1187,14 +1347,19 @@ impl LanceStore {
     }
 
     /// Update artifact updated_at (and optionally status/title).
+    ///
+    /// The row is addressed by its canonical key; `id` is a selector.
     pub(crate) async fn update_artifact(
         &self,
         id: &str,
         status: Option<&str>,
         title: Option<&str>,
     ) -> anyhow::Result<()> {
+        let Some(key) = self.resolve_canonical_key(id).await? else {
+            anyhow::bail!("Artifact '{}' not found", id);
+        };
         let now = Utc::now().to_rfc3339();
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         let mut builder = self
             .artifacts
             .update()
@@ -1211,13 +1376,18 @@ impl LanceStore {
     }
 
     /// Update the valid_until column of an artifact (ADR-005: renew).
+    ///
+    /// The row is addressed by its canonical key; `id` is a selector.
     pub(crate) async fn update_valid_until(
         &self,
         id: &str,
         valid_until: &str,
     ) -> anyhow::Result<()> {
+        let Some(key) = self.resolve_canonical_key(id).await? else {
+            anyhow::bail!("Artifact '{}' not found", id);
+        };
         let now = Utc::now().to_rfc3339();
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         self.artifacts
             .update()
             .only_if(predicate)
@@ -1232,9 +1402,14 @@ impl LanceStore {
     }
 
     /// Update the depth column of an artifact.
+    ///
+    /// The row is addressed by its canonical key; `id` is a selector.
     pub(crate) async fn update_depth(&self, id: &str, depth: &str) -> anyhow::Result<()> {
+        let Some(key) = self.resolve_canonical_key(id).await? else {
+            anyhow::bail!("Artifact '{}' not found", id);
+        };
         let now = Utc::now().to_rfc3339();
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         self.artifacts
             .update()
             .only_if(predicate)
@@ -1256,8 +1431,11 @@ impl LanceStore {
         if self.get_record(id).await?.is_none() {
             anyhow::bail!("Cannot update R_eff: artifact '{}' not found", id);
         }
+        let Some(key) = self.resolve_canonical_key(id).await? else {
+            anyhow::bail!("Cannot update R_eff: artifact '{}' not found", id);
+        };
         let now = Utc::now().to_rfc3339();
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         self.artifacts
             .update()
             .only_if(predicate)
@@ -1283,19 +1461,23 @@ impl LanceStore {
     /// permanently lost from the LanceDB index (only recoverable via
     /// `forgeplan scan-import` from the markdown source of truth).
     ///
-    /// We now use `Table::merge_insert(&["id"])` with
+    /// We now use `Table::merge_insert(&["canonical_key"])` with
     /// `when_matched_update_all` + `when_not_matched_insert_all`, which
     /// LanceDB executes as a single transactional operation against the
     /// underlying Lance dataset. Either the new row is committed or the
     /// previous row remains intact — there is no observable intermediate
-    /// state. Concurrent merge_inserts on the same `id` are serialized by
+    /// state. Concurrent merge_inserts on the same key are serialized by
     /// Lance's optimistic-concurrency commit loop with retries.
+    ///
+    /// Schema v5: the merge key is the canonical key, not the display id. Two
+    /// documents may share a display alias; none may share a key.
     ///
     /// See Sprint 13.3 audit finding H3 for context.
     pub(crate) async fn replace_record(&self, record: &ArtifactRecord) -> anyhow::Result<()> {
         validate_artifact_id(&record.id)?;
         let schema = schema::artifacts_schema();
         let tags_slices: Vec<&[String]> = vec![record.tags.as_slice()];
+        let canonical_key = canonical_key_of(&record.canonical_key, &record.id, &record.body);
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
@@ -1316,19 +1498,21 @@ impl LanceStore {
                 Arc::new(StringArray::from(vec![record.body_hash.as_deref()])),
                 convert::make_embedding_col_from_option(record.embedding.as_deref()),
                 Arc::new(convert::build_tags_list_array(tags_slices)),
+                Arc::new(StringArray::from(vec![canonical_key.as_str()])),
             ],
         )?;
 
         let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
-        let mut builder = self.artifacts.merge_insert(&["id"]);
+        let mut builder = self.artifacts.merge_insert(&["canonical_key"]);
         builder
             .when_matched_update_all(None)
             .when_not_matched_insert_all();
         builder.execute(reader).await.map_err(|e| {
             anyhow::anyhow!(
-                "replace_record: merge_insert failed for '{}': {}. \
+                "replace_record: merge_insert failed for '{}' (canonical key '{}'): {}. \
                  Run `forgeplan scan-import` to rebuild the index from markdown if data is missing.",
                 record.id,
+                canonical_key,
                 e
             )
         })?;
@@ -1400,14 +1584,26 @@ impl LanceStore {
     }
 
     /// Delete an artifact by ID.
+    ///
+    /// The row is addressed by its canonical key; `id` is a selector.
     pub(crate) async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
         validate_artifact_id(id)?;
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let Some(key) = self.resolve_canonical_key(id).await? else {
+            anyhow::bail!("Artifact '{}' not found", id);
+        };
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         self.artifacts.delete(&predicate).await?;
         Ok(())
     }
 
     /// Add a relation between two artifacts. Rejects duplicates.
+    ///
+    /// Schema v5: `source_id` and `target_id` hold **canonical keys**. Both
+    /// endpoints are resolved through the shared resolver, so a caller that
+    /// holds a display alias still writes a keyed edge. A target that names
+    /// no row in this workspace — a forward reference, a qualified
+    /// `KEY@qualifier` cross-source ref — keeps its declared bytes: it is an
+    /// edge with a diagnostic, not a dropped row.
     pub(crate) async fn add_relation(
         &self,
         source: &str,
@@ -1418,16 +1614,18 @@ impl LanceStore {
         // The target may be a qualified cross-source ref (`KEY@qualifier`,
         // stage 4) — stored verbatim, never resolved against this store.
         validate_link_target(target)?;
+        let source_key = self.resolve_endpoint(source).await?;
+        let target_key = self.resolve_endpoint(target).await?;
         // Self-link guard (PROB-019)
-        if source.eq_ignore_ascii_case(target) {
+        if source_key.eq_ignore_ascii_case(&target_key) {
             anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
         }
 
         // Dedup: check if relation already exists
-        let existing = self.get_relations(source).await?;
+        let existing = self.get_relations(&source_key).await?;
         let duplicate = existing
             .iter()
-            .any(|(t, r)| t.eq_ignore_ascii_case(target) && r == relation);
+            .any(|(t, r)| t.eq_ignore_ascii_case(&target_key) && r == relation);
         if duplicate {
             anyhow::bail!(
                 "Relation already exists: {} --{}--> {}",
@@ -1438,20 +1636,40 @@ impl LanceStore {
         }
 
         let now = Utc::now().to_rfc3339();
-        let batch = convert::relation_to_batch(source, target, relation, &now)?;
+        let batch = convert::relation_to_batch(&source_key, &target_key, relation, &now)?;
 
         self.relations.add(vec![batch]).execute().await?;
         Ok(())
     }
 
+    /// The canonical key an edge endpoint is stored under.
+    ///
+    /// A qualified cross-source ref (`KEY@qualifier`) is not a selector at
+    /// all and keeps its declared bytes. Every other endpoint resolves to
+    /// the key of the row it names, or keeps its declared bytes when it names
+    /// no row — a forward reference stays an edge instead of disappearing.
+    async fn resolve_endpoint(&self, endpoint: &str) -> anyhow::Result<String> {
+        if endpoint.contains('@') {
+            return Ok(endpoint.to_string());
+        }
+        Ok(self
+            .resolve_canonical_key(endpoint)
+            .await?
+            .unwrap_or_else(|| endpoint.to_string()))
+    }
+
     /// Remove ALL relations where artifact is source or target (cascade on delete).
-    /// Uses case-insensitive matching via `lower()` for consistency with Rust-side checks.
+    ///
+    /// Schema v5: the endpoints are canonical keys, so the comparison is
+    /// exact — a canonical key is lowercase by construction and the old
+    /// `lower()` folding would only hide a mismatch.
     pub(crate) async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
         validate_artifact_id(id)?;
-        let lower_id = id.to_ascii_lowercase().replace('\'', "''");
+        let key = self.resolve_endpoint(id).await?;
         let filter = format!(
-            "lower(source_id) = '{}' OR lower(target_id) = '{}'",
-            lower_id, lower_id
+            "source_id = '{}' OR target_id = '{}'",
+            key.replace('\'', "''"),
+            key.replace('\'', "''")
         );
         self.relations.delete(&filter).await?;
         Ok(())
@@ -1464,10 +1682,12 @@ impl LanceStore {
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
+        let source_key = self.resolve_endpoint(source).await?;
+        let target_key = self.resolve_endpoint(target).await?;
         let filter = format!(
             "source_id = '{}' AND target_id = '{}' AND relation_type = '{}'",
-            source.replace('\'', "''"),
-            target.replace('\'', "''"),
+            source_key.replace('\'', "''"),
+            target_key.replace('\'', "''"),
             relation.replace('\'', "''"),
         );
         self.relations.delete(&filter).await?;
@@ -1477,6 +1697,9 @@ impl LanceStore {
     /// Get all relations for an artifact (as source).
     /// Returns Vec<(target_id, relation_type)>.
     ///
+    /// Schema v5: `source_id` holds the source's canonical key, so the
+    /// selector is resolved to that key before the filter is built.
+    ///
     /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so
     /// `forgeplan_graph`, `forgeplan_score`, and other callers that hit
     /// the relations table do not surface a raw lance error when the handle
@@ -1484,7 +1707,8 @@ impl LanceStore {
     /// pre-built outside the closure (borrowck: `Fn` bound requires
     /// captured values to be `Clone`-able or pre-computed strings).
     pub async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
-        let filter = format!("source_id = '{}'", id.replace('\'', "''"));
+        let source_key = self.resolve_endpoint(id).await?;
+        let filter = format!("source_id = '{}'", source_key.replace('\'', "''"));
         self.with_retry_on_stale(|| async {
             let batches = collect_batches(
                 self.relations
@@ -1551,10 +1775,14 @@ impl LanceStore {
     /// Get incoming relations where this artifact is the TARGET.
     /// Returns Vec<(source_id, relation_type)>.
     ///
+    /// Schema v5: `target_id` holds the target's canonical key, so the
+    /// selector is resolved to that key before the filter is built.
+    ///
     /// PROB-074: wrapped in [`Self::with_retry_on_stale`] — same rationale
     /// as [`Self::get_relations`]. Filter pre-built outside the closure.
     pub async fn get_incoming_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
-        let filter = format!("target_id = '{}'", id.replace('\'', "''"));
+        let target_key = self.resolve_endpoint(id).await?;
+        let filter = format!("target_id = '{}'", target_key.replace('\'', "''"));
         self.with_retry_on_stale(|| async {
             let batches = collect_batches(
                 self.relations
@@ -1593,12 +1821,19 @@ impl LanceStore {
 
     /// Get a single artifact by ID as a full record. Returns None if not found.
     ///
+    /// The `id` argument is a *selector* — a canonical key, a display alias,
+    /// or a legacy slug. It is resolved to the row's canonical key and the
+    /// row is then read by `canonical_key = '…'`.
+    ///
     /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so an external
     /// `forgeplan reindex` that invalidated this handle's manifest does
     /// not surface as a `lance error: Not found` on the next read.
     pub async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
-        let filter = format!("id = '{}'", id.replace('\'', "''"));
         self.with_retry_on_stale(|| async {
+            let Some(key) = self.resolve_canonical_key(id).await? else {
+                return Ok(None);
+            };
+            let filter = format!("canonical_key = '{}'", key.replace('\'', "''"));
             let batches = collect_batches(
                 self.artifacts
                     .query()
@@ -1620,41 +1855,34 @@ impl LanceStore {
         .await
     }
 
-    /// Resolve a user-supplied id-like input to a canonical artifact id.
+    /// Resolve a user-supplied id-like input to the display id of the
+    /// document it names.
     ///
-    /// PROB-060 / SPEC-005 Phase 1.5 — enforces ADR-012 invariants I-3 + I-4
-    /// ("lookup accepts both formats and resolves to the same canonical
-    /// artifact").
+    /// ADR-030: the selection is made by the shared resolver
+    /// ([`Self::resolve_canonical_key`]) — the one the capture side uses —
+    /// so this function and [`Self::resolve_canonical_key`] can never
+    /// disagree about which document a selector names. The value returned
+    /// here is that document's **display id**, because that is what the
+    /// callers print; the document's identity is its canonical key.
     ///
-    /// Accepts three input shapes, tried in order:
-    /// (0) Literal id form — the trimmed input compared byte-for-byte against
-    /// the canonical `id` column. This is the only path that resolves kinds
-    /// whose ids are not `KIND-NNN` shaped, notably Memory
-    /// (`mem-<slugified-text>`, issue #411). Byte-exact by construction, so
-    /// non-canonical casing (`prd-074`) misses here and still falls through
-    /// to (a);
-    /// (a) Display id form (`PRD-074`, `prd-074`, `Prd-74` — case-insensitive
-    /// prefix; trailing digits parsed as u32 then zero-padded to 3 width)
-    /// resolved by direct DB lookup; (b) slug form (`prd-auth-system` —
-    /// lowercase + dashes, kind prefix + content) resolved by scanning records
-    /// of that kind and parsing each frontmatter for the `slug` field
-    /// (compared case-insensitively).
+    /// Accepts the shapes the shared resolver accepts:
+    /// (0) the canonical key itself (`prd-auth-system`) — matched exactly
+    /// (SPEC-009 rule 2);
+    /// (a) the display alias in any shape (`PRD-074`, `prd-074`, `Prd-74` —
+    /// case-insensitive prefix, trailing digits zero-padded to 3 width),
+    /// which also covers kinds whose ids are not `KIND-NNN` shaped, notably
+    /// Memory (`mem-<slugified-text>`, issue #411);
+    /// (b) nothing else. A selector that names more than one document is an
+    /// ambiguity, not a winner, and resolves to nothing.
     ///
-    /// Returns `Ok(None)` when neither path matches an existing artifact.
-    /// Returns `Ok(Some(canonical_id))` where `canonical_id` is the value
-    /// of the `id` column in the DB (current Phase 1.x form: `KIND-NNN`).
+    /// Returns `Ok(None)` when the selector names no artifact, and
+    /// `Ok(Some(display_id))` — the value of the `id` column — otherwise.
     ///
     /// # Performance
-    /// Literal path is O(1) on an indexed point lookup. Display id path is
-    /// O(1) on indexed DB lookup. Slug path is O(n) over records of one kind
-    /// only (filtered first) — for ~50 PRDs this is ~50 frontmatter parses,
-    /// acceptable for CLI; not benchmarked.
-    ///
-    /// Path 0 is free for already-canonical input (`PRD-074`): it hits and
-    /// returns, consuming the single point query Path 1 would have made.
-    /// It costs one extra point query for non-canonical display input
-    /// (`prd-074`, `PRD-74`) and for anything that ends up on the slug scan —
-    /// negligible next to that scan's `list_records` + frontmatter parses.
+    /// Every path goes through one resolution pass over the index's own
+    /// (id, canonical_key, title) columns: a columnar read of two small
+    /// columns, not a body scan. It replaced the old case-insensitive slug
+    /// scan over every record of one kind.
     pub async fn resolve_id(&self, input: &str) -> anyhow::Result<Option<String>> {
         // Audit Phase 1.5 M1: trim whitespace from copy-paste / LLM input.
         let input = input.trim();
@@ -1662,33 +1890,29 @@ impl LanceStore {
             return Ok(None);
         }
 
-        // ---- Path 0: literal id match (issue #411) ----
-        // The `id` column IS the canonical identity. Kinds whose ids are not
-        // `KIND-NNN` shaped — Memory (`mem-<slugified-text>`) — are invisible
-        // to Path 1 (which needs an all-digit suffix) and to Path 2 (which
-        // needs a `slug` frontmatter field that `forgeplan remember` never
-        // writes). One point lookup on the trimmed input makes them linkable
-        // without granting Memory a lifecycle, required sections, or any
-        // validation weight.
+        // ---- Path 0: the shared resolver decides (issue #411) ----
+        // `get_record` resolves the selector through the shared resolver and
+        // then reads the row by its canonical key. One call therefore
+        // answers for every shape the resolver knows: the canonical key
+        // itself, the display alias in any casing, and kinds whose ids are
+        // not `KIND-NNN` shaped (Memory, `mem-<slugified-text>` — issue
+        // #411), without granting Memory a lifecycle, required sections, or
+        // any validation weight.
         //
-        // Uses the TRIMMED input: `get_record` builds an exact `id = '...'`
-        // predicate, so untrimmed input could never match, and the Phase 1.5
-        // M1 contract ("  PRD-074  " resolves) must hold on this path too.
-        //
-        // Byte-exact on purpose: `prd-074` does NOT match a stored `PRD-074`
-        // here, so it falls through to Path 1's case-insensitive
-        // normalization exactly as before. Making this case-insensitive would
-        // shadow Path 1 and silently change which row wins.
+        // Uses the TRIMMED input: the resolver trims too, so the Phase 1.5
+        // M1 contract ("  PRD-074  " resolves) holds on this path.
         if let Some(rec) = self.get_record(input).await? {
             return Ok(Some(rec.id));
         }
 
         // ---- Path 1: display id form (KIND-NNN) ----
-        // Accept any case for prefix; trailing digits as u32.
+        // Accept any case for prefix; trailing digits as u32. The
+        // zero-padded form is asked of the SAME shared resolver, so this
+        // path cannot pick a different row than Path 0 would.
         // Audit Phase 1.5 H2: when input shape is unambiguously display-id
         // (alpha prefix + digit suffix + valid kind), do NOT fall through
-        // to slug scan on miss — slug shape requires lowercase + dashes
-        // separating words, which digit-only suffix cannot satisfy.
+        // on miss — a digit-only suffix cannot be a slug, so no other
+        // shape can match it.
         if let Some((prefix, rest)) = input.split_once('-')
             && !prefix.is_empty()
             && !rest.is_empty()
@@ -1703,47 +1927,23 @@ impl LanceStore {
                 if let Some(rec) = self.get_record(&normalized).await? {
                     return Ok(Some(rec.id));
                 }
-                // Display-id shape with valid kind but DB miss → don't waste
-                // a full slug scan; the input cannot match any slug.
+                // Display-id shape with valid kind but DB miss: the input
+                // cannot match any other shape either.
                 return Ok(None);
             }
         }
 
-        // ---- Path 2: slug form (lowercase prefix + dashes + content) ----
-        // Detect by: input is all-lowercase ASCII alphanumeric + dashes,
-        // and starts with a known kind prefix.
-        let is_slug_shape = !input.is_empty()
-            && input
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-        if !is_slug_shape {
-            return Ok(None);
-        }
-        let Some((kind_prefix, _suffix)) = input.split_once('-') else {
-            return Ok(None);
-        };
-        let Some(kind) = crate::artifact::types::ArtifactKind::from_slug_prefix(kind_prefix) else {
-            return Ok(None);
-        };
-
-        // Filter to records of that kind only (saves scanning all artifacts).
-        let filter = ArtifactFilter {
-            kind: Some(kind.template_key().to_string()),
-            status: None,
-        };
-        let records = self.list_records(Some(&filter)).await?;
-        for record in records {
-            let Ok((fm, _body)) = crate::artifact::frontmatter::parse_frontmatter(&record.body)
-            else {
-                continue;
-            };
-            if let Some(slug) = crate::artifact::frontmatter::slug_from_frontmatter(&fm)
-                && slug.eq_ignore_ascii_case(input)
-            {
-                return Ok(Some(record.id));
-            }
-        }
-
+        // ---- Path 2: the slug form is the canonical key ----
+        //
+        // ADR-030: a document's slug IS its canonical key, and the shared
+        // resolver matches a key exactly (SPEC-009 rule 2). Path 0 already
+        // asked that resolver, so a slug resolves here by the same answer
+        // every other selector gets.
+        //
+        // The old case-insensitive slug scan is gone on purpose: it was a
+        // SECOND set of selection rules, and a selector it accepted while
+        // `resolve_canonical_key` rejected it made the two resolvers
+        // disagree about which document a selector names.
         Ok(None)
     }
 
@@ -1931,8 +2131,11 @@ impl LanceStore {
     /// detectable by anything. `body_hash` is stamped so the subsequent
     /// `forgeplan embed` re-encodes this record alone rather than all of them.
     pub(crate) async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
+        let Some(key) = self.resolve_canonical_key(id).await? else {
+            anyhow::bail!("Artifact '{}' not found", id);
+        };
         let now = Utc::now().to_rfc3339();
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         let escaped_body = body.replace('\'', "''");
 
         // The hash covers title + body, so read the current title rather than
@@ -1993,6 +2196,11 @@ impl LanceStore {
     // ── Change Log ───────────────────────────────────────────────────
 
     /// Insert a change log entry.
+    ///
+    /// Schema v5: a history row names the changed artifact by its **canonical
+    /// key**, so the same query that finds the artifact finds its history. A
+    /// caller that holds a display alias gets it resolved; an artifact that
+    /// is no longer in the index (a deleted one) keeps its declared id.
     pub async fn log_change(&self, entry: &ChangeLogEntry) -> anyhow::Result<()> {
         let table = self.change_log.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
@@ -2000,10 +2208,19 @@ impl LanceStore {
             )
         })?;
 
-        crate::db::auxiliary::change_log_append(table, entry).await
+        let mut keyed = entry.clone();
+        if let Some(key) = self.resolve_canonical_key(&entry.artifact_id).await? {
+            keyed.artifact_id = key;
+        }
+        crate::db::auxiliary::change_log_append(table, &keyed).await
     }
 
     /// Query change log entries with optional artifact filter and source filter.
+    ///
+    /// Schema v5: the artifact filter is a *selector*. It is resolved to the
+    /// canonical key the history rows carry; a selector that names no row
+    /// falls back to its own bytes so entries written before the upgrade
+    /// stay reachable.
     pub async fn get_change_log(
         &self,
         artifact_id: Option<&str>,
@@ -2015,7 +2232,15 @@ impl LanceStore {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("change_log table not initialized"))?;
 
-        crate::db::auxiliary::change_log_query(table, artifact_id, source, limit).await
+        let key = match artifact_id {
+            Some(selector) => Some(
+                self.resolve_canonical_key(selector)
+                    .await?
+                    .unwrap_or_else(|| selector.to_string()),
+            ),
+            None => None,
+        };
+        crate::db::auxiliary::change_log_query(table, key.as_deref(), source, limit).await
     }
 
     // ── FPF Knowledge Base ───────────────────────────────────────────
@@ -2142,6 +2367,40 @@ fn extract_summary(batch: &RecordBatch, row: usize) -> Option<ArtifactSummary> {
     })
 }
 
+/// Build resolver candidates from artifacts rows.
+///
+/// `derive_from_body` serves a schema-4 table that has no `canonical_key`
+/// column: there the key is the ADR-030 rule applied to the document the row
+/// carries. A schema-5 table always takes the column.
+fn candidates_from_batches(
+    batches: &[RecordBatch],
+    derive_from_body: bool,
+) -> Vec<ArtifactCandidate> {
+    let mut candidates = Vec::new();
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            let Some(display_id) = get_string(batch, "id", row) else {
+                continue;
+            };
+            let canonical_key = match get_string(batch, "canonical_key", row) {
+                Some(key) => key,
+                None if derive_from_body => {
+                    let body = get_large_string(batch, "body", row).unwrap_or_default();
+                    canonical_key_from_document(&display_id, &body)
+                }
+                None => continue,
+            };
+            candidates.push(ArtifactCandidate {
+                canonical_key,
+                display_id,
+                title: get_string(batch, "title", row).unwrap_or_default(),
+                relative_path: PathBuf::new(),
+            });
+        }
+    }
+    candidates
+}
+
 /// Extract a full ArtifactRecord from a RecordBatch row.
 fn extract_record(batch: &RecordBatch, row: usize) -> Option<ArtifactRecord> {
     let id = get_string(batch, "id", row)?;
@@ -2159,12 +2418,13 @@ fn extract_record(batch: &RecordBatch, row: usize) -> Option<ArtifactRecord> {
     let tags = convert::extract_tags(batch, row);
     let body_hash = get_string(batch, "body_hash", row);
     let embedding = convert::extract_embedding(batch, row);
-    // ADR-030: a legacy row has no canonical-key column yet (schema v5 is
-    // Slice B's), so the key is derived from the document the row carries —
+    // ADR-030: the canonical key is the row's own column (schema v5) — the
+    // identity every filter and mutation uses. A schema-4 row that predates
+    // the column falls back to the rule applied to the document it carries:
     // the slug its frontmatter declares, and its display id when it declares
-    // none. The `body` column holds the whole markdown file, so the same
-    // rule the writers and the capture use reads the same key back.
-    let canonical_key = canonical_key_from_document(&id, &body);
+    // none.
+    let canonical_key = get_string(batch, "canonical_key", row)
+        .unwrap_or_else(|| canonical_key_from_document(&id, &body));
     Some(ArtifactRecord {
         canonical_key,
         id,
@@ -2196,6 +2456,18 @@ fn get_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Read one `Utf8` column of a row, for the modules that verify a staged
+/// index against the Markdown it was built from.
+pub(crate) fn record_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
+    get_string(batch, col, row)
+}
+
+/// Read one `LargeUtf8` column of a row, for the modules that verify a
+/// staged index against the Markdown it was built from.
+pub(crate) fn record_large_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
+    get_large_string(batch, col, row)
 }
 
 /// Read a LargeUtf8 column value from a RecordBatch row.
@@ -2349,6 +2621,8 @@ fn empty_artifacts_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatc
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
             convert::make_null_embedding_col(0),
             Arc::new(convert::build_tags_list_array(empty_tags)),
+            // canonical_key — the row's authoritative identity (ADR-030).
+            Arc::new(StringArray::from(Vec::<&str>::new())),
         ],
     )
 }
@@ -5095,6 +5369,358 @@ mod tests {
         assert_eq!(
             kw_results[0].id, sem_results[0].id,
             "semantic and keyword top result must agree for this clear match"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // ADR-030 / schema v5 — the index is keyed by the canonical key.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// A document with a slug in its frontmatter declares its key there; a
+    /// document without one keeps its display id as the key.
+    #[test]
+    fn canonical_key_of_prefers_the_prepared_key_and_never_returns_empty() {
+        assert_eq!(
+            canonical_key_of("prd-auth-system", "PRD-001", "body"),
+            "prd-auth-system",
+            "a prepared key wins"
+        );
+        assert_eq!(
+            canonical_key_of("", "PRD-001", "---\nslug: prd-auth-system\n---\n\nbody"),
+            "prd-auth-system",
+            "an unprepared key is derived from the document's own slug"
+        );
+        assert_eq!(
+            canonical_key_of("", "PRD-001", "no frontmatter here"),
+            "PRD-001",
+            "a document without a slug keeps its display id as the key"
+        );
+        assert_eq!(
+            canonical_key_of("  ", "PRD-002", "body"),
+            "PRD-002",
+            "a blank key is not a key"
+        );
+    }
+
+    /// The store resolves a display alias to the canonical key of the row it
+    /// names — and a selector that names no row resolves to nothing.
+    #[tokio::test]
+    async fn resolve_canonical_key_maps_an_alias_to_the_row_key() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&NewArtifact {
+                canonical_key: "prd-auth-system".to_string(),
+                id: "PRD-001".to_string(),
+                kind: "prd".to_string(),
+                status: "draft".to_string(),
+                title: "Auth".to_string(),
+                body: "body".to_string(),
+                depth: "standard".to_string(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.resolve_canonical_key("PRD-001").await.unwrap(),
+            Some("prd-auth-system".to_string()),
+            "the display alias must resolve to the row's canonical key"
+        );
+        assert_eq!(
+            store.resolve_canonical_key("prd-auth-system").await.unwrap(),
+            Some("prd-auth-system".to_string()),
+            "the canonical key must resolve to itself"
+        );
+        assert_eq!(
+            store.resolve_canonical_key("PRD-404").await.unwrap(),
+            None,
+            "a selector that names no row resolves to nothing"
+        );
+    }
+
+    /// Two documents may share a display alias; the resolver must not pick
+    /// one of them.
+    #[tokio::test]
+    async fn resolve_canonical_key_refuses_an_ambiguous_alias() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        for (key, id) in [("prd-alpha", "PRD-001"), ("prd-beta", "PRD-002")] {
+            store
+                .create_artifact(&NewArtifact {
+                    canonical_key: key.to_string(),
+                    id: id.to_string(),
+                    kind: "prd".to_string(),
+                    status: "draft".to_string(),
+                    title: id.to_string(),
+                    body: "body".to_string(),
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        // Force the shared alias: the second row keeps PRD-001 as its display
+        // id, so the alias names two rows.
+        store
+            .create_artifact(&NewArtifact {
+                canonical_key: "prd-gamma".to_string(),
+                id: "PRD-001".to_string(),
+                kind: "prd".to_string(),
+                status: "draft".to_string(),
+                title: "Third".to_string(),
+                body: "body".to_string(),
+                depth: "standard".to_string(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.resolve_canonical_key("PRD-001").await.unwrap(),
+            None,
+            "an alias that names two rows must not resolve to a winner"
+        );
+        assert_eq!(
+            store.resolve_canonical_key("prd-beta").await.unwrap(),
+            Some("prd-beta".to_string()),
+            "an unambiguous key still resolves"
+        );
+    }
+
+    /// The row carries its canonical key, and the row is found by that key
+    /// as well as by its display alias.
+    #[tokio::test]
+    async fn a_row_is_addressed_by_its_canonical_key() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&NewArtifact {
+                canonical_key: "prd-auth-system".to_string(),
+                id: "PRD-001".to_string(),
+                kind: "prd".to_string(),
+                status: "draft".to_string(),
+                title: "Auth".to_string(),
+                body: "body".to_string(),
+                depth: "standard".to_string(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let listed = store.list_records(None).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].canonical_key, "prd-auth-system",
+            "the row must carry the canonical key"
+        );
+        assert_eq!(listed[0].id, "PRD-001", "the public id stays the display id");
+
+        let by_key = store.get_record("prd-auth-system").await.unwrap();
+        let by_alias = store.get_record("PRD-001").await.unwrap();
+        assert!(by_key.is_some(), "the key must address the row");
+        assert!(by_alias.is_some(), "the alias must address the row");
+    }
+
+    /// A relation row stores the canonical keys of its endpoints — the
+    /// display ids never reach the table.
+    #[tokio::test]
+    async fn a_relation_row_holds_canonical_keys() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        for (key, id) in [("prd-auth-system", "PRD-001"), ("rfc-wire-format", "RFC-001")] {
+            store
+                .create_artifact(&NewArtifact {
+                    canonical_key: key.to_string(),
+                    id: id.to_string(),
+                    kind: "prd".to_string(),
+                    status: "draft".to_string(),
+                    title: id.to_string(),
+                    body: "body".to_string(),
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+
+        // The caller may hold the display aliases; the row must not.
+        store
+            .add_relation("PRD-001", "RFC-001", "informs")
+            .await
+            .unwrap();
+
+        let all = store.get_all_relations().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, "prd-auth-system", "the source must be the key");
+        assert_eq!(all[0].1, "rfc-wire-format", "the target must be the key");
+
+        // And the edge is found by the key, not by the display id.
+        let outgoing = store.get_relations("prd-auth-system").await.unwrap();
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(outgoing[0].0, "rfc-wire-format");
+    }
+
+    /// A canonical key is taken: two documents may share a display alias,
+    /// none may share a key.
+    #[tokio::test]
+    async fn a_duplicate_canonical_key_is_refused() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        let artifact = NewArtifact {
+            canonical_key: "prd-auth-system".to_string(),
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Auth".to_string(),
+            body: "body".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&artifact).await.unwrap();
+
+        let second = NewArtifact {
+            id: "PRD-002".to_string(),
+            ..artifact
+        };
+        let error = store
+            .create_artifact(&second)
+            .await
+            .expect_err("a taken canonical key must be refused");
+        assert!(
+            error.to_string().contains("already exists"),
+            "the refusal must say the artifact exists, got {error}"
+        );
+        assert_eq!(
+            store.list_records(None).await.unwrap().len(),
+            1,
+            "the refused insert must not have added a row"
+        );
+    }
+
+    /// The two resolvers must agree. A selector that names one document
+    /// produces that document's key from `resolve_canonical_key` and its
+    /// display id from `resolve_id`; a selector that names none produces
+    /// nothing from either. Two selection rule sets would let them disagree
+    /// about which document a selector names.
+    #[tokio::test]
+    async fn resolve_id_and_resolve_canonical_key_agree() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&NewArtifact {
+                canonical_key: "prd-auth-system".to_string(),
+                id: "PRD-001".to_string(),
+                kind: "prd".to_string(),
+                status: "draft".to_string(),
+                title: "Auth".to_string(),
+                body: "body".to_string(),
+                depth: "standard".to_string(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        for selector in ["prd-auth-system", "PRD-001", "  PRD-001  ", "prd-1"] {
+            let key = store.resolve_canonical_key(selector).await.unwrap();
+            let id = store.resolve_id(selector).await.unwrap();
+            match (key, id) {
+                (Some(key), Some(id)) => {
+                    assert_eq!(id, "PRD-001", "the display id must come back");
+                    let row = store
+                        .get_record(&key)
+                        .await
+                        .unwrap()
+                        .expect("the key must address the row");
+                    assert_eq!(
+                        row.id, id,
+                        "both resolvers must name the same document for '{selector}'"
+                    );
+                }
+                (None, None) => {}
+                (key, id) => panic!(
+                    "the two resolvers disagree about '{selector}': key={key:?} id={id:?}"
+                ),
+            }
+        }
+
+        // A selector that names nothing resolves to nothing in both.
+        assert_eq!(store.resolve_canonical_key("PRD-404").await.unwrap(), None);
+        assert_eq!(store.resolve_id("PRD-404").await.unwrap(), None);
+    }
+
+    /// The frontmatter the store reconstructs carries the canonical key in
+    /// the `slug` field next to the display id in `id` — the same terms the
+    /// frontmatter reader and the document writers use. A round trip through
+    /// the frontmatter must not rewrite the key.
+    #[test]
+    fn the_frontmatter_map_carries_the_key_in_the_slug_field() {
+        let record = ArtifactRecord {
+            canonical_key: "prd-auth-system".to_string(),
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Auth".to_string(),
+            body: "body".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
+        };
+
+        let map = record.frontmatter_map();
+        assert_eq!(
+            map.get("id").unwrap(),
+            &serde_yaml::Value::String("PRD-001".to_string()),
+            "the public id stays the display id"
+        );
+        assert_eq!(
+            map.get("slug").unwrap(),
+            &serde_yaml::Value::String("prd-auth-system".to_string()),
+            "the canonical key travels in the slug field"
+        );
+
+        // The round trip: the map renders to Markdown, and the reader hands
+        // the same key back.
+        let rendered =
+            crate::artifact::frontmatter::render_frontmatter(&map, &record.body).unwrap();
+        let (parsed, _body) = crate::artifact::frontmatter::parse_frontmatter(&rendered).unwrap();
+        assert_eq!(
+            crate::artifact::frontmatter::slug_from_frontmatter(&parsed),
+            Some("prd-auth-system"),
+            "a round trip through the frontmatter must not rewrite the key"
+        );
+        assert_eq!(
+            crate::artifact::canonical_key::canonical_key_from_document("PRD-001", &rendered),
+            "prd-auth-system",
+            "the document's own key rule must read back the same key"
         );
     }
 }

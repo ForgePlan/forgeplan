@@ -2,21 +2,47 @@
 //! Uses HashMap + tokio::sync::RwLock for thread-safe async access. No disk I/O.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use tokio::sync::RwLock;
 
+use crate::artifact::canonical_key::ArtifactCandidate;
 use crate::artifact::store::ArtifactSummary;
 use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, NewArtifact};
 use crate::driver::{ArtifactStorage, FpfStorage, RelationStorage, SearchStorage, VectorStorage};
 
 /// Internal state behind a single RwLock to avoid TOCTOU races.
 struct InMemoryState {
+    /// Canonical key → record. The key is the identity (ADR-030); the display
+    /// id in the record is a repeatable alias.
     artifacts: HashMap<String, ArtifactRecord>,
-    relations: Vec<(String, String, String)>, // source, target, relation_type
+    /// (source key, target key, relation_type)
+    relations: Vec<(String, String, String)>,
     fpf_chunks: Vec<FpfChunk>,
     id_counters: HashMap<String, u32>,
+}
+
+/// Resolve a caller-supplied selector to the canonical key of exactly one
+/// document, using the **shared** algorithm — the same one the Lance store and
+/// the capture-backed read use. An ambiguous selector resolves to nothing: this
+/// driver must never answer differently from the store it stands in for.
+fn resolve_key(state: &InMemoryState, selector: &str) -> Option<String> {
+    let candidates: Vec<ArtifactCandidate> = state
+        .artifacts
+        .values()
+        .map(|record| ArtifactCandidate {
+            canonical_key: record.canonical_key.clone(),
+            display_id: record.id.clone(),
+            title: record.title.clone(),
+            // The in-memory driver has no files; the path is never read.
+            relative_path: PathBuf::new(),
+        })
+        .collect();
+    crate::artifact::canonical_key::resolve_artifact(selector, &candidates)
+        .ok()
+        .flatten()
+        .map(|resolved| resolved.identity.canonical_key)
 }
 
 /// Thread-safe in-memory store for testing.
@@ -94,17 +120,20 @@ impl ArtifactStorage for InMemoryStore {
             embedding: None,
         };
         let id = record.id.clone();
-        self.state
-            .write()
-            .await
-            .artifacts
-            .insert(id.clone(), record);
+        // The row is keyed by the canonical key (ADR-030). The prepared key
+        // wins; a caller that supplied none gets the ADR-030 rule applied to
+        // the document.
+        let key = crate::db::store::canonical_key_of(&artifact.canonical_key, &artifact.id, &artifact.body);
+        self.state.write().await.artifacts.insert(key, record);
         Ok(id)
     }
 
     async fn get_artifact(&self, id: &str) -> anyhow::Result<Option<ArtifactSummary>> {
         let state = self.state.read().await;
-        Ok(state.artifacts.get(id).map(|r| r.to_summary()))
+        let key = resolve_key(&state, id);
+        Ok(key
+            .and_then(|key| state.artifacts.get(&key))
+            .map(|r| r.to_summary()))
     }
 
     async fn list_artifacts(
@@ -139,9 +168,11 @@ impl ArtifactStorage for InMemoryStore {
         title: Option<&str>,
     ) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let key = resolve_key(&state, id)
+            .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         let record = state
             .artifacts
-            .get_mut(id)
+            .get_mut(&key)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         if let Some(s) = status {
             record.status = s.to_string();
@@ -155,9 +186,11 @@ impl ArtifactStorage for InMemoryStore {
 
     async fn update_r_eff_score(&self, id: &str, score: f64) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let key = resolve_key(&state, id)
+            .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         let record = state
             .artifacts
-            .get_mut(id)
+            .get_mut(&key)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         record.r_eff_score = score;
         record.updated_at = Utc::now().to_rfc3339();
@@ -166,12 +199,14 @@ impl ArtifactStorage for InMemoryStore {
 
     async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let key = resolve_key(&state, id)
+            .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         state
             .artifacts
-            .remove(id)
+            .remove(&key)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         // Atomically clean up relations involving this artifact (same lock)
-        state.relations.retain(|(s, t, _)| s != id && t != id);
+        state.relations.retain(|(s, t, _)| s != &key && t != &key);
         Ok(())
     }
 
@@ -179,7 +214,9 @@ impl ArtifactStorage for InMemoryStore {
 
     async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
         let state = self.state.read().await;
-        Ok(state.artifacts.get(id).cloned())
+        Ok(resolve_key(&state, id)
+            .and_then(|key| state.artifacts.get(&key))
+            .cloned())
     }
 
     async fn list_records(
@@ -209,9 +246,11 @@ impl ArtifactStorage for InMemoryStore {
 
     async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let key = resolve_key(&state, id)
+            .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         let record = state
             .artifacts
-            .get_mut(id)
+            .get_mut(&key)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         record.body = body.to_string();
         record.updated_at = Utc::now().to_rfc3339();
@@ -229,16 +268,22 @@ impl RelationStorage for InMemoryStore {
             anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
         }
         let mut state = self.state.write().await;
+        // Relation endpoints are canonical keys (ADR-030); a caller may still
+        // pass a display alias, so resolve both before storing.
+        let source_key = resolve_key(&state, source).unwrap_or_else(|| source.to_string());
+        let target_key = resolve_key(&state, target).unwrap_or_else(|| target.to_string());
         // Reject duplicates
         let exists = state.relations.iter().any(|(s, t, r)| {
-            s.eq_ignore_ascii_case(source) && t.eq_ignore_ascii_case(target) && r == relation
+            s.eq_ignore_ascii_case(&source_key)
+                && t.eq_ignore_ascii_case(&target_key)
+                && r == relation
         });
         if exists {
             anyhow::bail!("relation already exists: {source} -> {target} ({relation})");
         }
         state
             .relations
-            .push((source.to_string(), target.to_string(), relation.to_string()));
+            .push((source_key, target_key, relation.to_string()));
         Ok(())
     }
 
@@ -249,10 +294,12 @@ impl RelationStorage for InMemoryStore {
         relation: &str,
     ) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let source_key = resolve_key(&state, source).unwrap_or_else(|| source.to_string());
+        let target_key = resolve_key(&state, target).unwrap_or_else(|| target.to_string());
         let before = state.relations.len();
         state
             .relations
-            .retain(|(s, t, r)| !(s == source && t == target && r == relation));
+            .retain(|(s, t, r)| !(s == &source_key && t == &target_key && r == relation));
         if state.relations.len() == before {
             anyhow::bail!("relation not found: {source} -> {target} ({relation})");
         }
@@ -261,20 +308,22 @@ impl RelationStorage for InMemoryStore {
 
     async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         let state = self.state.read().await;
+        let key = resolve_key(&state, id);
         Ok(state
             .relations
             .iter()
-            .filter(|(s, _, _)| s == id)
+            .filter(|(s, _, _)| Some(s) == key.as_ref())
             .map(|(_, t, r)| (t.clone(), r.clone()))
             .collect())
     }
 
     async fn get_incoming_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         let state = self.state.read().await;
+        let key = resolve_key(&state, id);
         Ok(state
             .relations
             .iter()
-            .filter(|(_, t, _)| t == id)
+            .filter(|(_, t, _)| Some(t) == key.as_ref())
             .map(|(s, _, r)| (s.clone(), r.clone()))
             .collect())
     }
@@ -286,9 +335,10 @@ impl RelationStorage for InMemoryStore {
 
     async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let key = resolve_key(&state, id).unwrap_or_else(|| id.to_string());
         state
             .relations
-            .retain(|(s, t, _)| !s.eq_ignore_ascii_case(id) && !t.eq_ignore_ascii_case(id));
+            .retain(|(s, t, _)| !s.eq_ignore_ascii_case(&key) && !t.eq_ignore_ascii_case(&key));
         Ok(())
     }
 }

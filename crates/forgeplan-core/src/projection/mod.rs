@@ -184,6 +184,9 @@ pub async fn render_projection(
         &[],
         false,
         ProjectionBodyMode::Body,
+        None,
+        None,
+        false,
     )
     .await
 }
@@ -240,7 +243,22 @@ async fn render_projection_record_inner(
 
     let slug = projection_slug(&record.title);
     let filename = format!("{}-{}.md", record.id, slug);
-    let filepath = dir.join(&filename);
+    // An existing document keeps its path: a document published under its
+    // canonical key is found by the key it declares, not by a name derived
+    // from the title.
+    let legacy = dir.join(&filename);
+    let filepath = if legacy.exists() {
+        legacy
+    } else {
+        find_existing_projection_file(
+            workspace,
+            &dir,
+            &record.id,
+            declared_canonical_key(Some(&record.canonical_key)),
+        )
+        .await?
+        .unwrap_or(legacy)
+    };
 
     // Files-first: preserve existing body + agent-owned fm keys (PRD-057 FR-009).
     // `force_body` (#478) opts out for mutations that append to the body.
@@ -275,6 +293,20 @@ async fn render_projection_record_inner(
         }
     } else {
         (record.body.clone(), None)
+    };
+
+    // A document that does not exist yet declares the key it is created
+    // under. An existing document keeps the key it already carries.
+    let preserved_fm = match preserved_fm {
+        Some(fm) => Some(fm),
+        None => declared_canonical_key(Some(&record.canonical_key)).map(|key| {
+            let mut fm = Frontmatter::new();
+            fm.insert(
+                "slug".to_string(),
+                serde_yaml::Value::String(key.to_string()),
+            );
+            fm
+        }),
     };
 
     let content = render_markdown_with_extras(
@@ -331,6 +363,9 @@ pub async fn render_projection_with_body(
         &[],
         true,
         ProjectionBodyMode::Body,
+        None,
+        None,
+        false,
     )
     .await
 }
@@ -351,6 +386,9 @@ async fn render_projection_inner(
     tags: &[String],
     force_body: bool,
     body_mode: ProjectionBodyMode,
+    canonical_key: Option<&str>,
+    explicit_path: Option<PathBuf>,
+    create_only: bool,
 ) -> anyhow::Result<PathBuf> {
     let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
     let dir = workspace.join(artifact_kind.dir_name());
@@ -358,7 +396,22 @@ async fn render_projection_inner(
 
     let slug = projection_slug(title);
     let filename = format!("{}-{}.md", id, slug);
-    let filepath = dir.join(&filename);
+    let filepath = match explicit_path {
+        Some(path) => path,
+        None => {
+            // An existing document keeps its path: a document published
+            // under its canonical key is found by the key it declares, not
+            // by a name derived from the title.
+            let legacy = dir.join(&filename);
+            if legacy.exists() {
+                legacy
+            } else {
+                find_existing_projection_file(workspace, &dir, id, canonical_key)
+                    .await?
+                    .unwrap_or(legacy)
+            }
+        }
+    };
 
     // Files-first (RFC-004): preserve the file body when the file exists.
     // Only frontmatter is updated from LanceDB. Body comes from the file on disk.
@@ -391,6 +444,22 @@ async fn render_projection_inner(
         (body.to_string(), None)
     };
 
+    // A document that does not exist yet declares the key it is created
+    // under. An existing document keeps the key it already carries — the
+    // canonical key is immutable through ordinary updates, and the
+    // preserved frontmatter is where it survives a re-render.
+    let preserved_fm = match preserved_fm {
+        Some(fm) => Some(fm),
+        None => canonical_key.map(|key| {
+            let mut fm = Frontmatter::new();
+            fm.insert(
+                "slug".to_string(),
+                serde_yaml::Value::String(key.to_string()),
+            );
+            fm
+        }),
+    };
+
     let content = render_markdown_with_extras(
         id,
         kind,
@@ -407,7 +476,13 @@ async fn render_projection_inner(
         body_mode,
     )?;
     // PRD-073 audit C1: atomic write protects against kill-mid-truncate window.
-    atomic_markdown_write(&filepath, content.as_bytes()).await?;
+    if create_only {
+        // Publication never clobbers: the write fails when the target path
+        // already exists, so an existing document is never overwritten.
+        atomic_markdown_create(&filepath, content.as_bytes()).await?;
+    } else {
+        atomic_markdown_write(&filepath, content.as_bytes()).await?;
+    }
 
     Ok(filepath)
 }
@@ -435,6 +510,60 @@ fn filter_preserved(fm: &Frontmatter) -> Option<Frontmatter> {
         }
     }
     if out.is_empty() { None } else { Some(out) }
+}
+
+/// The canonical key a freshly written document declares, if there is one.
+///
+/// An empty key is not a key: a row that carries none simply does not
+/// declare one, and the document keeps whatever it already had.
+fn declared_canonical_key(canonical_key: Option<&str>) -> Option<&str> {
+    canonical_key.filter(|key| !key.trim().is_empty())
+}
+
+/// Find the file an existing document already lives in.
+///
+/// A document published under its canonical key keeps that path. The lookup
+/// never invents a path: a document that is not on disk has no path yet, and
+/// the caller falls back to the name it would create.
+///
+/// The canonical key is checked first (one stat). Only when the key is
+/// unknown does the directory have to be read — a document whose file name
+/// drifted is found by the `id:` it declares.
+async fn find_existing_projection_file(
+    _workspace: &Path,
+    dir: &Path,
+    id: &str,
+    canonical_key: Option<&str>,
+) -> anyhow::Result<Option<PathBuf>> {
+    if let Some(key) = declared_canonical_key(canonical_key) {
+        let candidate = dir.join(crate::artifact::store::canonical_filename(key)?);
+        if candidate.exists() {
+            return Ok(Some(candidate));
+        }
+    }
+    let Ok(mut read_dir) = tokio::fs::read_dir(dir).await else {
+        return Ok(None);
+    };
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "md") {
+            continue;
+        }
+        let Ok(content) = tokio::fs::read_to_string(&path).await else {
+            continue;
+        };
+        let Ok((fm, _body)) = frontmatter::parse_frontmatter(&content) else {
+            continue;
+        };
+        if fm
+            .get("id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|declared| declared.eq_ignore_ascii_case(id))
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
 }
 
 /// Sync file → store BEFORE mutation. Preserves any user edits to the
@@ -1559,6 +1688,124 @@ pub async fn import_artifact_with_projection(
     create_artifact_projection(ctx, artifact, ProjectionBodyMode::CanonicalFile).await
 }
 
+/// The row a document's creation publishes.
+///
+/// The row is keyed by the document's **real** canonical key — the slug its
+/// frontmatter declares, or the display id when it declares none (ADR-030).
+/// A row keyed by the display id instead would put two rows in the
+/// workspace for one document, and that document would then read as an
+/// ambiguous alias.
+fn creation_row(artifact: &crate::db::store::NewArtifact) -> crate::db::store::NewArtifact {
+    let canonical_key = crate::artifact::canonical_key::canonical_key_from_document(
+        &artifact.id,
+        &artifact.body,
+    );
+    crate::db::store::NewArtifact {
+        id: artifact.id.clone(),
+        canonical_key,
+        kind: artifact.kind.clone(),
+        status: artifact.status.clone(),
+        title: artifact.title.clone(),
+        body: artifact.body.clone(),
+        depth: artifact.depth.clone(),
+        author: artifact.author.clone(),
+        parent_epic: artifact.parent_epic.clone(),
+        valid_until: artifact.valid_until.clone(),
+        tags: artifact.tags.clone(),
+    }
+}
+
+/// Publish a newly created document under its canonical key.
+///
+/// SPEC-009 "New file naming": a newly created document is written to
+/// `<canonical_key>.md`. Existing files keep their paths — this path is
+/// for a document that is being created, never for one that already exists.
+///
+/// Publication never clobbers: an existing path aborts the creation, the
+/// existing document is not overwritten, and no second key is minted after
+/// relations have already been published against the first.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `artifact.id` fails
+///   `validate_artifact_id`.
+/// - [`MutationError::InvalidKind`] if `artifact.kind` does not parse as
+///   an `ArtifactKind`.
+/// - [`MutationError::StoreFatal`] if the canonical key is not a usable
+///   file name, or if the target path already exists.
+pub async fn create_artifact_with_canonical_key(
+    ctx: &MutationContext<'_>,
+    artifact: &crate::db::store::NewArtifact,
+) -> MutationResult<PathBuf> {
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
+    crate::db::store::validate_artifact_id(&artifact.id)
+        .map_err(|_| MutationError::InvalidId(artifact.id.clone()))?;
+    let artifact_kind: ArtifactKind = artifact
+        .kind
+        .parse()
+        .map_err(
+            |e: crate::error::ForgeplanError| MutationError::InvalidKind {
+                id: artifact.id.clone(),
+                kind: artifact.kind.clone(),
+                reason: e.to_string(),
+            },
+        )?;
+    let filename = crate::artifact::store::canonical_filename(&artifact.canonical_key)
+        .map_err(MutationError::StoreFatal)?;
+    let filepath = workspace.join(artifact_kind.dir_name()).join(&filename);
+
+    // Publication never clobbers. The check is a courtesy — the write
+    // itself refuses to replace an existing file.
+    if tokio::fs::metadata(&filepath).await.is_ok() {
+        return Err(MutationError::StoreFatal(anyhow::anyhow!(
+            "refusing to publish canonical key '{}': {} already exists",
+            artifact.canonical_key,
+            filepath.display()
+        )));
+    }
+
+    // The document declares the key it is filed under — the file, the row
+    // and the file name then name one identity.
+    let body = crate::artifact::frontmatter::ensure_canonical_key(
+        &artifact.body,
+        &artifact.canonical_key,
+    )
+    .map_err(MutationError::StoreFatal)?;
+
+    let path = render_projection_inner(
+        workspace,
+        &artifact.id,
+        &artifact.kind,
+        &artifact.title,
+        &artifact.status,
+        &artifact.depth,
+        artifact.author.as_deref(),
+        artifact.parent_epic.as_deref(),
+        artifact.valid_until.as_deref(),
+        &body,
+        &[],
+        &artifact.tags,
+        true,
+        ProjectionBodyMode::Body,
+        Some(&artifact.canonical_key),
+        Some(filepath),
+        true,
+    )
+    .await?;
+
+    // Then the derived index — only when this workspace still has a legacy
+    // index. On a constellation-managed workspace the markdown write above
+    // is the whole mutation.
+    if let Some(store) = store {
+        // If this fails, the file remains and reindex recovers.
+        let mut row = creation_row(artifact);
+        row.body = body;
+        store.create_artifact(&row).await?;
+    }
+    Ok(path)
+}
+
 async fn create_artifact_projection(
     ctx: &MutationContext<'_>,
     artifact: &crate::db::store::NewArtifact,
@@ -1572,7 +1819,7 @@ async fn create_artifact_projection(
     // `format!("{id}-{slug}.md")` resolved against `workspace/<kind>/`.
     crate::db::store::validate_artifact_id(&artifact.id)
         .map_err(|_| MutationError::InvalidId(artifact.id.clone()))?;
-    let _: ArtifactKind = artifact
+    let artifact_kind: ArtifactKind = artifact
         .kind
         .parse()
         .map_err(
@@ -1595,6 +1842,15 @@ async fn create_artifact_projection(
     //
     // 1. File first — projection is the source of truth, with caller body
     //    forced over any pre-existing file at the same slug path.
+    // The legacy creation path writes the name it has always written; the
+    // canonical-key path is the one that publishes under `<key>.md`.
+    let legacy_path = workspace
+        .join(artifact_kind.dir_name())
+        .join(format!(
+            "{}-{}.md",
+            artifact.id,
+            projection_slug(&artifact.title)
+        ));
     let path = render_projection_inner(
         workspace,
         &artifact.id,
@@ -1610,6 +1866,9 @@ async fn create_artifact_projection(
         &artifact.tags,
         true,
         body_mode,
+        None,
+        Some(legacy_path),
+        false,
     )
     .await?;
 
@@ -1621,7 +1880,7 @@ async fn create_artifact_projection(
     //    retired table that shadows the real index.
     if let Some(store) = store {
         // If this fails, file remains and reindex recovers.
-        store.create_artifact(artifact).await?;
+        store.create_artifact(&creation_row(artifact)).await?;
     }
     Ok(path)
 }
@@ -1955,6 +2214,17 @@ pub async fn update_body_with_projection(
         }
     };
     let links = store.get_relations(id).await.unwrap_or_default();
+
+    // The canonical key is immutable through an ordinary update. A body
+    // that declares a different key — in its own frontmatter or in a
+    // nested one — is refused instead of written.
+    let current_key = if record.canonical_key.trim().is_empty() {
+        crate::artifact::canonical_key::canonical_key_from_document(&record.id, &record.body)
+    } else {
+        record.canonical_key.clone()
+    };
+    frontmatter::refuse_canonical_key_change(&current_key, body)
+        .map_err(MutationError::StoreFatal)?;
 
     // PROB-060 / ADR-012: preserve the body-frontmatter fields the replacement
     // would otherwise delete — every field the record does not own, not just
@@ -2474,7 +2744,10 @@ pub async fn update_metadata_file_first(
         rendered.push('\n');
     }
 
-    // Title change → the canonical filename follows the NEW slug.
+    // Title change → the canonical filename follows the NEW slug — unless
+    // the document is published under its canonical key. A document filed
+    // under its key keeps that path: a title change renames nothing and
+    // changes no key.
     let mut final_path = artifact_path.to_path_buf();
     if let Some(t) = title {
         let id = fm.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -2483,12 +2756,19 @@ pub async fn update_metadata_file_first(
                 artifact_path.display()
             )
         })?;
-        let candidate = artifact_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(format!("{id}-{}.md", projection_slug(t)));
-        if candidate != artifact_path {
-            final_path = candidate;
+        let canonical_key =
+            crate::artifact::canonical_key::canonical_key_from_document(id, &content);
+        let published_under_key = artifact_path
+            .file_stem()
+            .is_some_and(|stem| stem.to_string_lossy() == canonical_key);
+        if !published_under_key {
+            let candidate = artifact_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(format!("{id}-{}.md", projection_slug(t)));
+            if candidate != artifact_path {
+                final_path = candidate;
+            }
         }
     }
 
@@ -2522,6 +2802,15 @@ pub async fn update_metadata_file_first(
 pub async fn update_body_file_first(artifact_path: &Path, new_body: &str) -> anyhow::Result<()> {
     let content = tokio::fs::read_to_string(artifact_path).await?;
     let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
+
+    // The canonical key is immutable through an ordinary update. A body
+    // that declares a different key — in its own frontmatter or in a
+    // nested one — is refused instead of written.
+    let current_key = {
+        let id = fm.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        crate::artifact::canonical_key::canonical_key_from_document(id, &content)
+    };
+    frontmatter::refuse_canonical_key_change(&current_key, new_body)?;
 
     let carried = carry_identity_forward(&body, new_body);
     if let Some(derived_status) =
@@ -3351,6 +3640,85 @@ pub async fn delete_artifact_after_soft_delete(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn publishes_a_new_document_under_its_canonical_key() {
+        use crate::workspace::lock::acquire_workspace_lock;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = crate::workspace::init_workspace(tmp.path(), "canonical-key").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let ctx = MutationContext::new(&ws, &lock, None);
+        let key = "prd-auth-system-k0123456789abcdef0123456789abcdef";
+        let artifact = crate::db::store::NewArtifact {
+            canonical_key: key.to_string(),
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Auth system".to_string(),
+            body: "## Summary\n\nBody.\n".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![],
+        };
+        let path = create_artifact_with_canonical_key(&ctx, &artifact).await.unwrap();
+        assert_eq!(path, ws.join("prds").join(format!("{key}.md")));
+
+        let text = tokio::fs::read_to_string(&path).await.unwrap();
+        let (fm, _body) = frontmatter::parse_frontmatter(&text).unwrap();
+        assert_eq!(
+            fm.get("slug").and_then(|v| v.as_str()),
+            Some(key),
+            "the published document declares the key it is filed under"
+        );
+
+        // Publishing onto the same path again aborts, and the existing
+        // document is not overwritten.
+        let err = create_artifact_with_canonical_key(&ctx, &artifact)
+            .await
+            .expect_err("publication must not clobber an existing document");
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
+        let after = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(after, text, "the existing document must stay untouched");
+    }
+
+    #[tokio::test]
+    async fn an_update_cannot_change_the_canonical_key() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp
+            .path()
+            .join("prds")
+            .join("prd-auth-system-k0123456789abcdef0123456789abcdef.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth system\n\
+             slug: prd-auth-system-k0123456789abcdef0123456789abcdef\n---\n\n\
+             Original body.\n",
+        )
+        .unwrap();
+
+        let err = update_body_file_first(
+            &path,
+            "---\nslug: prd-other-system\n---\n\nReplacement body.\n",
+        )
+        .await
+        .expect_err("an ordinary update must not change the canonical key");
+        assert!(
+            err.to_string().contains("canonical key change refused"),
+            "unexpected error: {err:#}"
+        );
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            after.contains("Original body."),
+            "the document must stay untouched"
+        );
+    }
 
     #[tokio::test]
     async fn clearing_nested_edges_and_tags_survives_fresh_reads_for_both_owners() {

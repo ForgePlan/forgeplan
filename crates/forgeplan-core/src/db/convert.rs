@@ -53,6 +53,16 @@ pub(crate) fn artifact_to_batch_with_schema(
             ])),
             embedding_col,
             Arc::new(tags_col),
+            // canonical_key — ADR-030: the row's authoritative identity. The
+            // column is NOT NULL, so a caller that did not prepare a key gets
+            // the legacy rule applied to the row's own document (the
+            // frontmatter slug when it declares a valid one, the display id
+            // otherwise) rather than an empty, unaddressable row.
+            Arc::new(StringArray::from(vec![crate::db::store::canonical_key_of(
+                &artifact.canonical_key,
+                &artifact.id,
+                &artifact.body,
+            )])),
         ],
     )?;
     Ok(batch)

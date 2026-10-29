@@ -141,6 +141,11 @@ impl AuxiliaryStore {
     ///
     /// The caller holds the lock. A read handle for absent history cannot
     /// append; use `open_history_or_create` for a write.
+    ///
+    /// Schema v5 (ADR-030): this handle owns the history only — it cannot
+    /// see the artifact index — so it stores the id it is given. The legacy
+    /// store's [`crate::db::store::LanceStore::log_change`] resolves that id
+    /// to the artifact's canonical key first.
     pub async fn log_change(&self, entry: &ChangeLogEntry) -> anyhow::Result<()> {
         let table = self
             .change_log
@@ -537,6 +542,12 @@ pub(crate) async fn change_log_append(table: &Table, entry: &ChangeLogEntry) -> 
     Ok(())
 }
 
+/// Query history rows.
+///
+/// Schema v5 (ADR-030): `artifact_id` holds the **canonical key** of the
+/// changed artifact, so the filter is a key filter. The caller resolves the
+/// selector it was given; a row written before the upgrade keeps its display
+/// id and is reachable only under that id.
 pub(crate) async fn change_log_query(
     table: &Table,
     artifact_id: Option<&str>,

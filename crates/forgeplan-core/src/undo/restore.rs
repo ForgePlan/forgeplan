@@ -338,9 +338,11 @@ fn snapshot_artifact(receipt: &Receipt, status: &str) -> NewArtifact {
 
 /// Move the trashed projection back without re-rendering it on either layout.
 ///
-/// The destination is recomputed from workspace + kind + id + slug, never
-/// taken from the receipt's recorded projection path. A missing trashed file
-/// returns `false`; the restore cannot then consume its receipt.
+/// The destination is the document's canonical home: the file name the
+/// receipt recorded (validated — only the name is taken, never the
+/// directory), falling back to workspace + kind + id + title slug. A
+/// missing trashed file returns `false`; the restore cannot then consume
+/// its receipt.
 async fn restore_projection_file(workspace: &Path, receipt: &Receipt) -> anyhow::Result<bool> {
     let trashed = Path::new(&receipt.trashed_projection);
     let safe_original = compute_safe_projection_path(workspace, &receipt.snapshot)?;
@@ -352,6 +354,10 @@ async fn restore_projection_file(workspace: &Path, receipt: &Receipt) -> anyhow:
     if let Some(parent) = safe_original.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
+    // A restore never overwrites a different canonical document: the
+    // document that already holds the path is not the one the receipt
+    // captured, and replacing it would destroy another artifact's identity.
+    ensure_restore_target_is_free(receipt, &safe_original).await?;
     match tokio::fs::rename(trashed, &safe_original).await {
         Ok(()) => Ok(true),
         Err(e) => {
@@ -384,7 +390,7 @@ async fn render_snapshot_projection(
     status: &str,
 ) -> anyhow::Result<()> {
     let snapshot = &receipt.snapshot;
-    crate::projection::render_projection_with_body(
+    let rendered = crate::projection::render_projection_with_body(
         workspace,
         &snapshot.id,
         &snapshot.kind,
@@ -398,6 +404,44 @@ async fn render_snapshot_projection(
         &[],
     )
     .await?;
+    // The receipt records the document's canonical home. A document
+    // published under its canonical key is restored to that path, so the
+    // restored document keeps the key it was filed under.
+    let target = compute_safe_projection_path(workspace, snapshot)?;
+    if target != rendered {
+        ensure_restore_target_is_free(receipt, &target).await?;
+        if let Some(parent) = target.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::rename(&rendered, &target).await?;
+    }
+    Ok(())
+}
+
+/// Refuse to restore over a document that is not the one the receipt
+/// captured.
+///
+/// The restore target may already exist: the same document may have been
+/// recreated after the delete. Restoring over the *same* canonical document
+/// is the point of an undo; restoring over a *different* one would destroy
+/// another artifact's identity.
+async fn ensure_restore_target_is_free(receipt: &Receipt, target: &Path) -> anyhow::Result<()> {
+    if !target.exists() {
+        return Ok(());
+    }
+    let existing = tokio::fs::read_to_string(target).await?;
+    let existing_key = canonical_key_from_document(&receipt.snapshot.id, &existing);
+    let receipt_key = canonical_key_from_document(&receipt.snapshot.id, &receipt.snapshot.body);
+    if existing_key != receipt_key {
+        anyhow::bail!(
+            "refusing to restore '{}': {} already holds a different canonical document \
+             ('{}' instead of '{}')",
+            receipt.snapshot.id,
+            target.display(),
+            existing_key,
+            receipt_key
+        );
+    }
     Ok(())
 }
 
@@ -472,8 +516,16 @@ fn compute_safe_projection_path(
         .kind
         .parse()
         .map_err(|e| anyhow::anyhow!("receipt has unknown kind '{}': {e}", snapshot.kind))?;
-    let slug = crate::projection::projection_slug(&snapshot.title);
-    let filename = format!("{}-{}.md", snapshot.id, slug);
+    // The receipt records where the document lived. That file name is the
+    // document's canonical home: a document published under its canonical
+    // key is restored to that name, and a legacy document keeps the name it
+    // had. Only the file NAME is taken from the receipt — never its
+    // directory — and the name is validated, so a tampered receipt cannot
+    // aim the restore outside the kind directory.
+    let filename = recorded_file_name(snapshot).unwrap_or_else(|| {
+        let slug = crate::projection::projection_slug(&snapshot.title);
+        format!("{}-{}.md", snapshot.id, slug)
+    });
     let candidate = workspace.join(kind.dir_name()).join(&filename);
 
     // Canonical check: resolved path must live under workspace.
@@ -504,6 +556,24 @@ fn compute_safe_projection_path(
         }
     }
     Ok(candidate)
+}
+
+/// The file name the receipt recorded for the document, when it is usable.
+///
+/// Only the name is taken — never the directory — and it must be a safe
+/// canonical file name. A tampered receipt therefore cannot aim a restore
+/// outside the kind directory.
+fn recorded_file_name(snapshot: &super::ArtifactSnapshot) -> Option<String> {
+    let recorded = Path::new(&snapshot.projection_path);
+    let name = recorded.file_name()?.to_str()?.trim();
+    if !name.ends_with(".md") {
+        return None;
+    }
+    let stem = &name[..name.len() - 3];
+    // The name must be one this build could have written.
+    crate::artifact::store::canonical_filename(stem)
+        .ok()
+        .map(|_| name.to_string())
 }
 
 /// Read a receipt by ID and apply_restore. Convenience wrapper.
@@ -577,6 +647,84 @@ mod tests {
         tokio::fs::rename(&original, &trashed).await.unwrap();
         receipt.snapshot.projection_path = original.display().to_string();
         receipt.trashed_projection = trashed.display().to_string();
+    }
+
+    #[tokio::test]
+    async fn restore_preserves_the_key_from_the_receipt() {
+        let (_tmp, ws, store) = fresh_ws().await;
+        let key = "prd-auth-system-k0123456789abcdef0123456789abcdef";
+        let body = format!("---\nid: PRD-042\nkind: prd\nslug: {key}\n---\n\n# body\n");
+        let mut receipt = build_receipt("PRD-042", DestructiveOp::Delete, &body);
+        receipt.snapshot.slug = Some(key.to_string());
+        let target = ws.join("prds").join(format!("{key}.md"));
+        receipt.snapshot.projection_path = target.display().to_string();
+
+        // The document is in the trash; its canonical path is free.
+        let trashed = trashed_projection_path(&ws, &receipt.receipt_id);
+        tokio::fs::create_dir_all(trashed.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&trashed, &body).await.unwrap();
+        receipt.trashed_projection = trashed.display().to_string();
+        write_receipt(&ws, &receipt).await.unwrap();
+
+        let report = apply_restore(&ws, &store, &receipt).await.unwrap();
+        assert_eq!(report.artifact_id, "PRD-042");
+        assert!(
+            target.exists(),
+            "the document must come back at its canonical path: {}",
+            target.display()
+        );
+        let text = tokio::fs::read_to_string(&target).await.unwrap();
+        let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&text).unwrap();
+        assert_eq!(
+            fm.get("slug").and_then(|value| value.as_str()),
+            Some(key),
+            "the restored document keeps the key the receipt captured"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_refuses_to_overwrite_a_different_canonical_document() {
+        let (_tmp, ws, store) = fresh_ws().await;
+        let key = "prd-auth-system-k0123456789abcdef0123456789abcdef";
+        let body = format!("---\nid: PRD-042\nkind: prd\nslug: {key}\n---\n\n# body\n");
+        let mut receipt = build_receipt("PRD-042", DestructiveOp::Delete, &body);
+        receipt.snapshot.slug = Some(key.to_string());
+        let target = ws.join("prds").join(format!("{key}.md"));
+        receipt.snapshot.projection_path = target.display().to_string();
+
+        // A DIFFERENT document already holds the canonical path.
+        tokio::fs::create_dir_all(target.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &target,
+            "---\nid: PRD-099\nkind: prd\nslug: prd-other-k11111111111111111111111111111111\n---\n\n# other\n",
+        )
+        .await
+        .unwrap();
+
+        let trashed = trashed_projection_path(&ws, &receipt.receipt_id);
+        tokio::fs::create_dir_all(trashed.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&trashed, &body).await.unwrap();
+        receipt.trashed_projection = trashed.display().to_string();
+        write_receipt(&ws, &receipt).await.unwrap();
+
+        let err = apply_restore(&ws, &store, &receipt)
+            .await
+            .expect_err("restore must refuse to overwrite a different document");
+        assert!(
+            err.to_string().contains("different canonical document"),
+            "unexpected error: {err:#}"
+        );
+        let after = tokio::fs::read_to_string(&target).await.unwrap();
+        assert!(
+            after.contains("PRD-099"),
+            "the other document must stay untouched"
+        );
     }
 
     async fn assert_canonical_metadata(workspace: &Path, id: &str, status: &str, title: &str) {

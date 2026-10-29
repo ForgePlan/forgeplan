@@ -8,6 +8,11 @@ use forgeplan_core::scan::import::{ImportStatus, ScanImportOptions, scan_and_imp
 use crate::commands::common;
 
 /// `forgeplan scan-import [--path <dir>] [--dry-run]`
+///
+/// ADR-030: an imported document keeps the key it was written with — the
+/// slug its frontmatter declares when that slug is valid, and its display id
+/// when it declares none. An import never mints a key, and the derived index
+/// row is keyed by that same key.
 pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
     // A preview acquires NOTHING. Taking the workspace lock would create
     // `.forgeplan/.lock`, and opening the store would run its schema

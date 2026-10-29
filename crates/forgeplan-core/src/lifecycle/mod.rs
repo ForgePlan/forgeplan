@@ -632,20 +632,32 @@ pub async fn reopen(
     let safe_reason = sanitize_reason(reason);
     let today = chrono::Utc::now().format("%Y-%m-%d");
 
+    // ADR-030: the successor is a NEW document — it gets a minted canonical
+    // key, not the display id it happens to be numbered with.
+    let successor_kind: crate::artifact::types::ArtifactKind =
+        record.kind.parse().map_err(|e: crate::error::ForgeplanError| {
+            anyhow::anyhow!(
+                "artifact '{artifact_id}' has unknown kind '{}': {e}",
+                record.kind
+            )
+        })?;
+    let successor_title = format!("{} (reopened)", record.title);
+    let canonical_key =
+        crate::artifact::canonical_key::mint_artifact_key(&successor_kind, &successor_title)?;
+
     // Step 1: Create new artifact FIRST (before deprecating old — audit C3: atomicity)
     let lineage = format!(
-        "## Lineage\n\nReopened from: {artifact_id}\nReason: {safe_reason}\n\n\
+        "---\nslug: {canonical_key}\n---\n\n\
+         ## Lineage\n\nReopened from: {artifact_id}\nReason: {safe_reason}\n\n\
          Previous title: {}\n\n---\n",
         record.title
     );
     let new_artifact = crate::db::store::NewArtifact {
-        // ADR-030: no minted key yet — the document declares no slug, so its
-        // canonical key is its display id.
-        canonical_key: new_id.to_string(),
+        canonical_key: canonical_key.clone(),
         id: new_id.to_string(),
         kind: record.kind.clone(),
         status: "draft".to_string(),
-        title: format!("{} (reopened)", record.title),
+        title: successor_title,
         body: lineage,
         depth: record.depth.clone(),
         author: record.author.clone(),
@@ -930,6 +942,36 @@ mod tests {
         // Link exists: new → old
         let rels = store.get_relations("PRD-201").await.unwrap();
         assert!(rels.iter().any(|(t, r)| t == "PRD-200" && r == "based_on"));
+    }
+
+    #[tokio::test]
+    async fn reopen_mints_a_canonical_key_for_the_successor() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store.create_artifact(&stale_prd("PRD-300")).await.unwrap();
+
+        reopen(&store, "PRD-300", "need another approach", "PRD-301")
+            .await
+            .unwrap();
+
+        let new = store.get_record("PRD-301").await.unwrap().unwrap();
+        // The successor is a new document: its identity is a minted key,
+        // not the display id it happens to be numbered with.
+        assert_ne!(
+            new.canonical_key, "PRD-301",
+            "the successor must not be keyed by its display id"
+        );
+        assert!(
+            new.canonical_key.starts_with("prd-"),
+            "unexpected canonical key: {}",
+            new.canonical_key
+        );
+        // The document declares the key it is filed under.
+        let (fm, _body) = crate::artifact::frontmatter::parse_frontmatter(&new.body).unwrap();
+        assert_eq!(
+            fm.get("slug").and_then(|v| v.as_str()),
+            Some(new.canonical_key.as_str())
+        );
     }
 
     #[tokio::test]

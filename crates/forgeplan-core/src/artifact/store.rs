@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::artifact::canonical_key::{ArtifactCandidate, ResolveError, ResolvedArtifact};
 use crate::artifact::frontmatter::{self, Frontmatter};
 use crate::artifact::types::ArtifactKind;
 
@@ -52,6 +53,154 @@ pub async fn next_id(workspace: &Path, kind: &ArtifactKind, digits: u32) -> anyh
 #[deprecated(note = "use crate::artifact::types::slugify instead")]
 pub fn slugify(title: &str) -> String {
     crate::artifact::types::slugify(title)
+}
+
+/// The file name a canonical key is published under: `<canonical_key>.md`.
+///
+/// The key is validated, not sanitised: a key that could escape the kind
+/// directory, hide a path segment, or collide with the current directory is
+/// refused. A canonical key is minted from the kind prefix, a slugified
+/// title, and a hexadecimal suffix, so it only ever contains ASCII
+/// alphanumerics, dashes, and underscores.
+pub fn canonical_filename(canonical_key: &str) -> anyhow::Result<String> {
+    let key = canonical_key.trim();
+    if key.is_empty() {
+        anyhow::bail!("canonical key is empty");
+    }
+    if key != canonical_key {
+        anyhow::bail!("canonical key {canonical_key:?} has surrounding whitespace");
+    }
+    if !key
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        anyhow::bail!(
+            "canonical key {canonical_key:?} contains characters that are not allowed in a file name"
+        );
+    }
+    if key.starts_with('-') || key.ends_with('-') {
+        anyhow::bail!("canonical key {canonical_key:?} is not a usable file name");
+    }
+    Ok(format!("{key}.md"))
+}
+
+/// Upper bound on the documents one resolution may read.
+const MAX_RESOLVE_DOCUMENTS: usize = 100_000;
+
+/// Upper bound on the bytes one resolution may read.
+const MAX_RESOLVE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Resolve a caller reference to exactly one document of a workspace.
+///
+/// The file-level counterpart of
+/// [`crate::artifact::canonical_key::resolve_artifact`]: it parses the
+/// workspace's document set and hands every candidate to the one shared
+/// algorithm, so a selector means the same thing here and in the index.
+///
+/// The error taxonomy is the shared one: an empty or unusable selector is
+/// [`ResolveError::InvalidSelector`], several documents matching one alias
+/// are [`ResolveError::Ambiguous`], several files claiming one key are
+/// [`ResolveError::ConflictingCanonicalKey`], and a document set that could
+/// not be parsed in full is [`ResolveError::IncompleteCapture`].
+///
+/// A parse error, an I/O error, and a limit error are errors — never
+/// "not found".
+pub async fn resolve_artifact(
+    workspace: &Path,
+    input: &str,
+) -> Result<Option<ResolvedArtifact>, ResolveError> {
+    let paths = collect_document_paths(workspace).await?;
+    let mut candidates: Vec<ArtifactCandidate> = Vec::new();
+    let mut read_bytes: u64 = 0;
+    for path in paths {
+        let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
+            ResolveError::IncompleteCapture {
+                message: format!("could not read {}: {e}", path.display()),
+            }
+        })?;
+        read_bytes = read_bytes.saturating_add(content.len() as u64);
+        if read_bytes > MAX_RESOLVE_BYTES {
+            return Err(ResolveError::IncompleteCapture {
+                message: format!(
+                    "the document set exceeds the {MAX_RESOLVE_BYTES} byte resolution limit"
+                ),
+            });
+        }
+        // A file that does not open a frontmatter block is not a document.
+        // A file that opens one and then fails to parse IS an error: its
+        // identity would be unknown, and every answer computed over the set
+        // would be partial.
+        if !content.trim_start().starts_with("---") {
+            continue;
+        }
+        let (fm, _body) = frontmatter::parse_frontmatter(&content).map_err(|e| {
+            ResolveError::IncompleteCapture {
+                message: format!("could not parse {}: {e}", path.display()),
+            }
+        })?;
+        let Some(display_id) = fm.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let title = fm.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let canonical_key =
+            crate::artifact::canonical_key::canonical_key_from_document(display_id, &content);
+        let relative_path = path
+            .strip_prefix(workspace)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|_| path.clone());
+        candidates.push(ArtifactCandidate {
+            canonical_key,
+            display_id: display_id.to_string(),
+            title: title.to_string(),
+            relative_path,
+        });
+    }
+    crate::artifact::canonical_key::resolve_artifact(input, &candidates)
+}
+
+/// Every markdown file of a workspace that could be a document.
+async fn collect_document_paths(workspace: &Path) -> Result<Vec<PathBuf>, ResolveError> {
+    let workspace = workspace.to_path_buf();
+    let paths = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<PathBuf>> {
+        let mut paths = Vec::new();
+        for dir_name in crate::workspace::ARTIFACT_DIRS {
+            let dir = workspace.join(dir_name);
+            if !dir.exists() {
+                continue;
+            }
+            for entry in walkdir::WalkDir::new(&dir)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(Result::ok)
+            {
+                let path = entry.path();
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "md") {
+                    continue;
+                }
+                paths.push(path.to_path_buf());
+            }
+        }
+        anyhow::Ok(paths)
+    })
+    .await
+    .map_err(|e| ResolveError::IncompleteCapture {
+        message: format!("the document scan task failed: {e}"),
+    })?
+    .map_err(|e| ResolveError::IncompleteCapture {
+        message: format!("the document set could not be scanned: {e}"),
+    })?;
+    if paths.len() > MAX_RESOLVE_DOCUMENTS {
+        return Err(ResolveError::IncompleteCapture {
+            message: format!(
+                "the document set holds {} documents, above the {MAX_RESOLVE_DOCUMENTS} resolution limit",
+                paths.len()
+            ),
+        });
+    }
+    Ok(paths)
 }
 
 /// Normalize a display-id input (`prd-74`, `Prd-074`) to canonical
@@ -215,6 +364,94 @@ fn fm_string(fm: &Frontmatter, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_filename_publishes_under_the_key() {
+        assert_eq!(
+            canonical_filename("prd-weekly-review-k0123456789abcdef0123456789abcdef").unwrap(),
+            "prd-weekly-review-k0123456789abcdef0123456789abcdef.md"
+        );
+        // A key that could escape the kind directory is refused, not
+        // sanitised into something else.
+        assert!(canonical_filename("../evil").is_err());
+        assert!(canonical_filename("a/b").is_err());
+        assert!(canonical_filename("").is_err());
+        assert!(canonical_filename("with space").is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_artifact_finds_a_document_by_its_canonical_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = tmp.path().join("prds");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("prd-auth-system-k0123456789abcdef0123456789abcdef.md"),
+            "---\nid: PRD-001\nkind: prd\ntitle: Auth system\n---\n\
+             ---\nslug: prd-auth-system-k0123456789abcdef0123456789abcdef\n---\nbody\n",
+        )
+        .unwrap();
+        let resolved = resolve_artifact(tmp.path(), "prd-auth-system-k0123456789abcdef0123456789abcdef")
+            .await
+            .expect("resolution must succeed")
+            .expect("the document must resolve");
+        assert_eq!(resolved.identity.display_id, "PRD-001");
+        assert_eq!(
+            resolved.identity.canonical_key,
+            "prd-auth-system-k0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(
+            resolved.relative_path,
+            PathBuf::from("prds/prd-auth-system-k0123456789abcdef0123456789abcdef.md")
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_artifact_reports_an_ambiguous_alias() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = tmp.path().join("prds");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("PRD-001-first.md"),
+            "---\nid: PRD-001\nkind: prd\ntitle: First\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("PRD-001-second.md"),
+            "---\nid: PRD-001\nkind: prd\ntitle: Second\n---\nbody\n",
+        )
+        .unwrap();
+        match resolve_artifact(tmp.path(), "PRD-001").await {
+            Err(ResolveError::Ambiguous { candidates, .. }) => assert_eq!(candidates.len(), 2),
+            other => panic!("expected an ambiguity, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_artifact_reports_a_parse_error_as_an_incomplete_capture() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = tmp.path().join("prds");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("broken.md"), "---\nid: [unclosed\n---\nbody\n").unwrap();
+        match resolve_artifact(tmp.path(), "PRD-001").await {
+            Err(ResolveError::IncompleteCapture { .. }) => {}
+            other => panic!("expected an incomplete capture, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_artifact_rejects_an_unusable_selector() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        match resolve_artifact(tmp.path(), "  ").await {
+            Err(ResolveError::InvalidSelector { .. }) => {}
+            other => panic!("expected an invalid selector, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_artifact_reports_a_missing_document_as_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert!(resolve_artifact(tmp.path(), "PRD-999").await.unwrap().is_none());
+    }
 
     fn write(ws: &Path, dir: &str, name: &str, fm_extra: &str) -> PathBuf {
         let d = ws.join(dir);

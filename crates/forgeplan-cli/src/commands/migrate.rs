@@ -19,6 +19,9 @@ pub async fn run() -> anyhow::Result<()> {
     if common::index_migrated(&ws) {
         // Maintenance owns its owner -> workspace lock ordering. Do not hold
         // this routing guard across the pass or open a legacy store first.
+        //
+        // A constellation layout opens and creates NO legacy index: the
+        // identity-v5 tables belong to the legacy plane only.
         drop(lock);
         let capability = MaintainCapability::for_strict_maintenance(ws.canonicalize()?);
         maintain_index(
@@ -28,6 +31,36 @@ pub async fn run() -> anyhow::Result<()> {
         )
         .await?;
     } else {
+        // Legacy layout: the staged identity-v5 migration runs here, under
+        // the workspace lock this command already holds. It rebuilds the
+        // index from the Markdown, verifies it, and publishes it behind the
+        // readiness marker. A conflict leaves the original index untouched.
+        let report = forgeplan_core::db::migrate::run_identity_v5_migration(&ws).await?;
+        if report.already_published {
+            println!(
+                "  Identity-v5 index already published ({} documents).",
+                report.document_count
+            );
+        } else {
+            println!(
+                "  Identity-v5 index published: {} documents, {} relations, {} evidence rows.",
+                report.document_count, report.relation_count, report.evidence_count
+            );
+        }
+        for (alias, paths) in &report.ambiguous_aliases {
+            println!(
+                "  Warning: display alias '{}' is shared by {} documents ({}) — a reference to it is ambiguous.",
+                alias,
+                paths.len(),
+                paths.join(", ")
+            );
+        }
+        for reference in &report.unresolved_references {
+            println!(
+                "  Warning: reference '{}' names no document of this workspace — it is kept as a forward reference.",
+                reference
+            );
+        }
         let _store = forgeplan_core::db::store::LanceStore::open(&ws).await?;
     }
     println!("  Migrations complete. Schema up to date.");

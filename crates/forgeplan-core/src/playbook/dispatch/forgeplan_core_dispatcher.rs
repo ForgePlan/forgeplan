@@ -50,7 +50,6 @@ use async_trait::async_trait;
 use serde_yaml::Value as YamlValue;
 
 use super::{DispatchError, DispatchOutcome, Dispatcher};
-use crate::artifact::canonical_key::canonical_key_from_document;
 use crate::artifact::types::ArtifactKind;
 use crate::constellation::capture::CaptureLimits;
 use crate::constellation::facade::{
@@ -296,21 +295,6 @@ async fn reconcile_after_mutation(workspace_root: &Path) {
     .await
     {
         tracing::warn!(%error, "native playbook write stands; run `forgeplan index` to publish it");
-    }
-}
-
-async fn next_id(
-    workspace_root: &Path,
-    store: Option<&LanceStore>,
-    kind: &ArtifactKind,
-) -> anyhow::Result<String> {
-    match store {
-        Some(store) => {
-            store
-                .next_id(&kind.prefix().trim_end_matches('-').to_uppercase())
-                .await
-        }
-        None => crate::artifact::store::next_id(workspace_root, kind, 3).await,
     }
 }
 
@@ -622,24 +606,36 @@ async fn write_ingest_draft(
             UpdateDecision::Create => {}
         }
     }
-    let id = candidates.next_id(&kind);
-
-    let new = NewArtifact {
-        // ADR-030: no minted key yet — the document declares no slug, so its
-        // canonical key is its display id.
-        canonical_key: id.clone(),
-        id: id.clone(),
-        kind: template_key.to_string(),
-        status: "draft".to_string(),
-        title: draft.title.clone(),
-        body: draft.body.clone(),
-        depth: "tactical".to_string(),
-        author: None,
-        parent_epic: None,
-        valid_until: None,
-        tags: vec![format!("source=ingest:{}", draft.rule_id)],
+    let build = |id: &str, _number: u32, key: &str| -> anyhow::Result<NewArtifact> {
+        Ok(NewArtifact {
+            canonical_key: key.to_string(),
+            id: id.to_string(),
+            kind: template_key.to_string(),
+            status: "draft".to_string(),
+            title: draft.title.clone(),
+            body: draft.body.clone(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![format!("source=ingest:{}", draft.rule_id)],
+        })
     };
-    let path = projection::create_artifact_with_projection(ctx, &new).await?;
+    // One creation mechanism: the key is minted, the display number is
+    // reserved under the shared per-kind ledger, and the document is
+    // published under its key — never over an existing file.
+    let created = crate::artifact::id_alloc::create_artifact_with_minted_key(
+        ctx.workspace,
+        ctx.guard,
+        ctx.legacy_sink,
+        &kind,
+        3,
+        &draft.title,
+        &build,
+    )
+    .await?;
+    let id = created.id;
+    let path = created.filepath;
     candidates.record_written(template_key, draft, id.clone(), path.clone());
     Ok(Some((id, path)))
 }
@@ -693,10 +689,6 @@ async fn run_new(
     if store.is_none() {
         workspace_read(workspace_root).await?;
     }
-    let id = next_id(workspace_root, store.as_ref(), &kind)
-        .await
-        .map_err(|e| DispatchError::Transport(format!("next_id: {e}")))?;
-
     let template_key = kind.template_key();
     let template = match get_embedded_template(template_key) {
         Some(t) => t,
@@ -706,14 +698,6 @@ async fn run_new(
             )));
         }
     };
-    let nnn = id.split('-').next_back().unwrap_or("001").to_string();
-    let mut vars = HashMap::new();
-    vars.insert("NNN".to_string(), nnn);
-    vars.insert("title".to_string(), title.to_string());
-    vars.insert("Title".to_string(), title.to_string());
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let mut rendered = render_template(template, &vars);
-    rendered = rendered.replace("YYYY-MM-DD", &today);
 
     let depth = match kind {
         ArtifactKind::Note
@@ -724,34 +708,44 @@ async fn run_new(
         _ => "standard",
     };
 
-    let artifact = NewArtifact {
-        // ADR-030: the canonical key of a document is the slug its
-        // frontmatter declares, and its display id when it declares none.
-        canonical_key: canonical_key_from_document(&id, &rendered),
-        id: id.clone(),
-        kind: template_key.to_string(),
-        status: "draft".to_string(),
-        title: title.to_string(),
-        body: rendered,
-        depth: depth.to_string(),
-        author: None,
-        parent_epic: None,
-        valid_until: None,
-        tags: Vec::new(),
+    let build = |id: &str, _number: u32, key: &str| -> anyhow::Result<NewArtifact> {
+        let nnn = id.split('-').next_back().unwrap_or("001").to_string();
+        let mut vars = HashMap::new();
+        vars.insert("NNN".to_string(), nnn);
+        vars.insert("title".to_string(), title.to_string());
+        vars.insert("Title".to_string(), title.to_string());
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let mut rendered = render_template(template, &vars);
+        rendered = rendered.replace("YYYY-MM-DD", &today);
+        Ok(NewArtifact {
+            canonical_key: key.to_string(),
+            id: id.to_string(),
+            kind: template_key.to_string(),
+            status: "draft".to_string(),
+            title: title.to_string(),
+            body: rendered,
+            depth: depth.to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        })
     };
-    let path = match projection::create_artifact_with_projection(
-        &MutationContext::new(workspace_root, &lock, store.as_ref()),
-        &artifact,
+    // One creation mechanism: mint the canonical key, reserve the display
+    // number under the shared per-kind ledger, and publish the document
+    // under its key.
+    let path = match crate::artifact::id_alloc::create_artifact_with_minted_key(
+        workspace_root,
+        &lock,
+        store.as_ref(),
+        &kind,
+        3,
+        title,
+        &build,
     )
     .await
     {
-        Ok(path) => path,
-        Err(
-            projection::MutationError::StoreTransient(error)
-            | projection::MutationError::StoreFatal(error),
-        ) if error.chain().any(|cause| cause.is::<std::io::Error>()) => {
-            return Err(DispatchError::Transport(format!("projection: {error}")));
-        }
+        Ok(created) => created.filepath,
         Err(error) => {
             return Ok(DispatchOutcome::failure(format!(
                 "create_artifact failed: {error}"
