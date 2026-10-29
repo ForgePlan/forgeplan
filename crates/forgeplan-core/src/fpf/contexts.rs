@@ -211,9 +211,18 @@ fn detect_for_artifact_from_records(
         .iter()
         .map(|(s, t, _)| (s.clone(), t.clone()))
         .collect();
+    // The contexts hold **canonical keys** (see `detect`), so the requested
+    // artifact has to be named by its key too. The caller passes the display
+    // id, so it is translated here — through the record set, which is the
+    // only place that knows which key a display id stands for.
+    let canonical = records
+        .iter()
+        .find(|r| r.id == artifact_id || r.canonical_key == artifact_id)
+        .map(|r| r.canonical_key.clone())
+        .unwrap_or_else(|| artifact_id.to_string());
     detect(records, &edges)
         .into_iter()
-        .find(|c| c.members.iter().any(|m| m == artifact_id))
+        .find(|c| c.members.iter().any(|m| m == &canonical))
         .map(|c| (c.name, c.members.len(), c.cohesion))
 }
 

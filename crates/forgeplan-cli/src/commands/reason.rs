@@ -610,7 +610,11 @@ mod tests {
                 projection::sync_artifact_from_file(
                     &ctx,
                     &NewArtifact {
-                        canonical_key: record.id.clone(),
+                        // The key travels with the record: the legacy store is
+                        // keyed by the canonical key (ADR-030), and a row keyed
+                        // by the display id would be a second row for the same
+                        // document.
+                        canonical_key: record.canonical_key.clone(),
                         id: record.id.clone(),
                         kind: record.kind.clone(),
                         status: record.status.clone(),
