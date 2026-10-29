@@ -171,18 +171,21 @@ fn capture_relations(
 
     let mut captured = Vec::new();
     for (source, target, relation) in all_relations {
-        if source.eq_ignore_ascii_case(&record.id) {
+        // The relation endpoints are canonical keys (ADR-030); the receipt
+        // stores the endpoints it finds, and the artifact it belongs to is
+        // named by its key.
+        if source.eq_ignore_ascii_case(&record.canonical_key) {
             captured.push(CapturedRelation {
-                from: record.id.clone(),
+                from: record.canonical_key.clone(),
                 to: target.clone(),
                 relation: relation.clone(),
                 direction: RelationDirection::Outgoing,
             });
         }
-        if target.eq_ignore_ascii_case(&record.id) {
+        if target.eq_ignore_ascii_case(&record.canonical_key) {
             captured.push(CapturedRelation {
                 from: source.clone(),
-                to: record.id.clone(),
+                to: record.canonical_key.clone(),
                 relation: relation.clone(),
                 direction: RelationDirection::Incoming,
             });

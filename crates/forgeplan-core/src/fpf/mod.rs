@@ -582,7 +582,9 @@ fn compute_fgr_for_record(
     let fm = record.frontmatter_map();
     let link_count = all_relations
         .iter()
-        .filter(|(src, tgt, _)| src == &record.id || tgt == &record.id)
+        // The relation endpoints are canonical keys (ADR-030); the display id
+        // is a repeatable alias, so the comparison is made on the key.
+        .filter(|(src, tgt, _)| src == &record.canonical_key || tgt == &record.canonical_key)
         .count();
     let is_stale = record
         .valid_until

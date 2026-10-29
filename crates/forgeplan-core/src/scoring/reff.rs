@@ -322,6 +322,22 @@ impl AssuranceSource<'_> {
             Self::Read(read) => Ok(read.get_all_relations()),
         }
     }
+
+    /// The canonical key of the document a reference names.
+    ///
+    /// Relation endpoints are canonical keys (ADR-030); a caller may still
+    /// hold a display id. Both the evidence comparison and the link count
+    /// need the key, and neither may assume one layout.
+    async fn canonical_key_of(&self, id: &str) -> Option<String> {
+        match self {
+            Self::Store(store) => store.resolve_canonical_key(id).await.ok().flatten(),
+            Self::Read(read) => read
+                .resolve_artifact(id)
+                .ok()
+                .flatten()
+                .map(|resolved| resolved.identity.canonical_key),
+        }
+    }
 }
 
 /// Recursively compute R_eff for an artifact and its dependency chain over
@@ -385,16 +401,22 @@ pub async fn linked_evidence_items(
         .map(|(target, _)| target.clone())
         .collect();
 
+    // The relation endpoints are canonical keys; the evidence records carry
+    // both, so the comparison is made on the key.
+    let target_key = source.canonical_key_of(target_id).await;
     let mut items = Vec::new();
     for record in source.evidence_records().await? {
         let linked = evidence_targets
             .iter()
-            .any(|id| id.eq_ignore_ascii_case(&record.id))
-            || source
-                .outgoing(&record.id)
-                .await?
-                .iter()
-                .any(|(target, _)| target.eq_ignore_ascii_case(target_id));
+            .any(|id| id.eq_ignore_ascii_case(&record.canonical_key))
+            || match target_key.as_deref() {
+                Some(key) => source
+                    .outgoing(&record.canonical_key)
+                    .await?
+                    .iter()
+                    .any(|(target, _)| target.eq_ignore_ascii_case(key)),
+                None => false,
+            };
         if linked {
             items.push(parse_evidence_from_record(&record));
         }
@@ -408,11 +430,15 @@ pub async fn relation_link_count(
     source: &AssuranceSource<'_>,
     target_id: &str,
 ) -> anyhow::Result<usize> {
+    // The edges name canonical keys; the caller may hold a display id.
+    let Some(key) = source.canonical_key_of(target_id).await else {
+        return Ok(0);
+    };
     Ok(source
         .all_relations()
         .await?
         .iter()
-        .filter(|(src, target, _)| src == target_id || target == target_id)
+        .filter(|(src, target, _)| src == &key || target == &key)
         .count())
 }
 
@@ -465,7 +491,9 @@ async fn assurance_recursive(
     let mut terminal_skips = 0usize;
     for rec in all_evidence
         .iter()
-        .filter(|rec| linked_evidence_ids.contains(&rec.id))
+        // The linked set holds canonical keys; the record's display id may
+        // repeat, so the comparison is made on the key.
+        .filter(|rec| linked_evidence_ids.contains(&rec.canonical_key))
     {
         if crate::lifecycle::transitions::is_terminal(&rec.status) {
             factors.push(format!("Skipped {} (status: {})", rec.id, rec.status));

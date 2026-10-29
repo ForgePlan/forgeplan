@@ -37,8 +37,37 @@
 //! - `0` — workspace coherent (no actions reported, or apply mode applied
 //!   all proposed fixes successfully)
 //! - `1` — drift detected in `--check-only` mode, or unfixable categories
-//!   were reported (`duplicate_assigned`, `body_links_drift`)
-//! - `2` — workspace error (no `.forgeplan/`, scan failure)
+//!   were reported (`duplicate_assigned`, `body_links_drift`), or the
+//!   identity-repair plan still holds an unresolved reference
+//! - `2` — workspace error (no `.forgeplan/`, scan failure, stale plan,
+//!   refused repair)
+//!
+//! ## The identity repair (SPEC-009)
+//!
+//! Three modes extend the command. They are mutually exclusive — a plan,
+//! an apply and a recovery are three different operations:
+//!
+//! - `--plan-out <file>` writes the version-1 repair plan of the
+//!   workspace. Planning is read-only: the workspace is not changed, and
+//!   only the plan file is written. A reference that no review has
+//!   attributed stays unresolved, and the command exits 1.
+//! - `--apply-plan <file>` applies the plan. The plan is re-checked
+//!   against the workspace under the workspace lock — the workspace, the
+//!   Git identity, the whole inventory, the group membership, every
+//!   source and reference hash and every target path. A stale plan is
+//!   refused. The repair is preserve-all: nothing is deleted, nothing is
+//!   merged, and no historical display number is rewritten.
+//! - `--recover <transaction-id> [--rollback]` reports a repair
+//!   transaction, or restores the preimages of the files it published.
+//!   The rollback accepts only the expected post-images and pre-images;
+//!   an unrelated edit is never overwritten, and the journal keeps the
+//!   exact conflict.
+//!
+//! The recovery journal of a transaction lives in
+//! `.forgeplan/identity-repair/<transaction-id>/`: the manifest, the
+//! preimages of every file the transaction touches, the planned
+//! post-image hashes and the per-operation state. The preimages and the
+//! manifest are fsynced before the first mutation.
 //!
 //! ## --report-cross-pr (deferred Phase 4 work)
 //!
@@ -59,6 +88,12 @@ use clap::Args;
 use forgeplan_core::artifact::frontmatter::{
     Frontmatter, assigned_number_from_frontmatter, parse_frontmatter,
     predicted_number_from_frontmatter, render_frontmatter, slug_from_frontmatter,
+};
+use forgeplan_core::artifact::identity_repair::{
+    PILOT_REFERENCE_DECISIONS, OperationState, PlannedReference, ReferenceDecision, RepairJournal,
+    RepairPlan, apply_repair_plan, build_repair_plan, census_workspace, journal_digest_matches,
+    merge_decisions, read_decision_file, read_plan_json, repair_journal_dir, repair_journal_root,
+    rollback_repair, write_plan_json,
 };
 use forgeplan_core::artifact::types::{ArtifactKind, validate_slug};
 use serde::Serialize;
@@ -86,6 +121,27 @@ pub struct ReconcileIdsArgs {
     /// scannable human-readable summary.
     #[arg(long)]
     pub json: bool,
+
+    /// Write a version-1 identity-repair plan to this file. Planning is
+    /// read-only: the workspace is not changed, and only the plan file is
+    /// written.
+    #[arg(long, value_name = "FILE")]
+    pub plan_out: Option<PathBuf>,
+
+    /// Apply a version-1 identity-repair plan. The plan is re-checked
+    /// against the workspace under the workspace lock; a stale plan is
+    /// refused.
+    #[arg(long, value_name = "FILE")]
+    pub apply_plan: Option<PathBuf>,
+
+    /// Recover an identity-repair transaction by its identifier. With
+    /// `--rollback` the transaction's preimages are restored.
+    #[arg(long, value_name = "TXN")]
+    pub recover: Option<String>,
+
+    /// Roll the recovered transaction back to its preimages.
+    #[arg(long)]
+    pub rollback: bool,
 }
 
 /// Same kind list as `migrate-dry-run` — `Memory` is excluded from
@@ -1150,6 +1206,32 @@ pub fn render_human(report: &ReconcileReport) -> String {
 /// Public entry point. Returns process exit code (0 / 1 / 2 per module
 /// docs). Caller in `main.rs` is responsible for `std::process::exit`.
 pub fn run(args: ReconcileIdsArgs) -> Result<i32> {
+    // The repair modes are exclusive. A plan, an apply and a recovery are
+    // three different operations, and running two of them in one command
+    // would hide which one actually did the work.
+    let selected = [
+        args.plan_out.is_some(),
+        args.apply_plan.is_some(),
+        args.recover.is_some(),
+    ];
+    if selected.iter().filter(|chosen| **chosen).count() > 1 {
+        eprintln!("Error: --plan-out, --apply-plan and --recover are mutually exclusive");
+        return Ok(2);
+    }
+    if args.rollback && args.recover.is_none() {
+        eprintln!("Error: --rollback needs --recover <transaction-id>");
+        return Ok(2);
+    }
+    if args.plan_out.is_some() {
+        return run_plan_out(&args);
+    }
+    if args.apply_plan.is_some() {
+        return run_apply_plan(&args);
+    }
+    if args.recover.is_some() {
+        return run_recover(&args);
+    }
+
     let forgeplan_dir = match resolve_forgeplan_dir(args.workspace.as_deref()) {
         Ok(p) => p,
         Err(e) => {
@@ -1212,8 +1294,580 @@ pub fn run(args: ReconcileIdsArgs) -> Result<i32> {
 }
 
 // =====================================================================
+// The identity repair (SPEC-009)
+// =====================================================================
+
+/// Write the identity-repair plan of the workspace.
+///
+/// Planning is read-only: the census reads the workspace, the plan lands
+/// in the requested file, and nothing else changes. A reference that no
+/// review has attributed stays unresolved, and the command says so
+/// instead of guessing.
+fn run_plan_out(args: &ReconcileIdsArgs) -> Result<i32> {
+    let forgeplan_dir = match resolve_forgeplan_dir(args.workspace.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return Ok(2);
+        }
+    };
+    let census = match census_workspace(&forgeplan_dir) {
+        Ok(census) => census,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            return Ok(2);
+        }
+    };
+    let decisions = load_reviewed_decisions(&forgeplan_dir);
+    let plan = match build_repair_plan(&forgeplan_dir, &census, &decisions) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            return Ok(2);
+        }
+    };
+    let plan_path = args.plan_out.as_ref().expect("plan_out is set");
+    if let Err(error) = write_plan_json(&plan, plan_path) {
+        eprintln!("Error: {error:#}");
+        return Ok(2);
+    }
+    let unresolved: Vec<&PlannedReference> = plan
+        .references
+        .iter()
+        .filter(|reference| !reference.is_resolved())
+        .collect();
+    if args.json {
+        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for source in &plan.sources {
+            groups
+                .entry(source.old_key.clone())
+                .or_default()
+                .push(source.relative_path.clone());
+        }
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "mode": "plan",
+            "plan_path": plan_path.display().to_string(),
+            "digest": plan.digest,
+            "workspace": plan.workspace_path,
+            "inventory_digest": plan.inventory_digest,
+            "documents": census.documents.len(),
+            "groups": groups,
+            "sources": plan.sources.len(),
+            "references": plan.references.len(),
+            "unresolved": unresolved.len(),
+            "unresolved_references": unresolved
+                .iter()
+                .map(|reference| serde_json::json!({
+                    "source_path": reference.source_path,
+                    "field": reference.field,
+                    "occurrence": reference.occurrence,
+                    "from": reference.from,
+                    "candidates": reference.mapping.keys().collect::<Vec<_>>(),
+                }))
+                .collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "{}",
+            render_plan_human(&plan, plan_path, unresolved.len())
+        );
+    }
+    // An unresolved reference is the owner's to settle, not the tool's to
+    // guess: the command says so and exits non-zero.
+    Ok(if unresolved.is_empty() { 0 } else { 1 })
+}
+
+/// Apply an identity-repair plan.
+fn run_apply_plan(args: &ReconcileIdsArgs) -> Result<i32> {
+    let forgeplan_dir = match resolve_forgeplan_dir(args.workspace.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return Ok(2);
+        }
+    };
+    let plan_path = args.apply_plan.as_ref().expect("apply_plan is set");
+    let plan = match read_plan_json(plan_path) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            return Ok(2);
+        }
+    };
+    // After a crash the next mutation refuses to proceed until the
+    // unfinished transaction is recovered explicitly.
+    if let Some(transaction_id) = find_unfinished_transaction(&forgeplan_dir) {
+        eprintln!(
+            "Error: the repair transaction {transaction_id} is unfinished — recover it with `--recover {transaction_id} --rollback` before repairing again"
+        );
+        return Ok(2);
+    }
+    let outcome = match apply_repair_plan(&forgeplan_dir, &plan) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            return Ok(2);
+        }
+    };
+    if args.json {
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "mode": "apply",
+            "transaction_id": outcome.transaction_id,
+            "journal_dir": outcome.journal_dir.display().to_string(),
+            "published": outcome.published.clone(),
+            "status": outcome.status,
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "Repair committed: transaction {}\n  published: {} document(s)\n  journal: {}\n  the derived index is behind — run `forgeplan index` to refresh it",
+            outcome.transaction_id,
+            outcome.published.len(),
+            outcome.journal_dir.display()
+        );
+    }
+    Ok(0)
+}
+
+/// Report — or roll back — an identity-repair transaction.
+fn run_recover(args: &ReconcileIdsArgs) -> Result<i32> {
+    let forgeplan_dir = match resolve_forgeplan_dir(args.workspace.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return Ok(2);
+        }
+    };
+    let transaction_id = args.recover.as_ref().expect("recover is set");
+    if args.rollback {
+        let outcome = match rollback_repair(&forgeplan_dir, transaction_id) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                eprintln!("Error: {error:#}");
+                return Ok(2);
+            }
+        };
+        if args.json {
+            let report = serde_json::json!({
+                "schema_version": 1,
+                "mode": "recover",
+                "rolled_back": true,
+                "transaction_id": outcome.transaction_id,
+                "journal_dir": outcome.journal_dir.display().to_string(),
+                "restored": outcome.restored.clone(),
+                "conflicts": outcome.conflicts.clone(),
+                "status": outcome.status,
+            });
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!(
+                "Rolled back {}: {} document(s) restored",
+                outcome.transaction_id,
+                outcome.restored.len()
+            );
+        }
+        return Ok(0);
+    }
+
+    let journal = match read_journal(&forgeplan_dir, transaction_id) {
+        Ok(journal) => journal,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            return Ok(2);
+        }
+    };
+    if args.json {
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "mode": "recover",
+            "rolled_back": false,
+            "transaction_id": journal.transaction_id,
+            "journal_dir": repair_journal_dir(&forgeplan_dir, transaction_id)
+                .display()
+                .to_string(),
+            "status": journal.status,
+            "operations": journal.operations.len(),
+            "pending": journal
+                .operations
+                .iter()
+                .filter(|operation| operation.state == OperationState::Pending)
+                .count(),
+            "published": journal
+                .operations
+                .iter()
+                .filter(|operation| operation.state == OperationState::Published)
+                .count(),
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "Transaction {}: {} operation(s), {} published, {} pending\n  journal: {}",
+            journal.transaction_id,
+            journal.operations.len(),
+            journal
+                .operations
+                .iter()
+                .filter(|operation| operation.state == OperationState::Published)
+                .count(),
+            journal
+                .operations
+                .iter()
+                .filter(|operation| operation.state == OperationState::Pending)
+                .count(),
+            repair_journal_dir(&forgeplan_dir, transaction_id).display()
+        );
+    }
+    Ok(0)
+}
+
+/// The reviewed decisions the plan is built on.
+///
+/// The pilot review record is the built-in default. A workspace may add
+/// or override decisions in `.forgeplan/identity-repair/decisions.json`;
+/// the file's entries win over the built-in ones.
+fn load_reviewed_decisions(forgeplan_dir: &Path) -> Vec<ReferenceDecision> {
+    let path = repair_journal_root(forgeplan_dir).join("decisions.json");
+    let extra = if path.is_file() {
+        match read_decision_file(&path) {
+            Ok(file) => file.decisions,
+            Err(error) => {
+                eprintln!("Warning: {error:#}");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    merge_decisions(&PILOT_REFERENCE_DECISIONS, &extra)
+}
+
+/// The identifier of an unfinished repair transaction, when there is one.
+fn find_unfinished_transaction(forgeplan_dir: &Path) -> Option<String> {
+    let root = repair_journal_root(forgeplan_dir);
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let manifest = entry.path().join("manifest.json");
+        if !manifest.is_file() {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&manifest) else {
+            continue;
+        };
+        let Ok(journal) = serde_json::from_slice::<RepairJournal>(&bytes) else {
+            continue;
+        };
+        if journal.is_unfinished() {
+            return Some(journal.transaction_id);
+        }
+    }
+    None
+}
+
+/// The recovery journal of one transaction.
+fn read_journal(forgeplan_dir: &Path, transaction_id: &str) -> Result<RepairJournal> {
+    let manifest_path = repair_journal_dir(forgeplan_dir, transaction_id).join("manifest.json");
+    let bytes = fs::read(&manifest_path)
+        .with_context(|| format!("read the recovery journal {}", manifest_path.display()))?;
+    let journal: RepairJournal = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse the recovery journal {}", manifest_path.display()))?;
+    if !journal_digest_matches(&journal) {
+        anyhow::bail!(
+            "the recovery journal {} does not match its digest",
+            manifest_path.display()
+        );
+    }
+    Ok(journal)
+}
+
+/// The human-readable summary of a repair plan.
+fn render_plan_human(plan: &RepairPlan, plan_path: &Path, unresolved: usize) -> String {
+    let mut out = String::new();
+    out.push_str("Forgeplan reconcile-ids — identity repair plan\n");
+    out.push_str(&format!("Plan: {}\n", plan_path.display()));
+    out.push_str(&format!("Digest: {}\n", plan.digest));
+    out.push_str(&format!("Documents to re-key: {}\n", plan.sources.len()));
+    out.push_str(&format!(
+        "References to rewrite: {}\n",
+        plan.references.len()
+    ));
+    out.push_str(&format!("Unresolved references: {unresolved}\n"));
+    if unresolved > 0 {
+        out.push_str(
+            "The plan cannot be applied until every reference is attributed by a review.\n",
+        );
+    }
+    out.push_str("Nothing in the workspace was changed.\n");
+    out
+}
+
+// =====================================================================
 // Tests
 // =====================================================================
+
+#[cfg(test)]
+mod repair_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// A document with a display id and a title, and no slug.
+    fn document(id: &str, kind: &str, title: &str) -> String {
+        format!("---\nid: {id}\nkind: {kind}\ntitle: {title}\n---\n\n# {id}\n\nBody of {id}.\n")
+    }
+
+    /// A document that links to one target.
+    fn linking_document(id: &str, kind: &str, target: &str) -> String {
+        format!(
+            "---\nid: {id}\nkind: {kind}\ntitle: {id}\nlinks:\n- target: {target}\n  relation: informs\n---\n\n# {id}\n\nBody of {id}.\n"
+        )
+    }
+
+    /// A workspace with two PRDs that share a display id and one evidence
+    /// document that links to it.
+    fn colliding_workspace() -> TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forgeplan = dir.path().join(".forgeplan");
+        for kind in SCAN_KINDS {
+            fs::create_dir_all(forgeplan.join(kind.dir_name())).expect("kind dir");
+        }
+        fs::write(
+            forgeplan.join("prds/PRD-001-a.md"),
+            document("PRD-001", "prd", "First"),
+        )
+        .expect("write");
+        fs::write(
+            forgeplan.join("prds/PRD-001-b.md"),
+            document("PRD-001", "prd", "Second"),
+        )
+        .expect("write");
+        fs::write(
+            forgeplan.join("evidence/EVID-001.md"),
+            linking_document("EVID-001", "evidence", "PRD-001"),
+        )
+        .expect("write");
+        dir
+    }
+
+    #[test]
+    fn plan_out_writes_the_plan_and_changes_nothing_in_the_workspace() {
+        let workspace = colliding_workspace();
+        let forgeplan = workspace.path().join(".forgeplan");
+        let before = fs::read_to_string(forgeplan.join("prds/PRD-001-a.md")).expect("read");
+        let plan_path = workspace.path().join("plan.json");
+
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            plan_out: Some(plan_path.clone()),
+            json: true,
+            ..Default::default()
+        };
+        // The link points at a colliding key and no review has attributed
+        // it, so the plan is written but the command reports the
+        // unresolved reference.
+        let code = run(args).expect("run");
+        assert_eq!(code, 1);
+        assert!(plan_path.exists(), "the plan file must be written");
+
+        // The workspace is untouched.
+        assert_eq!(
+            fs::read_to_string(forgeplan.join("prds/PRD-001-a.md")).expect("read"),
+            before
+        );
+        assert!(!forgeplan.join("identity-repair").exists());
+
+        // The plan carries the fields the apply needs.
+        let plan: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&plan_path).expect("read")).expect("parse");
+        assert_eq!(plan["version"], 1);
+        assert_eq!(plan["sources"].as_array().expect("sources").len(), 2);
+        assert_eq!(
+            plan["references"].as_array().expect("references").len(),
+            1
+        );
+        assert_eq!(
+            plan["references"][0]["to"].as_str().expect("to"),
+            "",
+            "an unattributed reference stays unresolved"
+        );
+        assert_eq!(
+            plan["references"][0]["mapping"]
+                .as_object()
+                .expect("mapping")
+                .len(),
+            2
+        );
+        assert_eq!(plan["digest"].as_str().expect("digest").len(), 64);
+        assert_eq!(
+            plan["inventory_digest"].as_str().expect("inventory").len(),
+            64
+        );
+        assert!(plan["workspace"].as_str().expect("workspace").ends_with(".forgeplan"));
+    }
+
+    #[test]
+    fn apply_plan_rewrites_the_documents_and_a_rollback_restores_them() {
+        let workspace = colliding_workspace();
+        let forgeplan = workspace.path().join(".forgeplan");
+        let plan_path = workspace.path().join("plan.json");
+
+        // A review decides which of the two documents the link denotes.
+        let decisions = forgeplan.join("identity-repair");
+        fs::create_dir_all(&decisions).expect("journal root");
+        fs::write(
+            decisions.join("decisions.json"),
+            serde_json::json!({
+                "version": 1,
+                "decisions": [{
+                    "source_path": "evidence/EVID-001.md",
+                    "field": "links",
+                    "from": "PRD-001",
+                    "target_path": "prds/PRD-001-b.md",
+                }],
+            })
+            .to_string(),
+        )
+        .expect("write decisions");
+
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            plan_out: Some(plan_path.clone()),
+            json: false,
+            ..Default::default()
+        };
+        // The review resolved the reference, so the plan is complete.
+        assert_eq!(run(args).expect("run"), 0);
+
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            apply_plan: Some(plan_path.clone()),
+            json: false,
+            ..Default::default()
+        };
+        assert_eq!(run(args).expect("run"), 0);
+
+        // The documents carry their new keys, and their display numbers
+        // and bodies are untouched.
+        let rewritten = fs::read_to_string(forgeplan.join("prds/PRD-001-b.md")).expect("read");
+        assert!(rewritten.contains("slug:"), "the key must be rewritten");
+        assert!(rewritten.contains("id: PRD-001"), "the display number stays");
+        assert!(rewritten.contains("Body of PRD-001."), "the body stays");
+        let evidence = fs::read_to_string(forgeplan.join("evidence/EVID-001.md")).expect("read");
+        assert!(evidence.contains("slug:"), "the reference must be rewritten");
+        assert!(!evidence.contains("target: PRD-001"), "the old target is gone");
+
+        // A second apply refuses: the workspace has moved on.
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            apply_plan: Some(plan_path.clone()),
+            json: false,
+            ..Default::default()
+        };
+        assert_eq!(run(args).expect("run"), 2);
+
+        // The journal holds the transaction; rolling it back restores the
+        // bytes.
+        let journal_root = forgeplan.join("identity-repair");
+        let transaction = fs::read_dir(&journal_root)
+            .expect("journal root")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .find(|name| name.starts_with("repair-"))
+            .expect("a transaction directory");
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            recover: Some(transaction.clone()),
+            rollback: true,
+            json: false,
+            ..Default::default()
+        };
+        assert_eq!(run(args).expect("run"), 0);
+        let restored = fs::read_to_string(forgeplan.join("prds/PRD-001-b.md")).expect("read");
+        assert!(!restored.contains("slug:"), "the rollback must restore");
+        assert!(restored.contains("id: PRD-001"));
+    }
+
+    #[test]
+    fn apply_plan_refuses_an_unresolved_reference() {
+        let workspace = colliding_workspace();
+        let forgeplan = workspace.path().join(".forgeplan");
+        let plan_path = workspace.path().join("plan.json");
+
+        // A plan without the review decision: the apply refuses it.
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            plan_out: Some(plan_path.clone()),
+            json: false,
+            ..Default::default()
+        };
+        assert_eq!(run(args).expect("run"), 1);
+
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            apply_plan: Some(plan_path.clone()),
+            json: false,
+            ..Default::default()
+        };
+        // The unresolved reference blocks the apply.
+        assert_eq!(run(args).expect("run"), 2);
+
+        // Nothing was published.
+        let content = fs::read_to_string(forgeplan.join("prds/PRD-001-a.md")).expect("read");
+        assert!(!content.contains("slug:"), "no document may be re-keyed");
+    }
+
+    #[test]
+    fn the_repair_modes_are_mutually_exclusive() {
+        let workspace = colliding_workspace();
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            plan_out: Some(workspace.path().join("plan.json")),
+            apply_plan: Some(workspace.path().join("plan.json")),
+            json: false,
+            ..Default::default()
+        };
+        assert_eq!(run(args).expect("run"), 2);
+
+        // --rollback without --recover is refused too.
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            rollback: true,
+            json: false,
+            ..Default::default()
+        };
+        assert_eq!(run(args).expect("run"), 2);
+    }
+
+    #[test]
+    fn recovering_an_unknown_transaction_fails() {
+        let workspace = colliding_workspace();
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            recover: Some("repair-does-not-exist".to_string()),
+            rollback: true,
+            json: false,
+            ..Default::default()
+        };
+        assert_eq!(run(args).expect("run"), 2);
+    }
+
+    #[test]
+    fn the_existing_modes_keep_working() {
+        let workspace = colliding_workspace();
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            check_only: true,
+            json: true,
+            ..Default::default()
+        };
+        // The legacy scan still runs: the workspace has duplicate display
+        // numbers, which it reports as drift.
+        let code = run(args).expect("run");
+        assert!(code == 0 || code == 1, "unexpected exit code: {code}");
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1275,6 +1929,7 @@ mod tests {
             check_only: true,
             report_cross_pr: false,
             json: true,
+            ..Default::default()
         };
         let code = run(args).unwrap();
         // 0 actions ⇒ no unresolved ⇒ exit 0
@@ -1319,6 +1974,7 @@ mod tests {
             check_only: false, // apply
             report_cross_pr: false,
             json: false,
+            ..Default::default()
         };
         let code = run(args).unwrap();
         // The predicted_number action applied, filename was already canonical
@@ -1362,6 +2018,7 @@ mod tests {
             check_only: false,
             report_cross_pr: false,
             json: false,
+            ..Default::default()
         };
         let code = run(args).unwrap();
         assert_eq!(code, 1);
@@ -1411,6 +2068,7 @@ mod tests {
             check_only: false,
             report_cross_pr: false,
             json: false,
+            ..Default::default()
         };
         let code = run(args).unwrap();
         assert_eq!(code, 0);
@@ -1437,6 +2095,7 @@ mod tests {
             check_only: true,
             report_cross_pr: false,
             json: false,
+            ..Default::default()
         };
         let code = run(args).unwrap();
         // Two pending fixes (filename + missing_predicted) → unresolved.
@@ -1466,6 +2125,7 @@ mod tests {
             check_only: true,
             report_cross_pr: false,
             json: false,
+            ..Default::default()
         };
         let code = run(args).unwrap();
         assert_eq!(code, 2);

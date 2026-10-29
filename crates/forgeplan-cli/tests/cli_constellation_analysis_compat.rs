@@ -84,7 +84,11 @@ fn artifact(
         .map(|id| format!("parent_epic: {id}\n"))
         .unwrap_or_default();
     NewArtifact {
-        canonical_key: id.to_string(),
+        // The canonical key is the slug the document declares (ADR-030): it is
+        // the document's permanent identity and the value a reference
+        // resolves to. Keying the row by the display id instead would give the
+        // same document two identities.
+        canonical_key: slug.clone(),
         id: id.to_string(),
         kind: kind.to_string(),
         status: status.to_string(),

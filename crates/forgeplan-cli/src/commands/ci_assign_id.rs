@@ -15,9 +15,11 @@
 //!    via [`forgeplan_core::git::max_assigned_number_in_base`] — git-native,
 //!    LanceDB-free (ADR-003 invariant + PROB-061 isolation).
 //! 3. Mint sequential numbers starting from `max+1`, deterministic order.
-//! 4. Detect slug collisions (slug already exists in `--base`) — exit 1
-//!    unless `--auto-suffix` is supplied (Phase 0b prototype: warning only;
-//!    rename is Phase 2.1's responsibility — now implemented in Phase 2.2).
+//! 4. Detect canonical-key collisions — the key a document claims is read
+//!    from its frontmatter (ADR-030), and the file names of `--base` are
+//!    checked as well. A collision is reported and the command exits 1: a
+//!    suffix is not an identity, so no suffix is ever suggested and no
+//!    collision is ever silently skipped.
 //! 5. Rewrite frontmatter and (Phase 2.2) rename file from
 //!    `<kind>-<slug-suffix>.md` → `<KIND>-<NNN>-<slug-suffix>.md` so the
 //!    on-disk filename agrees with the freshly assigned display ID.
@@ -47,6 +49,7 @@
 //! `schema_version` stays at `1` because consumers must already treat
 //! `action` as an open-set string per the original CD-3 contract.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -71,6 +74,7 @@ fn redact_path(workspace: &Path, path: &Path) -> String {
         .map(|s| s.to_string())
         .unwrap_or_else(|| "<unknown>".to_string())
 }
+use forgeplan_core::artifact::canonical_key::canonical_key_from_document;
 use forgeplan_core::artifact::frontmatter::{
     assigned_number_from_frontmatter, parse_frontmatter, predicted_number_from_frontmatter,
     set_assigned_number, slug_from_frontmatter,
@@ -102,9 +106,10 @@ pub struct CiAssignIdArgs {
     pub workspace: Option<PathBuf>,
     /// Do not write frontmatter; print what would change.
     pub dry_run: bool,
-    /// On slug collision (slug already exists on `--base`), suggest
-    /// `<slug>-<assigned_number>` rename. Phase 0b: prototype only — emits
-    /// warning to stderr.
+    /// Accepted for compatibility. It no longer offers a suffix: a
+    /// canonical key that is already claimed is a collision the repair
+    /// path has to settle, and the command exits with the collision code
+    /// whether this flag is present or not.
     pub auto_suffix: bool,
     /// Emit machine-readable JSON to stdout instead of human-readable.
     pub json: bool,
@@ -303,7 +308,11 @@ pub async fn run(args: CiAssignIdArgs) -> Result<i32> {
         apply_plan(&workspace, &plan, args.dry_run).context("applying assignment plan")?;
 
     // 4. Build output.
-    let exit_code = if !collisions.is_empty() && !args.auto_suffix {
+    //
+    // A collision is always a collision. `--auto-suffix` no longer turns
+    // it into a silent skip: a suffix is not an identity, and a canonical
+    // key that is already claimed is a fact the repair path has to settle.
+    let exit_code = if !collisions.is_empty() {
         EXIT_COLLISION
     } else {
         EXIT_SUCCESS
@@ -344,7 +353,7 @@ pub async fn run(args: CiAssignIdArgs) -> Result<i32> {
     } else {
         for c in &collisions {
             eprintln!(
-                "warning: slug collision: {} ({}) collides with {}; suggested: {}",
+                "collision: the canonical key {} ({}) is already claimed by {}: {}",
                 c.slug, c.kind, c.conflicts_with_base_path, c.suggested_resolution
             );
         }
@@ -443,6 +452,119 @@ pub fn discover_candidates(workspace: &Path) -> Result<Vec<Candidate>> {
 
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
+}
+
+/// The canonical keys the workspace's documents claim, read from their
+/// frontmatter.
+///
+/// A file name is not an identity. ADR-030 makes the canonical key the
+/// identity of a document: the slug its frontmatter declares when that
+/// slug is valid, and the display id otherwise. The numbering therefore
+/// asks the frontmatter, so two documents that declare the same key are a
+/// collision even when their file names differ.
+///
+/// The map is keyed by the canonical key and names the documents that
+/// claim it, workspace-relative.
+fn frontmatter_claims(workspace: &Path) -> BTreeMap<String, Vec<String>> {
+    let mut claims: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for kind in ci_scan_kinds() {
+        let dir = workspace.join(".forgeplan").join(kind.dir_name());
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok((frontmatter, _body)) = parse_frontmatter(&content) else {
+                continue;
+            };
+            let display_id = frontmatter
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .or_else(|| {
+                    path.file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .map(str::to_string)
+                });
+            let Some(display_id) = display_id else {
+                continue;
+            };
+            let key = canonical_key_from_document(&display_id, &content);
+            claims
+                .entry(key)
+                .or_default()
+                .push(redact_path(workspace, &path));
+        }
+    }
+    for paths in claims.values_mut() {
+        paths.sort();
+    }
+    claims
+}
+
+/// The kinds the CI numbering scans.
+///
+/// The same list [`discover_candidates`] walks: `Memory` is excluded
+/// because a memory document carries no display number.
+fn ci_scan_kinds() -> Vec<ArtifactKind> {
+    vec![
+        ArtifactKind::Prd,
+        ArtifactKind::Rfc,
+        ArtifactKind::Adr,
+        ArtifactKind::Epic,
+        ArtifactKind::Spec,
+        ArtifactKind::ProblemCard,
+        ArtifactKind::SolutionPortfolio,
+        ArtifactKind::EvidencePack,
+        ArtifactKind::Note,
+        ArtifactKind::RefreshReport,
+    ]
+}
+
+/// The collision report of one candidate, or `None` when its canonical key
+/// is free.
+///
+/// The report never proposes a suffix. A suffix is not an identity: two
+/// documents that differ only in a numeric tail still answer to nearly the
+/// same name, and a collision is a fact about the corpus that the repair
+/// path has to settle — not something the numbering may paper over.
+fn collision_for_candidate(
+    workspace: &Path,
+    claims: &BTreeMap<String, Vec<String>>,
+    candidate: &Candidate,
+    base_files: &[String],
+) -> Option<String> {
+    let own = redact_path(workspace, &candidate.path);
+    if let Some(conflicts) = claims.get(&candidate.slug) {
+        let others: Vec<&str> = conflicts
+            .iter()
+            .filter(|path| **path != own)
+            .map(|path| path.as_str())
+            .collect();
+        if !others.is_empty() {
+            return Some(format!(
+                "the canonical key {:?} is already claimed by {} — the artifact needs its own canonical key (plan the repair with `forgeplan reconcile-ids --plan-out`)",
+                candidate.slug,
+                others.join(", ")
+            ));
+        }
+    }
+    if slug_exists_in_filenames(&candidate.slug, base_files) {
+        return Some(format!(
+            "the canonical key {:?} already exists in the base ref — the artifact needs its own canonical key; a suffix is not an identity",
+            candidate.slug
+        ));
+    }
+    None
 }
 
 /// Convert candidates → plan items with assigned numbers.
@@ -620,6 +742,12 @@ pub fn compute_assignment_plan_with_bases(
     // Pass 2: emit plan items in input order. Nulls now mint numbers
     // strictly above all absorbed existing numbers, so collisions are
     // impossible regardless of how the original input was ordered.
+    //
+    // The canonical keys the workspace already claims are read from the
+    // frontmatter of every document: a file name is not an identity, and
+    // two documents that declare the same key collide whatever their file
+    // names look like.
+    let claims = frontmatter_claims(workspace);
     let mut output: Vec<PlanItem> = Vec::with_capacity(candidates.len());
     for c in candidates {
         let kind_dir = c.kind.dir_name().to_string();
@@ -644,11 +772,7 @@ pub fn compute_assignment_plan_with_bases(
         *seq += 1;
         let assigned_number = *seq;
 
-        let collision = if slug_exists_in_filenames(&c.slug, &base_files) {
-            Some(format!("{}-{}", c.slug, assigned_number))
-        } else {
-            None
-        };
+        let collision = collision_for_candidate(workspace, &claims, c, &base_files);
 
         output.push(PlanItem {
             candidate: c.clone(),
@@ -801,25 +925,44 @@ pub fn apply_plan(
     // dry-run paths but writes will fail loudly below.
     let canonical_workspace = std::fs::canonicalize(workspace).ok();
 
+    // The canonical keys the workspace already claims — read from the
+    // frontmatter, so the report names the document that actually holds
+    // the key rather than a file name guessed from the slug.
+    let claims = frontmatter_claims(workspace);
+
     for item in plan {
         let kind_template_key = item.candidate.kind.template_key().to_string();
         let mut current_path = item.candidate.path.clone();
         let path_str = current_path.to_string_lossy().into_owned();
 
         if let Some(suggested) = &item.collision {
+            let own = redact_path(workspace, &current_path);
+            let conflicting: Vec<&String> = claims
+                .get(&item.candidate.slug)
+                .map(|paths| paths.iter().filter(|path| **path != own).collect())
+                .unwrap_or_default();
+            let conflicts_with = if conflicting.is_empty() {
+                format!(
+                    ".forgeplan/{}/{}.md",
+                    item.candidate.kind.dir_name(),
+                    item.candidate.slug
+                )
+            } else {
+                conflicting
+                    .iter()
+                    .map(|path| path.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             collisions.push(Collision {
                 slug: item.candidate.slug.clone(),
                 kind: kind_template_key.clone(),
                 path: path_str.clone(),
-                conflicts_with_base_path: format!(
-                    ".forgeplan/{}/{}.md",
-                    item.candidate.kind.dir_name(),
-                    item.candidate.slug
-                ),
+                conflicts_with_base_path: conflicts_with,
                 suggested_resolution: suggested.clone(),
             });
-            // Phase 0b prototype: collision-resolution suffix is decided
-            // upstream in compute_assignment_plan — not here.
+            // The collision is the planner's verdict: no number is
+            // assigned, and no file is renamed.
             continue;
         }
 
@@ -1100,7 +1243,7 @@ pub fn render_human_summary(out: &CiAssignIdOutput) -> String {
         s.push_str("Collisions:\n");
         for c in &out.collisions {
             s.push_str(&format!(
-                "  {} ({}) ↔ {}; suggested: {}\n",
+                "  {} ({}) ↔ {}: {}\n",
                 c.slug, c.kind, c.conflicts_with_base_path, c.suggested_resolution
             ));
         }
@@ -1611,7 +1754,9 @@ mod tests {
             assigned_number: 74,
             max_in_base: Some(73),
             already_assigned: false,
-            collision: Some("prd-conflict-74".to_string()),
+            collision: Some(
+                "the canonical key \"prd-conflict\" is already claimed by another document — the artifact needs its own canonical key".to_string(),
+            ),
         }];
         let (assignments, collisions) = apply_plan(tmp.path(), &plan, false).unwrap();
         assert_eq!(collisions.len(), 1);
@@ -1619,8 +1764,135 @@ mod tests {
             assignments.is_empty(),
             "collision must not produce assignment"
         );
+        // The report never proposes a suffix.
+        assert!(
+            !collisions[0]
+                .suggested_resolution
+                .contains("prd-conflict-74"),
+            "a suffix is not an identity: {}",
+            collisions[0].suggested_resolution
+        );
         let after = fs::read_to_string(&path).unwrap();
         assert!(after.contains("assigned_number: null"));
+    }
+
+    #[test]
+    fn a_frontmatter_key_collision_names_the_document_that_holds_the_key() {
+        // Two documents declare the same canonical key. Their file names
+        // differ, so only the frontmatter can see the collision.
+        let tmp = make_ws(&[
+            (
+                ".forgeplan/prds/prd-auth-system.md",
+                &artifact("prd-auth-system", 74, None),
+            ),
+            (
+                ".forgeplan/prds/prd-auth-system-copy.md",
+                &artifact("prd-auth-system", 75, None),
+            ),
+        ]);
+        let candidates = discover_candidates(tmp.path()).unwrap();
+        assert_eq!(candidates.len(), 2);
+        let plan = compute_assignment_plan_with_bases(
+            tmp.path(),
+            "origin/dev",
+            &candidates,
+            &BTreeMap::from([("prds".to_string(), Some(73))]),
+            &BTreeMap::from([("prds".to_string(), Vec::<String>::new())]),
+        )
+        .unwrap();
+        for item in &plan {
+            let collision = item
+                .collision
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} must be reported as a collision", item.candidate.slug));
+            assert!(
+                collision.contains("prd-auth-system"),
+                "the collision must name the key: {collision}"
+            );
+            assert!(
+                !collision.contains("prd-auth-system-74"),
+                "a suffix is not an identity: {collision}"
+            );
+        }
+        // The report names the other document, not a guessed file name.
+        let (_, collisions) = apply_plan(tmp.path(), &plan, true).unwrap();
+        assert_eq!(collisions.len(), 2);
+        for collision in &collisions {
+            assert!(
+                collision.conflicts_with_base_path.contains(".forgeplan/prds/"),
+                "unexpected conflicting document: {}",
+                collision.conflicts_with_base_path
+            );
+        }
+    }
+
+    #[test]
+    fn a_collision_never_offers_a_suffix_or_a_silent_skip() {
+        let tmp = make_ws(&[(
+            ".forgeplan/prds/prd-auth-system.md",
+            &artifact("prd-auth-system", 74, None),
+        )]);
+        let candidates = discover_candidates(tmp.path()).unwrap();
+        let plan = compute_assignment_plan_with_bases(
+            tmp.path(),
+            "origin/dev",
+            &candidates,
+            &BTreeMap::from([("prds".to_string(), Some(73))]),
+            &BTreeMap::from([(
+                "prds".to_string(),
+                vec!["prd-auth-system.md".to_string()],
+            )]),
+        )
+        .unwrap();
+        let item = &plan[0];
+        let collision = item
+            .collision
+            .as_ref()
+            .expect("the base ref holds the same slug");
+        assert!(
+            !collision.contains("-74"),
+            "a suffix is not an identity: {collision}"
+        );
+        assert!(
+            collision.contains("canonical key"),
+            "the remedy must name the canonical key: {collision}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_collision_exits_non_zero_even_with_auto_suffix() {
+        let tmp = make_ws(&[
+            (
+                ".forgeplan/prds/prd-auth-system.md",
+                &artifact("prd-auth-system", 74, None),
+            ),
+            (
+                ".forgeplan/prds/prd-auth-system-copy.md",
+                &artifact("prd-auth-system", 75, None),
+            ),
+        ]);
+        // A repository, so the base-ref lookup has an answer ("no such
+        // ref" is a valid empty base).
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("git init");
+        let args = CiAssignIdArgs {
+            pr: 7,
+            repo: Some("owner/repo".to_string()),
+            base: "origin/dev".to_string(),
+            head: "HEAD".to_string(),
+            workspace: Some(tmp.path().to_path_buf()),
+            dry_run: true,
+            auto_suffix: true,
+            json: true,
+        };
+        let code = run(args).await.unwrap();
+        assert_eq!(
+            code, EXIT_COLLISION,
+            "a collision is a collision, with or without --auto-suffix"
+        );
     }
 
     #[test]
