@@ -789,6 +789,7 @@ mod tests {
 
     fn rec(kind: &str, status: &str, r_eff: f64, tags: &[&str]) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: format!("{}-001", kind.to_uppercase()),
             id: format!("{}-001", kind.to_uppercase()),
             kind: kind.to_string(),
             status: status.to_string(),
@@ -1382,6 +1383,7 @@ mod tests {
         for record in read.records() {
             store
                 .create_artifact(&crate::db::store::NewArtifact {
+                    canonical_key: record.id.clone(),
                     id: record.id.clone(),
                     kind: record.kind.clone(),
                     status: record.status.clone(),

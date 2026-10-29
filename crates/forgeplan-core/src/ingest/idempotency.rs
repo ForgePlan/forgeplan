@@ -447,6 +447,7 @@ mod tests {
                 let path = projection::create_artifact_with_projection(
                     &ctx,
                     &NewArtifact {
+                        canonical_key: id.to_string(),
                         id: id.to_string(),
                         kind: "note".to_string(),
                         title: "Shared title".to_string(),
@@ -505,6 +506,7 @@ mod tests {
             let path = projection::create_artifact_with_projection(
                 &ctx,
                 &NewArtifact {
+                    canonical_key: id.clone(),
                     id: id.clone(),
                     kind: "note".to_string(),
                     title: created.title.clone(),

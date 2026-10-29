@@ -162,6 +162,7 @@ async fn seed_store(store: &LanceStore) {
     ] {
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: id.into(),
                 id: id.into(),
                 kind: kind.into(),
                 status: status.into(),

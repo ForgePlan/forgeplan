@@ -34,6 +34,7 @@ struct Corpus {
 
 fn artifact(id: &str, kind: &str, title: &str, body: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.into(),
         id: id.into(),
         kind: kind.into(),
         status: "draft".into(),

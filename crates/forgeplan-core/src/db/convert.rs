@@ -236,6 +236,7 @@ mod tests {
 
     fn sample_artifact() -> NewArtifact {
         NewArtifact {
+            canonical_key: "PRD-001".to_string(),
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),

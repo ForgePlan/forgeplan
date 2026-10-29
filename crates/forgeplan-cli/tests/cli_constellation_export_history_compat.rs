@@ -82,6 +82,7 @@ fn legacy_fixture() -> (TempDir, Value) {
             projection::sync_artifact_from_file(
                 &ctx,
                 &NewArtifact {
+                    canonical_key: id.into(),
                     id: id.into(),
                     kind: kind.into(),
                     title: title.into(),

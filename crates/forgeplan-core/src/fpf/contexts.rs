@@ -261,6 +261,7 @@ mod tests {
         for record in read.records() {
             store
                 .create_artifact(&NewArtifact {
+                    canonical_key: record.canonical_key.clone(),
                     id: record.id.clone(),
                     kind: record.kind.clone(),
                     status: record.status.clone(),
@@ -302,6 +303,7 @@ mod tests {
 
     fn record(id: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.into(),
             id: id.into(),
             kind: "prd".into(),
             status: "draft".into(),

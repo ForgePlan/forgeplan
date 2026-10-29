@@ -19,6 +19,7 @@ fn empty_fm() -> Frontmatter {
 
 fn make_record(id: &str, kind: &str, title: &str, status: &str) -> ArtifactRecord {
     ArtifactRecord {
+        canonical_key: id.into(),
         id: id.into(),
         kind: kind.into(),
         status: status.into(),
@@ -44,6 +45,7 @@ async fn make_store(tmp: &TempDir) -> LanceStore {
 
 fn new_prd(id: &str, body: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.into(),
         id: id.into(),
         kind: "prd".into(),
         status: "draft".into(),
@@ -59,6 +61,7 @@ fn new_prd(id: &str, body: &str) -> NewArtifact {
 
 fn new_evidence(id: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.into(),
         id: id.into(),
         kind: "evidence".into(),
         status: "active".into(),
@@ -273,6 +276,7 @@ async fn test_integration_activate_already_active_no_recheck() {
 
     // Notes don't go through the validation gate and can be created active.
     let note = NewArtifact {
+        canonical_key: "NOTE-700".into(),
         id: "NOTE-700".into(),
         kind: "note".into(),
         status: "active".into(),

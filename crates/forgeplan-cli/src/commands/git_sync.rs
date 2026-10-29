@@ -269,6 +269,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                                 .unwrap_or("standard");
 
                             let artifact = forgeplan_core::db::store::NewArtifact {
+                                canonical_key: id.clone(),
                                 id: id.clone(),
                                 kind: kind.to_string(),
                                 status: status.to_lowercase(),

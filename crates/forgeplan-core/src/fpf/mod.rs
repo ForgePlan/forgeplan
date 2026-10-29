@@ -676,6 +676,7 @@ mod prd041_tests {
 
     async fn seed_draft_prd(store: &LanceStore, id: &str) {
         let a = NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -926,6 +927,7 @@ mod prd041_tests {
         for record in read.records() {
             store
                 .create_artifact(&NewArtifact {
+                    canonical_key: record.id.clone(),
                     id: record.id.clone(),
                     kind: record.kind.clone(),
                     status: record.status.clone(),

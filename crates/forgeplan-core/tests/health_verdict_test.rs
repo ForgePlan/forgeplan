@@ -26,6 +26,7 @@ fn stub_body() -> String {
 
 fn new_prd_stub(id: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.into(),
         id: id.into(),
         kind: "prd".into(),
         status: "active".into(), // active stub — the PROB-029 surface
@@ -41,6 +42,7 @@ fn new_prd_stub(id: &str) -> NewArtifact {
 
 fn new_prd_clean(id: &str, title: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.into(),
         id: id.into(),
         kind: "prd".into(),
         status: "draft".into(),

@@ -592,6 +592,9 @@ async fn write_draft(
     let id = candidates.next_id(&kind);
 
     let new = NewArtifact {
+        // ADR-030: no minted key yet — the document declares no slug, so its
+        // canonical key is its display id.
+        canonical_key: id.clone(),
         id: id.clone(),
         kind: template_key.to_string(),
         status: "draft".to_string(),

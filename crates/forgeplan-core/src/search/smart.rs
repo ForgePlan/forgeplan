@@ -291,6 +291,7 @@ mod tests {
 
     fn make_record(id: &str, title: &str, body: &str, status: &str, r_eff: f64) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: status.to_string(),

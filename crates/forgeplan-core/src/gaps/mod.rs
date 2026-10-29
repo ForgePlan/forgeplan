@@ -384,6 +384,7 @@ mod tests {
 
     fn make_record(id: &str, kind: &str, status: &str, depth: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.into(),
             id: id.into(),
             kind: kind.into(),
             status: status.into(),

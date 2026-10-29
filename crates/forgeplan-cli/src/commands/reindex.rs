@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
+use forgeplan_core::artifact::canonical_key::canonical_key_from_document;
 use forgeplan_core::projection;
 
 use crate::commands::common;
@@ -335,6 +336,10 @@ pub async fn run() -> anyhow::Result<()> {
                         .unwrap_or("standard");
 
                     let artifact = forgeplan_core::db::store::NewArtifact {
+                        // ADR-030: the canonical key of a document read from
+                        // disk is the slug its frontmatter declares, and its
+                        // display id when it declares none.
+                        canonical_key: canonical_key_from_document(&id, &content),
                         id: id.clone(),
                         kind: kind.to_string(),
                         status: status.to_lowercase(),

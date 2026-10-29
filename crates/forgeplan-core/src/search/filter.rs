@@ -132,6 +132,7 @@ mod tests {
 
     fn mk(id: &str, kind: &str, status: &str, title: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             status: status.to_string(),

@@ -70,6 +70,7 @@ async fn corrupted_phase_yaml_increments_phase_read_errors() {
     //    to be `active` because `health_report_with_phase` filters phase
     //    reads to active artifacts only (line 511 of health/mod.rs).
     let prd = NewArtifact {
+        canonical_key: "PRD-001".to_string(),
         id: "PRD-001".to_string(),
         kind: "prd".to_string(),
         status: "active".to_string(),
@@ -163,6 +164,7 @@ async fn clean_phase_yaml_does_not_increment_phase_read_errors() {
         .expect("write config.yaml");
 
     let prd = NewArtifact {
+        canonical_key: "PRD-002".to_string(),
         id: "PRD-002".to_string(),
         kind: "prd".to_string(),
         status: "active".to_string(),

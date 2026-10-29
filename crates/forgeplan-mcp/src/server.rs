@@ -13,6 +13,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
+use forgeplan_core::artifact::canonical_key::canonical_key_from_document;
 use forgeplan_core::artifact::frontmatter::{
     Frontmatter, augment_frontmatter_with_id_fields, parse_frontmatter,
 };
@@ -3110,6 +3111,11 @@ impl ForgeplanServer {
                 }
             }
             Ok(NewArtifact {
+                // ADR-030: the canonical key of a document is the slug its
+                // frontmatter declares, and its display id when it declares
+                // none. The rendered template carries the slug the file will
+                // declare.
+                canonical_key: canonical_key_from_document(id, &rendered),
                 id: id.to_string(),
                 kind: template_key_owned.clone(),
                 status: "draft".into(),
@@ -6174,6 +6180,9 @@ impl ForgeplanServer {
 
         let build = |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
             Ok(NewArtifact {
+                // ADR-030: no minted key yet — the document declares no slug,
+                // so its canonical key is its display id.
+                canonical_key: id.to_string(),
                 id: id.to_string(),
                 kind: template_key.into(),
                 status: "draft".into(),
@@ -7377,6 +7386,9 @@ impl ForgeplanServer {
 
         let build = |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
             Ok(NewArtifact {
+                // ADR-030: no minted key yet — the document declares no slug,
+                // so its canonical key is its display id.
+                canonical_key: id.to_string(),
                 id: id.to_string(),
                 kind: template_key.into(),
                 status: "draft".into(),
@@ -7642,6 +7654,9 @@ impl ForgeplanServer {
             }
 
             let new_art = NewArtifact {
+                // ADR-030: no minted key yet — the imported document declares
+                // no slug, so its canonical key is its display id.
+                canonical_key: id.to_string(),
                 id: id.to_string(),
                 kind: art["kind"].as_str().unwrap_or("note").to_string(),
                 status: art["status"].as_str().unwrap_or("draft").to_string(),
@@ -8910,6 +8925,9 @@ impl ForgeplanServer {
 
         let build = |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
             Ok(NewArtifact {
+                // ADR-030: no minted key yet — the document declares no slug,
+                // so its canonical key is its display id.
+                canonical_key: id.to_string(),
                 id: id.to_string(),
                 kind: artifact_kind.template_key().to_string(),
                 status: "draft".to_string(),
@@ -13510,6 +13528,7 @@ mod claim_mcp_tests {
     ) {
         let store = server.require_store().await.expect("store initialized");
         let artifact = forgeplan_core::db::store::NewArtifact {
+            canonical_key: id.into(),
             id: id.into(),
             kind: "prd".into(),
             status: "draft".into(),
@@ -13701,6 +13720,7 @@ mod claim_mcp_tests {
             .unwrap();
         let body_with_section = "## Summary\n\nx\n\n## Affected Files\n\n- crates/legacy/main.rs\n- crates/legacy/helper.rs\n";
         let artifact = forgeplan_core::db::store::NewArtifact {
+            canonical_key: "PRD-950".into(),
             id: "PRD-950".into(),
             kind: "prd".into(),
             status: "draft".into(),
@@ -13936,6 +13956,7 @@ mod claim_mcp_tests {
         {
             let store = server.require_store().await.unwrap();
             let artifact = forgeplan_core::db::store::NewArtifact {
+                canonical_key: "RFC-A01".into(),
                 id: "RFC-A01".into(),
                 kind: "rfc".into(),
                 status: "draft".into(),
@@ -14592,6 +14613,7 @@ mod prob060_response_shape_tests {
         let legacy_body =
             "---\nid: PRD-018\nstatus: active\ntitle: Legacy artifact\n---\n\n## Body\n\nLegacy.";
         let artifact = forgeplan_core::db::store::NewArtifact {
+            canonical_key: "PRD-018".into(),
             id: "PRD-018".into(),
             kind: "prd".into(),
             status: "active".into(),
@@ -16441,6 +16463,7 @@ mod public_compat_context_tests {
             if let Some(store) = &legacy {
                 store
                     .create_artifact_for_test(&NewArtifact {
+                        canonical_key: id.into(),
                         id: id.into(),
                         kind: "note".into(),
                         status: "draft".into(),

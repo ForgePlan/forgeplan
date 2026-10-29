@@ -29,6 +29,7 @@ const TEMPLATE: &str = "## Summary\n\nORIGINAL template body (pre-update).";
 
 fn seed_artifact(id: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.to_string(),
         id: id.to_string(),
         kind: "prd".to_string(),
         status: "draft".to_string(),

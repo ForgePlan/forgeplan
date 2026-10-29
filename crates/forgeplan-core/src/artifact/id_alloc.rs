@@ -588,6 +588,7 @@ mod tests {
         let title = String::from("Borrowed request title");
         let build = |id: &str, _: u32| -> anyhow::Result<NewArtifact> {
             Ok(NewArtifact {
+                canonical_key: id.to_owned(),
                 id: id.to_owned(),
                 kind: "prd".into(),
                 status: "draft".into(),

@@ -4,19 +4,18 @@ default_depth: standard
 id_digits: 3
 created_at: 2026-03-24
 llm:
-  # provider: openai
-  # model: gpt-oss-120b
-  # api_key_env: NEURALDEEP_API_KEY
-  # base_url: https://api.neuraldeep.ru/v1
-  # max_tokens: 4096 # ≥300 per их note для reasoning tokens
-  # temperature: 0.3
-  # reason_temperature: 0.3
-  provider: codex-cli
-  model: "" # use the model selected by the local Codex CLI
-  # provider: gemini
-  # model: gemini-3.1-pro-preview
-  # api_key_env: GEMINI_API_KEY
-  # base_url: https://...    # override for custom endpoints
+  # 2026-10-28: the local CLI providers are all unusable on this machine —
+  # codex-cli reports the ChatGPT usage limit is exhausted, claude-code and
+  # devin-cli have no login, gemini-cli has an invalid API key, cursor-agent
+  # requires authentication. The MiniMax HTTP endpoint answers, but this network
+  # terminates TLS in a TUN tunnel: rustls (the stack reqwest links) gets
+  # `tls handshake eof`, while curl and Node complete the handshake. So the
+  # route goes through a localhost relay that forwards to MiniMax over Node's
+  # working TLS stack. Workspace-local only — the global config is untouched.
+  provider: openai
+  model: MiniMax-M3.1-Flash-Preview
+  api_key_env: MINIMAX_CODING_API_KEY
+  base_url: http://127.0.0.1:8791/v1
   max_tokens: 20096
   temperature: 0.7
   reason_temperature: 0.3 # lower temp for structured ADI output

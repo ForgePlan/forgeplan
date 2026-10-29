@@ -639,6 +639,9 @@ pub async fn reopen(
         record.title
     );
     let new_artifact = crate::db::store::NewArtifact {
+        // ADR-030: no minted key yet — the document declares no slug, so its
+        // canonical key is its display id.
+        canonical_key: new_id.to_string(),
         id: new_id.to_string(),
         kind: record.kind.clone(),
         status: "draft".to_string(),
@@ -684,6 +687,7 @@ mod tests {
 
     fn active_note(id: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "note".to_string(),
             status: "active".to_string(),
@@ -704,6 +708,7 @@ mod tests {
 
         // Create a PRD with short body (stub) and no evidence
         let art = NewArtifact {
+            canonical_key: "PRD-001".to_string(),
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -768,6 +773,7 @@ mod tests {
 
     fn stale_prd(id: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: "stale".to_string(),
@@ -948,6 +954,7 @@ mod tests {
 
     fn full_prd(id: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -966,6 +973,7 @@ mod tests {
 
     fn evidence(id: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "evidence".to_string(),
             status: "active".to_string(),
@@ -1007,6 +1015,7 @@ mod tests {
         let store = make_store(&tmp).await;
 
         let stub = NewArtifact {
+            canonical_key: "PRD-401".to_string(),
             id: "PRD-401".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -1057,6 +1066,7 @@ mod tests {
         let store = make_store(&tmp).await;
 
         let stub = NewArtifact {
+            canonical_key: "PRD-402".to_string(),
             id: "PRD-402".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -1096,6 +1106,7 @@ mod tests {
                     This text needs more padding to clear the length threshold \
                     for the activation gate check.\n\n## Goals\n\nClear.\n";
         let prd = NewArtifact {
+            canonical_key: "PRD-294".to_string(),
             id: "PRD-294".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -1147,6 +1158,7 @@ mod tests {
 
         // Body short enough to fail the length gate.
         let prd = NewArtifact {
+            canonical_key: "PRD-294B".to_string(),
             id: "PRD-294B".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -1161,6 +1173,7 @@ mod tests {
         store.create_artifact(&prd).await.unwrap();
         // Link an EVID so the evidence gate passes — only body-length fails.
         let evid = NewArtifact {
+            canonical_key: "EVID-294B".to_string(),
             id: "EVID-294B".to_string(),
             kind: "evidence".to_string(),
             status: "active".to_string(),
@@ -1233,6 +1246,7 @@ mod tests {
         );
 
         let prd = NewArtifact {
+            canonical_key: "PRD-900".to_string(),
             id: "PRD-900".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -1248,6 +1262,7 @@ mod tests {
 
         // Add evidence so we pass the evidence gate and reach the stub-content gate
         let evid = NewArtifact {
+            canonical_key: "EVID-900".to_string(),
             id: "EVID-900".to_string(),
             kind: "evidence".to_string(),
             status: "active".to_string(),
@@ -1290,6 +1305,7 @@ mod tests {
             ## Functional Requirements\n\n\
             FR-1: activate must call check_stub before promoting.\n";
         let prd = NewArtifact {
+            canonical_key: "PRD-901".to_string(),
             id: "PRD-901".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -1304,6 +1320,7 @@ mod tests {
         store.create_artifact(&prd).await.unwrap();
 
         let evid = NewArtifact {
+            canonical_key: "EVID-901".to_string(),
             id: "EVID-901".to_string(),
             kind: "evidence".to_string(),
             status: "active".to_string(),
@@ -1343,6 +1360,7 @@ mod tests {
         let store = make_store(&tmp).await;
 
         let art = NewArtifact {
+            canonical_key: "HYP-001".to_string(),
             id: "HYP-001".to_string(),
             kind: "hypothesis".to_string(),
             status: "draft".to_string(),

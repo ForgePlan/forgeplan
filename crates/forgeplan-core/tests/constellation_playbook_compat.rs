@@ -154,6 +154,7 @@ async fn seed(
     projection::create_artifact_with_projection(
         ctx,
         &NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             title: title.to_string(),

@@ -1389,6 +1389,7 @@ mod tests {
         // Create a real source.
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "PRD-001".into(),
                 id: "PRD-001".into(),
                 kind: "prd".into(),
                 status: "active".into(),
@@ -1430,6 +1431,7 @@ mod tests {
         let (_tmp, ws, store) = fresh_store().await;
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "EVID-001".into(),
                 id: "EVID-001".into(),
                 kind: "evidence".into(),
                 status: "active".into(),
@@ -1445,6 +1447,7 @@ mod tests {
             .unwrap();
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "PRD-001".into(),
                 id: "PRD-001".into(),
                 kind: "prd".into(),
                 status: "active".into(),
@@ -1491,6 +1494,7 @@ mod tests {
         for id in ["EVID-001", "EVID-002"] {
             store
                 .create_artifact_for_test(&NewArtifact {
+                    canonical_key: id.into(),
                     id: id.into(),
                     kind: "evidence".into(),
                     status: "active".into(),
@@ -1536,6 +1540,7 @@ mod tests {
         // Pre-fix this fired weakest_link; post-fix it is skipped.
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "EVID-001".into(),
                 id: "EVID-001".into(),
                 kind: "evidence".into(),
                 status: "active".into(),
@@ -1553,6 +1558,7 @@ mod tests {
         for (id, kind) in [("PRD-001", "prd"), ("EPIC-001", "epic")] {
             store
                 .create_artifact_for_test(&NewArtifact {
+                    canonical_key: id.into(),
                     id: id.into(),
                     kind: kind.into(),
                     status: "active".into(),
@@ -1733,6 +1739,7 @@ mod tests {
         let (_tmp, ws, store) = fresh_store().await;
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "PRD-001".into(),
                 id: "PRD-001".into(),
                 kind: "prd".into(),
                 status: "active".into(),
@@ -1782,6 +1789,7 @@ mod tests {
         let (_tmp, ws, store) = fresh_store().await;
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "PRD-001".into(),
                 id: "PRD-001".into(),
                 kind: "prd".into(),
                 status: "active".into(),
@@ -1850,6 +1858,7 @@ mod tests {
     #[cfg(feature = "test-helpers")]
     fn new_artifact(id: &str, kind: &str, status: &str, body: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             status: status.to_string(),
@@ -3087,6 +3096,7 @@ mod captured_read_tests {
         for record in read.records() {
             store
                 .create_artifact(&crate::db::store::NewArtifact {
+                    canonical_key: record.canonical_key.clone(),
                     id: record.id.clone(),
                     kind: record.kind.clone(),
                     status: record.status.clone(),

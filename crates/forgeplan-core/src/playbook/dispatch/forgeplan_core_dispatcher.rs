@@ -50,6 +50,7 @@ use async_trait::async_trait;
 use serde_yaml::Value as YamlValue;
 
 use super::{DispatchError, DispatchOutcome, Dispatcher};
+use crate::artifact::canonical_key::canonical_key_from_document;
 use crate::artifact::types::ArtifactKind;
 use crate::constellation::capture::CaptureLimits;
 use crate::constellation::facade::{
@@ -624,6 +625,9 @@ async fn write_ingest_draft(
     let id = candidates.next_id(&kind);
 
     let new = NewArtifact {
+        // ADR-030: no minted key yet — the document declares no slug, so its
+        // canonical key is its display id.
+        canonical_key: id.clone(),
         id: id.clone(),
         kind: template_key.to_string(),
         status: "draft".to_string(),
@@ -721,6 +725,9 @@ async fn run_new(
     };
 
     let artifact = NewArtifact {
+        // ADR-030: the canonical key of a document is the slug its
+        // frontmatter declares, and its display id when it declares none.
+        canonical_key: canonical_key_from_document(&id, &rendered),
         id: id.clone(),
         kind: template_key.to_string(),
         status: "draft".to_string(),

@@ -604,6 +604,7 @@ async fn a_legacy_workspace_still_writes_its_projection_row() {
         .expect("init legacy store");
     store
         .create_artifact_for_test(&forgeplan_core::db::store::NewArtifact {
+            canonical_key: "PRD-001".into(),
             id: "PRD-001".into(),
             kind: "prd".into(),
             status: "draft".into(),

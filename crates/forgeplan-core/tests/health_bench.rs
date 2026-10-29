@@ -64,6 +64,7 @@ async fn seed_workspace(
         };
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: id.clone(),
                 id: id.clone(),
                 kind: kind.to_string(),
                 status: status.to_string(),

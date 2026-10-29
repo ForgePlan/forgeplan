@@ -74,6 +74,9 @@ impl ArtifactStorage for InMemoryStore {
     async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
         let now = Utc::now().to_rfc3339();
         let record = ArtifactRecord {
+            // ADR-030: no minted key yet — the artifact declares no slug, so
+            // its canonical key is its display id.
+            canonical_key: artifact.canonical_key.clone(),
             id: artifact.id.clone(),
             kind: artifact.kind.clone(),
             status: artifact.status.clone(),
@@ -451,6 +454,9 @@ mod tests {
 
     fn make_new_artifact(kind: &str, title: &str, body: &str) -> NewArtifact {
         NewArtifact {
+            // Placeholder like the id below — the id is replaced by
+            // `next_id` in tests, and the canonical key follows it.
+            canonical_key: String::new(),
             id: String::new(), // will be replaced by next_id in tests
             kind: kind.to_string(),
             status: "draft".to_string(),
@@ -675,6 +681,7 @@ mod tests {
             for i in 0..50 {
                 let id = store1.next_id("TST").await.unwrap();
                 let art = NewArtifact {
+                    canonical_key: id.clone(),
                     id,
                     kind: "TST".to_string(),
                     status: "draft".to_string(),
@@ -695,6 +702,7 @@ mod tests {
             for i in 0..50 {
                 let id = store2.next_id("TST").await.unwrap();
                 let art = NewArtifact {
+                    canonical_key: id.clone(),
                     id,
                     kind: "TST".to_string(),
                     status: "draft".to_string(),
@@ -731,6 +739,7 @@ mod tests {
         // Create artifact with expired valid_until (RFC3339 format)
         let id = store.next_id("PRD").await.unwrap();
         let art = NewArtifact {
+            canonical_key: id.clone(),
             id: id.clone(),
             kind: "PRD".to_string(),
             status: "active".to_string(),
@@ -747,6 +756,7 @@ mod tests {
         // Create artifact with expired valid_until (NaiveDate format)
         let id_naive = store.next_id("PRD").await.unwrap();
         let art_naive = NewArtifact {
+            canonical_key: id_naive.clone(),
             id: id_naive.clone(),
             kind: "PRD".to_string(),
             status: "active".to_string(),
@@ -763,6 +773,7 @@ mod tests {
         // Create artifact without valid_until
         let id3 = store.next_id("PRD").await.unwrap();
         let art3 = NewArtifact {
+            canonical_key: id3.clone(),
             id: id3,
             kind: "PRD".to_string(),
             status: "active".to_string(),
@@ -779,6 +790,7 @@ mod tests {
         // Create artifact with future valid_until
         let id4 = store.next_id("PRD").await.unwrap();
         let art4 = NewArtifact {
+            canonical_key: id4.clone(),
             id: id4,
             kind: "PRD".to_string(),
             status: "active".to_string(),

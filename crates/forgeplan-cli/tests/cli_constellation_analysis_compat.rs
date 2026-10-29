@@ -84,6 +84,7 @@ fn artifact(
         .map(|id| format!("parent_epic: {id}\n"))
         .unwrap_or_default();
     NewArtifact {
+        canonical_key: id.to_string(),
         id: id.to_string(),
         kind: kind.to_string(),
         status: status.to_string(),

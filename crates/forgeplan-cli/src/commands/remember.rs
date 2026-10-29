@@ -1,6 +1,7 @@
 use anyhow::Result;
 use console::style;
 
+use forgeplan_core::artifact::canonical_key::canonical_key_from_document;
 use forgeplan_core::artifact::types::slugify;
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
 use forgeplan_core::git::author::resolve_author;
@@ -71,6 +72,9 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
 
     // Create in LanceDB
     let artifact = NewArtifact {
+        // ADR-030: the canonical key of a document is the slug its
+        // frontmatter declares, and its display id when it declares none.
+        canonical_key: canonical_key_from_document(&id, &body),
         id: id.clone(),
         kind: "memory".to_string(),
         status: "active".to_string(),

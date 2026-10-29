@@ -437,6 +437,9 @@ pub async fn reopen_captured(
         record.title
     );
     let new_artifact = NewArtifact {
+        // ADR-030: no minted key yet — the document declares no slug, so its
+        // canonical key is its display id.
+        canonical_key: new_id.to_string(),
         id: new_id.to_string(),
         kind: record.kind.clone(),
         status: "draft".to_string(),

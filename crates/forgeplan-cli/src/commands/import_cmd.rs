@@ -1,3 +1,4 @@
+use forgeplan_core::artifact::canonical_key::canonical_key_from_document;
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::hints::{self, Hint};
@@ -49,6 +50,12 @@ fn record_from_projection_file(
         fm.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
     };
     forgeplan_core::db::store::ArtifactRecord {
+        // ADR-030: the canonical key of a document is the slug its
+        // frontmatter declares, and its display id when it declares none.
+        canonical_key: canonical_key_from_document(
+            &string("id").unwrap_or_else(|| id.to_string()),
+            content,
+        ),
         id: string("id").unwrap_or_else(|| id.to_string()),
         kind: string("kind").unwrap_or_default(),
         status: string("status").unwrap_or_default(),
@@ -265,6 +272,9 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         };
 
         let new_artifact = NewArtifact {
+            // ADR-030: no minted key yet — the imported document declares no
+            // slug, so its canonical key is its display id.
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind_str.to_string(),
             status: final_status,

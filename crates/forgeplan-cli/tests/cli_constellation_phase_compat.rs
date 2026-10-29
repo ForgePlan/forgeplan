@@ -61,6 +61,7 @@ impl Fixture {
                     .unwrap();
                 let store = LanceStore::open(&workspace).await.unwrap();
                 let artifact = NewArtifact {
+                    canonical_key: ID.to_string(),
                     id: ID.to_string(),
                     kind: "prd".to_string(),
                     status: "draft".to_string(),

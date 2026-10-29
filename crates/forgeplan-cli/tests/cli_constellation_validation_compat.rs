@@ -210,6 +210,7 @@ async fn fixture(migrated: bool, sources: &[(&str, &str)]) -> Fixture {
         projection::sync_artifact_from_file(
             &MutationContext::new(&workspace, &guard, Some(&store)),
             &NewArtifact {
+                canonical_key: field("id").into(),
                 id: field("id").into(),
                 kind: field("kind").into(),
                 status: field("status").into(),

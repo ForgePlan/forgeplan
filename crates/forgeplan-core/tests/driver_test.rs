@@ -10,6 +10,7 @@ use tempfile::TempDir;
 /// Helper: create a NewArtifact with given fields.
 fn make_artifact(id: &str, kind: &str, title: &str, body: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.to_string(),
         id: id.to_string(),
         kind: kind.to_string(),
         status: "draft".to_string(),

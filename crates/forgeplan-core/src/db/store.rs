@@ -14,6 +14,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 
 use crate::projection::MutationError;
 
+use crate::artifact::canonical_key::canonical_key_from_document;
 use crate::artifact::store::ArtifactSummary;
 use crate::changelog::ChangeLogEntry;
 use crate::db::auxiliary::verify_table_manifests;
@@ -111,6 +112,18 @@ pub type ArtifactFilter = ListFilter;
 #[derive(Debug, Default)]
 pub struct NewArtifact {
     pub id: String,
+    /// The canonical key — the document's permanent identity (ADR-030).
+    ///
+    /// The `id` field stays the *display* id (`PRD-074`): a human-facing
+    /// alias that may repeat inside a workspace and across projects. This
+    /// field is the identity a row is keyed by and a reference resolves to.
+    ///
+    /// Wave 1 carries the key in the value only; the legacy index has no
+    /// `canonical_key` column yet (schema v5 is Slice B's), so a row written
+    /// today still stores the key in the document's own frontmatter and the
+    /// value here is what the caller prepared. It is never empty by
+    /// construction: every builder derives it from the document.
+    pub canonical_key: String,
     pub kind: String,
     pub status: String,
     pub title: String,
@@ -128,6 +141,18 @@ pub struct NewArtifact {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactRecord {
     pub id: String,
+    /// The canonical key — the document's permanent identity (ADR-030).
+    ///
+    /// `id` remains the display id (`PRD-074`): an alias that may repeat.
+    /// This is the key a row is identified by and a reference resolves to.
+    ///
+    /// `#[serde(default)]` so an export bundle written before the key
+    /// existed still loads. An absent field means "this payload predates the
+    /// key" — it never means "mint a new one" (SPEC-009: the absence of the
+    /// field does not mean create a new key). The import path derives the key
+    /// from the saved document instead.
+    #[serde(default)]
+    pub canonical_key: String,
     pub kind: String,
     pub status: String,
     pub title: String,
@@ -2134,7 +2159,14 @@ fn extract_record(batch: &RecordBatch, row: usize) -> Option<ArtifactRecord> {
     let tags = convert::extract_tags(batch, row);
     let body_hash = get_string(batch, "body_hash", row);
     let embedding = convert::extract_embedding(batch, row);
+    // ADR-030: a legacy row has no canonical-key column yet (schema v5 is
+    // Slice B's), so the key is derived from the document the row carries —
+    // the slug its frontmatter declares, and its display id when it declares
+    // none. The `body` column holds the whole markdown file, so the same
+    // rule the writers and the capture use reads the same key back.
+    let canonical_key = canonical_key_from_document(&id, &body);
     Some(ArtifactRecord {
+        canonical_key,
         id,
         kind,
         status,
@@ -2588,6 +2620,7 @@ mod tests {
 
     fn sample_artifact(id: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -2643,6 +2676,7 @@ mod tests {
 
     fn artifact_with_slug(id: &str, slug: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -2842,6 +2876,7 @@ mod tests {
         let store = make_store(&tmp).await;
         // Legacy artifact: no slug field in body.
         let legacy = NewArtifact {
+            canonical_key: "PRD-018".to_string(),
             id: "PRD-018".to_string(),
             kind: "prd".to_string(),
             status: "active".to_string(),
@@ -2870,6 +2905,7 @@ mod tests {
     /// kind `memory`, no `slug` frontmatter field, no lifecycle.
     fn memory_artifact(id: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "memory".to_string(),
             status: "active".to_string(),
@@ -3548,6 +3584,7 @@ mod tests {
     #[tokio::test]
     async fn artifact_record_to_summary() {
         let record = ArtifactRecord {
+            canonical_key: "PRD-001".to_string(),
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -3575,6 +3612,7 @@ mod tests {
     #[tokio::test]
     async fn artifact_record_frontmatter_map() {
         let record = ArtifactRecord {
+            canonical_key: "PRD-001".to_string(),
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -3688,6 +3726,7 @@ mod tests {
 
     fn record_for_links_test(id: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "spec".to_string(),
             status: "draft".to_string(),
@@ -3709,6 +3748,7 @@ mod tests {
     #[tokio::test]
     async fn roundtrip_artifact_with_tags_through_frontmatter_map() {
         let record = ArtifactRecord {
+            canonical_key: "PRD-099".to_string(),
             id: "PRD-099".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -3846,6 +3886,7 @@ mod tests {
     #[test]
     fn embedding_text_includes_id_title_and_body_preview() {
         let record = ArtifactRecord {
+            canonical_key: "PRD-042".to_string(),
             id: "PRD-042".to_string(),
             kind: "prd".to_string(),
             status: "Draft".to_string(),
@@ -3883,6 +3924,7 @@ mod tests {
     fn embedding_text_truncates_body_at_chunk_size() {
         let long_body = "x".repeat(5000);
         let record = ArtifactRecord {
+            canonical_key: "PRD-001".to_string(),
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
             status: "Draft".to_string(),
@@ -3923,6 +3965,7 @@ mod tests {
 
     fn make_record(id: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: "Draft".to_string(),

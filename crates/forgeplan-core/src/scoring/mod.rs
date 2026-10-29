@@ -113,6 +113,7 @@ mod sync_score_target_tests {
 
     fn sample(id: &str, kind: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             status: "active".to_string(),

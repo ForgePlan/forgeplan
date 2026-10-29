@@ -18,6 +18,7 @@
 //! restore refuses so the operator can resolve the collision manually.
 
 use super::{DestructiveOp, Receipt, mark_consumed, receipt_path};
+use crate::artifact::canonical_key::canonical_key_from_document;
 use crate::db::store::{LanceStore, NewArtifact};
 use anyhow::Context;
 use std::path::{Path, PathBuf};
@@ -316,6 +317,12 @@ async fn apply_restore_with_sink(
 /// happened.
 fn snapshot_artifact(receipt: &Receipt, status: &str) -> NewArtifact {
     NewArtifact {
+        // ADR-030: the canonical key of a document is the slug its
+        // frontmatter declares, and its display id when it declares none.
+        canonical_key: canonical_key_from_document(
+            &receipt.snapshot.id,
+            &receipt.snapshot.body,
+        ),
         id: receipt.snapshot.id.clone(),
         kind: receipt.snapshot.kind.clone(),
         status: status.to_string(),
@@ -625,6 +632,7 @@ mod tests {
 
         // Create PRD-001 currently in store (someone re-created it).
         let existing = NewArtifact {
+            canonical_key: "PRD-001".into(),
             id: "PRD-001".into(),
             kind: "prd".into(),
             status: "active".into(),
@@ -660,6 +668,7 @@ mod tests {
         // Create as active in store.
         store
             .create_artifact(&NewArtifact {
+                canonical_key: "PRD-002".into(),
                 id: "PRD-002".into(),
                 kind: "prd".into(),
                 status: "active".into(),
@@ -924,6 +933,7 @@ mod tests {
         // Simulate: row is prd, receipt claims it was rfc.
         store
             .create_artifact(&NewArtifact {
+                canonical_key: "PRD-CONFLICT".into(),
                 id: "PRD-CONFLICT".into(),
                 kind: "prd".into(),
                 status: "active".into(),
@@ -984,6 +994,7 @@ mod tests {
         let (_tmp, ws, store) = fresh_ws().await;
         store
             .create_artifact(&NewArtifact {
+                canonical_key: "PRD-291A".into(),
                 id: "PRD-291A".into(),
                 kind: "prd".into(),
                 status: "active".into(),
@@ -1025,6 +1036,7 @@ mod tests {
         let (_tmp, ws, store) = fresh_ws().await;
         store
             .create_artifact(&NewArtifact {
+                canonical_key: "PRD-291B".into(),
                 id: "PRD-291B".into(),
                 kind: "prd".into(),
                 status: "draft".into(),
@@ -1073,6 +1085,7 @@ mod tests {
         let (_tmp, ws, store) = fresh_ws().await;
         store
             .create_artifact(&NewArtifact {
+                canonical_key: "PRD-291E".into(),
                 id: "PRD-291E".into(),
                 kind: "prd".into(),
                 status: "active".into(),
@@ -1123,6 +1136,7 @@ mod tests {
         let (_tmp, ws, store) = fresh_ws().await;
         store
             .create_artifact(&NewArtifact {
+                canonical_key: "PRD-291C".into(),
                 id: "PRD-291C".into(),
                 kind: "prd".into(),
                 status: "deprecated".into(),
@@ -1168,6 +1182,7 @@ mod tests {
         let (_tmp, ws, store) = fresh_ws().await;
         store
             .create_artifact(&NewArtifact {
+                canonical_key: "PRD-291D".into(),
                 id: "PRD-291D".into(),
                 kind: "prd".into(),
                 status: "active".into(),

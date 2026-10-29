@@ -55,6 +55,9 @@ pub async fn import_all(
         }
 
         let new = NewArtifact {
+            // ADR-030: no minted key yet — the artifact declares no slug, so
+            // its canonical key is its display id.
+            canonical_key: record.id.clone(),
             id: record.id.clone(),
             kind: record.kind.clone(),
             status: record.status.clone(),
@@ -110,6 +113,7 @@ mod tests {
         let (store, _tmp) = make_store().await;
 
         let artifact = NewArtifact {
+            canonical_key: "prd-001".to_string(),
             id: "prd-001".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -134,6 +138,7 @@ mod tests {
         let (store, _tmp) = make_store().await;
 
         let artifact = NewArtifact {
+            canonical_key: "prd-001".to_string(),
             id: "prd-001".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -151,6 +156,7 @@ mod tests {
             version: "1.0".to_string(),
             exported_at: "2026-01-01T00:00:00Z".to_string(),
             artifacts: vec![ArtifactRecord {
+                canonical_key: "prd-001".to_string(),
                 id: "prd-001".to_string(),
                 kind: "prd".to_string(),
                 status: "draft".to_string(),
@@ -184,6 +190,7 @@ mod tests {
         let (store, _tmp) = make_store().await;
 
         let artifact = NewArtifact {
+            canonical_key: "prd-002".to_string(),
             id: "prd-002".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -201,6 +208,7 @@ mod tests {
             version: "1.0".to_string(),
             exported_at: "2026-01-01T00:00:00Z".to_string(),
             artifacts: vec![ArtifactRecord {
+                canonical_key: "prd-002".to_string(),
                 id: "prd-002".to_string(),
                 kind: "prd".to_string(),
                 status: "active".to_string(),

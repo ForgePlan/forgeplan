@@ -23,6 +23,7 @@ async fn make_store(tmp: &TempDir) -> LanceStore {
 
 fn artifact(id: &str, kind: &str, status: &str, body: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.into(),
         id: id.into(),
         kind: kind.into(),
         status: status.into(),

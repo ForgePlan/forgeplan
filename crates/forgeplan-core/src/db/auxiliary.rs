@@ -1417,6 +1417,7 @@ mod tests {
         let legacy = LanceStore::init(&ws).await.unwrap();
         legacy
             .create_artifact(&crate::db::store::NewArtifact {
+                canonical_key: "PRD-001".into(),
                 id: "PRD-001".into(),
                 kind: "prd".into(),
                 status: "draft".into(),

@@ -93,6 +93,9 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
             chrono::Utc::now().format("%Y-%m-%d"),
         );
         Ok(NewArtifact {
+            // ADR-030: no minted key yet — the document declares no slug, so
+            // its canonical key is its display id.
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: template_key.clone(),
             status: "draft".to_string(),

@@ -129,6 +129,7 @@ mod tests {
 
     fn record(id: &str, status: &str, r_eff: f64) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.into(),
             id: id.into(),
             kind: "prd".into(),
             status: status.into(),

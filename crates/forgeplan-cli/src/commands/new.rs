@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
+use forgeplan_core::artifact::canonical_key::canonical_key_from_document;
 use forgeplan_core::artifact::frontmatter::augment_frontmatter_with_id_fields;
 use forgeplan_core::artifact::store::ArtifactSummary;
 use forgeplan_core::artifact::types::{ArtifactKind, slug_from_kind_title};
@@ -202,6 +203,10 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
             }
         }
         Ok(NewArtifact {
+            // ADR-030: the canonical key of a document is the slug its
+            // frontmatter declares, and its display id when it declares none.
+            // The rendered template carries the slug the file will declare.
+            canonical_key: canonical_key_from_document(id, &rendered),
             id: id.to_string(),
             kind: template_key_owned.clone(),
             status: "draft".to_string(),

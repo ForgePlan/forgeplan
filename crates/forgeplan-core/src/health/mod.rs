@@ -1998,6 +1998,7 @@ mod tests {
 
     fn make_record(id: &str, kind: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.into(),
             id: id.into(),
             kind: kind.into(),
             status: "draft".into(),
@@ -3121,6 +3122,7 @@ mod tests {
         // mismatches even with tracking enabled.
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "PRD-001".to_string(),
                 id: "PRD-001".to_string(),
                 kind: "prd".to_string(),
                 status: "active".to_string(),
@@ -3800,6 +3802,7 @@ mod captured_read_tests {
         for record in read.records() {
             store
                 .create_artifact(&NewArtifact {
+                    canonical_key: record.id.clone(),
                     id: record.id.clone(),
                     kind: record.kind.clone(),
                     status: record.status.clone(),

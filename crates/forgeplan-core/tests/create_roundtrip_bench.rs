@@ -35,6 +35,7 @@ use tempfile::TempDir;
 
 fn art(i: usize) -> NewArtifact {
     NewArtifact {
+        canonical_key: format!("PRD-BENCH-{i:05}"),
         id: format!("PRD-BENCH-{i:05}"),
         kind: "prd".to_string(),
         status: "draft".to_string(),

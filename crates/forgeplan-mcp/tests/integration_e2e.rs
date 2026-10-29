@@ -348,6 +348,7 @@ async fn t6_forgeplan_get_pre_merge_hint_uses_slug() {
         let body = body_with_null_assigned("prd-pre-merge-feature", "prd", 7, "Pre Merge Feature");
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "PRD-007".into(),
                 id: "PRD-007".into(),
                 kind: "prd".into(),
                 status: "draft".into(),
@@ -642,6 +643,7 @@ async fn t13_legacy_artifact_handled_gracefully() {
         let legacy_body = body_legacy("PRD-099", "Legacy Artifact");
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "PRD-099".into(),
                 id: "PRD-099".into(),
                 kind: "prd".into(),
                 status: "active".into(),
@@ -1099,6 +1101,7 @@ async fn t36_forgeplan_hypothesis_promote_walks_one_step_forward() {
         );
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "HYP-001".into(),
                 id: "HYP-001".into(),
                 kind: "hypothesis".into(),
                 status: "draft".into(),
@@ -1351,6 +1354,7 @@ auth bounded context.\n\
         ] {
             store
                 .create_artifact_for_test(&NewArtifact {
+                    canonical_key: id.into(),
                     id: id.into(),
                     kind: kind.into(),
                     status: "draft".into(),
@@ -1531,6 +1535,7 @@ title: Auth tokens expire after 24h\n\
 ## Lifecycle State\n**Current**: strong-inferred\n";
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "HYP-001".into(),
                 id: "HYP-001".into(),
                 kind: "hypothesis".into(),
                 status: "draft".into(),
@@ -1548,6 +1553,7 @@ title: Auth tokens expire after 24h\n\
         for evid in ["EVID-001", "EVID-002"] {
             store
                 .create_artifact_for_test(&NewArtifact {
+                    canonical_key: evid.into(),
                     id: evid.into(),
                     kind: "evidence".into(),
                     status: "draft".into(),
@@ -1621,6 +1627,7 @@ title: Test\n\
 ## Lifecycle State\n**Current**: strong-inferred\n";
         store
             .create_artifact_for_test(&NewArtifact {
+                canonical_key: "HYP-001".into(),
                 id: "HYP-001".into(),
                 kind: "hypothesis".into(),
                 status: "draft".into(),

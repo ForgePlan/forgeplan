@@ -1,3 +1,4 @@
+pub mod canonical_key;
 pub mod delta;
 pub mod frontmatter;
 pub mod id_alloc;
@@ -13,3 +14,12 @@ pub mod validation;
 // `forgeplan_core::artifact::validate_title(...)` without reaching into the
 // submodule path.
 pub use validation::{MAX_TITLE_LEN, validate_title};
+
+// ADR-030 — canonical artifact identity. The canonical key is a document's
+// permanent identity; the display id (`PRD-074`) is an alias that may repeat.
+// Re-exported at module level so a caller can write
+// `forgeplan_core::artifact::mint_artifact_key(...)` the same way it writes
+// `forgeplan_core::artifact::validate_title(...)`.
+pub use canonical_key::{
+    ArtifactCandidate, ArtifactIdentity, ResolveError, ResolvedArtifact, mint_artifact_key,
+};

@@ -32,11 +32,25 @@
 //! There is no `&mut` anything, no table handle, no owner, no
 //! `WorkspaceLock`, and no maintenance capability reachable from this type. A
 //! read handler can answer or fail; it cannot publish, migrate or create.
+//!
+//! # Identity
+//!
+//! A document's identity is its **canonical key** (ADR-030); the display id
+//! (`PRD-074`) is a repeatable alias. Every lookup map in this adapter is keyed
+//! by the canonical key, and the display id is resolved through the shared
+//! algorithm in [`crate::artifact::canonical_key::resolve_artifact`] — the one
+//! resolution order the specification froze. A display id two documents carry
+//! names **neither** of them: [`Self::resolve_artifact`] reports that as
+//! [`ResolveError::Ambiguous`] with every candidate, and the convenience
+//! accessors below answer "not this one" rather than picking a winner.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::artifact::canonical_key::{
+    ArtifactCandidate, ResolveError, ResolvedArtifact, resolve_artifact as resolve_shared,
+};
 use crate::artifact::store::ArtifactSummary;
 use crate::db::store::{ArtifactRecord, ListFilter, compute_content_hash};
 use crate::graph::knowledge::{ArtifactNode, KnowledgeGraph};
@@ -46,26 +60,92 @@ use crate::scoring::reff;
 use super::capture::{CapturedSourceView, ParsedArtifact};
 use super::view::ReadView;
 
+/// What a declared relation target turned out to name.
+///
+/// The three outcomes stay apart: a target that names exactly one document, a
+/// target that names none (a forward reference, preserved verbatim), and a
+/// target that names several (an ambiguous reference — neither a forward
+/// reference nor evidence for a score).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EdgeTarget {
+    /// The declared target resolved to exactly one document.
+    Key(String),
+    /// The declared target names no document in this capture.
+    Unresolved,
+    /// The declared target names more than one document.
+    Ambiguous,
+}
+
+/// One outgoing edge of one document.
+///
+/// The declared target is kept verbatim: it is the document's own word, and
+/// validation compares it against the frontmatter. The resolved key is what
+/// the edge points at, and it is absent when the declared target named no
+/// document or named several — an edge is never attributed to a winner.
+#[derive(Debug, Clone)]
+struct Edge {
+    /// The target exactly as the frontmatter declared it.
+    declared: String,
+    /// The relation kind, exactly as declared.
+    relation: String,
+    /// What the declared target named.
+    target: EdgeTarget,
+}
+
+impl Edge {
+    /// The endpoint this edge points at: the canonical key when the target
+    /// named exactly one document, the declared text otherwise.
+    fn endpoint(&self) -> String {
+        match &self.target {
+            EdgeTarget::Key(key) => key.clone(),
+            EdgeTarget::Unresolved | EdgeTarget::Ambiguous => self.declared.clone(),
+        }
+    }
+}
+
 /// Read-only view of one workspace, over one captured/pinned [`ReadView`].
 ///
 /// Construct it through [`super::facade::open_workspace_read`] so the capture
 /// and the view come from one call. The public constructor exists for callers
 /// that already hold both halves — a test, or a server caching a capture across
 /// two questions.
+///
+/// # Identity
+///
+/// A document's identity is its **canonical key** (ADR-030). The display id
+/// (`PRD-074`) is a *repeatable alias*: two documents in one workspace may
+/// carry the same one, and this adapter never picks a winner between them.
+/// Every lookup map here is keyed by the canonical key; the display id is
+/// resolved through the shared algorithm in
+/// [`crate::artifact::canonical_key::resolve_artifact`], which reports an
+/// ambiguity instead of a guess.
 #[derive(Debug, Clone)]
 pub struct WorkspaceRead {
     workspace: PathBuf,
     index_root: PathBuf,
     view: ReadView,
     captured: Arc<CapturedSourceView>,
-    /// Sorted by `id`, exactly as the store's `list_records` is.
+    /// Every captured document, sorted by display id then canonical key — the
+    /// store's `list_records` order, made total.
     records: Vec<ArtifactRecord>,
-    /// Lower-cased ADR-012 slug → canonical display id.
-    by_slug: HashMap<String, String>,
-    /// Source display id → outgoing `(target, relation)`, sorted.
-    outgoing: BTreeMap<String, Vec<(String, String)>>,
-    /// Target id → incoming `(source, relation)`, sorted.
+    /// Canonical key → index into `records`.
+    ///
+    /// A canonical key names exactly one document: the capture excludes every
+    /// row whose key another row claims, so no key here has two claimants.
+    by_key: HashMap<String, usize>,
+    /// Lower-cased display alias → every index of `records` carrying it.
+    ///
+    /// A multimap on purpose: a display id is a repeatable alias, and two
+    /// documents may carry the same one. The old slug map overwrote the first
+    /// claimant with the second, which is how one of them disappeared.
+    by_alias: HashMap<String, Vec<usize>>,
+    /// Source canonical key → its outgoing edges.
+    outgoing: BTreeMap<String, Vec<Edge>>,
+    /// Target canonical key → the sources pointing at it, as
+    /// `(source canonical key, relation)`.
     incoming: BTreeMap<String, Vec<(String, String)>>,
+    /// One candidate per document — the document set the shared resolver reads.
+    candidates: Vec<ArtifactCandidate>,
 }
 
 impl WorkspaceRead {
@@ -85,40 +165,83 @@ impl WorkspaceRead {
             captured.artifacts.iter().map(|a| a.as_ref()).collect();
         parsed.sort_by(|a, b| a.canonical_key.cmp(&b.canonical_key));
 
-        let mut outgoing: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        // A record and the candidate that names it, kept together so the
+        // candidate set always describes exactly the records above it.
+        let mut entries: Vec<(ArtifactRecord, ArtifactCandidate)> = parsed
+            .iter()
+            .map(|artifact| {
+                (
+                    record_from_parsed(artifact),
+                    ArtifactCandidate {
+                        canonical_key: artifact.canonical_key.clone(),
+                        display_id: artifact.display_id.clone(),
+                        title: artifact.title.clone(),
+                        relative_path: PathBuf::from(&artifact.relative_path),
+                    },
+                )
+            })
+            .collect();
+        // The store's `list_records` order is by display id; the canonical key
+        // breaks a tie, so two documents sharing a display id still have one
+        // order.
+        entries.sort_by(|(left, _), (right, _)| {
+            left.id
+                .cmp(&right.id)
+                .then_with(|| left.canonical_key.cmp(&right.canonical_key))
+        });
+        let (mut records, candidates): (Vec<ArtifactRecord>, Vec<ArtifactCandidate>) =
+            entries.into_iter().unzip();
+
+        // Canonical key → the record claiming it, and display alias → every
+        // record carrying it. The alias map is a multimap: a name that two
+        // documents answer to is an ambiguity, and an index that keeps only one
+        // of them is how a document disappears.
+        let mut by_key: HashMap<String, usize> = HashMap::with_capacity(records.len());
+        let mut by_alias: HashMap<String, Vec<usize>> = HashMap::with_capacity(records.len());
+        for (index, record) in records.iter().enumerate() {
+            by_key.entry(record.canonical_key.clone()).or_insert(index);
+            by_alias
+                .entry(record.id.to_ascii_lowercase())
+                .or_default()
+                .push(index);
+        }
+
+        // Edges: outgoing by source canonical key, incoming by target canonical
+        // key. A declared target is resolved through the shared algorithm, so a
+        // target that names no document — or names several — is attributed to
+        // none of them.
+        let mut outgoing: BTreeMap<String, Vec<Edge>> = BTreeMap::new();
         let mut incoming: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        let mut resolved_targets: HashMap<String, EdgeTarget> = HashMap::new();
         for artifact in &parsed {
-            let edges: Vec<(String, String)> = artifact
-                .outgoing
-                .iter()
-                .map(|edge| (edge.target.clone(), edge.relation.clone()))
-                .collect();
-            for (target, relation) in &edges {
-                incoming
-                    .entry(target.clone())
-                    .or_default()
-                    .push((artifact.display_id.clone(), relation.clone()));
+            let mut edges: Vec<Edge> = Vec::with_capacity(artifact.outgoing.len());
+            for edge in &artifact.outgoing {
+                let target = resolved_targets
+                    .entry(edge.target.clone())
+                    .or_insert_with(|| resolve_edge_target(&candidates, &edge.target))
+                    .clone();
+                if let EdgeTarget::Key(target_key) = &target {
+                    incoming
+                        .entry(target_key.clone())
+                        .or_default()
+                        .push((artifact.canonical_key.clone(), edge.relation.clone()));
+                }
+                edges.push(Edge {
+                    declared: edge.target.clone(),
+                    relation: edge.relation.clone(),
+                    target,
+                });
             }
-            outgoing.insert(artifact.display_id.clone(), edges);
+            outgoing.insert(artifact.canonical_key.clone(), edges);
         }
         for sources in incoming.values_mut() {
             sources.sort();
         }
 
-        let mut records: Vec<ArtifactRecord> =
-            parsed.iter().map(|a| record_from_parsed(a)).collect();
         let scores = compute_r_eff_scores(&records, &outgoing, &incoming);
         for record in &mut records {
-            if let Some(score) = scores.get(&record.id) {
+            if let Some(score) = scores.get(&record.canonical_key) {
                 record.r_eff_score = *score;
-            }
-        }
-        records.sort_by(|a, b| a.id.cmp(&b.id));
-
-        let mut by_slug = HashMap::with_capacity(parsed.len());
-        for artifact in &parsed {
-            if let Some(slug) = &artifact.identity.slug {
-                by_slug.insert(slug.to_ascii_lowercase(), artifact.display_id.clone());
             }
         }
 
@@ -128,9 +251,11 @@ impl WorkspaceRead {
             view,
             captured,
             records,
-            by_slug,
+            by_key,
+            by_alias,
             outgoing,
             incoming,
+            candidates,
         }
     }
 
@@ -170,23 +295,61 @@ impl WorkspaceRead {
         self.view.source_set_digest()
     }
 
-    /// Every record, sorted by id.
+    /// Every record, sorted by display id then canonical key.
     pub fn records(&self) -> &[ArtifactRecord] {
         &self.records
     }
 
-    /// `id` (display form) → record, or `None`.
+    /// The document a reference names, by display id or canonical key.
     ///
-    /// Byte-exact, like the store's `id = '…'` predicate: a normalized display
-    /// id or a slug goes through [`Self::resolve_id`] first.
+    /// Resolution runs through the shared algorithm, so a canonical key, a
+    /// display id and the normalised display form all reach the same document,
+    /// and a reference two documents answer to reaches **neither**: this
+    /// returns `None` rather than a winner. Use [`Self::resolve_artifact`] when
+    /// the caller must tell "not found" from "ambiguous".
     pub fn get_record(&self, id: &str) -> Option<&ArtifactRecord> {
-        // Records are sorted; the final equal entry preserves the previous
-        // index's last-write-wins behavior even if display ids collide.
-        let index = self
-            .records
-            .partition_point(|record| record.id.as_str() <= id)
-            .checked_sub(1)?;
-        self.records.get(index).filter(|record| record.id == id)
+        // Two documents carrying one display id: the alias names neither.
+        if self.alias_is_contested(id) {
+            return None;
+        }
+        let key = self.resolve_key(id)?;
+        self.get_record_by_key(&key)
+    }
+
+    /// The document with this canonical key, or `None`.
+    ///
+    /// The key is the identity, so this lookup is exact: one key, one
+    /// document, no ambiguity to report.
+    pub fn get_record_by_key(&self, canonical_key: &str) -> Option<&ArtifactRecord> {
+        self.by_key.get(canonical_key).map(|&index| &self.records[index])
+    }
+
+    /// Every document carrying this display alias, in record order.
+    ///
+    /// The alias index is a multimap, so a shared alias keeps **every**
+    /// claimant: the old slug map overwrote the first with the second, and
+    /// one of the two documents disappeared. This is where the second one is
+    /// still visible.
+    ///
+    /// The match is case-insensitive and exact on the display id; the
+    /// normalised forms (`prd-74` for `PRD-074`) are the shared
+    /// algorithm's business, and [`Self::resolve_artifact`] answers those.
+    pub fn records_with_alias(&self, alias: &str) -> Vec<&ArtifactRecord> {
+        self.by_alias
+            .get(&alias.trim().to_ascii_lowercase())
+            .map(|indices| indices.iter().map(|&index| &self.records[index]).collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether this display alias names more than one document.
+    ///
+    /// A contested alias names **neither** of its claimants: the convenience
+    /// accessors answer "not this one" rather than picking a winner, and
+    /// [`Self::resolve_artifact`] is where the caller learns why.
+    fn alias_is_contested(&self, alias: &str) -> bool {
+        self.by_alias
+            .get(&alias.trim().to_ascii_lowercase())
+            .is_some_and(|indices| indices.len() > 1)
     }
 
     /// Records matching a kind/status filter, sorted by id.
@@ -216,68 +379,136 @@ impl WorkspaceRead {
             .collect()
     }
 
-    /// Resolve a caller-supplied reference to a canonical display id.
+    /// Resolve a caller-supplied reference to the display id it names.
     ///
-    /// Same three paths the store resolver uses, in the same order: a literal id
-    /// match, the `KIND-N` display form, then the ADR-012 slug. A display-id
-    /// shape whose kind is real but which matches nothing does **not** fall
-    /// through to the slug scan — such an input cannot be a slug.
+    /// The three paths the store resolver uses, in the same order: an exact
+    /// canonical key, the display id in any accepted spelling, then the
+    /// ADR-012 slug — which is the canonical key itself, so the third path is
+    /// the first one. A reference two documents answer to resolves to `None`:
+    /// the alias names neither of them.
     pub fn resolve_id(&self, input: &str) -> Option<String> {
-        let input = input.trim();
-        if input.is_empty() {
-            return None;
-        }
-        if self.get_record(input).is_some() {
-            return Some(input.to_string());
-        }
+        self.resolve_artifact(input)
+            .ok()
+            .flatten()
+            .map(|resolved| resolved.identity.display_id)
+    }
 
-        if let Some((prefix, rest)) = input.split_once('-')
-            && !prefix.is_empty()
-            && !rest.is_empty()
-            && rest.chars().all(|c| c.is_ascii_digit())
-            && prefix.chars().all(|c| c.is_ascii_alphabetic())
-            && let Ok(number) = rest.parse::<u32>()
-            && crate::artifact::types::ArtifactKind::from_slug_prefix(&prefix.to_ascii_lowercase())
-                .is_some()
-        {
-            let normalized = format!("{}-{number:03}", prefix.to_ascii_uppercase());
-            return self.get_record(&normalized).is_some().then_some(normalized);
+    /// Resolve a caller-supplied reference against this view's documents.
+    ///
+    /// This is the one resolution path: the shared algorithm, over exactly the
+    /// documents this read saw. The outcomes stay apart —
+    ///
+    /// * `Ok(Some(resolved))` — exactly one document answers;
+    /// * `Ok(None)` — no document answers;
+    /// * [`ResolveError::Ambiguous`] — several documents answer by display
+    ///   alias, and every candidate is named;
+    /// * [`ResolveError::ConflictingCanonicalKey`] — several documents claim
+    ///   one canonical key;
+    /// * [`ResolveError::InvalidSelector`] — the reference is not usable;
+    /// * [`ResolveError::IncompleteCapture`] — the capture could not be read
+    ///   in full, so any answer would be partial.
+    ///
+    /// A partial document set answers nothing: a read that could not see every
+    /// document cannot say which of them a name belongs to.
+    pub fn resolve_artifact(&self, input: &str) -> Result<Option<ResolvedArtifact>, ResolveError> {
+        if !self.captured.is_complete() {
+            return Err(ResolveError::IncompleteCapture {
+                message: self.incomplete_capture_message(),
+            });
         }
+        resolve_shared(input, &self.candidates)
+    }
 
-        if !input
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        {
-            return None;
+    /// The canonical key a reference names, when it names exactly one.
+    fn resolve_key(&self, input: &str) -> Option<String> {
+        self.resolve_artifact(input)
+            .ok()
+            .flatten()
+            .map(|resolved| resolved.identity.canonical_key)
+    }
+
+    /// Why this capture could not be read in full.
+    ///
+    /// Workspace-relative paths only: an absolute path never leaves this
+    /// adapter.
+    fn incomplete_capture_message(&self) -> String {
+        let coverage = &self.captured.coverage;
+        let mut message = format!(
+            "canonical source capture is incomplete: {} of {} enumerated paths produced no current row ({} invalid, {} unavailable, {} excluded)",
+            coverage.expected.saturating_sub(coverage.read),
+            coverage.expected,
+            coverage.invalid,
+            coverage.unavailable,
+            coverage.excluded,
+        );
+        let unusable: Vec<&str> = self
+            .captured
+            .unusable
+            .iter()
+            .map(|source| source.relative_path.as_str())
+            .collect();
+        if !unusable.is_empty() {
+            message.push_str("; unusable: ");
+            message.push_str(&unusable.join(", "));
         }
-        let (prefix, _) = input.split_once('-')?;
-        crate::artifact::types::ArtifactKind::from_slug_prefix(prefix)?;
-        self.by_slug.get(input).cloned()
+        message
     }
 
     /// Outgoing edges of one artifact: `(target, relation)`, sorted.
     ///
-    /// Targets are the strings the frontmatter declared, verbatim. Resolving an
-    /// unresolved target is a read decision the caller makes; this adapter does
-    /// not invent a node for it.
+    /// The target is the canonical key of the document the declared target
+    /// names; a target that names no document — or names several — keeps its
+    /// declared text, so an unresolved reference is preserved rather than
+    /// dropped.
     pub fn get_relations(&self, id: &str) -> Vec<(String, String)> {
-        self.outgoing.get(id).cloned().unwrap_or_default()
+        // Two documents carrying one display id: the alias names neither.
+        if self.alias_is_contested(id) {
+            return Vec::new();
+        }
+        match self.resolve_key(id) {
+            Some(key) => self.get_relations_by_key(&key),
+            None => Vec::new(),
+        }
+    }
+
+    /// Outgoing edges of the document with this canonical key:
+    /// `(target, relation)`, sorted.
+    pub fn get_relations_by_key(&self, canonical_key: &str) -> Vec<(String, String)> {
+        self.outgoing
+            .get(canonical_key)
+            .map(|edges| {
+                edges
+                    .iter()
+                    .map(|edge| (edge.endpoint(), edge.relation.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Incoming edges of one artifact: `(source, relation)`, sorted.
+    ///
+    /// The source is the canonical key of the document the edge comes from, so
+    /// two documents sharing a display id stay two sources.
     pub fn get_incoming_relations(&self, id: &str) -> Vec<(String, String)> {
-        self.incoming.get(id).cloned().unwrap_or_default()
+        // Two documents carrying one display id: the alias names neither.
+        if self.alias_is_contested(id) {
+            return Vec::new();
+        }
+        match self.resolve_key(id) {
+            Some(key) => self.incoming.get(&key).cloned().unwrap_or_default(),
+            None => Vec::new(),
+        }
     }
 
-    /// Every edge as `(source_id, target_id, relation)`, sorted by source.
+    /// Every edge as `(source key, target, relation)`, sorted by source.
     ///
-    /// `source_id` is the artifact's display id — the same identity the store's
-    /// relations table uses — so a caller cannot tell the two sources apart.
+    /// The source is the canonical key — the identity — so two documents
+    /// sharing a display id contribute two edges, not one merged edge.
     pub fn get_all_relations(&self) -> Vec<(String, String, String)> {
         let mut out: Vec<(String, String, String)> = Vec::new();
         for (source, edges) in &self.outgoing {
-            for (target, relation) in edges {
-                out.push((source.clone(), target.clone(), relation.clone()));
+            for edge in edges {
+                out.push((source.clone(), edge.endpoint(), edge.relation.clone()));
             }
         }
         out.sort();
@@ -332,28 +563,71 @@ impl WorkspaceRead {
     /// `extract_frontmatter_link_targets(fm)` therefore see identical input on
     /// both layouts — a rule that fired only on the legacy projection would be
     /// a workspace-layout bug wearing a methodology rule's clothes.
+    ///
+    /// The links carry the *declared* target text, not the resolved key: the
+    /// frontmatter is the document's own word, and that is what the rules
+    /// compare against.
     pub fn frontmatter_map_with_links(
         &self,
         record: &ArtifactRecord,
     ) -> BTreeMap<String, serde_yaml::Value> {
-        crate::db::store::frontmatter_map_with_links_from(record, &self.get_relations(&record.id))
+        let relations: Vec<(String, String)> = self
+            .outgoing
+            .get(&record.canonical_key)
+            .map(|edges| {
+                edges
+                    .iter()
+                    .map(|edge| (edge.declared.clone(), edge.relation.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        crate::db::store::frontmatter_map_with_links_from(record, &relations)
     }
 
     /// The graph over exactly this view's records and edges.
     ///
     /// Built from parts rather than from a store, so graph expansion in search
     /// can never walk an artifact this read did not see.
+    ///
+    /// The node id is the **canonical key** — the identity — so two documents
+    /// carrying one display id stay two vertices instead of collapsing into one.
+    /// The label a renderer shows (display id and title) lives on the record
+    /// this read returns; [`Self::get_record_by_key`] joins the two.
     pub fn knowledge_graph(&self) -> KnowledgeGraph {
         let nodes: Vec<ArtifactNode> = self
             .records
             .iter()
             .map(|record| ArtifactNode {
-                id: record.id.clone(),
+                id: record.canonical_key.clone(),
                 kind: record.kind.clone(),
                 status: record.status.clone(),
             })
             .collect();
-        KnowledgeGraph::from_parts(nodes, self.get_all_relations())
+        let mut edges: Vec<(String, String, String)> = Vec::new();
+        for (source, source_edges) in &self.outgoing {
+            for edge in source_edges {
+                if let EdgeTarget::Key(target) = &edge.target {
+                    edges.push((source.clone(), target.clone(), edge.relation.clone()));
+                }
+            }
+        }
+        KnowledgeGraph::from_parts(nodes, edges)
+    }
+}
+
+/// What a declared relation target names, resolved through the shared
+/// algorithm.
+///
+/// The shared resolver is the only place that decides which document a name
+/// belongs to; this maps its verdict onto the three states an edge can be in.
+fn resolve_edge_target(candidates: &[ArtifactCandidate], declared: &str) -> EdgeTarget {
+    match resolve_shared(declared, candidates) {
+        Ok(Some(resolved)) => EdgeTarget::Key(resolved.identity.canonical_key),
+        Ok(None) => EdgeTarget::Unresolved,
+        // An ambiguous reference is neither a forward reference nor a link.
+        Err(ResolveError::Ambiguous { .. }) => EdgeTarget::Ambiguous,
+        // A qualified reference or an unusable string names nothing here.
+        Err(_) => EdgeTarget::Unresolved,
     }
 }
 
@@ -371,6 +645,7 @@ pub fn record_from_parsed(artifact: &ParsedArtifact) -> ArtifactRecord {
     let body = String::from_utf8_lossy(&artifact.raw_bytes).into_owned();
     let body_hash = Some(compute_content_hash(&artifact.title, &body));
     ArtifactRecord {
+        canonical_key: artifact.canonical_key.clone(),
         id: artifact.display_id.clone(),
         kind: artifact.kind.clone(),
         status: artifact.status.clone(),
@@ -400,28 +675,33 @@ pub fn record_from_parsed(artifact: &ParsedArtifact) -> ArtifactRecord {
 /// evidence packs linked in either direction. Terminal packs are excluded by
 /// [`reff::r_eff`] itself (ADR-020), so this function only decides *which*
 /// packs count as linked.
+///
+/// The score map is keyed by the canonical key: a score belongs to a document's
+/// identity, and two documents sharing a display id get two scores.
 fn compute_r_eff_scores(
     records: &[ArtifactRecord],
-    outgoing: &BTreeMap<String, Vec<(String, String)>>,
+    outgoing: &BTreeMap<String, Vec<Edge>>,
     incoming: &BTreeMap<String, Vec<(String, String)>>,
 ) -> BTreeMap<String, f64> {
     let evidence: Vec<&ArtifactRecord> = records
         .iter()
         .filter(|record| record.kind.eq_ignore_ascii_case("evidence"))
         .collect();
-    let pack_of = |id: &str| evidence.iter().copied().find(|pack| pack.id == id);
+    let pack_of = |key: &str| evidence.iter().copied().find(|pack| pack.canonical_key == key);
 
     let mut scores = BTreeMap::new();
     for record in records {
         let mut linked: Vec<&ArtifactRecord> = Vec::new();
-        if let Some(edges) = outgoing.get(&record.id) {
-            for (target, _) in edges {
-                if let Some(pack) = pack_of(target) {
+        if let Some(edges) = outgoing.get(&record.canonical_key) {
+            for edge in edges {
+                if let EdgeTarget::Key(target) = &edge.target
+                    && let Some(pack) = pack_of(target)
+                {
                     linked.push(pack);
                 }
             }
         }
-        if let Some(sources) = incoming.get(&record.id) {
+        if let Some(sources) = incoming.get(&record.canonical_key) {
             for (source, _) in sources {
                 if let Some(pack) = pack_of(source) {
                     linked.push(pack);
@@ -430,7 +710,7 @@ fn compute_r_eff_scores(
         }
         let items: Vec<reff::EvidenceItem> =
             linked.into_iter().map(parse_evidence_from_record).collect();
-        scores.insert(record.id.clone(), reff::r_eff(&items));
+        scores.insert(record.canonical_key.clone(), reff::r_eff(&items));
     }
     scores
 }
@@ -465,6 +745,51 @@ mod tests {
         std::fs::write(
             tmp.path().join("rfcs").join("RFC-002-wire.md"),
             "---\nid: RFC-002\nkind: rfc\nstatus: active\ntitle: Wire format\ndepth: standard\n---\n\n## Summary\n\nUnrelated.\n",
+        )
+        .unwrap();
+        tmp
+    }
+
+    /// A workspace where two documents carry the **same** display id.
+    ///
+    /// Their canonical keys differ — the slug is the key — so neither row is a
+    /// collision and both survive the capture. The display id is the alias they
+    /// share, and it is the alias that must not pick a winner.
+    fn workspace_with_duplicate_display_id() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        std::fs::write(
+            tmp.path().join("prds").join("PRD-001-alpha.md"),
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-alpha\n---\n\nAlpha.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("prds").join("PRD-001-beta.md"),
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-beta\n---\n\nBeta.\n",
+        )
+        .unwrap();
+        tmp
+    }
+
+    /// A workspace whose capture cannot be read in full.
+    ///
+    /// One valid document and one unparsable sibling: the capture counts the
+    /// broken file as invalid, so the document set is partial.
+    fn workspace_with_unreadable_source() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        std::fs::write(
+            tmp.path().join("prds").join("PRD-001-auth.md"),
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\nslug: prd-auth-system\n---\n\nAuth rewrite.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("prds").join("PRD-002-broken.md"),
+            "---\nid: [unclosed\n",
         )
         .unwrap();
         tmp
@@ -567,7 +892,8 @@ mod tests {
         );
         assert_eq!(
             read.get_incoming_relations("EVID-001"),
-            vec![("PRD-001".to_string(), "informs".to_string())]
+            vec![("prd-auth-system".to_string(), "informs".to_string())],
+            "the source is the canonical key: the identity, not the alias"
         );
         assert!(read.get_relations("RFC-002").is_empty());
         assert!(read.get_incoming_relations("PRD-001").is_empty());
@@ -576,11 +902,11 @@ mod tests {
         assert_eq!(
             read.get_all_relations(),
             vec![(
-                "PRD-001".to_string(),
+                "prd-auth-system".to_string(),
                 "EVID-001".to_string(),
                 "informs".to_string()
             )],
-            "the edge set is reported with display ids, once, sorted"
+            "the edge set is reported with canonical keys, once, sorted"
         );
     }
 
@@ -708,8 +1034,8 @@ mod tests {
 
         let graph = read.knowledge_graph();
         // One 1-hop neighbour on each side of the single declared edge; the
-        // RFC has none in either direction.
-        assert_eq!(graph.neighbors_with_relations("PRD-001").len(), 1);
+        // RFC has none in either direction. The node id is the canonical key.
+        assert_eq!(graph.neighbors_with_relations("prd-auth-system").len(), 1);
         assert_eq!(graph.neighbors_with_relations("EVID-001").len(), 1);
         assert!(graph.neighbors_with_relations("RFC-002").is_empty());
     }
@@ -722,5 +1048,175 @@ mod tests {
         assert!(!read.is_persisted(), "no CURRENT pointer exists here");
         assert_eq!(read.snapshot_id(), read.captured().snapshot_id);
         assert_eq!(read.source_set_digest(), read.captured().source_set_digest);
+    }
+
+    /// A document is addressed by its canonical key, whatever the display id
+    /// says.
+    #[tokio::test]
+    async fn a_document_is_retrievable_by_its_canonical_key() {
+        let tmp = workspace();
+        let read = read_of(tmp.path()).await;
+
+        let by_key = read
+            .get_record_by_key("prd-auth-system")
+            .expect("the canonical key names the document");
+        assert_eq!(by_key.title, "Auth");
+        assert_eq!(
+            by_key.id, "PRD-001",
+            "the key names the document; the display id stays its alias"
+        );
+        assert_eq!(
+            read.get_record_by_key("EVID-001")
+                .map(|record| record.title.as_str()),
+            Some("Stress run"),
+            "a legacy document whose key is its display id resolves the same way"
+        );
+        assert!(
+            read.get_record_by_key("PRD-001").is_none(),
+            "a display id is not a canonical key: the two identities stay apart"
+        );
+        assert!(read.get_record_by_key("prd-missing").is_none());
+    }
+
+    /// Two documents sharing one display id stay two documents: the graph
+    /// keeps two vertices, and the alias names neither of them.
+    #[tokio::test]
+    async fn two_documents_sharing_a_display_id_stay_two_vertices() {
+        let tmp = workspace_with_duplicate_display_id();
+        let read = read_of(tmp.path()).await;
+
+        let graph = read.knowledge_graph();
+        assert_eq!(
+            graph.node_count(),
+            2,
+            "the node id is the canonical key, so the shared display id cannot merge them"
+        );
+        assert!(
+            graph.get("prd-alpha").is_some() && graph.get("prd-beta").is_some(),
+            "each document keeps its own vertex, keyed by its own key"
+        );
+        assert!(
+            graph.get("PRD-001").is_none(),
+            "the shared display id is an alias, never a node id"
+        );
+
+        // Both records are still there: the alias did not overwrite one.
+        assert_eq!(
+            read.records()
+                .iter()
+                .map(|record| record.canonical_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["prd-alpha", "prd-beta"]
+        );
+        assert_eq!(read.records().iter().filter(|r| r.id == "PRD-001").count(), 2);
+    }
+
+    /// A duplicate alias is an ambiguity with both candidates named — never a
+    /// silent winner, and never an overwrite.
+    #[tokio::test]
+    async fn a_duplicate_alias_yields_the_ambiguity_not_a_winner() {
+        let tmp = workspace_with_duplicate_display_id();
+        let read = read_of(tmp.path()).await;
+
+        let error = read
+            .resolve_artifact("PRD-001")
+            .expect_err("a shared display id is an ambiguity, not a winner");
+        match error {
+            ResolveError::Ambiguous { input, candidates } => {
+                assert_eq!(input, "PRD-001");
+                assert_eq!(
+                    candidates.len(),
+                    2,
+                    "both claimants must be named, or the ambiguity hides one"
+                );
+                let keys: Vec<&str> = candidates
+                    .iter()
+                    .map(|candidate| candidate.canonical_key.as_str())
+                    .collect();
+                assert!(keys.contains(&"prd-alpha") && keys.contains(&"prd-beta"));
+            }
+            other => panic!("expected an ambiguity, got {other:?}"),
+        }
+
+        assert!(
+            read.get_record("PRD-001").is_none(),
+            "the convenience accessor must not pick one of the two claimants"
+        );
+        assert!(
+            read.get_relations("PRD-001").is_empty(),
+            "and it must not attribute one claimant's edges to the alias"
+        );
+        assert!(
+            read.get_record_by_key("prd-alpha").is_some()
+                && read.get_record_by_key("prd-beta").is_some(),
+            "each document is still addressable by its own key"
+        );
+    }
+
+    /// Absence and ambiguity are different answers.
+    #[tokio::test]
+    async fn absence_is_distinct_from_ambiguity() {
+        let tmp = workspace_with_duplicate_display_id();
+        let read = read_of(tmp.path()).await;
+
+        let absent = read
+            .resolve_artifact("PRD-999")
+            .expect("a missing reference is not an error");
+        assert!(
+            absent.is_none(),
+            "no document answers a missing reference"
+        );
+        assert!(
+            read.resolve_artifact("PRD-001").is_err(),
+            "a shared alias is an error, not an absence"
+        );
+    }
+
+    /// A partial document set answers nothing: the capture could not see every
+    /// document, so any answer would be partial.
+    #[tokio::test]
+    async fn an_incomplete_capture_refuses_to_answer() {
+        let tmp = workspace_with_unreadable_source();
+        let read = read_of(tmp.path()).await;
+
+        assert!(
+            !read.captured().is_complete(),
+            "the fixture must actually be an incomplete capture"
+        );
+        let error = read
+            .resolve_artifact("PRD-001")
+            .expect_err("a partial document set must not answer");
+        match error {
+            ResolveError::IncompleteCapture { message } => {
+                assert!(
+                    message.contains("incomplete"),
+                    "the message must say what is missing, got {message:?}"
+                );
+                assert!(
+                    !message.contains(tmp.path().to_string_lossy().as_ref()),
+                    "an absolute path must never leave this adapter"
+                );
+            }
+            other => panic!("expected an incomplete capture, got {other:?}"),
+        }
+    }
+
+    /// A complete capture resolves normally.
+    #[tokio::test]
+    async fn a_complete_capture_resolves_normally() {
+        let tmp = workspace();
+        let read = read_of(tmp.path()).await;
+
+        assert!(read.captured().is_complete());
+        let resolved = read
+            .resolve_artifact("prd-auth-system")
+            .expect("a complete capture resolves")
+            .expect("the key names a document");
+        assert_eq!(resolved.identity.canonical_key, "prd-auth-system");
+        assert_eq!(resolved.identity.display_id, "PRD-001");
+        assert!(
+            resolved.relative_path.is_relative(),
+            "the resolved path stays workspace-relative"
+        );
     }
 }

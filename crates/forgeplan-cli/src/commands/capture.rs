@@ -65,6 +65,9 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
     let captured_template_key = template_key.to_string();
     let build = move |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
         Ok(NewArtifact {
+            // ADR-030: no minted key yet — the document declares no slug, so
+            // its canonical key is its display id.
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: captured_template_key.clone(),
             status: "draft".to_string(),

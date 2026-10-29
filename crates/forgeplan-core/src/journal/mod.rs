@@ -387,6 +387,7 @@ mod tests {
         for record in read.records() {
             store
                 .create_artifact(&crate::db::store::NewArtifact {
+                    canonical_key: record.canonical_key.clone(),
                     id: record.id.clone(),
                     kind: record.kind.clone(),
                     status: record.status.clone(),

@@ -400,6 +400,9 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             };
 
             Ok(NewArtifact {
+                // ADR-030: no minted key yet — the document declares no slug,
+                // so its canonical key is its display id.
+                canonical_key: id.to_string(),
                 id: id.to_string(),
                 kind: "note".to_string(),
                 status: "draft".to_string(),
@@ -607,6 +610,7 @@ mod tests {
                 projection::sync_artifact_from_file(
                     &ctx,
                     &NewArtifact {
+                        canonical_key: record.id.clone(),
                         id: record.id.clone(),
                         kind: record.kind.clone(),
                         status: record.status.clone(),

@@ -58,6 +58,7 @@ async fn cli_and_mcp_agree_on_verdict_with_six_phase_mismatches() {
         for (id, kind, title, _phase) in ACTIVE_ARTIFACTS {
             store
                 .create_artifact_for_test(&NewArtifact {
+                    canonical_key: (*id).to_string(),
                     id: (*id).to_string(),
                     kind: (*kind).to_string(),
                     status: "active".to_string(),
@@ -89,6 +90,7 @@ async fn cli_and_mcp_agree_on_verdict_with_six_phase_mismatches() {
             let evid = format!("EVID-L-H3-{i:03}");
             store
                 .create_artifact_for_test(&NewArtifact {
+                    canonical_key: evid.clone(),
                     id: evid.clone(),
                     kind: "evidence".to_string(),
                     status: "active".to_string(),

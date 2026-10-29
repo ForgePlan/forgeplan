@@ -851,6 +851,7 @@ mod sync_drift_tests {
 
     fn art(id: &str, kind: &str, title: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             status: "draft".to_string(),
@@ -3378,6 +3379,7 @@ mod tests {
                 let path = create_artifact_with_projection(
                     &ctx,
                     &NewArtifact {
+                        canonical_key: id.to_string(),
                         id: id.to_string(),
                         kind: "note".to_string(),
                         status: "draft".to_string(),
@@ -3545,6 +3547,7 @@ mod tests {
             let imported = import_artifact_with_projection(
                 &ctx,
                 &NewArtifact {
+                    canonical_key: "NOTE-001".to_string(),
                     id: "NOTE-001".to_string(),
                     kind: "note".to_string(),
                     status: "draft".to_string(),
@@ -3568,6 +3571,7 @@ mod tests {
             let created = create_artifact_with_projection(
                 &ctx,
                 &NewArtifact {
+                    canonical_key: "NOTE-003".to_string(),
                     id: "NOTE-003".to_string(),
                     kind: "note".to_string(),
                     status: "draft".to_string(),
@@ -3939,6 +3943,7 @@ mod tests {
         assert_eq!(after_status, initial_body);
 
         let record = crate::db::store::ArtifactRecord {
+            canonical_key: "PRD-001".to_string(),
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
             title: "Test".to_string(),
@@ -4044,6 +4049,7 @@ mod tests {
         .unwrap();
         store
             .create_artifact(&crate::db::store::NewArtifact {
+                canonical_key: "PRD-001".to_string(),
                 id: "PRD-001".to_string(),
                 kind: "prd".to_string(),
                 status: "draft".to_string(),
@@ -4100,6 +4106,7 @@ mod tests {
         .unwrap();
         store
             .create_artifact(&crate::db::store::NewArtifact {
+                canonical_key: "PRD-001".to_string(),
                 id: "PRD-001".to_string(),
                 kind: "prd".to_string(),
                 status: "draft".to_string(),
@@ -4584,6 +4591,7 @@ mod tests {
         let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
 
         let new_artifact = crate::db::store::NewArtifact {
+            canonical_key: "PRD-901".to_string(),
             id: "PRD-901".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -4641,6 +4649,7 @@ mod tests {
         let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
 
         let evil = crate::db::store::NewArtifact {
+            canonical_key: "../../etc/evil".to_string(),
             id: "../../etc/evil".to_string(),
             kind: "note".to_string(),
             status: "draft".to_string(),
@@ -4674,6 +4683,7 @@ mod tests {
         // Create two memory artifacts where one ID is a strict prefix of the other.
         for (id, title) in [("mem-foo", "foo"), ("mem-foo-bar", "foo bar")] {
             let art = crate::db::store::NewArtifact {
+                canonical_key: id.to_string(),
                 id: id.to_string(),
                 kind: "memory".to_string(),
                 status: "active".to_string(),
@@ -4721,6 +4731,7 @@ mod tests {
         let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
 
         let art = crate::db::store::NewArtifact {
+            canonical_key: "PRD-901".to_string(),
             id: "PRD-901".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -4765,6 +4776,7 @@ mod tests {
         let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
 
         let art = crate::db::store::NewArtifact {
+            canonical_key: "PRD-902".to_string(),
             id: "PRD-902".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -4812,6 +4824,7 @@ mod tests {
 
     fn art(id: &str, kind: &str) -> crate::db::store::NewArtifact {
         crate::db::store::NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             status: "draft".to_string(),
@@ -6487,6 +6500,7 @@ mod replace_link_property_tests {
 
     fn art(id: &str, kind: &str) -> crate::db::store::NewArtifact {
         crate::db::store::NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             status: "draft".to_string(),
@@ -6661,6 +6675,7 @@ mod file_first_sink_tests {
 
     fn art(id: &str, kind: &str, title: &str) -> crate::db::store::NewArtifact {
         crate::db::store::NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             status: "draft".to_string(),

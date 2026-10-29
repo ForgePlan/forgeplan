@@ -44,6 +44,7 @@ use tempfile::TempDir;
 /// Build a minimal `NewArtifact` for seeding the store.
 fn fixture_prd(id: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.to_string(),
         id: id.to_string(),
         kind: "prd".to_string(),
         status: "active".to_string(),

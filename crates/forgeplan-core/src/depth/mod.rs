@@ -169,6 +169,7 @@ mod tests {
 
     fn make_record(body: &str, depth: &str, parent_epic: Option<&str>) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: "TEST-001".into(),
             id: "TEST-001".into(),
             kind: "prd".into(),
             status: "draft".into(),

@@ -282,6 +282,7 @@ async fn a_non_migrated_workspace_still_answers_from_the_legacy_store() {
         .expect("init legacy store");
     store
         .create_artifact_for_test(&forgeplan_core::db::store::NewArtifact {
+            canonical_key: "PRD-001".into(),
             id: "PRD-001".into(),
             kind: "prd".into(),
             status: "draft".into(),

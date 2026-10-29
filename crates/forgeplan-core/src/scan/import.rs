@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 
+use crate::artifact::canonical_key::canonical_key_from_document;
 use crate::artifact::types::ArtifactKind;
 use crate::db::store::{LanceStore, NewArtifact};
 use crate::scan::detect::{DetectionResult, DetectionTier, detect_kind_with_path};
@@ -433,6 +434,15 @@ async fn process_detected_file(
     // canonical file: the Markdown is the truth, and reconcile re-derives it.
     if let Some(store) = legacy {
         let new_artifact = NewArtifact {
+            // ADR-030: the canonical key of a document is the slug its
+            // frontmatter declares, and its display id when it declares none.
+            canonical_key: document
+                .frontmatter
+                .get("slug")
+                .and_then(|v| v.as_str())
+                .filter(|slug| crate::artifact::types::validate_slug(slug).is_ok())
+                .unwrap_or(&artifact_id)
+                .to_string(),
             id: artifact_id.clone(),
             kind: detection.kind.template_key().to_string(),
             status: document.status.clone(),
@@ -493,6 +503,10 @@ async fn write_canonical_document(
 
     let now = chrono::Utc::now().to_rfc3339();
     let record = crate::db::store::ArtifactRecord {
+        // ADR-030: the canonical key of a document is the slug its
+        // frontmatter declares, and its display id when it declares none.
+        // `seed` is the canonical document about to be written.
+        canonical_key: canonical_key_from_document(artifact_id, &seed),
         id: artifact_id.to_string(),
         kind: kind.template_key().to_string(),
         status: document.status.clone(),
@@ -1315,6 +1329,7 @@ mod tests {
         let store = LanceStore::init(&ws).await.unwrap();
         store
             .create_artifact(&NewArtifact {
+                canonical_key: "ADR-013".to_string(),
                 id: "ADR-013".to_string(),
                 kind: "adr".to_string(),
                 status: "draft".to_string(),

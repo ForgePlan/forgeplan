@@ -330,6 +330,7 @@ mod tests {
 
         // Create active PRD without Affected Files
         let art = NewArtifact {
+            canonical_key: "PRD-001".to_string(),
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
             status: "active".to_string(),
@@ -345,6 +346,7 @@ mod tests {
 
         // Create draft PRD (should NOT be backfilled)
         let draft = NewArtifact {
+            canonical_key: "PRD-002".to_string(),
             id: "PRD-002".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -412,6 +414,7 @@ mod tests {
 
         // Active epic — should NOT get Affected Files (not code-level)
         let epic = NewArtifact {
+            canonical_key: "EPIC-001".to_string(),
             id: "EPIC-001".to_string(),
             kind: "epic".to_string(),
             status: "active".to_string(),
@@ -440,6 +443,7 @@ mod tests {
 
         // PRD with "Affected Scope" (alias) — should NOT be backfilled
         let art = NewArtifact {
+            canonical_key: "PRD-001".to_string(),
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
             status: "active".to_string(),
@@ -470,6 +474,7 @@ mod tests {
         let store = LanceStore::init(&ws).await.unwrap();
 
         let rfc = NewArtifact {
+            canonical_key: "RFC-001".to_string(),
             id: "RFC-001".to_string(),
             kind: "rfc".to_string(),
             status: "active".to_string(),
@@ -493,6 +498,7 @@ mod tests {
 
         let records = vec![
             ArtifactRecord {
+                canonical_key: "PRD-001".to_string(),
                 id: "PRD-001".to_string(),
                 kind: "prd".to_string(),
                 status: "active".to_string(),
@@ -500,6 +506,7 @@ mod tests {
                 ..ArtifactRecord::default()
             },
             ArtifactRecord {
+                canonical_key: "ADR-002".to_string(),
                 id: "ADR-002".to_string(),
                 kind: "adr".to_string(),
                 status: "draft".to_string(),
@@ -507,6 +514,7 @@ mod tests {
                 ..ArtifactRecord::default()
             },
             ArtifactRecord {
+                canonical_key: "NOTE-001".to_string(),
                 id: "NOTE-001".to_string(),
                 kind: "note".to_string(),
                 status: "active".to_string(),

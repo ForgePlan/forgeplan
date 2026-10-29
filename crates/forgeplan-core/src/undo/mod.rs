@@ -803,6 +803,7 @@ mod tests {
         let source = ws.join("prds/PRD-901-linked.md");
         std::os::unix::fs::symlink(&foreign, &source).unwrap();
         let record = crate::db::store::ArtifactRecord {
+            canonical_key: "PRD-901".into(),
             id: "PRD-901".into(),
             kind: "prd".into(),
             status: "active".into(),
@@ -845,6 +846,7 @@ mod tests {
         let ws = tmp.path().join(".forgeplan");
         std::fs::create_dir_all(&ws).unwrap();
         let record = crate::db::store::ArtifactRecord {
+            canonical_key: "PRD-902".into(),
             id: "PRD-902".into(),
             kind: "prd".into(),
             title: "Missing file".into(),

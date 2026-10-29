@@ -21,6 +21,7 @@ async fn new_ws_with_artifact() -> (TempDir, std::path::PathBuf, LanceStore, New
     let store = LanceStore::init(&ws).await.unwrap();
 
     let artifact = NewArtifact {
+        canonical_key: "PRD-001".into(),
         id: "PRD-001".into(),
         kind: "prd".into(),
         status: "active".into(),
