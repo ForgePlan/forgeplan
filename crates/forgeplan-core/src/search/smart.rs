@@ -558,16 +558,19 @@ mod tests {
         let nodes = vec![
             ArtifactNode {
                 id: "PRD-001".into(),
+                label: ArtifactNode::label_for("PRD-001", ""),
                 kind: "prd".into(),
                 status: "active".into(),
             },
             ArtifactNode {
                 id: "PRD-002".into(),
+                label: ArtifactNode::label_for("PRD-002", ""),
                 kind: "prd".into(),
                 status: "active".into(),
             },
             ArtifactNode {
                 id: "RFC-001".into(),
+                label: ArtifactNode::label_for("RFC-001", ""),
                 kind: "rfc".into(),
                 status: "active".into(),
             },
@@ -668,11 +671,13 @@ mod tests {
         // RFC-001 doesn't match query, but is linked from PRD-001 → expansion adds it.
         let nodes = vec![
             ArtifactNode {
+                label: ArtifactNode::label_for("PRD-001", ""),
                 id: "PRD-001".into(),
                 kind: "prd".into(),
                 status: "active".into(),
             },
             ArtifactNode {
+                label: ArtifactNode::label_for("RFC-001", ""),
                 id: "RFC-001".into(),
                 kind: "rfc".into(),
                 status: "active".into(),
@@ -705,11 +710,13 @@ mod tests {
         ];
         let nodes = vec![
             ArtifactNode {
+                label: ArtifactNode::label_for("PRD-001", ""),
                 id: "PRD-001".into(),
                 kind: "prd".into(),
                 status: "active".into(),
             },
             ArtifactNode {
+                label: ArtifactNode::label_for("PRD-002", ""),
                 id: "PRD-002".into(),
                 kind: "prd".into(),
                 status: "active".into(),

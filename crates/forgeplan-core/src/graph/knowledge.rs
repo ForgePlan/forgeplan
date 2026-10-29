@@ -14,9 +14,35 @@ use crate::db::store::LanceStore;
 /// A node in the knowledge graph representing an artifact.
 #[derive(Debug, Clone)]
 pub struct ArtifactNode {
+    /// The node's identity: the document's **canonical key**.
+    ///
+    /// ADR-030 made the canonical key the identity of a document, and the
+    /// read model's relation endpoints are canonical keys, so a node id that
+    /// were a display id would not match the edges that point at it.
     pub id: String,
+    /// The human-readable label: the display id and the title.
+    ///
+    /// The node id is a key — stable, unique, and shaped for machines. This
+    /// is the part a person reads, and it is where the *display* id lives:
+    /// `PRD-074 · Authentication system`.
+    pub label: String,
     pub kind: String,
     pub status: String,
+}
+
+impl ArtifactNode {
+    /// The label text for one document: its display id and its title.
+    ///
+    /// A document without a title still gets its display id, so the label
+    /// never renders as an empty string.
+    pub fn label_for(display_id: &str, title: &str) -> String {
+        let title = title.trim();
+        if title.is_empty() {
+            display_id.to_string()
+        } else {
+            format!("{display_id} · {title}")
+        }
+    }
 }
 
 /// A directed edge in the knowledge graph representing a relation.
@@ -47,12 +73,16 @@ impl KnowledgeGraph {
         // Add all artifacts as nodes.
         for artifact in &artifacts {
             let node = ArtifactNode {
-                id: artifact.id.clone(),
+                // The node id is the canonical key (ADR-030): the relation
+                // endpoints are keys, so a display-id node id would not match
+                // the edges that point at it.
+                id: artifact.canonical_key.clone(),
+                label: ArtifactNode::label_for(&artifact.id, &artifact.title),
                 kind: artifact.kind.clone(),
                 status: artifact.status.clone(),
             };
             let idx = graph.add_node(node);
-            index.insert(artifact.id.clone(), idx);
+            index.insert(artifact.canonical_key.clone(), idx);
         }
 
         // Add all relations as directed edges (source -> target).
@@ -210,6 +240,7 @@ mod tests {
     fn make_node(id: &str, kind: &str, status: &str) -> ArtifactNode {
         ArtifactNode {
             id: id.to_string(),
+            label: ArtifactNode::label_for(id, ""),
             kind: kind.to_string(),
             status: status.to_string(),
         }

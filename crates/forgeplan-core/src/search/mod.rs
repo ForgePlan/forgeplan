@@ -103,6 +103,7 @@ pub async fn search(
             if !matches.is_empty() {
                 hits.push(SearchHit {
                     artifact: ArtifactSummary {
+                        canonical_key: crate::artifact::canonical_key::canonical_key_from_document(&id, &body),
                         id,
                         title,
                         kind,

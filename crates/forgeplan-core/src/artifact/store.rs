@@ -7,6 +7,9 @@ use crate::artifact::types::ArtifactKind;
 /// Summary of a stored artifact (parsed from frontmatter only).
 #[derive(Debug, Clone)]
 pub struct ArtifactSummary {
+    /// The document's **canonical key** — its permanent identity (ADR-030).
+    pub canonical_key: String,
+    /// The display alias (`PRD-074`), which may repeat.
     pub id: String,
     pub title: String,
     pub kind: String,
@@ -339,6 +342,7 @@ pub async fn list_artifacts(workspace: &Path) -> anyhow::Result<Vec<ArtifactSumm
                 let status = fm_string(&fm, "status").unwrap_or_else(|| "Draft".into());
                 if let Some(id) = id {
                     results.push(ArtifactSummary {
+                        canonical_key: crate::artifact::canonical_key::canonical_key_from_document(&id, &content),
                         id,
                         title: title.unwrap_or_default(),
                         kind,

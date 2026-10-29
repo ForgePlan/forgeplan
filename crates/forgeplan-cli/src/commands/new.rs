@@ -347,6 +347,7 @@ mod tests {
 
     fn rec(id: &str, title: &str) -> ArtifactSummary {
         ArtifactSummary {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             title: title.to_string(),
             kind: "prd".to_string(),

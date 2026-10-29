@@ -232,6 +232,7 @@ impl ArtifactRecord {
     /// Convert to a lightweight ArtifactSummary (drops body and most metadata).
     pub fn to_summary(&self) -> ArtifactSummary {
         ArtifactSummary {
+            canonical_key: self.canonical_key.clone(),
             id: self.id.clone(),
             title: self.title.clone(),
             kind: self.kind.clone(),
@@ -2360,6 +2361,8 @@ fn extract_summary(batch: &RecordBatch, row: usize) -> Option<ArtifactSummary> {
     let status = get_string(batch, "status", row).unwrap_or_default();
 
     Some(ArtifactSummary {
+        canonical_key: get_string(batch, "canonical_key", row)
+            .unwrap_or_else(|| crate::artifact::canonical_key::canonical_key_from_document(&id, "")),
         id,
         title,
         kind,

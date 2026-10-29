@@ -53,6 +53,7 @@ pub async fn find_stale(workspace: &Path) -> anyhow::Result<Vec<StaleArtifact>> 
                 let days_expired = (today - expiry).num_days();
                 stale.push(StaleArtifact {
                     artifact: ArtifactSummary {
+                        canonical_key: crate::artifact::canonical_key::canonical_key_from_document(id, &content),
                         id: id.to_string(),
                         title: title.to_string(),
                         kind: kind.to_string(),

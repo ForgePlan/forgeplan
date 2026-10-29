@@ -736,21 +736,6 @@ fn empty_evidence_batch() -> anyhow::Result<RecordBatch> {
     )?)
 }
 
-/// An empty relations batch, shaped like the relations schema.
-fn empty_relations_batch() -> anyhow::Result<RecordBatch> {
-    let schema = super::schema::relations_schema();
-    Ok(RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(StringArray::from(Vec::<&str>::new())),
-            Arc::new(StringArray::from(Vec::<&str>::new())),
-            Arc::new(StringArray::from(Vec::<&str>::new())),
-            Arc::new(StringArray::from(Vec::<&str>::new())),
-            Arc::new(Int32Array::from(Vec::<Option<i32>>::new())),
-        ],
-    )?)
-}
-
 /// Write the three staged tables of the identity-v5 index.
 ///
 /// The old tables are not touched, and `fpf_spec` and `change_log` are not

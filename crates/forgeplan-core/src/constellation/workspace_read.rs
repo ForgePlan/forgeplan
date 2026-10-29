@@ -599,6 +599,7 @@ impl WorkspaceRead {
             .iter()
             .map(|record| ArtifactNode {
                 id: record.canonical_key.clone(),
+                label: ArtifactNode::label_for(&record.id, &record.title),
                 kind: record.kind.clone(),
                 status: record.status.clone(),
             })

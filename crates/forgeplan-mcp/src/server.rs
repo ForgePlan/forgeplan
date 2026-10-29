@@ -12730,6 +12730,7 @@ mod duplicate_tests {
 
     fn rec(id: &str, title: &str) -> ArtifactSummary {
         ArtifactSummary {
+            canonical_key: id.into(),
             id: id.into(),
             title: title.into(),
             kind: "prd".into(),

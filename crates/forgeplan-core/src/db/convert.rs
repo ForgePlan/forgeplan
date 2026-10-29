@@ -162,6 +162,8 @@ fn extract_summary(batch: &RecordBatch, row: usize) -> Option<ArtifactSummary> {
     let status = get_string(batch, "status", row).unwrap_or_default();
 
     Some(ArtifactSummary {
+        canonical_key: get_string(batch, "canonical_key", row)
+            .unwrap_or_else(|| crate::artifact::canonical_key::canonical_key_from_document(&id, "")),
         id,
         title,
         kind,
