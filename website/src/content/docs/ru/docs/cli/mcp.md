@@ -9,10 +9,7 @@ description: "Parent command for MCP integration helpers - install Forgeplan int
 клиента (`mcp install`) или вручную запустить stdio-сервер (`mcp serve`, алиас для
 [`forgeplan serve`](/ru/docs/cli/serve/)).
 
-Forgeplan - MCP-first: большая часть повседневной поверхности (73 инструмента) доступна
-через сервер. Эта родительская команда существует для того, чтобы один-единственный
-`forgeplan mcp install --client claude` довёл вас от свежего `brew install forgeplan` до
-работающего агента без ручного редактирования JSON.
+Выбранная сборка `0.39.0+constellation.s1.1` предоставляет 76 инструментов в full-профиле и 9 в дополнительном read-only профиле. Это снимки интерфейса, не приёмка всех операций и не глобальный запрет записи. Установленный релиз `0.38.0` не изменён. `mcp install` настраивает клиента; инициализацию и вызовы нужно проверить в самом клиенте.
 
 ## Когда использовать
 
@@ -57,8 +54,7 @@ forgeplan mcp <COMMAND>
 forgeplan mcp install --client claude --scope user
 ```
 
-Записывает Forgeplan в `~/.claude.json`, чтобы каждая сессия Claude Code видела
-инструменты `mcp__forgeplan__*`. Идемпотентно - безопасно перезапускать после обновлений.
+Пишет user-scoped запись в `~/.claude.json`. Инструменты доступны после загрузки и успешной инициализации клиентом; после обновлений проверяйте путь к бинарнику.
 
 ### Project-scoped конфигурация Cursor
 
@@ -66,8 +62,7 @@ forgeplan mcp install --client claude --scope user
 forgeplan mcp install --client cursor --scope project
 ```
 
-Создаёт `./.cursor/mcp.json`, чтобы сервер Forgeplan запускался только когда открыт
-этот репозиторий. Идеально для монорепозиториев, где Forgeplan используют не все проекты.
+Пишет project-scoped запись в `./.cursor/mcp.json`. Загрузка и запуск зависят от настоящего workspace и политики клиента.
 
 ### Запустить сервер вручную (только для отладки)
 
@@ -81,11 +76,7 @@ JSON-RPC или подключаете `mcp-inspector`.
 
 ## Место в рабочем процессе
 
-`mcp install` - это однократный шаг настройки между «бинарник на диске» и «агент может
-вызывать инструменты». После того как он отработает, остальная методология
-(Shape → Validate → Code → Evidence → Activate) выполняется через MCP-инструменты,
-которые предоставляет сервер. `mcp serve` - это runtime; вы почти никогда не
-вызываете его вручную, потому что клиент запускает его за вас.
+`mcp install` настраивает клиента, `mcp serve` - runtime, который обычно запускает клиент. До использования инструментов подтвердите бинарник, профиль, workspace и handshake. Регистрация сама не доказывает прохождение гейтов методологии.
 
 ## См. также
 
@@ -94,3 +85,27 @@ JSON-RPC или подключаете `mcp-inspector`.
 - [`forgeplan serve`](/ru/docs/cli/serve/) - основной справочник по MCP-серверу
 - [Индекс MCP-инструментов](/ru/docs/mcp/) - что предоставляет сервер
 - [`forgeplan health`](/ru/docs/cli/health/) - проверить рабочее пространство перед подключением
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan mcp --help`.
+
+```text
+MCP integration helpers (install config for AI agent clients)
+
+Usage: forgeplan mcp <COMMAND>
+
+Commands:
+  serve    Start MCP server (alias for `forgeplan serve`)
+  install  Install forgeplan MCP config into a client (Claude / Cursor / Windsurf)
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+- [`forgeplan mcp serve`](/ru/docs/cli/mcp-serve/)
+- [`forgeplan mcp install`](/ru/docs/cli/mcp-install/)
+<!-- forgeplan-runtime:end -->

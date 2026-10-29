@@ -37,8 +37,8 @@
 //!
 //! # Every test here is serialised
 //!
-//! `#[serial_test::serial(env_model_cache)]` is on **all nineteen** tests, not
-//! only on the one that writes the variable.
+//! `#[serial_test::serial(env_model_cache)]` is on every test, not only on
+//! the one that writes a shared process variable.
 //!
 //! One test has to point `FORGEPLAN_MODEL_CACHE` at an empty directory to
 //! create its "no model available" condition. A serial group containing only
@@ -57,6 +57,8 @@
 //! costs parallelism *inside this binary only* — each integration test file is
 //! its own process, so no other target is affected.
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -150,7 +152,13 @@ async fn seed_store(store: &LanceStore) {
     for (id, kind, status, title, body) in [
         ("PRD-001", "prd", "draft", "Auth rewrite", PRD_001),
         ("ADR-002", "adr", "active", "Session storage", ADR_002),
-        ("EVID-003", "evidence", "active", "Load run 2026-01", EVID_003),
+        (
+            "EVID-003",
+            "evidence",
+            "active",
+            "Load run 2026-01",
+            EVID_003,
+        ),
     ] {
         store
             .create_artifact_for_test(&NewArtifact {
@@ -375,6 +383,132 @@ async fn server_at(root: &Path) -> McpFixture {
     McpFixture::new_rooted(root.to_path_buf()).await
 }
 
+struct WorkspaceEnvGuard {
+    previous: Option<OsString>,
+}
+
+impl WorkspaceEnvGuard {
+    fn set(workspace: &Path) -> Self {
+        let previous = std::env::var_os("FORGEPLAN_WORKSPACE");
+        // SAFETY: tests in this binary share `env_model_cache`, so no other
+        // test reads or mutates process environment while this guard is live.
+        unsafe { std::env::set_var("FORGEPLAN_WORKSPACE", workspace.as_os_str()) };
+        Self { previous }
+    }
+
+    fn clear() -> Self {
+        let previous = std::env::var_os("FORGEPLAN_WORKSPACE");
+        // SAFETY: tests in this binary share `env_model_cache`, so no other
+        // test reads or mutates process environment while this guard is live.
+        unsafe { std::env::remove_var("FORGEPLAN_WORKSPACE") };
+        Self { previous }
+    }
+}
+
+impl Drop for WorkspaceEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: see `WorkspaceEnvGuard::set`; the serial guard is still held
+        // until the test and this drop complete.
+        unsafe {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("FORGEPLAN_WORKSPACE", value),
+                None => std::env::remove_var("FORGEPLAN_WORKSPACE"),
+            }
+        }
+    }
+}
+
+fn snapshot_workspace(root: &Path, exclude_activity_logs: bool) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(
+        root: &Path,
+        current: &Path,
+        exclude_activity_logs: bool,
+        files: &mut BTreeMap<PathBuf, Vec<u8>>,
+    ) {
+        for entry in std::fs::read_dir(current).expect("read workspace snapshot directory") {
+            let entry = entry.expect("read workspace snapshot entry");
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .expect("snapshot entry remains under root")
+                .to_path_buf();
+            if exclude_activity_logs
+                && relative
+                    .components()
+                    .next()
+                    .is_some_and(|component| component.as_os_str() == "logs")
+            {
+                continue;
+            }
+            let file_type = entry.file_type().expect("read snapshot entry type");
+            if file_type.is_dir() {
+                files.insert(relative.clone(), b"directory".to_vec());
+                visit(root, &path, exclude_activity_logs, files);
+            } else if file_type.is_symlink() {
+                let target = std::fs::read_link(&path).expect("read snapshot symlink");
+                let mut encoded = b"symlink:".to_vec();
+                encoded.extend_from_slice(target.to_string_lossy().as_bytes());
+                files.insert(relative, encoded);
+            } else if file_type.is_file() {
+                files.insert(relative, std::fs::read(&path).expect("read snapshot file"));
+            }
+        }
+    }
+
+    let mut files = BTreeMap::new();
+    visit(root, root, exclude_activity_logs, &mut files);
+    files
+}
+
+fn read_activity_entries(workspace_dir: &Path) -> Vec<forgeplan_core::activity::ActivityEntry> {
+    let logs_dir = workspace_dir.join("logs");
+    let Ok(entries) = std::fs::read_dir(logs_dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("tools-") && name.ends_with(".jsonl"))
+        })
+        .collect();
+    paths.sort();
+
+    paths
+        .into_iter()
+        .flat_map(|path| {
+            std::fs::read_to_string(path)
+                .expect("read activity log")
+                .lines()
+                .filter_map(|line| {
+                    serde_json::from_str::<forgeplan_core::activity::ActivityEntry>(line).ok()
+                })
+                .collect::<Vec<forgeplan_core::activity::ActivityEntry>>()
+        })
+        .collect()
+}
+
+async fn wait_for_activity_entries(
+    workspace_dir: &Path,
+    count: usize,
+) -> Vec<forgeplan_core::activity::ActivityEntry> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let entries = read_activity_entries(workspace_dir);
+        if entries.len() >= count {
+            return entries;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {count} activity entries; found {}",
+            entries.len()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn counts_by(items: &Value, key_field: &str, count_field: &str) -> Vec<(String, u64)> {
     items
         .as_array()
@@ -432,7 +566,11 @@ async fn health_reports_the_real_corpus_on_a_legacy_workspace() {
     let env = server.call_tool_json("forgeplan_health", json!({})).await;
     let payload = env.assert_ok();
 
-    assert_eq!(payload["total"], 3, "all three artifacts counted: {}", env.raw_text);
+    assert_eq!(
+        payload["total"], 3,
+        "all three artifacts counted: {}",
+        env.raw_text
+    );
     assert_eq!(
         counts_by(&payload["by_kind"], "kind", "count"),
         vec![
@@ -477,13 +615,20 @@ async fn health_reports_the_real_corpus_on_a_legacy_workspace() {
 #[serial_test::serial(env_model_cache)]
 async fn health_reports_the_same_corpus_on_a_migrated_workspace() {
     let (_tmp, root, ws, _base) = migrated_workspace().await;
-    assert!(legacy_tables(&ws).is_empty(), "precondition: no legacy tables");
+    assert!(
+        legacy_tables(&ws).is_empty(),
+        "precondition: no legacy tables"
+    );
     let server = server_at(&root).await;
 
     let env = server.call_tool_json("forgeplan_health", json!({})).await;
     let payload = env.assert_ok();
 
-    assert_eq!(payload["total"], 3, "captured corpus counted: {}", env.raw_text);
+    assert_eq!(
+        payload["total"], 3,
+        "captured corpus counted: {}",
+        env.raw_text
+    );
     assert_eq!(
         counts_by(&payload["by_kind"], "kind", "count"),
         vec![
@@ -506,7 +651,8 @@ async fn health_reports_the_same_corpus_on_a_migrated_workspace() {
     assert_eq!(payload["stale_count"], 1);
     assert_eq!(payload["verdict"], "needs_attention");
     assert_eq!(
-        payload["phase_mismatches"], payload["advisory_phase_mismatches"],
+        payload["phase_mismatches"],
+        payload["advisory_phase_mismatches"],
     );
 
     assert!(
@@ -613,7 +759,12 @@ async fn journal_scores_linked_evidence_the_same_on_both_layouts() {
         );
         // The payload shape is pinned exactly, so a field appearing or
         // disappearing is caught here rather than by a downstream consumer.
-        let mut keys: Vec<&str> = entry.as_object().expect("entry object").keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = entry
+            .as_object()
+            .expect("entry object")
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         assert_eq!(
             keys,
@@ -750,18 +901,26 @@ async fn anomalies_find_the_mistyped_link_on_both_layouts() {
         "one projection may not see anomalies the other cannot"
     );
 
-    // `forgeplan_anomalies` is a PURE read: it loads the observed_at journal and
-    // returns findings without persisting anything. MCP therefore never seeds
-    // observations, and `since` filters against whatever another writer (the
-    // CLI's own persist step) has already recorded — never against this call's
-    // own detections. Asserted here so a future "make MCP remember what it
-    // saw" change is a deliberate decision rather than a silent regression.
-    for ws in [&legacy_ws, &migrated_ws] {
-        assert!(
-            !ws.join("anomalies-journal.jsonl").exists(),
-            "a read must not create the anomalies journal in {}",
-            ws.display()
-        );
+    // MCP records first observations just like the CLI. Persist the complete
+    // scan, even when the caller later narrows the returned report.
+    for (ws, report) in [
+        (&legacy_ws, &legacy_report),
+        (&migrated_ws, &migrated_report),
+    ] {
+        let journal = std::fs::read_to_string(ws.join("anomalies-journal.jsonl"))
+            .expect("MCP persists the anomaly journal");
+        let entries: Vec<Value> = journal
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("journal JSONL"))
+            .collect();
+        for anomaly in report["anomalies"].as_array().expect("anomalies array") {
+            assert!(
+                entries.iter().any(|entry| {
+                    entry["id"] == anomaly["id"] && entry["observed_at"] == anomaly["observed_at"]
+                }),
+                "the observation must survive the MCP call: {anomaly}"
+            );
+        }
     }
 }
 
@@ -968,7 +1127,9 @@ async fn fpf_reads_return_the_ingested_knowledge_base_on_a_migrated_workspace() 
 
     // The genuine config-only tool still answers from config on a migrated
     // workspace — it never needed the artifact projection.
-    let rules = server.call_tool_json("forgeplan_fpf_rules", json!({})).await;
+    let rules = server
+        .call_tool_json("forgeplan_fpf_rules", json!({}))
+        .await;
     let rules_payload = rules.assert_ok();
     assert_eq!(rules_payload["source"], "default");
     assert!(rules_payload["count"].as_u64().expect("count") >= 5);
@@ -1158,7 +1319,9 @@ async fn a_semantic_request_without_a_model_is_labelled_as_a_keyword_fallback() 
 
     // The response still answers — degrading is correct — but it must not
     // claim the semantic channel produced it.
-    let warning = payload["warning"].as_str().expect("a reason for degradation");
+    let warning = payload["warning"]
+        .as_str()
+        .expect("a reason for degradation");
     assert!(
         warning.contains("keyword search"),
         "the fallback must be named in the warning, got: {warning}"
@@ -1507,7 +1670,9 @@ async fn a_running_server_follows_an_external_cli_index_migration() {
         "the retired table must stay retired"
     );
     assert!(
-        ws.join("lance").join("artifacts.legacy-backup.lance").exists(),
+        ws.join("lance")
+            .join("artifacts.legacy-backup.lance")
+            .exists(),
         "the external index run is what renamed it aside"
     );
     // `relations` is retired by the same publish, on the same terms as
@@ -1533,5 +1698,435 @@ async fn a_running_server_follows_an_external_cli_index_migration() {
         "the post-migration reads must not create any table: {:?} (before the reads: {:?})",
         legacy_tables(&ws),
         before_reads
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(env_model_cache)]
+async fn phase5_paths_and_activity_follow_the_request_workspace() {
+    let (_x_temp, x_root, x_ws, _) = migrated_workspace().await;
+    let (_y_temp, y_root, y_ws, _) = migrated_workspace().await;
+    let _workspace_env = WorkspaceEnvGuard::set(&x_root);
+
+    let x_playbooks = x_ws.join("playbooks");
+    let y_playbooks = y_ws.join("playbooks");
+    std::fs::create_dir_all(&x_playbooks).expect("create X playbook directory");
+    std::fs::create_dir_all(&y_playbooks).expect("create Y playbook directory");
+    let yaml = r#"schema_version: "1.0"
+name: routing-search
+title: Routing Search
+steps:
+  - id: native-search
+    delegate_to: { type: forgeplan_core, target: search }
+    input:
+      query: Y_ONLY_ROUTING_MARKER
+      kind: prd
+"#;
+    let x_only = x_playbooks.join("x-only.yaml");
+    let y_playbook = y_playbooks.join("routing-search.yaml");
+    std::fs::write(&x_only, yaml).expect("write X-only playbook");
+    std::fs::write(&y_playbook, yaml).expect("write Y playbook");
+
+    let y_prd = y_ws.join("prds/PRD-001-auth.md");
+    let mut y_prd_content = std::fs::read_to_string(&y_prd).expect("read Y's shared-id artifact");
+    y_prd_content.push_str("\nY_ONLY_ROUTING_MARKER\n");
+    std::fs::write(&y_prd, y_prd_content).expect("add Y-only search marker");
+    let x_prd_content = std::fs::read_to_string(x_ws.join("prds/PRD-001-auth.md"))
+        .expect("read X's shared-id artifact");
+    let y_prd_content = std::fs::read_to_string(&y_prd).expect("read updated Y artifact");
+    assert!(x_prd_content.contains("id: PRD-001"));
+    assert!(y_prd_content.contains("id: PRD-001"));
+    assert!(!x_prd_content.contains("Y_ONLY_ROUTING_MARKER"));
+    assert!(y_prd_content.contains("Y_ONLY_ROUTING_MARKER"));
+    publish(&y_ws).await;
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&x_only, y_playbooks.join("escape.yaml"))
+            .expect("create playbook symlink escape");
+    }
+
+    let server = server_at(&x_root).await;
+    let before_x = snapshot_workspace(&x_ws, false);
+    let before_y = snapshot_workspace(&y_ws, true);
+    assert!(
+        legacy_tables(&x_ws).is_empty(),
+        "X fixture starts without legacy tables"
+    );
+    assert!(
+        legacy_tables(&y_ws).is_empty(),
+        "Y fixture starts without legacy tables"
+    );
+    assert!(
+        read_activity_entries(&x_ws).is_empty(),
+        "X activity log starts empty"
+    );
+    assert!(
+        read_activity_entries(&y_ws).is_empty(),
+        "Y activity log starts empty"
+    );
+
+    let y_root_arg = y_root.to_string_lossy().into_owned();
+    let absolute_target = y_playbook.to_string_lossy().into_owned();
+    let absolute_y = server
+        .call_tool_json(
+            "forgeplan_playbook_run",
+            json!({
+                "target": absolute_target,
+                "workspace": y_root_arg,
+                "dry_run": true
+            }),
+        )
+        .await;
+    let absolute_body = absolute_y.assert_ok();
+    let expected_y_ws = y_ws.canonicalize().expect("canonical Y workspace");
+    let expected_source = Path::new(".forgeplan")
+        .join("playbooks")
+        .join("routing-search.yaml")
+        .display()
+        .to_string();
+    assert_eq!(absolute_body["playbook"], "routing-search");
+    assert_eq!(absolute_body["source_path"], expected_source);
+    assert_eq!(
+        absolute_body["resolved_workspace"],
+        expected_y_ws.display().to_string()
+    );
+    assert_eq!(absolute_body["resolved_via"], "param");
+
+    let by_name = server
+        .call_tool_json(
+            "forgeplan_playbook_run",
+            json!({
+                "target": "routing-search",
+                "workspace": y_root_arg,
+                "dry_run": true
+            }),
+        )
+        .await;
+    assert_eq!(by_name.assert_ok()["source_path"], expected_source);
+
+    let relative = server
+        .call_tool_json(
+            "forgeplan_playbook_run",
+            json!({
+                "target": ".forgeplan/playbooks/routing-search.yaml",
+                "workspace": y_root_arg,
+                "dry_run": true
+            }),
+        )
+        .await;
+    assert_eq!(relative.assert_ok()["source_path"], expected_source);
+
+    let no_consent = server
+        .call_tool_json(
+            "forgeplan_playbook_run",
+            json!({
+                "target": absolute_target,
+                "workspace": y_root_arg,
+                "dry_run": false,
+                "yes": false
+            }),
+        )
+        .await;
+    assert!(no_consent.is_error, "real execution still requires consent");
+    assert!(
+        !no_consent.raw_text.contains(&absolute_target),
+        "consent hint must not disclose an absolute target"
+    );
+    assert!(
+        no_consent.raw_text.contains("ADR-009"),
+        "consent error contract is preserved"
+    );
+
+    let unauthorized = server
+        .call_tool_json(
+            "forgeplan_playbook_run",
+            json!({
+                "target": "/etc/passwd",
+                "workspace": y_root_arg,
+                "dry_run": true
+            }),
+        )
+        .await;
+    assert!(unauthorized.is_error, "absolute path outside Y is refused");
+    assert!(
+        !unauthorized.raw_text.contains("/etc/passwd"),
+        "unauthorized path error must remain redacted"
+    );
+
+    #[cfg(unix)]
+    {
+        let escaping_target = y_playbooks
+            .join("escape.yaml")
+            .to_string_lossy()
+            .into_owned();
+        let escaping = server
+            .call_tool_json(
+                "forgeplan_playbook_run",
+                json!({
+                    "target": escaping_target,
+                    "workspace": y_root_arg,
+                    "dry_run": true
+                }),
+            )
+            .await;
+        assert!(escaping.is_error, "symlink resolving outside Y is refused");
+        assert!(
+            !escaping
+                .raw_text
+                .contains(&x_root.to_string_lossy().to_string()),
+            "symlink escape error must not disclose X's path"
+        );
+    }
+
+    assert_eq!(
+        snapshot_workspace(&x_ws, false),
+        before_x,
+        "dry-run and rejected Y calls preserve every X byte, including logs"
+    );
+    assert_eq!(
+        snapshot_workspace(&y_ws, true),
+        before_y,
+        "dry-run and rejected Y calls change no Y state other than activity logs"
+    );
+
+    let native_search = server
+        .call_tool_json(
+            "forgeplan_playbook_run",
+            json!({
+                "target": "routing-search",
+                "workspace": y_root_arg,
+                "dry_run": false,
+                "yes": true
+            }),
+        )
+        .await;
+    let native_body = native_search.assert_ok();
+    assert_eq!(native_body["report"]["success"], 1);
+    assert_eq!(native_body["report"]["failed"], 0);
+    let search_output = native_body["report"]["per_step"][0]["message"]
+        .as_str()
+        .expect("native search output is captured in the step report");
+    let search_output: Value =
+        serde_json::from_str(search_output).expect("native search emits structured JSON");
+    let results = search_output["results"]
+        .as_array()
+        .expect("native search returns a result list");
+    assert_eq!(results.len(), 1, "only Y contains the query marker");
+    assert_eq!(results[0]["id"], "PRD-001");
+    assert_eq!(results[0]["title"], "Auth rewrite");
+
+    let actor_a = "compat-regression/actor-a";
+    let actor_b = "compat-regression/actor-b";
+    let claimed = server
+        .call_tool_json(
+            "forgeplan_claim",
+            json!({
+                "id": "PRD-001",
+                "agent": actor_a,
+                "ttl_minutes": 5,
+                "workspace": y_root_arg
+            }),
+        )
+        .await;
+    let claim_body = claimed.assert_ok();
+    assert_eq!(claim_body["id"], "PRD-001");
+    assert_eq!(claim_body["agent_id"], actor_a);
+    assert!(y_ws.join("claims/PRD-001.yaml").is_file());
+    let y_claim = forgeplan_core::claim::ClaimStore::new(&y_ws)
+        .get("PRD-001")
+        .await
+        .expect("read Y claim")
+        .expect("Y claim exists");
+    assert_eq!(y_claim.agent_id, actor_a);
+    assert!(
+        forgeplan_core::claim::ClaimStore::new(&x_ws)
+            .get("PRD-001")
+            .await
+            .expect("read X claim")
+            .is_none(),
+        "the same canonical ID remains unclaimed in X"
+    );
+    assert!(!x_ws.join("claims/PRD-001.yaml").exists());
+
+    let conflict = server
+        .call_tool_json(
+            "forgeplan_claim",
+            json!({
+                "id": "PRD-001",
+                "agent": actor_b,
+                "ttl_minutes": 5,
+                "workspace": y_root_arg
+            }),
+        )
+        .await;
+    assert!(conflict.is_error, "Y's live same-ID claim rejects actor B");
+    let still_claimed_by_a = forgeplan_core::claim::ClaimStore::new(&y_ws)
+        .get("PRD-001")
+        .await
+        .expect("read Y claim after conflict")
+        .expect("actor A's Y claim remains");
+    assert_eq!(still_claimed_by_a.agent_id, actor_a);
+    assert!(!x_ws.join("claims/PRD-001.yaml").exists());
+
+    let released = server
+        .call_tool_json(
+            "forgeplan_release",
+            json!({
+                "id": "PRD-001",
+                "agent": actor_a,
+                "workspace": y_root_arg
+            }),
+        )
+        .await;
+    let release_body = released.assert_ok();
+    assert_eq!(release_body["released"], true);
+    assert!(
+        forgeplan_core::claim::ClaimStore::new(&y_ws)
+            .get("PRD-001")
+            .await
+            .expect("read Y claim after release")
+            .is_none(),
+        "Y release removes actor A's claim"
+    );
+    assert!(!x_ws.join("claims/PRD-001.yaml").exists());
+
+    let expected_playbook_calls = if cfg!(unix) { 7 } else { 6 };
+    let expected_calls = expected_playbook_calls + 3;
+    let y_entries = wait_for_activity_entries(&y_ws, expected_calls).await;
+    assert_eq!(y_entries.len(), expected_calls);
+    assert_eq!(
+        y_entries
+            .iter()
+            .filter(|entry| entry.tool == "forgeplan_playbook_run")
+            .count(),
+        expected_playbook_calls
+    );
+    assert_eq!(
+        y_entries
+            .iter()
+            .filter(|entry| entry.tool == "forgeplan_claim")
+            .count(),
+        2
+    );
+    assert_eq!(
+        y_entries
+            .iter()
+            .filter(|entry| entry.tool == "forgeplan_release")
+            .count(),
+        1
+    );
+    assert!(
+        y_entries
+            .iter()
+            .all(|entry| entry.workspace == expected_y_ws.display().to_string()),
+        "each request-scoped event belongs to Y: {y_entries:?}"
+    );
+    assert!(
+        y_entries.iter().all(|entry| entry.args.is_none()),
+        "activity argument privacy remains disabled by default"
+    );
+    assert_eq!(
+        y_entries
+            .iter()
+            .filter(|entry| entry.status == "ok")
+            .count(),
+        6
+    );
+    assert_eq!(
+        y_entries
+            .iter()
+            .filter(|entry| entry.status == "tool_err")
+            .count(),
+        expected_calls - 6
+    );
+    assert!(
+        read_activity_entries(&x_ws).is_empty(),
+        "Y-directed calls must not append to X's activity log"
+    );
+
+    assert_eq!(
+        snapshot_workspace(&x_ws, false),
+        before_x,
+        "all Y-directed calls preserve every X byte, including its activity logs"
+    );
+    assert!(legacy_tables(&x_ws).is_empty());
+    assert!(legacy_tables(&y_ws).is_empty());
+}
+
+#[tokio::test]
+#[serial_test::serial(env_model_cache)]
+async fn parameterless_phase5_call_keeps_default_activity_workspace() {
+    let (_temp, root, ws, _) = migrated_workspace().await;
+    let _workspace_env = WorkspaceEnvGuard::clear();
+    let server = server_at(&root).await;
+
+    let listed = server
+        .call_tool_json("forgeplan_playbook_list", json!({}))
+        .await;
+    listed.assert_ok();
+
+    let entries = wait_for_activity_entries(&ws, 1).await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].tool, "forgeplan_playbook_list");
+    assert_eq!(
+        entries[0].workspace,
+        ws.canonicalize()
+            .expect("canonical workspace")
+            .display()
+            .to_string()
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(env_model_cache)]
+async fn init_activity_uses_the_server_root_not_an_ignored_workspace_argument() {
+    let x_temp = TempDir::new().expect("X tempdir");
+    let x_root = x_temp.path().to_path_buf();
+    let (_y_temp, y_root, y_ws, _) = migrated_workspace().await;
+    let _workspace_env = WorkspaceEnvGuard::set(&y_root);
+    let before_y = snapshot_workspace(&y_ws, false);
+
+    assert!(
+        forgeplan_core::workspace::find_workspace(&x_root).is_none(),
+        "X starts uninitialized"
+    );
+    let server = server_at(&x_root).await;
+    let initialized = server
+        .call_tool_json(
+            "forgeplan_init",
+            json!({
+                "force": false,
+                "workspace": y_root.to_string_lossy().into_owned()
+            }),
+        )
+        .await;
+    let body = initialized.assert_ok();
+
+    let x_ws = forgeplan_core::workspace::find_workspace(&x_root)
+        .expect("init creates the workspace at the server root");
+    let expected_x_ws = x_ws.canonicalize().expect("canonical X workspace");
+    let returned_ws = PathBuf::from(
+        body["workspace"]
+            .as_str()
+            .expect("init response identifies its workspace"),
+    )
+    .canonicalize()
+    .expect("init response path exists");
+    assert_eq!(returned_ws, expected_x_ws);
+
+    let x_entries = wait_for_activity_entries(&x_ws, 1).await;
+    assert_eq!(x_entries.len(), 1);
+    assert_eq!(x_entries[0].tool, "forgeplan_init");
+    assert_eq!(x_entries[0].status, "ok");
+    assert_eq!(x_entries[0].workspace, expected_x_ws.display().to_string());
+    assert!(
+        read_activity_entries(&y_ws).is_empty(),
+        "the ignored workspace argument and valid environment Y do not redirect init"
+    );
+    assert_eq!(
+        snapshot_workspace(&y_ws, false),
+        before_y,
+        "initializing X leaves Y, including its activity logs, unchanged"
     );
 }

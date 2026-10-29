@@ -3,13 +3,13 @@ title: forgeplan_supersede
 description: "Supersede an artifact (active → superseded). Creates a supersedes link to the replacement and marks the original as terminal."
 ---
 
-Marks an active artifact as superseded by a newer one. This is a **terminal** transition - once superseded, the artifact never goes back to active. The tool also creates a `supersedes` link automatically, so the decision history is preserved and traceable. Agents use this when a PRD/RFC/ADR is being replaced (not retired, not deleted) by a new, better version.
+Marks an active artifact as superseded by a replacement and records a `supersedes` link. This is terminal in ordinary lifecycle transitions, not irreversible: `forgeplan_restore` can reverse it while an eligible receipt remains. The operation captures a recovery receipt before mutation.
 
 **Category**: Lifecycle
 
 ## When an agent calls this
 
-- To displace an outdated EvidencePack after re-verification (link the successor pack first) — the superseded pack is excluded from the parent artifact's R_eff min and the informed artifacts are rescored automatically.
+- To displace an outdated EvidencePack after re-verification: terminal packs leave the eligible R_eff population. Legacy dependent-score refresh is best-effort; migrated workspaces recompute during reconciliation. This is not a guarantee of universal ancestor-cache reconciliation.
 
 - Redesign: new RFC-019 replaces RFC-018 - agent calls `supersede RFC-018 --by RFC-019`.
 - Second iteration of a decision after new evidence contradicts the old one.
@@ -21,24 +21,17 @@ Marks an active artifact as superseded by a newer one. This is a **terminal** tr
 |---|---|---|---|
 | `id` | `string` | yes | Artifact ID to supersede. |
 | `by` | `string` | yes | Replacement artifact ID. |
+| `workspace` | `string \| null` | no | Explicit absolute or tilde-expanded workspace path. |
 
 _Schema source: `crates/forgeplan-mcp/src/server.rs::SupersedeParams`_
 
 ## Returns
 
-The transition confirmation plus the auto-created link. Agents should read `from`/`to` to verify it actually moved, and check `link` to confirm the graph is consistent.
-
-Example response shape:
-
-```json
-{
-  "ok": true,
-  "id": "RFC-018",
-  "from": "active",
-  "to": "superseded",
-  "link": { "source": "RFC-019", "target": "RFC-018", "relation": "supersedes" }
-}
-```
+The JSON text payload contains `superseded`, `replacement`,
+`dependents_affected`, `warnings`, `receipt_id`, and `_next_action`, plus
+workspace-resolution and index-publication fields. It has no `from`, `to`,
+or `link` object. Read the affected artifacts to inspect their status and
+links, and inspect `index_pending` for publication acknowledgement.
 
 ## Example invocation
 
@@ -56,7 +49,7 @@ With typical agent context:
 
 ## Typical sequence
 
-`forgeplan_new` (replacement) → `forgeplan_update` → `forgeplan_validate` PASS → `forgeplan_activate` the replacement → `forgeplan_supersede` the old one. Never supersede before the replacement is active - you'd leave an orphan.
+Create, fill, validate, implement and evidence the replacement as required, then activate it before superseding the old decision. This is workflow guidance, not a claim that the handler requires the replacement to be active. Review `dependents_affected`; supersession does not automatically implement their required changes.
 
 ## CLI equivalent
 
@@ -68,3 +61,54 @@ With typical agent context:
 - [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) - preceding step
 - [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) - retirement without replacement
 - [`forgeplan_link`](/docs/mcp/forgeplan_link/) - manual link creation
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Supersede an artifact (active → superseded). Creates link to replacement and notifies dependents.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `by` | yes | string | Replacement artifact ID |
+| `id` | yes | string | Artifact ID to supersede |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "by": {
+      "description": "Replacement artifact ID",
+      "type": "string"
+    },
+    "id": {
+      "description": "Artifact ID to supersede",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "by"
+  ],
+  "title": "SupersedeParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

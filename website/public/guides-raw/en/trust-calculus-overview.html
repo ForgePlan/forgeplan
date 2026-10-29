@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trust Calculus: rating trust in a decision across three axes - Forgeplan Guides</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 18px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  ul, ol { color: var(--text-2); font-size: 17px; line-height: 1.65; list-style: none; padding-left: 0; margin: 16px 0; }
+  main > ul, main > ol { max-width: 820px; }
+  ul li, ol li { margin-bottom: 12px; padding-left: 28px; position: relative; }
+  ul li::before { content: "▸"; position: absolute; left: 6px; top: 0; color: var(--accent); font-family: var(--font-mono); font-size: 17px; line-height: 1.65; }
+  ol { counter-reset: list-counter; }
+  ol li::before { content: counter(list-counter, decimal-leading-zero); counter-increment: list-counter; position: absolute; left: 0; top: 1px; color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; font-weight: 500; }
+  ol li { padding-left: 36px; }
+  .deflist, .deflist li { padding-left: 0; margin-bottom: 0; }
+  .deflist li::before { content: none; }
+  .ba-cell ul, .ba-cell li { padding-left: 0; }
+  .ba-cell li::before { content: none; }
+  .ba-cell li { padding-left: 14px; }
+  .ba-cell li::before { content: "·"; position: absolute; left: 0; top: -2px; color: var(--text-3); font-size: 20px; font-family: var(--font-mono); }
+  code { font-family: var(--font-mono); font-size: 14.5px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bg); transition: border-color .15s ease; }
+  a:hover { border-color: var(--accent); }
+
+  /* Audience grid */
+  .audience-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 24px 0 0; }
+  @media (max-width: 720px) { .audience-grid { grid-template-columns: 1fr; } }
+  .audience-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 24px 24px; }
+  .audience-card .role-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+  .audience-card .role-title { font-size: 17px; font-weight: 500; color: var(--text); margin: 0 0 10px; line-height: 1.3; }
+  .audience-card .role-body { font-size: 14px; color: var(--text-2); line-height: 1.55; margin: 0 0 8px; }
+  .audience-card .role-pain { font-size: 13px; color: var(--text-3); border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; font-style: italic; }
+
+  /* Use-case grid */
+  .usecase-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 0; }
+  @media (max-width: 960px) { .usecase-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .usecase-grid { grid-template-columns: 1fr; } }
+  .usecase-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 22px; border-top: 2px solid var(--accent); }
+  .usecase-card .uc-domain { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .usecase-card .uc-title { font-size: 15px; font-weight: 500; color: var(--text); margin: 0 0 8px; line-height: 1.35; }
+  .usecase-card .uc-body { font-size: 13px; color: var(--text-2); line-height: 1.55; margin: 0; }
+
+  /* Compare chart */
+  .compare-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 24px 0 0; }
+  .compare-wrap .compare-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 6px; }
+  .compare-wrap .compare-title { font-size: 18px; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  .compare-wrap .chart-host { position: relative; height: 320px; }
+  .compare-wrap .compare-note { font-size: 12.5px; color: var(--text-3); margin-top: 14px; line-height: 1.5; max-width: 760px; }
+
+  /* Definition list (6 fields) */
+  .deflist { margin: 16px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: none; }
+  @media (max-width: 960px) { .deflist { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .deflist { grid-template-columns: 1fr; } }
+  .deflist li { background: var(--bg-1); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 0; padding: 14px 16px 16px; }
+  .deflist .def-num { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; margin-bottom: 6px; }
+  .deflist .def-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 6px; }
+  .deflist .def-body { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+
+  /* Start-here grid */
+  .start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 0; }
+  @media (max-width: 640px) { .start-grid { grid-template-columns: 1fr; } }
+  .start-link { display: block; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; color: var(--text-1); border-bottom: 1px solid var(--line-2); transition: all .15s ease; }
+  .start-link:hover { border-color: var(--accent); color: var(--text); }
+  .start-link .start-who { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .start-link .start-where { font-size: 14px; color: var(--text); }
+  .start-link .start-arrow { float: right; color: var(--accent); }
+
+  .aside { border-left: 2px solid var(--accent); background: var(--accent-bg); padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--text-1); border-radius: 0; max-width: 820px; }
+
+  .ba-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0 0; }
+  @media (max-width: 720px) { .ba-grid { grid-template-columns: 1fr; } }
+  .ba-cell { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px 22px; }
+  .ba-cell .ba-head { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 12px; }
+  .ba-cell.ba-bad .ba-head { color: var(--err); }
+  .ba-cell.ba-good .ba-head { color: var(--ok); }
+  .ba-cell ul { margin: 0; padding-left: 18px; }
+  .ba-cell li { color: var(--text-2); font-size: 13.5px; line-height: 1.55; margin-bottom: 6px; }
+
+  .closing { margin: 48px 0 0; padding: 28px 32px 30px; background: var(--bg-1); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; }
+  .closing p { color: var(--text-1); font-size: 15.5px; max-width: 820px; }
+
+  hr.sep { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+
+  /* Axes cards */
+  .axes-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 24px 0 0; }
+  @media (max-width: 840px) { .axes-grid { grid-template-columns: 1fr; } }
+  .axis-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 24px 26px; border-top: 3px solid var(--accent); }
+  .axis-card .axis-label { font-family: var(--font-mono); font-size: 28px; font-weight: 700; color: var(--accent); letter-spacing: -0.01em; margin-bottom: 6px; line-height: 1; }
+  .axis-card .axis-name { font-size: 15px; font-weight: 500; color: var(--text); margin-bottom: 10px; }
+  .axis-card .axis-body { font-size: 13.5px; color: var(--text-2); line-height: 1.6; margin-bottom: 14px; }
+  .axis-card .axis-scale { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .axis-card .scale-item { font-size: 12px; color: var(--text-3); font-family: var(--font-mono); padding: 5px 8px; background: var(--bg-2); border-radius: 0; }
+  .axis-card .scale-item.hi { color: var(--ok); }
+  .axis-card .scale-item.lo { color: var(--err); }
+
+  /* Evidence example table */
+  .evid-table { width: 100%; border-collapse: collapse; margin: 20px 0 0; font-size: 13.5px; }
+  .evid-table th { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); font-weight: 500; padding: 8px 12px; border-bottom: 1px solid var(--line-2); text-align: left; }
+  .evid-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--text-2); vertical-align: top; line-height: 1.5; }
+  .evid-table tr:last-child td { border-bottom: none; }
+  .evid-table td.mono { font-family: var(--font-mono); font-size: 12.5px; color: var(--accent-soft); }
+  .evid-table .score-cell { text-align: center; }
+  .evid-table .score-hi { color: var(--ok); font-family: var(--font-mono); font-weight: 500; }
+  .evid-table .score-mid { color: var(--warn); font-family: var(--font-mono); font-weight: 500; }
+  .evid-table .score-lo { color: var(--err); font-family: var(--font-mono); font-weight: 500; }
+  .evid-table .penalty { font-size: 12px; color: var(--text-3); font-family: var(--font-mono); }
+  .result-row { margin-top: 16px; padding: 14px 18px; background: var(--bg-2); border: 1px solid var(--line-2); border-left: 2px solid var(--accent); border-radius: 0; font-family: var(--font-mono); font-size: 14px; color: var(--text-1); }
+  .result-row .r-eff { font-size: 22px; color: var(--accent); font-weight: 700; margin-left: 8px; }
+
+  /* CL badge */
+  .cl { display: inline-block; font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 0; letter-spacing: 0.05em; }
+  .cl3 { background: rgba(34, 197, 94, 0.18); color: #22c55e; }
+  .cl2 { background: rgba(245, 158, 11, 0.18); color: #f59e0b; }
+  .cl1 { background: rgba(239, 68, 68, 0.18); color: #ef4444; }
+  .cl0 { background: rgba(82, 82, 82, 0.3); color: var(--text-3); }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">TRUST CALCULUS · OVERVIEW</p>
+  <h1>Trust Calculus: rating trust in a decision across three axes</h1>
+  <p class="lead">
+    A vendor's research and a measurement of your own data made by a colleague on
+    a Friday evening may have the same "average quality".
+    But they are different stakes. One piece of evidence confirms a decision in
+    your context; another creates the illusion of confidence where there is none.
+    A trust calculation is the tool that makes that difference visible.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Why evidence needs a formal rating</h2>
+  <p>
+    When a team picks between two technical options, this is usually what happens:
+    each side brings evidence. Some bring a post from a company blog. Others a
+    benchmark run on a different configuration. A third a link to a Reddit thread.
+    In the meeting all of it carries roughly the same weight, because there is no
+    scale on which to compare.
+  </p>
+  <p>
+    In the end the most persuasive talker wins, or whoever has more authority in
+    the room - not whoever has the stronger evidence. Six months later, when the
+    decision starts to crack, it turns out the key argument was marketing
+    material rather than a real measurement.
+  </p>
+  <p>
+    A formal rating of evidence solves one problem: it makes the team answer
+    three questions about every piece of evidence explicitly - before the decision
+    is taken. Once those three answers sit next to the evidence, it becomes
+    visible that some arguments weigh 0.8 and others weigh 0.2. The final trust
+    calculation then reflects that, rather than the intensity of the discussion.
+  </p>
+  <p>
+    Without such a scale, teams systematically overrate well-presented but weak
+    evidence and underrate rough but precise measurements. This is not about how
+    smart the team is - it is a consequence of having no tool.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Three axes: F, G, R in plain language</h2>
+  <p>
+    This lesson's teaching model rates every piece of evidence
+    along three independent axes. Each axis gives a score from 0 to 1. None is more
+    important than the other two - they are different measurements of one question:
+    "how far can this evidence be trusted in our situation?". The 0-1 scale and the
+    band boundaries below are a teaching layout for this walkthrough; how the same
+    axes are described in FPF itself, and what Forgeplan actually computes, is in
+    the formula block further down.
+  </p>
+
+  <div class="axes-grid">
+    <div class="axis-card">
+      <div class="axis-label">F</div>
+      <div class="axis-name">Formal - how strictly the claim is worded</div>
+      <div class="axis-body">
+        How precisely the evidence itself is stated. A vague conclusion
+        "it is faster" has low rigour. A concrete claim "p95 latency 42ms at
+        1000 RPS on configuration X" has high rigour. One thing matters here:
+        rigour of wording is not the same as truth. A strictly worded lie is still
+        a lie. But rigour at least lets you check the claim.
+      </div>
+      <div class="axis-scale">
+        <div class="scale-item lo">0.0-0.3 · "faster", "better"</div>
+        <div class="scale-item">0.4-0.6 · partly with numbers</div>
+        <div class="scale-item hi">0.7-1.0 · metric + conditions</div>
+        <div class="scale-item">- · example: independent review</div>
+      </div>
+    </div>
+
+    <div class="axis-card">
+      <div class="axis-label">G</div>
+      <div class="axis-name">Granular - level of detail, presence of numbers</div>
+      <div class="axis-body">
+        How detailed the evidence is spelled out. One number without
+        context is low detail. A table broken down by scenario, data size and
+        configuration is high detail. G asks: can you tell from this evidence
+        <b class="k">under which conditions</b> it holds, and how closely your case
+        matches those conditions?
+      </div>
+      <div class="axis-scale">
+        <div class="scale-item lo">0.0-0.3 · one sentence, no detail</div>
+        <div class="scale-item">0.4-0.6 · data present, no breakdown</div>
+        <div class="scale-item hi">0.7-1.0 · broken down by scenario</div>
+        <div class="scale-item">- · example: a benchmark with a matrix</div>
+      </div>
+    </div>
+
+    <div class="axis-card">
+      <div class="axis-label">R</div>
+      <div class="axis-name">Reliable - how trustworthy the source is in your context</div>
+      <div class="axis-body">
+        How reliable the source is - not in general, but for your task.
+        An article from a vendor who sells the product rates low. An independent
+        academic benchmark rates medium. A measurement made by your own team on
+        your own infrastructure with your own data rates high. R is the most
+        context-bound axis: the same source can score 0.9 for one task and 0.3
+        for another.
+      </div>
+      <div class="axis-scale">
+        <div class="scale-item lo">0.0-0.3 · vendor research</div>
+        <div class="scale-item">0.4-0.6 · independent publication</div>
+        <div class="scale-item hi">0.7-1.0 · your measurement on your data</div>
+        <div class="scale-item">- · example: a production profile</div>
+      </div>
+    </div>
+  </div>
+
+  <p style="margin-top: 20px;">
+    Each axis is scored separately, and they cannot compensate for one another.
+    High detail does not make an unreliable source reliable. A reliable source does
+    not compensate for vague wording. The overall rating of a piece of evidence is
+    the <b class="k">minimum</b> of the three numbers, not the average. That is what
+    the next section is about.
+  </p>
+
+  <hr class="sep">
+
+  <h2>The weakest-link rule: why the minimum, not the average</h2>
+  <p>
+    The most common question when people meet the Trust Calculus goes like this:
+    "Why not take the average? If the source is reliable (R = 0.9), does that not
+    compensate for the claim being vague (F = 0.2)?"
+  </p>
+  <p>
+    No. An average hides a critical weakness and creates a false sense of
+    confidence. A chain of three axes is not a sum of strengths, it is a
+    multiplication of constraints.
+  </p>
+  <p>
+    An everyday analogy: the roadworthiness inspection of a car. The car goes
+    through a checklist: engine, brakes, lights, steering. If the brakes fail,
+    the car does not drive out - not even with a perfect engine, brand-new
+    lights and faultless steering. An average across all items could report
+    "84% - very good", and a car with bad brakes would drive away.
+  </p>
+  <p>
+    Evidence works the same way. If the claim is vague and unverifiable
+    (F = 0.2), then the detail of the data and the reputation of the source do not
+    matter: there is no way to check whether the claim holds at all. Or if the
+    source is vendor marketing (R = 0.2), then no matter how many numbers it
+    prints, those numbers are not optimised for your task.
+  </p>
+
+  <div class="aside">
+    The weakest-link rule in the teaching model: evidence rating = min(F, G, R).
+    Here we take the minimum, not the average or a weighted sum. This is not a universal
+    FPF formula or Forgeplan's artifact F/G/R computation.
+  </div>
+
+  <p>
+    Engineers know this principle under another name - Amdahl's law in parallel
+    computing, or the "bottleneck" of any system. The logic is the same here: a
+    chain is exactly as reliable as its weakest link.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Where F/G/R lives inside a DDR</h2>
+  <p>
+    A DDR (Detailed Decision Record) is a decision record with six
+    mandatory sections. The third one is called "Evidence" - and that is exactly
+    where the Trust Calculus lives.
+  </p>
+  <p>
+    In the teaching example, every piece of evidence in that section is recorded not as a bare link
+    or quotation, but as a structured object with four fields:
+  </p>
+  <ul>
+    <li><b class="k">The evidence itself</b> - what exactly: a link, a quotation, a measurement result.</li>
+    <li><b class="k">F / G / R</b> - three numbers from 0 to 1, one per axis.</li>
+    <li><b class="k">The overall rating</b> - min(F, G, R) in the teaching model.</li>
+    <li><b class="k">Context fit level (CL)</b> - how much this evidence applies to your situation at all.</li>
+  </ul>
+  <p>
+    The context fit level is a separate parameter on top of F/G/R.
+    It answers the question: "is this evidence about us at all?". Evidence can be
+    strict, detailed and from a reliable source - but if it concerns a load of
+    10 000 RPS while you run 50 RPS, its applicability is limited. The numbers
+    in the table match Forgeplan's CL penalties
+    (0 / 0.1 / 0.4 / 0.9 for CL3 / CL2 / CL1 / CL0), but the product subtracts them
+    rather than using the teaching multiplier <code>(1 − CL penalty)</code> below.
+  </p>
+
+  <ul class="deflist">
+    <li>
+      <div class="def-num">CL3 · OUR CONTEXT</div>
+      <div class="def-title">Penalty: 0%</div>
+      <div class="def-body">The same scenario, the same infrastructure, the same load range. The evidence was measured under conditions as close to yours as possible.</div>
+    </li>
+    <li>
+      <div class="def-num">CL2 · SIMILAR CONTEXT</div>
+      <div class="def-title">Penalty: 10%</div>
+      <div class="def-body">Similar load, close architecture. The evidence is relevant, but you have to adjust for the difference in conditions.</div>
+    </li>
+    <li>
+      <div class="def-num">CL1 · DIFFERENT CONTEXT</div>
+      <div class="def-title">Penalty: 40%</div>
+      <div class="def-body">A different scale, a different technological environment. The conclusions transfer with difficulty; applicability has to be argued explicitly.</div>
+    </li>
+    <li>
+      <div class="def-num">CL0 · OPPOSED</div>
+      <div class="def-title">Penalty: 90%</div>
+      <div class="def-body">The conditions are so different that transferring the conclusions directly would be wrong. The evidence barely works in the DDR section.</div>
+    </li>
+  </ul>
+
+  <p style="margin-top: 20px;">
+    The teaching formula of this walkthrough:
+    <code>score = min(F, G, R) × (1 − CL penalty)</code>.
+    In this teaching model, the minimum over the evidence in the section
+    is labelled the decision's <code>R_eff</code>.
+  </p>
+
+  <div class="aside">
+    <b class="k">The teaching formula and the Forgeplan computation are different things.</b>
+    The product above is a teaching example, not a universal FPF formula or the product algorithm.
+    Forgeplan separately computes an artifact's F/G/R on a 0–1 scale and their geometric mean
+    <code>(F × G × R)^(1/3)</code>; these are artifact-quality heuristics.
+    An evidence pack's intrinsic score does not use the teaching F/G/R ratings. In the full scorer,
+    an unexpired pack scores <code>max(0, verdict − CL penalty − type modifier)</code>.
+    Bases for <code>supports</code> / <code>weakens</code> / <code>refutes</code> are 1.0 / 0.5 / 0.0;
+    CL0 / CL1 / CL2 / CL3 penalties are 0.9 / 0.4 / 0.1 / 0; modifiers for
+    <code>measurement</code> / <code>test</code> / <code>benchmark</code> / <code>audit</code> are 0 / 0 / 0.1 / 0.2.
+    If the optional <code>valid_until</code> has expired, the scorer returns 0.1 before this arithmetic,
+    including for <code>refutes</code>. With no date, this scorer applies no expiry.
+    Recursive decision <code>R_eff</code> takes the minimum of its own eligible evidence score
+    and eligible dependency contributions. Evidence packs in <code>draft</code> count;
+    <code>superseded</code>/<code>deprecated</code> packs are excluded. Dependencies also exclude
+    <code>draft</code> and the <code>note</code>/<code>memory</code> kinds.
+    A dependency contributes <code>max(0, dependency R_eff − relation penalty)</code>:
+    <code>based_on</code>/<code>informs</code> incur 0.1 (CL2),
+    <code>refines</code>/<code>depends_on</code> incur 0 (CL3). Own evidence at 1.0
+    and an eligible <code>based_on</code> dependency at 0.2 produce 0.1 overall.
+    With no eligible own evidence, an ordinary decision scores 0; a leaf evidence pack
+    is scored on its own fields.
+    The flat helper used for some displayed scores neither traverses dependencies nor applies
+    the type modifier. Its result can differ from the full recursive report.
+  </div>
+
+  <hr class="sep">
+
+  <h2>A worked example with three pieces of evidence</h2>
+  <p>
+    Let us walk through a concrete case: a team picks between two databases for
+    storing vector embeddings - LanceDB and SQLite with the vector extension.
+    Both options work technically; the team has collected three pieces of
+    evidence in favour of LanceDB.
+  </p>
+
+  <div class="compare-wrap">
+    <div class="compare-tag">CASE · CHOOSING STORAGE FOR VECTOR SEARCH</div>
+    <h3 class="compare-title">Three pieces of evidence and their F / G / R / CL rating</h3>
+    <div class="chart-host">
+      <canvas id="evidChart"></canvas>
+    </div>
+    <p class="compare-note">
+      The decision's final R_eff = min of all scores = <b style="color: var(--warn);">0.12</b>.
+      The decision is technically accepted, but the signal is weak: one of the three
+      pieces of evidence is vendor marketing with poor context fit. That is a reason
+      either to find a replacement for E1, or to mark it explicitly as "accepted with
+      low trust".
+      All three ratings are a teaching example: the numbers in the F/G/R columns were
+      chosen to demonstrate the minimum rule, not taken from a real measurement.
+    </p>
+  </div>
+
+  <table class="evid-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Evidence</th>
+        <th class="score-cell">F</th>
+        <th class="score-cell">G</th>
+        <th class="score-cell">R</th>
+        <th class="score-cell">min</th>
+        <th>CL</th>
+        <th class="score-cell">Rating</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="mono">E1</td>
+        <td>Vendor research: "LanceDB is 5× faster on analytical queries"</td>
+        <td class="score-cell"><span class="score-lo">0.3</span></td>
+        <td class="score-cell"><span class="score-lo">0.4</span></td>
+        <td class="score-cell"><span class="score-lo">0.2</span></td>
+        <td class="score-cell"><span class="score-lo">0.2</span></td>
+        <td><span class="cl cl1">CL1</span> <span class="penalty">−40%</span></td>
+        <td class="score-cell"><span class="score-lo">0.12</span></td>
+      </tr>
+      <tr>
+        <td class="mono">E2</td>
+        <td>A publication by the Qdrant engineers with a benchmark on 1M vectors, broken down by HNSW parameters</td>
+        <td class="score-cell"><span class="score-hi">0.8</span></td>
+        <td class="score-cell"><span class="score-hi">0.8</span></td>
+        <td class="score-cell"><span class="score-mid">0.6</span></td>
+        <td class="score-cell"><span class="score-mid">0.6</span></td>
+        <td><span class="cl cl2">CL2</span> <span class="penalty">−10%</span></td>
+        <td class="score-cell"><span class="score-mid">0.54</span></td>
+      </tr>
+      <tr>
+        <td class="mono">E3</td>
+        <td>Our own team's measurement: 500K documents, our own load, comparing p95 latency and throughput</td>
+        <td class="score-cell"><span class="score-hi">0.9</span></td>
+        <td class="score-cell"><span class="score-hi">0.9</span></td>
+        <td class="score-cell"><span class="score-hi">0.95</span></td>
+        <td class="score-cell"><span class="score-hi">0.9</span></td>
+        <td><span class="cl cl3">CL3</span> <span class="penalty">−0%</span></td>
+        <td class="score-cell"><span class="score-hi">0.90</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="result-row">
+    R_eff = min(0.12, 0.54, 0.90) = <span class="r-eff">0.12</span>
+    &nbsp;·&nbsp; Weak signal - E1 (vendor research) drags it down
+  </div>
+
+  <p style="margin-top: 20px;">
+    Notice: even one weak source drags down the R_eff of the whole
+    decision. That is not a bug - it is the point. The weakest-link rule says: if
+    your evidence base contains marketing material that you take seriously, that is
+    a risk. Either remove it, or state openly that you are relying on weak
+    evidence.
+  </p>
+  <p>
+    In this example the team could drop E1 from the DDR and rely on E2 and E3
+    alone - then R_eff = min(0.54, 0.90) = 0.54. That is already an honest
+    rating: "we decided with moderate trust, on the basis of an independent
+    benchmark and our own measurement".
+  </p>
+
+  <hr class="sep">
+
+  <h2>Go deeper</h2>
+  <p>
+    Three materials for the next step, depending on what is closer to
+    your situation right now.
+  </p>
+
+  <div class="start-grid">
+    <a class="start-link" href="trust-calculus.html">
+      <div class="start-who">3D INTERACTIVE</div>
+      <div class="start-where">Trust Calculus in F/G/R space - an interactive visualisation <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="decision-cycle.html">
+      <div class="start-who">DDR FORMAT</div>
+      <div class="start-where">How to fit F/G/R into the "Evidence" section of a DDR when you record a decision <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="lifecycle-cycle.html">
+      <div class="start-who">SHELF LIFE</div>
+      <div class="start-where">Evidence decay: evidence expiry and its effect on R_eff <span class="start-arrow">→</span></div>
+    </a>
+  </div>
+
+  <div class="closing">
+    <p>
+      <b class="k">The main point:</b> a trust calculation is not bureaucracy on top of
+      a discussion, it is protection against a common mistake. Teams do not lose
+      because they pick bad technology; they lose because they trust
+      well-presented arguments as much as real measurements. Three numbers and the
+      minimum rule make that difference visible before the decision is taken.
+    </p>
+  </div>
+
+</main>
+
+<script>
+(function () {
+  if (typeof Chart === 'undefined') return;
+  var ctx = document.getElementById('evidChart');
+  if (!ctx) return;
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: [
+        'E1 · Vendor research',
+        'E2 · Independent benchmark',
+        'E3 · Our own measurement'
+      ],
+      datasets: [
+        {
+          label: 'Average F/G/R',
+          data: [
+            +((0.3 + 0.4 + 0.2) / 3).toFixed(2),
+            +((0.8 + 0.8 + 0.6) / 3).toFixed(2),
+            +((0.9 + 0.9 + 0.95) / 3).toFixed(2)
+          ],
+          backgroundColor: 'rgba(245, 158, 11, 0.35)',
+          borderColor: 'rgba(245, 158, 11, 0.8)',
+          borderWidth: 1,
+          borderRadius: 3
+        },
+        {
+          label: 'min(F, G, R) - before the CL penalty',
+          data: [0.2, 0.6, 0.9],
+          backgroundColor: [
+            'rgba(239, 68, 68, 0.55)',
+            'rgba(245, 158, 11, 0.65)',
+            'rgba(34, 197, 94, 0.55)'
+          ],
+          borderColor: [
+            'rgba(239, 68, 68, 0.9)',
+            'rgba(245, 158, 11, 0.9)',
+            'rgba(34, 197, 94, 0.9)'
+          ],
+          borderWidth: 1,
+          borderRadius: 3
+        },
+        {
+          label: 'score = min(F, G, R) x (1 - CL penalty)',
+          data: [0.12, 0.54, 0.9],
+          backgroundColor: [
+            'rgba(96, 165, 250, 0.5)',
+            'rgba(96, 165, 250, 0.5)',
+            'rgba(96, 165, 250, 0.5)'
+          ],
+          borderColor: [
+            'rgba(96, 165, 250, 0.9)',
+            'rgba(96, 165, 250, 0.9)',
+            'rgba(96, 165, 250, 0.9)'
+          ],
+          borderWidth: 1,
+          borderRadius: 3
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          ticks: {
+            color: 'rgba(229, 229, 229, 0.88)',
+            font: { family: 'Inter, sans-serif', size: 12.5 }
+          },
+          grid: { color: 'rgba(255, 255, 255, 0.06)' }
+        },
+        y: {
+          beginAtZero: true,
+          max: 1,
+          ticks: {
+            color: 'rgba(163, 163, 163, 0.85)',
+            font: { family: 'JetBrains Mono, monospace', size: 11 },
+            callback: function (v) { return v.toFixed(1); }
+          },
+          grid: { color: 'rgba(255, 255, 255, 0.06)' }
+        }
+      },
+      plugins: {
+        legend: {
+          display: true,
+          labels: {
+            color: 'rgba(229, 229, 229, 0.8)',
+            font: { family: 'Inter, sans-serif', size: 12 },
+            boxWidth: 14,
+            padding: 16
+          }
+        },
+        tooltip: {
+          backgroundColor: 'rgba(11, 11, 11, 0.95)',
+          borderColor: 'rgba(255, 90, 31, 0.7)',
+          borderWidth: 1,
+          titleColor: '#f5f5f5',
+          bodyColor: '#e5e5e5',
+          callbacks: {
+            label: function (c) {
+              return c.dataset.label + ': ' + c.parsed.y.toFixed(2);
+            }
+          }
+        }
+      }
+    }
+  });
+})();
+</script>
+
+</body>
+</html>

@@ -1,5 +1,13 @@
 # Dependabot triage — 2026-05-21 (v0.32.0 release window)
 
+> Historical v0.32.0 snapshot; reported acceptance and planned closure are not
+> current release approval. [GHSA-rhfx-m35p-ff5j](https://github.com/advisories/GHSA-rhfx-m35p-ff5j)
+> describes `IterMut` pointer-invalidation soundness, affected `>=0.9.0,<0.16.3`,
+> fixed `0.16.3` (currently CVSS 2.7). “Miri-only”/“no production impact”
+> below is the recorded rationale, not proof that optimized builds are safe.
+> Website-only dependencies are outside the Rust binary but can affect the
+> build machine and deployment. No current alert/CI query was run here.
+
 Per RED-LINE #10 (CLAUDE.md): each release tags every open Dependabot alert as **addressed** / **scheduled** / **accepted-with-justification**. Following the `docs/operations/RELEASE-PROTOCOL.ru.md` step-4 contract.
 
 ## Snapshot at release time

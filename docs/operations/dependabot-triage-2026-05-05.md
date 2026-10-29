@@ -1,5 +1,14 @@
 # Dependabot Triage — 2026-05-05 (Round 4, pre-release v0.29.0)
 
+> Historical branch-specific triage, not current dependency or release proof.
+> Pins, actual outcomes and pending merges below are preserved. In particular,
+> [GHSA-rhfx-m35p-ff5j](https://github.com/advisories/GHSA-rhfx-m35p-ff5j)
+> is an `IterMut` soundness defect (`>=0.9.0,<0.16.3`, fixed `0.16.3`).
+> “Miri-only”/“no production impact” is the old risk rationale, not evidence
+> that optimized builds are unaffected. Current advisory CVSS is 2.7.
+> Separate website/tooling dependencies still carry build/deployment risk;
+> no live alert refresh or re-execution was performed for this annotation.
+
 **Sprint:** v0.29.0 release prep (CLAUDE.md red line #10)
 **Triage author:** chore/release-v0.29.0 W5
 **Branch base:** `feat/prob-050-claude-print-refactor` (PR #247 awaiting merge to dev)

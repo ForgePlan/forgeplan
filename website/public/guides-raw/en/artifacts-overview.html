@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Managing team artifacts - Forgeplan Guides</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 18px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  ul, ol { color: var(--text-2); font-size: 17px; line-height: 1.65; list-style: none; padding-left: 0; margin: 16px 0; }
+  main > ul, main > ol { max-width: 820px; }
+  ul li, ol li { margin-bottom: 12px; padding-left: 28px; position: relative; }
+  ul li::before { content: "▸"; position: absolute; left: 6px; top: 0; color: var(--accent); font-family: var(--font-mono); font-size: 17px; line-height: 1.65; }
+  ol { counter-reset: list-counter; }
+  ol li::before { content: counter(list-counter, decimal-leading-zero); counter-increment: list-counter; position: absolute; left: 0; top: 1px; color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; font-weight: 500; }
+  ol li { padding-left: 36px; }
+  .deflist, .deflist li { padding-left: 0; margin-bottom: 0; }
+  .deflist li::before { content: none; }
+  .ba-cell ul, .ba-cell li { padding-left: 0; }
+  .ba-cell li::before { content: none; }
+  .ba-cell li { padding-left: 14px; }
+  .ba-cell li::before { content: "·"; position: absolute; left: 0; top: -2px; color: var(--text-3); font-size: 20px; font-family: var(--font-mono); }
+  code { font-family: var(--font-mono); font-size: 14.5px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bg); transition: border-color .15s ease; }
+  a:hover { border-color: var(--accent); }
+
+  .audience-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 24px 0 0; }
+  @media (max-width: 720px) { .audience-grid { grid-template-columns: 1fr; } }
+  .audience-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 24px 24px; }
+  .audience-card .role-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+  .audience-card .role-title { font-size: 17px; font-weight: 500; color: var(--text); margin: 0 0 10px; line-height: 1.3; }
+  .audience-card .role-body { font-size: 14px; color: var(--text-2); line-height: 1.55; margin: 0 0 8px; }
+  .audience-card .role-pain { font-size: 13px; color: var(--text-3); border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; font-style: italic; }
+
+  .usecase-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 0; }
+  @media (max-width: 960px) { .usecase-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .usecase-grid { grid-template-columns: 1fr; } }
+  .usecase-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 22px; border-top: 2px solid var(--accent); }
+  .usecase-card .uc-domain { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .usecase-card .uc-title { font-size: 15px; font-weight: 500; color: var(--text); margin: 0 0 8px; line-height: 1.35; }
+  .usecase-card .uc-body { font-size: 13px; color: var(--text-2); line-height: 1.55; margin: 0; }
+
+  .compare-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 24px 0 0; }
+  .compare-wrap .compare-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 6px; }
+  .compare-wrap .compare-title { font-size: 18px; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  .compare-wrap .chart-host { position: relative; height: 320px; }
+  .compare-wrap .compare-note { font-size: 12.5px; color: var(--text-3); margin-top: 14px; line-height: 1.5; max-width: 760px; }
+
+  .deflist { margin: 16px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: none; }
+  @media (max-width: 960px) { .deflist { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .deflist { grid-template-columns: 1fr; } }
+  .deflist li { background: var(--bg-1); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 0; padding: 14px 16px 16px; }
+  .deflist .def-num { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; margin-bottom: 6px; }
+  .deflist .def-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 6px; }
+  .deflist .def-body { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+
+  .start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 0; }
+  @media (max-width: 640px) { .start-grid { grid-template-columns: 1fr; } }
+  .start-link { display: block; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; color: var(--text-1); border-bottom: 1px solid var(--line-2); transition: all .15s ease; }
+  .start-link:hover { border-color: var(--accent); color: var(--text); }
+  .start-link .start-who { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .start-link .start-where { font-size: 14px; color: var(--text); }
+  .start-link .start-arrow { float: right; color: var(--accent); }
+
+  .aside { border-left: 2px solid var(--accent); background: var(--accent-bg); padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--text-1); border-radius: 0; max-width: 820px; }
+
+  .ba-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0 0; }
+  @media (max-width: 720px) { .ba-grid { grid-template-columns: 1fr; } }
+  .ba-cell { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px 22px; }
+  .ba-cell .ba-head { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 12px; }
+  .ba-cell.ba-bad .ba-head { color: var(--err); }
+  .ba-cell.ba-good .ba-head { color: var(--ok); }
+  .ba-cell ul { margin: 0; padding-left: 18px; }
+  .ba-cell li { color: var(--text-2); font-size: 13.5px; line-height: 1.55; margin-bottom: 6px; }
+
+  .closing { margin: 48px 0 0; padding: 28px 32px 30px; background: var(--bg-1); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; }
+  .closing p { color: var(--text-1); font-size: 15.5px; max-width: 820px; }
+
+  hr.sep { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+
+  .antipattern-list { margin: 20px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; max-width: 820px; }
+  .antipattern-list li { background: var(--bg-1); border: 1px solid var(--line-2); border-left: 2px solid var(--err); border-radius: 0; padding: 14px 18px; padding-left: 0; display: flex; align-items: baseline; gap: 0; }
+  .antipattern-list li::before { content: none; }
+  .ap-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--err); min-width: 180px; padding: 0 18px; flex-shrink: 0; }
+  .ap-body { font-size: 14px; color: var(--text-2); line-height: 1.55; padding-right: 18px; }
+  @media (max-width: 720px) { .antipattern-list li { flex-direction: column; } .ap-label { padding: 14px 18px 6px; } .ap-body { padding: 0 18px 14px; } }
+
+  .rhythm-steps { margin: 20px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; max-width: 820px; counter-reset: rhythm-counter; }
+  .rhythm-steps li { display: flex; align-items: baseline; gap: 16px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 0; padding: 14px 18px; counter-increment: rhythm-counter; }
+  .rhythm-steps li::before { content: counter(rhythm-counter, decimal-leading-zero); font-family: var(--font-mono); font-size: 12px; color: var(--accent); letter-spacing: 0.1em; font-weight: 500; flex-shrink: 0; }
+  .rhythm-steps .step-title { font-size: 15px; font-weight: 500; color: var(--text); margin-bottom: 3px; }
+  .rhythm-steps .step-body { font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .rhythm-steps .step-content { display: flex; flex-direction: column; }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">ARTIFACTS · OVERVIEW</p>
+  <h1>Managing team artifacts</h1>
+  <p class="lead">
+    Six months after a release, decisions have to be reconstructed from records or memory.
+    An agreement about where decisions <b class="k">must</b> be recorded helps.
+    Here an artifact is a structured record with an owner and a review process.
+    This is a proposed team practice, not a universal standard for every document.
+  </p>
+
+  <hr class="sep">
+
+  <h2>What counts as an artifact?</h2>
+  <p>
+    In everyday usage, an artifact can be any work file. In the decision-journal
+    practice described here, it means something more specific: <b class="k">a record
+    with a required structure that captures one decision, one requirement,
+    or one item of evidence</b>.
+  </p>
+  <p>Three properties distinguish this kind of artifact from an ordinary document.</p>
+  <p>
+    First, <b class="k">required fields defined by an agreed template</b>.
+    The decision format proposed here requires a review condition.
+    Requirements and evidence may need different fields.
+    Agreeing on a structure helps expose omissions before a record is approved.
+  </p>
+  <p>
+    Second, <b class="k">version history</b>. Keep the artifact alongside the code
+    in version control. Its history should show who reconsidered what and when.
+    This is a chronology, not just a file labelled “latest version.”
+  </p>
+  <p>
+    Third, <b class="k">substantial changes are recorded as a review</b>.
+    This is a team rule, not technical immutability after activation.
+    A typo can be corrected with a recorded change; a changed decision is better
+    captured separately, with a date, rationale, and link to the old decision.
+    A wiki can also preserve history.
+  </p>
+
+  <div class="aside">
+    A useful analogy is a series of dated observations: add new information with
+    an author and date rather than presenting it as earlier knowledge.
+    This illustrates record keeping; it is not a claim about medical-record rules.
+  </div>
+
+  <hr class="sep">
+
+  <h2>One file, one responsibility</h2>
+  <p>
+    A possible antipattern is “let’s put every decision this quarter in one big
+    document,” or “we have a master specification; everything is there.”
+    The appeal is understandable: fewer files and less switching.
+  </p>
+  <p>
+    Imagine that after four to six months the master document has reached
+    80 pages and finding a decision takes an hour. These are illustrative values,
+    not a team measurement. Without explicit statuses and review conditions,
+    current and obsolete decisions become hard to distinguish.
+    The document risks becoming “the archive we never open.”
+  </p>
+  <p>
+    “One file, one decision” makes targeted review easier. When the context for
+    one choice changes, open its record. Related decisions still need checking:
+    file boundaries do not remove dependencies. An explicit status—active,
+    replaced, or requiring review—helps readers navigate without reading the archive.
+  </p>
+  <p>
+    In practice, the database choice gets a file. The API format gets another.
+    A performance requirement gets its own record. Evidence that the requirement
+    was met gets another record, with an explicit link to the requirement.
+  </p>
+  <p>
+    For example, a team might accumulate 40–80 artifacts in a year.
+    That is a hypothetical scale, not a norm or statistic.
+    What matters is that each record <b class="k">answers one question</b>
+    and can be found by title, keyword, or relation.
+  </p>
+
+  <hr class="sep">
+
+  <h2>A working rhythm for artifacts</h2>
+  <p>
+    Structure makes more sense alongside the work it supports.
+    The following is a suggested cycle, from first draft to the point
+    when a record no longer reflects the current context.
+  </p>
+
+  <ol class="rhythm-steps">
+    <li>
+      <div class="step-content">
+        <div class="step-title">Create a draft</div>
+        <div class="step-body">Start from a template and record the context and provisional rationale. A draft is not a commitment: it is space to think before recording a final choice.</div>
+      </div>
+    </li>
+    <li>
+      <div class="step-content">
+        <div class="step-title">Fill the required fields</div>
+        <div class="step-body">For a decision: context, alternatives, evidence, the choice, reasons for rejecting alternatives, and a review condition. Three alternatives are a useful local anti-anchoring heuristic, not a universal FPF threshold. The record type determines its fields and readiness criteria.</div>
+      </div>
+    </li>
+    <li>
+      <div class="step-content">
+        <div class="step-title">Review the record</div>
+        <div class="step-body">Ask a teammate to read it: “If I work with this a year from now, will I understand what was decided and why?” If not, revise the record.</div>
+      </div>
+    </li>
+    <li>
+      <div class="step-content">
+        <div class="step-title">Activate</div>
+        <div class="step-body">The record moves from draft to active. It represents an accepted choice, not a technically locked file. Under the proposed team convention, substantial changes get a separate review linked to the earlier record.</div>
+      </div>
+    </li>
+    <li>
+      <div class="step-content">
+        <div class="step-title">Monitor the review condition</div>
+        <div class="step-body">Record a date or event and who will check it. Date-based detection can list an overdue record without changing its stored status. A person or separately configured monitor must track an event or metric; writing a condition does not install a monitor.</div>
+      </div>
+    </li>
+    <li>
+      <div class="step-content">
+        <div class="step-title">Reconsider or extend</div>
+        <div class="step-body">If the decision remains appropriate, extend its review date with a reason. If the context has invalidated it, open a new draft with the updated context and repeat the cycle. Keep the old record as history.</div>
+      </div>
+    </li>
+  </ol>
+
+  <hr class="sep">
+
+  <h2>What makes an artifact maintainable?</h2>
+  <p>
+    Documentation can become obsolete when nobody returns to it after creation.
+    Structure alone is not enough: it needs an owner and an actual review process.
+    The following three properties support review, but do not make records update themselves.
+  </p>
+  <p>
+    <b class="k">A named person, not an anonymous “team secretary.”</b>
+    Anonymous corporate phrasing—“it was decided,” “the team agreed”—hides useful
+    context. Name the person responsible for the choice. A year later,
+    readers know whom to ask if the record is incomplete.
+  </p>
+  <p>
+    <b class="k">An observable review condition and an owner.</b>
+    Instead of “review someday,” specify a date six months away, a threefold
+    increase in load, or a library release. Use an actual date for a deadline
+    and an observation method for an event. Configure reminders or an external
+    monitor separately. A sentence in the record does not initiate review.
+  </p>
+  <p>
+    <b class="k">Linked evidence, not a passing mention.</b>
+    “We checked; it was fine” is not inspectable evidence. Link to a concrete
+    measurement. An illustrative entry might say “230 ms at peak load,
+    data from April 12, stored in this file.” When the context changes,
+    readers can inspect whether the conditions of that measurement still apply.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Antipatterns</h2>
+  <p>
+    Five illustrative failures. These scenarios show risks, not measured
+    frequencies or a measured timetable for documentation decay.
+  </p>
+
+  <ul class="antipattern-list">
+    <li>
+      <div class="ap-label">ARCHIVE DUMP</div>
+      <div class="ap-body">A team creates records but never reviews them. Imagine 60 “active” records a year later, half describing a world that no longer exists. Nobody touches them “in case something breaks.”</div>
+    </li>
+    <li>
+      <div class="ap-label">SILENT EDIT</div>
+      <div class="ap-body">Someone silently rewrites an active record “to bring it up to date.” There is no dated explanation. Three months later, nobody knows when the decision changed or what it replaced.</div>
+    </li>
+    <li>
+      <div class="ap-label">EMPTY TEMPLATE</div>
+      <div class="ap-body">The fields exist but say nothing: “context: working on project X,” “options: considered several,” “review: as needed.” This creates the appearance of documentation without recording a usable decision.</div>
+    </li>
+    <li>
+      <div class="ap-label">MEGADOCUMENT</div>
+      <div class="ap-body">Every decision for the quarter lives in one file. A change to one choice rewrites the shared document. The history becomes difficult to interpret. In this hypothetical example, finding a decision takes 20 minutes.</div>
+    </li>
+    <li>
+      <div class="ap-label">NO EVIDENCE</div>
+      <div class="ap-body">A decision is chosen, recorded, and activated, but has no linked evidence. “We decided” without inspectable supporting data records a choice but gives readers no way to reassess it when the facts change.</div>
+    </li>
+  </ul>
+
+  <hr class="sep">
+
+  <h2>Explore the practice</h2>
+  <p>Examine a complete decision cycle and the lifecycle of a record after activation.</p>
+
+  <div class="start-grid">
+    <a class="start-link" href="decision-cycle.html">
+      <div class="start-who">DECISION CYCLE</div>
+      <div class="start-where">One decision in detail: alternatives, evidence, choice <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="lifecycle-cycle.html">
+      <div class="start-who">RECORD LIFECYCLE</div>
+      <div class="start-where">After activation: expiry, renewal, replacement <span class="start-arrow">→</span></div>
+    </a>
+  </div>
+
+</main>
+</body>
+</html>

@@ -81,7 +81,7 @@ function closestPointOnSegment(
   return [ax + t * dx, ay + t * dy];
 }
 
-// Zero-alloc min-distance between two segments (fixes GC pressure)
+// Minimum among endpoint-to-segment distances; not a zero-allocation routine.
 function segSegDist(
   a1x: number, a1y: number, a2x: number, a2y: number,
   b1x: number, b1y: number, b2x: number, b2y: number
@@ -201,7 +201,7 @@ export default function CrystallizationAnimation({ progress }: Props) {
       svg.appendChild(g); labels.push(g);
     });
 
-    // Base counts for each artifact (randomized, grow during chaos)
+    // Decorative counts, not workspace data (randomized, grow during chaos)
     const baseCounts = ARTIFACTS.map(() => 8 + Math.floor(Math.random() * 40));
 
     const hexElements: SVGPolygonElement[] = [];

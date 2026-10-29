@@ -1,9 +1,9 @@
 ---
 title: forgeplan_export
-description: "Экспортирует все артефакты и связи в JSON-пакет. Возвращает экспортированные данные напрямую для программного использования или записывает их в файл. Безопасный, доступный только для чтения снимок, подходящий для резервного копирования, миграции и передачи между машинами."
+description: "Экспорт полей артефактов и связей в JSON-ответ или целевой файл."
 ---
 
-Создает полный JSON-снимок рабочего пространства: каждого артефакта (PRD, RFC, ADR, Epic, Spec, Note, Problem, Solution, Evidence, Refresh), их метаданных (frontmatter), содержимого в формате Markdown и полного графа связей. Результат может быть записан в файл или возвращен в виде встроенных данных, чтобы агент мог встроить его в ответ, передать в инструменты миграции или прикрепить к аудиторскому следу.
+Экспортирует поля записей артефактов и связи выбранного workspace в JSON. Это не побайтовая копия каталога проекта: вспомогательное состояние, логи, захваты, конфигурация и кэши не входят в пакет. В мигрированном workspace записи берутся из захваченного канонического Markdown, в legacy — из проекции.
 
 **Категория**: Рабочее пространство и данные
 
@@ -17,9 +17,9 @@ description: "Экспортирует все артефакты и связи �
 
 ## Примечания по безопасности
 
--   Экспорт **доступен только для чтения**. Он никогда не изменяет рабочее пространство.
--   **Ключи API и локальная конфигурация НЕ экспортируются.** Файл `.forgeplan/config.yaml` игнорируется Git и находится вне домена артефактов; экспорт содержит только артефакты + связи. Вам все равно потребуется перенастроить провайдеров LLM после `forgeplan_import`.
--   Производные индексы (`.forgeplan/lance/`, `.fastembed_cache/`) **не** включаются - они перестраиваются по требованию с помощью `forgeplan scan-import`.
+- Экспорт не меняет записи артефактов. С `output` он **записывает или перезаписывает файл**: абсолютный путь используется напрямую, относительный разрешается от корня проекта. Выбирайте файл резервной копии, не канонический исходник.
+- Конфигурация и ключи провайдера в ней не включаются отдельными файлами. Однако тела артефактов экспортируются дословно и сами могут содержать чувствительные данные; проверьте пакет перед передачей.
+- Производные индексы и кэши моделей не входят в пакет. `forgeplan index` публикует Constellation; legacy `forgeplan reindex` перестраивает старую проекцию. `scan-import` импортирует внешний Markdown, а не восстанавливает индекс.
 -   Экспорт является каноническим форматом резервного копирования. Никогда не выполняйте `rm -rf .forgeplan`, не вызвав сначала `forgeplan_export`.
 
 ## Входные параметры
@@ -27,46 +27,21 @@ description: "Экспортирует все артефакты и связи �
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
 | `output` | `string` | no | Путь к целевому файлу. Если опущено, инструмент возвращает JSON-пакет в виде встроенных данных в ответе. Если указано, инструмент записывает данные на диск и возвращает краткое сообщение об успешном выполнении. |
+| `workspace` | `string \| null` | no | Явный абсолютный путь workspace или путь с `~/`. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ExportParams`_
 
 ## Возвращает
 
-**С `output`:**
+С `output` успешный payload содержит `written_to`, числовые счётчики
+`artifacts`, `relations`, а также `_next_action`. Поля `bytes` нет.
 
-```json
-{
-  "written": "/Users/me/forgeplan-backup-2026-04-11.json",
-  "artifacts": 187,
-  "relations": 312,
-  "bytes": 648321
-}
-```
-
-**Без `output` (встроенный режим):**
-
-```json
-{
-  "version": 1,
-  "generated_at": "2026-04-11T12:04:18Z",
-  "artifacts": [
-    {
-      "id": "PRD-001",
-      "kind": "prd",
-      "status": "active",
-      "depth": "standard",
-      "title": "Auth system",
-      "body": "# PRD-001: Auth system\n\n## Problem\n…",
-      "tags": ["auth"],
-      "valid_until": null,
-      "updated_at": "2026-04-08T10:00:00Z"
-    }
-  ],
-  "relations": [
-    { "from": "EVID-012", "to": "PRD-001", "type": "informs" }
-  ]
-}
-```
+Без `output` возвращаются `version: 1`, `artifacts`, `relations`,
+`_next_action`; поля `generated_at` нет. Записи артефактов содержат
+`id`, `kind`, `status`, `title`, `body`, `depth`, `author`, `parent_epic`,
+`r_eff_score`, `valid_until`, `created_at`, `updated_at` (не `tags`).
+У связей поля `source`, `target`, `relation`, не `from`/`to`/`type`.
+Сам экспорт не шифрует результат.
 
 Встроенный режим удобен для небольших рабочих пространств; для больших предпочтительнее запись в файл, чтобы избежать раздувания полезной нагрузки ответов MCP.
 
@@ -97,15 +72,61 @@ forgeplan_import (data=<contents of backup.json>)   ← restore if things go wro
 ```
 [machine A] forgeplan_export → bundle.json
 [transfer bundle.json]
-[machine B] forgeplan init → forgeplan_import (data=bundle.json)
+[machine B] forgeplan init → forgeplan_import (data=<JSON-содержимое bundle.json, не имя файла>)
 ```
 
 ## Эквивалент CLI
 
--   [`forgeplan export`](/ru/docs/cli/export/) - идентичное поведение из терминала.
+- [`forgeplan export`](/ru/docs/cli/export/) — экспорт из терминала; поля оболочки не следует считать совпадающими с MCP payload.
 
 ## См. также
 
 -   [Обзор MCP](/ru/docs/mcp/)
 -   [`forgeplan_import`](/ru/docs/mcp/forgeplan_import/) - восстановление из пакета
 -   [`forgeplan_init`](/ru/docs/mcp/forgeplan_init/) - инициализация рабочего пространства перед импортом
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Export all artifacts and relations to a JSON bundle. Returns the exported data directly for programmatic use, or writes to a file path.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `output` | нет | string \| null | Optional output file path. If omitted, returns JSON directly. |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "output": {
+      "default": null,
+      "description": "Optional output file path. If omitted, returns JSON directly.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "ExportParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

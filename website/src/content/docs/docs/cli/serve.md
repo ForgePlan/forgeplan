@@ -11,42 +11,52 @@ over JSON-RPC on stdin/stdout.
 ## Usage
 
 ```text
-forgeplan serve
+forgeplan serve [OPTIONS]
 ```
 
 ## Options
 
 ```text
-  -h, --help     Print help
-  -V, --version  Print version
+      --auto-index        Enable background Constellation maintenance
+      --profile <PROFILE> full (default) or constellation-read
+      --workspace <PATH>  Server default (startup environment can override)
+  -h, --help              Print help
+  -V, --version           Print version
 ```
 
 ## What it exposes
 
-73 MCP tools mapped onto the core Forgeplan operations:
+The default `full` profile includes read **and write** tools. Consult the
+[MCP overview](/docs/mcp/) and the running server's `tools/list` for the
+version-specific interface; registration does not prove that every tool
+supports a migrated workspace.
 
-- **Artifact lifecycle** - `new`, `validate`, `review`, `activate`,
-  `supersede`, `deprecate`, `stale`, `renew`, `reopen`
-- **Query + discovery** - `list`, `get`, `search`, `blocked`, `order`,
-  `tree`, `discover`, `blindspots`, `gaps`
-- **Scoring + reasoning** - `score`, `fgr`, `reason`, `route`, `estimate`
-- **Evidence + links** - `link`, `unlink`, `new_evidence`
-- **Tags** - `tag`, `untag`
-- **Health + observability** - `health`, `status`, `coverage`, `drift`
-- **FPF knowledge base** - `fpf_search`, `fpf_section`, `fpf_check`
-- **Memory** - `remember`, `recall`, `promote`
+In the local `0.39.0+constellation.s1.1` build (not the published 0.38.0),
+`--profile constellation-read` selects a separate registry-bound, handle-based
+read interface. It is not a read-only switch for the full tool namespace.
+See [Constellation setup](/docs/guides/constellation/) and the
+[read contracts](/docs/reference/constellation/).
 
-Forgeplan is **MCP-first**: the CLI is a convenience wrapper, and the full
-power of the tool is designed to be driven by AI agents through this server.
+`--auto-index` enables index maintenance, not automatic embeddings by itself.
+Vector queue draining also requires a semantic-search build, explicit
+`embedding:` configuration with `model: bge-m3`, a complete cached model
+snapshot, and a running maintenance host. Maintenance is implied for an
+already-migrated workspace.
 
 ## Transport
 
 - **stdio only** - no HTTP, no sockets, no network exposure. The MCP client
   owns the process and communicates over pipes.
-- **One workspace per server** - the server runs in the current working
-  directory and operates on `./.forgeplan/`. Launch it from the project root.
-- **Stateless** - no long-lived state between requests beyond what's in
-  LanceDB and markdown.
+- **Workspace routing** - `--workspace` sets the server default. Full-server
+  startup selects maintenance using `FORGEPLAN_WORKSPACE` → server default →
+  current-directory discovery. Bind that value to the project or explicitly
+  set it empty; unsetting permits `.env` reload. Captured help below omits
+  this override. For tools accepting
+  `workspace`, request parameter → environment → server default → current
+  directory. Request paths accept absolute or `~/`-expanded paths. A later
+  request for another workspace does not move maintenance.
+- **Profile state** - the read profile holds process-local scope/snapshot
+  handles; restart invalidates those handles.
 
 ## Examples
 
@@ -59,22 +69,23 @@ See "Manual usage (debugging)" below.
 ## Typical usage (automatic)
 
 You usually don't run `serve` manually. MCP clients launch it as a child
-process via their config file. For Claude Code, add to `~/.claude/mcp.json`:
+process via their config file. For Claude Code, use `forgeplan mcp install`
+or a project `.mcp.json` entry:
 
 ```json
 {
   "mcpServers": {
     "forgeplan": {
       "command": "forgeplan",
-      "args": ["serve"],
-      "cwd": "/path/to/your/project"
+      "args": ["serve", "--profile", "full", "--workspace", "/path/to/your/project"],
+      "env": { "FORGEPLAN_WORKSPACE": "/path/to/your/project" }
     }
   }
 }
 ```
 
-Cursor (`~/.cursor/mcp.json`) and Windsurf use the same schema. Restart the
-client; Forgeplan tools (`mcp__forgeplan__*`) become available to the agent.
+Client configuration formats vary. Restart the client after editing its
+configuration and inspect `tools/list` to confirm the selected profile.
 
 ## Manual usage (debugging)
 
@@ -99,18 +110,52 @@ than hand-writing JSON-RPC.
 
 ## Troubleshooting
 
-- **"No workspace found"** - the server was launched in a directory without
-  `.forgeplan/`. Set `cwd` in your MCP client config to the project root.
+- **"No workspace found"** - set `--workspace` to the intended project root;
+  do not assume the AI agent's working directory is the server's directory.
 - **Tools missing in client** - restart the MCP client after editing its
   config; most clients only read `mcp.json` at startup.
-- **LLM features fail** - LLM-backed tools (`reason`, `route`) need a
-  provider configured in `.forgeplan/config.yaml`. See the LLM guide.
-- **Semantic tools no-op** - `embed` feature flag must be compiled in for
-  semantic search; otherwise those tools fall back to keyword search.
+- **LLM features fail** — `reason` and LLM-classified routing need a provider
+  configured in `.forgeplan/config.yaml`; keyword routing does not itself need an LLM.
+- **Semantic search unavailable** - distinguish the `semantic-search` build
+  feature, cached model files, and embeddings in the index. See
+  [`forgeplan embed`](/docs/cli/embed/); forced semantic search on a migrated
+  workspace does not promise keyword fallback.
 
 ## See also
 
 - [CLI overview](/docs/cli/)
 - [MCP tools reference](/docs/mcp/) - full list of exposed tools
 - [`forgeplan health`](/docs/cli/health/) - verify workspace before serving
-- [`forgeplan reindex`](/docs/cli/reindex/) - rebuild index if tools return stale data
+- [`forgeplan index`](/docs/cli/index-command/) - Constellation maintenance; use legacy `reindex` only with the appropriate layout
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan serve --help`.
+
+```text
+Start MCP server (stdio transport) for AI agent integration
+
+Usage: forgeplan serve [OPTIONS]
+
+Options:
+      --auto-index
+          Run a Constellation maintenance pass + embedding-queue drain in the background while serving (explicit opt-in; the index itself is never required for reads)
+
+      --profile <PROFILE>
+          Server profile: `full` (default — all tools) or `constellation-read` (stage-5 read profile — only scope/snapshot handle reads; no write tools, no raw paths accepted)
+          
+          [default: full]
+
+      --workspace <PATH>
+          Workspace this process maintains, when it is not the one the server was started in.
+          
+          Absent, the maintenance host follows the process's working directory. Present, it follows **this** path — so `serve --auto-index --workspace Y` in a checkout of X maintains Y and never X. Without the flag, `forgeplan serve` started in X had no way to keep a second workspace current at all, and any attempt to infer one from the server's own default resolution would silently pick X again.
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+```
+<!-- forgeplan-runtime:end -->

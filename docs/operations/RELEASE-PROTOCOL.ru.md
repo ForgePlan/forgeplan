@@ -8,6 +8,11 @@
 Companion read для daily git flow:
 [`GIT-WORKFLOW.ru.md`](GIT-WORKFLOW.ru.md).
 
+Проверки выполняет один допущенный tester/build owner под общей lease, не
+каждый параллельный writer. Все release prerequisites и user approval
+сохраняются. Этот протокол не является receipt PASS для документационной
+сборки: G1/G2/G3 отложены, не отменены; PRD-089/RFC-017 намеренно остаются draft.
+
 ---
 
 ## Зачем этот документ
@@ -132,7 +137,9 @@ forgeplan-core = { path = "../forgeplan-core", version = "X.Y.Z", features = ["t
 cargo check --workspace
 ```
 
-Это produces deterministic `Cargo.lock` diff alongside manifest diffs.
+Проверьте реальный diff lockfile вместе с manifests: результат зависит от
+имеющегося lock, toolchain и registry. Неизменность или неожиданный diff нужно
+разобрать, а не считать доказанным заранее определённый результат.
 
 ### 6. Update human-readable docs
 
@@ -192,13 +199,16 @@ git push origin vX.Y.Z
 публикация не доказывает правильный состав — PROB-088 просидел незамеченным
 месяцами именно потому, что бинари собирались и публиковались нормально,
 просто без `semantic-search`. Скачай один опубликованный артефакт и проверь
-маркер линковки, а не доверяй факту сборки:
+бинарь в подготовленном изолированном workspace с выбранным layout и полным
+model cache. Prerequisites и реальные embed/search проверки описаны в
+[CONSTELLATION-PILOT.ru.md](CONSTELLATION-PILOT.ru.md). Сохраняйте полный вывод
+и настоящий exit status; не обрезайте результат через `head`.
 
-```bash
-# Спроси сам бинарь. Отказ означает, что фичи нет; любой другой исход
-# (прогресс-бар, реальный прогон) означает, что она есть.
-/path/to/downloaded/forgeplan embed 2>&1 | head -3
-```
+Отсутствие feature устанавливает специальная диагностика “Embedding not available —
+this build was compiled without the semantic-search feature”. Отсутствующий
+workspace/model/config, отказ прав, пустые или
+ineligible vectors этого не доказывают. Progress message не доказывает
+завершённый embed и работающий semantic search.
 
 **Прежняя проверка по линковке больше не работает и не должна возвращаться.**
 До RFC-013 маркером было наличие `libc++` в выводе `otool -L` — он появлялся
@@ -253,9 +263,9 @@ Fix: открыть sync-PR ДО закрытия release session. Protocol sequ
 
 ### Push'ать в release branch *после* мерджа PR
 
-Symptom: поздний commit land'ится на release branch уже после `git
-merge`; `git push` succeeds но коммит висит dangling. Worse: если был
-squash merge, весь late commit silently discarded.
+Symptom: поздний commit отправлен в release branch после merge PR.
+Он остаётся доступен в этой ветке, но не попадает автоматически в `main`.
+Squash не удаляет такой поздний commit.
 
 Fix: никогда не push'ать в branch после мерджа PR. Если нужно
 "amend the release", открой свежую `fix/vX.Y.Z-hotfix` branch и trat'ь
@@ -290,12 +300,10 @@ output. Polish для narrative, НЕ bypass для "скорости" — ин�
 Symptom: tag landed, бинари не publish'атся, users репортят 404 на
 brew bottle.
 
-Fix: никогда не tag'ать до того как CI на `main` fully green. Шаг 9
-читает `git checkout main && git pull --ff-only` first; единственный
-способ чтобы это succeed'ило после мерджа release PR — это merge
-commit на `main`'s tip, и единственный способ что *этот* tip safe to
-tag — это что его CI passed. Check `gh run list --branch main --limit
-3` ПЕРЕД `git tag`.
+Не ставьте tag до зелёного CI на точном intended commit `main`.
+`git pull --ff-only` не доказывает CI success и не исключает более поздний commit.
+Сверьте `MERGE_SHA` с release PR и outcomes всех обязательных workflows на этом
+SHA до tag; короткий список branch runs сам по себе не является proof.
 
 ### Dependabot alerts на release time (RED LINE #10)
 
@@ -320,8 +328,9 @@ justification** (explicit risk-take statement). Файл triage doc под
 `.gitkeep` плейсхолдеры из PRD-077 FR-001, `secrets.env` template из
 FR-002).
 
-`forgeplan init --force` — migration entry point. Он **strictly additive**
-(PROB-068 контракт):
+`forgeplan init --force` обновляет workspace skeleton/config; это **не**
+обычная команда recovery производного индекса. Additive-контракт для тел
+артефактов не означает сохранение активной custom-конфигурации:
 
 - Existing artifact `.md` bodies НИКОГДА не перезаписываются.
 - `config.yaml` регенерируется (предыдущая версия сдвигается в сторону
@@ -343,9 +352,19 @@ FR-002).
     git pull
     forgeplan init --force
 
-Это idempotent и additive — твои artifact bodies, custom config.yaml
-edits, и existing secrets.env ключи сохраняются.
+Тела артефактов и существующие secrets.env keys сохраняются, но config.yaml
+заменяется defaults. Custom edits остаются только в backup;
+сравните и восстановите нужные настройки до продолжения работы.
 ```
+
+Перед операцией остановите writers и сохраните весь `.forgeplan/` и MCP config
+вне workspace. `init` обнаруживает родителей — проверьте целевой путь.
+В новых defaults `llm` и `embedding` равны none: automatic Constellation embedding
+остановится до восстановления явной настройки модели. Кэш модели и прежний
+ручной `embed` конфигурацию не восстанавливают. Для recovery индекса используйте
+`reindex` (либо явный `index` в Constellation), сохраняя canonical Markdown/config;
+см. [переносимый пилот и откат](CONSTELLATION-PILOT.ru.md).
+Откат требует совместимый набор workspace/index/binary, не только старый executable.
 
 ---
 

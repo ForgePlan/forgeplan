@@ -1,5 +1,14 @@
 # Dependabot Triage — 2026-05-03 (Round 3, pre-release v0.28.0)
 
+> Historical release-window receipt, not a fresh risk acceptance or present
+> Dependabot/CI status. Preserve its pins, counts, outcomes and forecasts.
+> The old `lru` “Miri-only”/“no production impact” rationale overstates what
+> detection establishes: [GHSA-rhfx-m35p-ff5j](https://github.com/advisories/GHSA-rhfx-m35p-ff5j)
+> describes an `IterMut` soundness defect in `>=0.9.0,<0.16.3`, fixed `0.16.3`.
+> Optimized-build safety was not demonstrated here; the currently displayed
+> advisory CVSS is 2.7, not the older snapshot's 0.0. Website build tooling is
+> not bundled in the CLI but is not thereby harmless to builders/deployments.
+
 **Sprint:** PR 2 — release v0.28.0 (CLAUDE.md red line #10)
 **Triage author:** chore/release-v0.28.0 (autonomous run)
 **Branch base:** `dev` @ `136a881` (Merge PR #237 from PR 1 — real E2E closure)

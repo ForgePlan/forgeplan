@@ -1,5 +1,7 @@
 # Execution Order
 
+This is the proposed delivery order, not a record of completed dependencies. `issues/manifest.json` defines the explicit dependency edges; a shared wave does not remove them. `_import/02-EXECUTION-PLAN.md` preserves the original imported snapshot rather than a live copy of this corrected sequence.
+
 ## Wave 0 — Alignment
 
 - FPV-01 Product boundary.
@@ -18,17 +20,18 @@ Parallel after FPV-02:
 - FPV-03 WorkContract.
 - FPV-04 ExecutionReceipt.
 - FPV-06 R_eff v2 design/implementation.
-- FPV-07 Authority Policy.
 - FPV-08 Agent API parity work that does not depend on WorkContract.
 
 Then:
+
+- FPV-07 Authority Policy depends on FPV-02 + FPV-03.
 
 - FPV-05 EvidenceBundle and Verification depends on WorkContract + Receipt.
 
 ## Wave 3 — Conformance and Extensions foundation
 
-- FPV-09 Conformance.
-- FPV-11 Marketplace v2.
+- FPV-09 Conformance after FPV-02 + FPV-03 + FPV-04 + FPV-05 + FPV-07.
+- FPV-11 Marketplace v2 after FPV-02 + FPV-09; it is not parallel with its conformance dependency.
 
 ## Wave 4 — Host adapters
 

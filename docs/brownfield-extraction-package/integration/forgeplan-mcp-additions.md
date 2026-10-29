@@ -2,6 +2,20 @@
 
 > New MCP tools and extensions to existing tools. Spec for the forgeplan maintainer agent.
 
+## Status: proposed wire contracts, not current schemas
+
+The I/O sketches below preserve the original design. Use the selected executable's advertised schema for an actual call, not these sketches. At `c852f40c`:
+
+- Core registers six brownfield kinds, but captured `forgeplan_new`/`forgeplan_generate` schemas still enumerate the ten older kinds. Kind registration is not proof that every creation surface accepts it.
+- `forgeplan_hypothesis_status` accepts optional `id`, not the proposed domain/state filters. Promotion requires `hypothesis_id`, `new_state`, `rationale` (optional `evidence_refs`); its cascade is informational, not automatic dependent rewrites.
+- `forgeplan_coverage_business` requires `domain_model_id`, reads `## Composition`, and leaves canonical readiness false/zero.
+- Contradictions currently detect title-token hypothesis duplicates only (Jaccard ≥ 0.6). Semantic conflict buckets are deferred; an empty bucket is not evidence of no semantic conflicts.
+- `forgeplan_orphans` is a best-effort link/body-reference heuristic, not proof of semantic coverage.
+- Interview draft advertises `domain`/`seed_ids`; ingest advertises `transcript_path` (workspace-relative). Both core handlers return `status: not_implemented`, not the packet/update envelopes below. An install hint does not establish an installed working plugin.
+- Canonical-render, RAG-export and reproducibility-check tools are absent from the captured full catalog. Section 4 lists nine proposed tools; the parent extension wish list additionally names `forgeplan_reproducibility_check`.
+
+Every current tool above also has the captured optional `workspace` routing parameter. Authorities: exact full MCP catalog; target `crates/forgeplan-core/src/{hypothesis.rs,brownfield.rs,validation/rules.rs}` and `crates/forgeplan-mcp/src/server.rs:11336-11446`. No schema or implementation is changed by this document.
+
 ## Scope
 
 This document defines the forgeplan MCP server changes needed to support the 6 new artifact kinds and the extraction workflow.
@@ -101,7 +115,7 @@ OUTPUT: [{id, subject, lifecycle_state, days_since_creation, blocks_count}]
 
 ```
 INPUT: { hypothesis_id: string, new_state: 'verified'|'strong-inferred'|'inferred'|'refuted'|'parked', evidence_refs: string[], rationale: string }
-OUTPUT: { ok: true, cascade: [list of downstream artifacts re-queued for update] }
+OUTPUT: { ok: true, cascade: [list of downstream artifacts proposed for review] }
 ```
 
 Enforces state-machine transitions.
@@ -150,7 +164,7 @@ INPUT: { domain?: string, max_questions?: number }
 OUTPUT: { packet_id: string, path: string, question_count: number, priority_breakdown: { P1, P2, P3 } }
 ```
 
-Wraps C7 draft mode.
+Proposed C7 draft wrapper; current core returns `not_implemented` and does not generate a packet.
 
 ### `forgeplan_interview_packet_ingest`
 
@@ -159,7 +173,7 @@ INPUT: { packet_id: string, answered_markdown_path: string }
 OUTPUT: { hypotheses_updated: number, promoted: [], refuted: [], still_parked: [], cascade: [] }
 ```
 
-Wraps C7 ingest mode.
+Proposed C7 ingest wrapper; current core returns `not_implemented` and does not read answers or update hypotheses.
 
 ### `forgeplan_render_canonical`
 

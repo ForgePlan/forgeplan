@@ -56,4 +56,4 @@ updated: YYYY-MM-DD
 
 | Artifact | Relation |
 |----------|----------|
-| {original} | refreshes |
+| {original} | informs |

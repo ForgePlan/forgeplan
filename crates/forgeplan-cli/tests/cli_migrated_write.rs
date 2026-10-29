@@ -1298,16 +1298,13 @@ fn review_on_a_migrated_workspace_reads_gates_from_canonical_links() {
 /// behaviour it was written to cover.
 fn activatable_prd_body(topic: &str) -> String {
     format!(
-        "## Summary\n\n{summary}\n\n## Problem\n\n{problem}\n\n## Goals\n\n{goals}\n\n\
-         ## Non-Goals\n\n{non_goals}\n\n## Functional Requirements\n\n{requirements}\n\n\
-         ## Related Artifacts\n\n{related}\n\n## Target Audience\n\n{audience}\n",
-        summary = format!("{topic} needs a canonical Markdown answer, stated in prose rather than placeholders so the stub detector has nothing to fire on."),
-        problem = format!("The current state of {topic} is only partly recorded, so behaviour on a migrated workspace cannot be verified from the artifacts alone."),
-        goals = format!("State what {topic} must guarantee, in language that names the guarantee rather than the mechanism."),
-        non_goals = "Rewriting the underlying store, and changing the rules themselves, are both out of scope: this work moves where the answer is read from, not which rules apply.".to_string(),
-        requirements = format!("FR-1 {topic} must behave identically on both workspace layouts. FR-2 the gate must be satisfied by a canonical edge and by nothing else. FR-3 no migrated operation may open a retired table."),
-        related = "The canonical `links:` block is the only relationship record these operations consult.".to_string(),
-        audience = format!("Operators and reviewers working in a workspace that has been migrated, who need {topic} to behave the same as before the cutover."),
+        "## Summary\n\n{topic} needs a canonical Markdown answer, stated in prose rather than placeholders so the stub detector has nothing to fire on.\n\n\
+         ## Problem\n\nThe current state of {topic} is only partly recorded, so behaviour on a migrated workspace cannot be verified from the artifacts alone.\n\n\
+         ## Goals\n\nState what {topic} must guarantee, in language that names the guarantee rather than the mechanism.\n\n\
+         ## Non-Goals\n\nRewriting the underlying store, and changing the rules themselves, are both out of scope: this work moves where the answer is read from, not which rules apply.\n\n\
+         ## Functional Requirements\n\nFR-1 {topic} must behave identically on both workspace layouts. FR-2 the gate must be satisfied by a canonical edge and by nothing else. FR-3 no migrated operation may open a retired table.\n\n\
+         ## Related Artifacts\n\nThe canonical `links:` block is the only relationship record these operations consult.\n\n\
+         ## Target Audience\n\nOperators and reviewers working in a workspace that has been migrated, who need {topic} to behave the same as before the cutover.\n",
     )
 }
 

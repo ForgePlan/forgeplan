@@ -3,11 +3,14 @@ title: Smart Search (v0.18 BM25 + Russian morphology)
 description: "How Forgeplan's production BM25 engine finds artifacts - stemming, multi-language support, and CLI/MCP usage."
 ---
 
-Forgeplan ships a production-grade search engine that finds artifacts by meaning,
-not just by exact string match. v0.18.0 replaces the hand-written prototype with
-the `bm25` crate (v2.3.2), adds Russian Snowball stemming, strips template noise
-from the index, and cuts batch ranking from O(N²) to O(N). This guide explains
-how it works and how to use it from the CLI and MCP.
+Forgeplan combines lexical retrieval with optional semantic vectors. The
+v0.18 sections below explain the historical BM25 engine; benchmark numbers
+are historical observations, not measurements of the local Constellation build.
+
+For migrated workspaces in local `0.39.0+constellation.s1.1` (not published
+0.38.0), see the [Constellation guide](/docs/guides/constellation/) and
+[reference](/docs/reference/constellation/). Ordinary `search` defaults to
+20 results; separate `constellation search` defaults to 10.
 
 ## Who this is for
 
@@ -46,13 +49,15 @@ tests in `crates/forgeplan-core/src/search/` - see the CHANGELOG entry.
 
 ## How it works
 
-Smart search runs a three-stage pipeline on every query:
+In smart mode, lexical ranking and optional semantic scores are combined
+before optional graph expansion. Forced keyword and semantic modes use
+different paths.
 
-1. **Lexical (BM25)** - the `bm25` crate ranks documents by term frequency,
-   inverse document frequency and length normalization. This is the default
-   and covers the 90% case.
-2. **Boosters** - exact-id match, kind filter, status filter, and recency
-   nudge the lexical score before the final sort.
+1. **Lexical (BM25 + substring)** - BM25 ranks terms by frequency, inverse
+   document frequency and length normalization; a substring channel also
+   supports partial matches. No measured query-coverage percentage is implied.
+2. **Filters and boosters** - kind/status filters restrict candidates.
+   R_eff, active status and graph centrality boost matching results.
 3. **Graph expansion** - results are optionally enriched with neighbors via
    typed links (`informs`, `refines`, `supersedes`) so a hit on a PRD also
    surfaces its RFC and evidence.
@@ -62,20 +67,21 @@ see [Semantic search](#semantic-search-feature-flag) below.
 
 ### Tokenization and stemming
 
-Every indexed document and every query runs through the same pipeline:
+The document body is cleaned before indexing; queries use the same tokenizer
+but do not pass through document noise stripping:
 
 ```
-raw text
-  → strip_indexing_noise()       // frontmatter, {placeholders}, |tables|, <!-- html -->
-  → whichlang detect             // 17 languages, per-document and per-query
+document body → strip_indexing_noise() → prepend title
+document text or query
+  → whichlang detect             // per document/query; detection can be wrong
   → lowercase + unicode split
-  → Snowball stem (per detected language)
   → stop-word filter
+  → Snowball stem (when the detected language has a supported stemmer)
   → BM25 term vector
 ```
 
-Because both sides use the same stemmer, `"аутентификация"` in a PRD body and
-`"аутентификации"` in your query collapse to the same stem and match.
+When both sides select the Russian stemmer, noun forms such as
+`"аутентификация"` and `"аутентификации"` can share a stem and match.
 
 ### Template noise stripping
 
@@ -99,19 +105,17 @@ on workspaces with hundreds of artifacts. v0.18 uses `search_scores()` from the
 `bm25` crate, which ranks the whole corpus in a single pass:
 
 - 193-artifact workspace: **0.23s** end-to-end
-- No more "search feels laggy after 100 PRDs" reports
+- This dated result is not a latency guarantee for another machine or corpus.
 
 ## Multi-language morphology
 
-v0.18.0 enables `LanguageMode::Detect` in the BM25 tokenizer: each document
-and each query is inspected by [`whichlang`](https://crates.io/crates/whichlang),
-which picks the right Snowball stemmer on the fly. Seventeen languages are
-supported out of the box - English, Russian, German, French, Spanish,
-Italian, Portuguese, Dutch, Swedish, Norwegian, Danish, Finnish, Hungarian,
-Romanian, Turkish, Arabic, and a generic fallback.
+v0.18.0 enabled `LanguageMode::Detect`. The pinned `bm25` 2.3.2 tokenizer
+has 17 fixed-language variants, but automatic detection maps only a subset
+to stemmers: Arabic, German, English, French, Italian, Dutch, Portuguese,
+Russian, Spanish, Swedish and Turkish. Unsupported detections use no
+stemmer. This is not translation between languages.
 
-Because the stem is shared between every inflected form, all of the
-following Russian queries return the same PRD:
+Illustrative result shape for a Russian noun query, not a runtime transcript:
 
 ```
 $ forgeplan search "аутентификация"
@@ -119,10 +123,9 @@ PRD-019 Auth middleware    (matches "аутентификации" via stem "а�
 EVID-023 Auth benchmark    (matches "аутентификацию")
 ```
 
-The query `"аутентификация"` (nominative) and the stored form
-`"аутентификации"` (genitive / dative) both normalize to the stem
-`аутентификац`. Same mechanism, same scores, no configuration required in a
-mixed-language workspace.
+Inflected nouns can normalize to the same stem when language detection
+agrees. Detection, corpus statistics and other ranking channels can affect
+the result and score; equal scores are not guaranteed.
 
 ## Russian morphology in practice
 
@@ -132,7 +135,7 @@ Create a PRD in Russian:
 forgeplan new prd "Система аутентификации"
 ```
 
-Then search with any inflected form:
+Try noun inflections and a related verb separately:
 
 ```bash
 forgeplan search "аутентификация"     # nominative
@@ -141,12 +144,10 @@ forgeplan search "аутентификацией"    # instrumental
 forgeplan search "аутентифицировать"  # verb form
 ```
 
-All four queries return the same PRD with the same score, because the Snowball
-Russian stemmer reduces every form to the shared stem. The same is true for
-English (`authenticate`, `authentication`, `authenticating` all stem to `authent`).
-
-Language is detected per document and per query via `whichlang`, so a mixed
-workspace with English PRDs and Russian ADRs works without any configuration.
+Stemming is not a synonym or derivation engine. Do not assume the verb
+`аутентифицировать` shares the noun's stem, or that every English derivative
+has one stem. Short or mixed-language queries can also be misclassified.
+Compare actual results rather than requiring identical scores.
 
 ## CLI usage
 
@@ -158,14 +159,14 @@ All examples assume you are inside a Forgeplan workspace.
 forgeplan search "bm25 russian morphology"
 ```
 
-Prints the top 10 hits with kind, id, title and score.
+Prints up to 20 hits by default with kind, ID, title and score.
 
 ### 2. Filter by kind
 
 ```bash
-forgeplan search "auth" --kind prd
-forgeplan search "auth" --kind rfc
-forgeplan search "auth" --kind evidence
+forgeplan search "auth" --type prd
+forgeplan search "auth" --type rfc
+forgeplan search "auth" --type evidence
 ```
 
 Only artifacts of the requested kind are returned. Useful when you want the
@@ -178,10 +179,10 @@ forgeplan search "tags canonicalization" --status active
 forgeplan search "deprecated semantics"   --status deprecated
 ```
 
-Combine with `--kind` to scope precisely:
+Combine with `--type` to scope precisely:
 
 ```bash
-forgeplan search "scoring" --kind prd --status active
+forgeplan search "scoring" --type prd --status active
 ```
 
 ### 4. Limit results
@@ -190,21 +191,20 @@ forgeplan search "scoring" --kind prd --status active
 forgeplan search "LanceDB" --limit 5
 ```
 
-The default is 10. For scripting, set `--limit 1` to grab the single best hit.
+The default is 20. For scripting, set `--limit 1` to request one hit.
 
 ### 5. Reindex after manual edits
 
-If you edited markdown files outside the CLI (e.g. in your editor), rebuild
-the BM25 index once:
+After an intentional canonical Markdown change, publish the derived index
+with the command appropriate to its layout:
 
 ```bash
-forgeplan reindex
+forgeplan index  # Constellation; use forgeplan reindex for the legacy layout
 ```
 
-The reindex reads every file under `.forgeplan/`, re-runs
-`strip_indexing_noise()`, and writes a fresh term frequency table. See PROB-027
-for the canonical fix that removed the dependency on a live `lance/` folder
-during reindex.
+`reindex` reads canonical artifact Markdown. On a Constellation-owned layout
+it routes through reconcile rather than creating legacy tables. A fresh
+canonical read and a persisted index generation are different states.
 
 ## MCP usage
 
@@ -223,74 +223,79 @@ Agents can invoke it via stdio. Example JSON call:
 }
 ```
 
-Response shape (truncated):
+The MCP payload uses `results`, `total`, and `coverage` (not `hits` or
+`took_ms`). See [`forgeplan_search`](/docs/mcp/forgeplan_search/) for fields.
+This illustrative empty payload is a shape example, not a runtime transcript:
 
 ```json
 {
-  "hits": [
-    {
-      "id": "PRD-040",
-      "kind": "prd",
-      "title": "Scoring Intelligence",
-      "status": "active",
-      "score": 12.83,
-      "path": ".forgeplan/prds/prd-040-scoring-intelligence.md"
-    }
-  ],
-  "total": 1,
-  "took_ms": 47
+  "results": [],
+  "total": 0,
+  "coverage": {
+    "semantic": false,
+    "lexical": true,
+    "graph": false
+  }
 }
 ```
 
-All CLI flags (`kind`, `status`, `limit`) are available as arguments. The
-default if no filter is provided is "search all kinds, return top 10".
+MCP uses `kind` while the CLI flag is `--type`. MCP also accepts `workspace`
+and `no_expand`; it defaults to 20 results. `coverage` reports channel state,
+not proof that each channel contributed to this response's ranking. In the
+current full-MCP smart path, `coverage.graph` is set from `!no_expand` even
+if graph loading failed and no graph reached the ranker. A true flag therefore
+does not establish graph contribution or completeness; a false semantic flag
+still identifies an incomplete negative without semantic retrieval.
 
 ## Semantic search (feature flag)
 
-For queries where lexical match is not enough (synonyms, paraphrasing,
-cross-language similarity), Forgeplan can layer BGE-M3 dense embeddings on top
-of BM25. This is an **opt-in** feature because embeddings add ~400 MB to the
-binary and require a fastembed cache on first run.
-
-Build from source with the feature:
+Semantic retrieval needs a binary built with `semantic-search`, the cached
+BGE-M3 snapshot, and eligible vectors in the workspace index. The current
+engine is tract, not the older fastembed runtime; only `bge-m3` is supported.
+Model weights are roughly 2.1 GB, separate from the binary.
 
 ```bash
-cargo install forgeplan-cli --features semantic-search
+cargo install forgeplan --features semantic-search
+forgeplan setup
+forgeplan embed
+forgeplan search "how do I prove a decision is sound" --semantic
 ```
 
-Then search - the flag is transparent; BM25 still runs and semantic results
-are merged in:
+The cache root is `FORGEPLAN_MODEL_CACHE` if set, otherwise
+`~/.forgeplan/models` (platform/legacy fallback only without home).
+`HF_HOME` does not override tract. Queries and maintenance do not download
+weights. Background embedding also requires explicit `embedding:` config;
+`--auto-index` alone and a prior manual `embed` do not configure it.
 
-```bash
-forgeplan search "how do I prove a decision is sound"
-```
-
-When the feature is off, the same command still works - Forgeplan falls back
-to lexical-only search with a gentle log line. This graceful fallback is why
-PRD-042 (FPF KB vector search) can ship the same binary to both minimal and
-semantic users.
+On a migrated workspace, forced `--semantic` does not guarantee keyword
+fallback. Check availability and coverage. Use `--keyword` explicitly when
+you need lexical retrieval without semantic prerequisites.
 
 ## Troubleshooting
 
 **Score is always 0 or no results come back.**
-Run `forgeplan reindex`. The most common cause is markdown edited outside the
-CLI, so the index has stale term frequencies.
+Inspect the query, filters, source content and selected mode first. If the
+persisted generation is stale, use `index` for Constellation or `reindex`
+for the legacy layout. An empty result alone does not establish the cause.
 
 **Query in Russian finds nothing but the same English term works.**
-Check that the document was indexed after v0.18.0 - earlier versions did not
-have the Russian stemmer. Run `forgeplan reindex` once after upgrading.
+Check detected-language limitations and noun/verb differences above.
+Morphology is not translation, and reindexing cannot make every related
+word share a stem.
 
 **Too many irrelevant hits from frontmatter fields.**
-You are on a pre-v0.18 binary. `strip_indexing_noise()` fixes this. Upgrade
-and reindex.
+Check the selected version and the matching source fields. Noise stripping
+does not prove that every irrelevant result comes from an old binary.
 
 **Search is slow on a large workspace.**
-v0.18 is O(N) - a 193-artifact workspace should return in under a second. If
-you see multi-second latency, file a PROB and attach the output of
-`forgeplan health` plus a count of files under `.forgeplan/`.
+The historical v0.18 record reports 0.23s for 193 artifacts; it is not a
+sub-second service guarantee. Record the selected mode, version, corpus size
+and observed latency when reporting a performance issue.
 
 **I deleted a file but it still shows up in results.**
-Reindex. The BM25 store is derived state; deletions need to be replayed.
+Inspect the source and persisted generation separately. Reconcile with
+`index` for Constellation or `reindex` for the legacy layout; canonical
+reads and persisted-index freshness are different contracts.
 
 ## Related artifacts
 

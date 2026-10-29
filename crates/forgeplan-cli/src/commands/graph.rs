@@ -8,19 +8,27 @@ use forgeplan_core::hypothesis::{HypothesisState, current_state_from_frontmatter
 use crate::commands::common;
 
 pub async fn run(json: bool, brownfield_only: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
-
-    // Build edges from LanceDB relations
-    let relations = store.get_all_relations().await?;
+    let (_, source) = common::open_read_source().await?;
+    let relations = match &source {
+        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Captured(read) => read.get_all_relations(),
+    };
+    let legacy_records;
+    let records = match &source {
+        common::ReadSource::Legacy(store) => {
+            legacy_records = store.list_records(None).await?;
+            legacy_records.as_slice()
+        }
+        common::ReadSource::Captured(read) => read.records(),
+    };
     let edges: Vec<graph::Edge> = relations
         .into_iter()
         .map(|(from, to, relation)| graph::Edge { from, to, relation })
         .collect();
 
-    // Also add parent_epic edges from artifacts
-    let records = store.list_records(None).await?;
+    // Parent-epic edges use the same records as the explicit relations.
     let mut all_edges = edges;
-    for record in &records {
+    for record in records {
         if let Some(parent) = &record.parent_epic
             && !parent.is_empty()
         {
@@ -41,7 +49,7 @@ pub async fn run(json: bool, brownfield_only: bool) -> anyhow::Result<()> {
     // colour palette improves the default render too.
     let mut hypothesis_states: BTreeMap<String, HypothesisState> = BTreeMap::new();
     let mut dm_compositions: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for record in &records {
+    for record in records {
         match record.kind.as_str() {
             "hypothesis" => {
                 // Parse the frontmatter to extract the canonical

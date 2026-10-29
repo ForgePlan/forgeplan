@@ -47,11 +47,12 @@ forgeplan blocked
 
 ## What you see
 
-The dashboard groups output into three blocks:
+The dashboard displays four blocks:
 
-1. **Bounded contexts** - each context (e.g. `search`, `scoring`, `fpf-kb`) with aggregate R_eff, artifact count, and blind-spot flags.
-2. **Quality scores** - explore_reff / investigate_reff / exploit_reff per context, showing where trust is strongest.
-3. **Recommended actions** - one of `EXPLORE` (not enough hypotheses), `INVESTIGATE` (hypotheses exist but evidence is weak), or `EXPLOIT` (evidence is strong, ship it).
+1. **Bounded contexts** - graph clusters, members and cohesion.
+2. **Quality (F-G-R)** - counts by ForgePlan's Formality/Granularity/Reliability grade.
+3. **Next Actions** - per-artifact `EXPLORE`, `INVESTIGATE` or `EXPLOIT` recommendations.
+4. **Pipeline** - a pipeline status summary.
 
 The action recommendation comes from the same rule engine surfaced by [`forgeplan fpf rules`](/docs/cli/fpf-rules/).
 
@@ -59,11 +60,11 @@ The action recommendation comes from the same rule engine surfaced by [`forgepla
 
 `fpf dashboard` is the visual synthesis of PRD-041 (FPF rule engine) and PRD-043 (methodology integrity). It reads:
 
-- Artifact metadata (kind, status, R_eff) from LanceDB
-- Active rules from the FPF KB
+- Artifact metadata (kind, status, R_eff) from the selected workspace
+- Rules from workspace configuration or built-in defaults, not the ingested spec
 - Evidence links and congruence levels
 
-...and projects them onto the explore→investigate→exploit axis defined in FPF section B (trust calculus).
+These are product heuristics, not upstream FPF's literal scales. Help registration alone does not establish runtime acceptance for every workspace layout.
 
 ## See also
 
@@ -72,3 +73,19 @@ The action recommendation comes from the same rule engine surfaced by [`forgepla
 - [`forgeplan fpf check`](/docs/cli/fpf-check/) - per-artifact rule match
 - [`forgeplan health`](/docs/cli/health/) - artifact-level counterpart
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf dashboard --help`.
+
+```text
+Show FPF dashboard — bounded contexts, quality scores, explore-exploit actions
+
+Usage: forgeplan fpf dashboard
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

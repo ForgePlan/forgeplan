@@ -1,9 +1,124 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use forgeplan_core::projection;
 
 use crate::commands::common;
+
+/// The audit before-image is the published projection, never a second fresh
+/// source capture: both captures would already contain the edited bytes.
+pub(super) async fn published_history_records(
+    ws: &std::path::Path,
+) -> anyhow::Result<BTreeMap<String, forgeplan_core::constellation::facade::PinnedArtifact>> {
+    use forgeplan_core::constellation::{facade, storage};
+
+    let index_root = ws.join("lance");
+    let Some(descriptor) = storage::read_current(&index_root)? else {
+        if matches!(
+            storage::read_marker(&index_root)?,
+            storage::IndexProtocolState::Active(_)
+        ) {
+            anyhow::bail!("active constellation index has no published pointer");
+        }
+        // An interrupted first bootstrap has no published rows yet.
+        return Ok(BTreeMap::new());
+    };
+    let mut records = BTreeMap::new();
+    // One native scan at this exact descriptor/version, not N pinned gets
+    // whose implementations each materialize the entire artifacts table.
+    for record in facade::read_pinned_artifacts(&index_root, &descriptor).await? {
+        let id = record
+            .display_id
+            .as_ref()
+            .unwrap_or(&record.canonical_key)
+            .clone();
+        records.insert(id, record);
+    }
+    if storage::read_current(&index_root)?.as_ref() != Some(&descriptor) {
+        anyhow::bail!("published generation changed while reading history before-image");
+    }
+    Ok(records)
+}
+
+/// Preserve the legacy Phase 2 predicate, including title/filename renames.
+pub(super) async fn orphan_reason(
+    ws: &std::path::Path,
+    id: &str,
+    kind: &str,
+    title: &str,
+) -> Option<&'static str> {
+    let Ok(kind) = kind.parse::<forgeplan_core::artifact::types::ArtifactKind>() else {
+        return Some("corrupt kind field");
+    };
+    let dir = ws.join(kind.dir_name());
+    let slug = forgeplan_core::artifact::types::slugify(title);
+    if dir.join(format!("{id}-{slug}.md")).exists() {
+        return None;
+    }
+    if dir.exists()
+        && let Ok(mut entries) = tokio::fs::read_dir(&dir).await
+    {
+        let prefix = format!("{}-", id.to_uppercase());
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.to_uppercase().starts_with(&prefix) && name.ends_with(".md") {
+                return None;
+            }
+        }
+    }
+    Some("no .md file found")
+}
+
+async fn audit_captured_reindex(ws: &std::path::Path) -> anyhow::Result<()> {
+    let previous = published_history_records(ws).await?;
+    let current = common::workspace_read(ws).await?;
+    let mut changes = Vec::new();
+    for record in current.records() {
+        let (_, body) = forgeplan_core::artifact::frontmatter::parse_frontmatter(&record.body)?;
+        match previous.get(&record.id) {
+            Some(old) => {
+                let old_body = old.body.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("published artifact {} has no body", record.id)
+                })?;
+                if old_body.trim() != body.trim() {
+                    changes.push((record.id.as_str(), "update"));
+                }
+            }
+            None => changes.push((record.id.as_str(), "create")),
+        }
+    }
+    for (id, record) in &previous {
+        if orphan_reason(
+            ws,
+            id,
+            record.kind.as_deref().unwrap_or_default(),
+            &record.title,
+        )
+        .await
+        .is_some()
+        {
+            changes.push((id.as_str(), "delete"));
+        }
+    }
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let history = forgeplan_core::db::auxiliary::AuxiliaryStore::open_history_or_create(ws).await;
+    for (id, action) in changes {
+        let entry = forgeplan_core::changelog::ChangeLogEntry::new(id, action, "reindex");
+        let result = match &history {
+            Ok(history) => history.log_change(&entry).await,
+            Err(error) => {
+                eprintln!("  Warning: changelog write failed for {id}: {error}");
+                continue;
+            }
+        };
+        if let Err(error) = result {
+            eprintln!("  Warning: changelog write failed for {id}: {error}");
+        }
+    }
+    Ok(())
+}
 
 /// Rebuild LanceDB index from .md files (files-first, RFC-004).
 ///
@@ -82,6 +197,9 @@ pub async fn run() -> anyhow::Result<()> {
             })
         });
     if constellation_owned {
+        audit_captured_reindex(&ws)
+            .await
+            .map_err(|error| anyhow::anyhow!("reindex: Constellation reconcile failed: {error}"))?;
         drop(_lock);
         println!(
             "Index is constellation-managed — `forgeplan index` owns this layout; \
@@ -189,7 +307,8 @@ pub async fn run() -> anyhow::Result<()> {
                         .await
                         {
                             Ok(()) => {
-                                common::log_change(&store, &id, "update", "reindex").await;
+                                common::log_change(&ws, Some(&store), &id, "update", "reindex")
+                                    .await;
                                 println!("  SYNC {} — body updated from file", id);
                                 synced += 1;
                             }
@@ -244,7 +363,7 @@ pub async fn run() -> anyhow::Result<()> {
                     .await
                     {
                         Ok(()) => {
-                            common::log_change(&store, &id, "create", "reindex").await;
+                            common::log_change(&ws, Some(&store), &id, "create", "reindex").await;
                             println!("  NEW  {} — created from file", id);
                             synced += 1;
                         }
@@ -331,63 +450,14 @@ pub async fn run() -> anyhow::Result<()> {
     let mut removed = 0usize;
     let all_records = store.list_records(None).await?;
     for record in &all_records {
-        enum OrphanReason {
-            CorruptKind,
-            MissingFile,
-        }
-
-        let orphan_reason: Option<OrphanReason> =
-            match record
-                .kind
-                .parse::<forgeplan_core::artifact::types::ArtifactKind>()
-            {
-                Err(_) => Some(OrphanReason::CorruptKind),
-                Ok(kind) => {
-                    let dir = ws.join(kind.dir_name());
-                    let slug = forgeplan_core::artifact::types::slugify(&record.title);
-                    let filename = format!("{}-{}.md", record.id, slug);
-                    let filepath = dir.join(&filename);
-
-                    if filepath.exists() {
-                        None
-                    } else {
-                        // Double-check: maybe file exists with different slug (title changed)
-                        let mut found = false;
-                        if dir.exists()
-                            && let Ok(mut rd) = tokio::fs::read_dir(&dir).await
-                        {
-                            while let Ok(Some(entry)) = rd.next_entry().await {
-                                let name = entry.file_name().to_string_lossy().to_string();
-                                let id_prefix = format!("{}-", record.id.to_uppercase());
-                                if name.to_uppercase().starts_with(&id_prefix)
-                                    && name.ends_with(".md")
-                                {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if found {
-                            None
-                        } else {
-                            Some(OrphanReason::MissingFile)
-                        }
-                    }
-                }
-            };
-
-        if let Some(reason) = orphan_reason {
+        if let Some(reason) = orphan_reason(&ws, &record.id, &record.kind, &record.title).await {
             projection::delete_orphan_artifact(
                 &projection::MutationContext::new(&ws, &_lock, Some(&store)),
                 &record.id,
             )
             .await?;
-            common::log_change(&store, &record.id, "delete", "reindex").await;
-            let reason_label = match reason {
-                OrphanReason::CorruptKind => "corrupt kind field",
-                OrphanReason::MissingFile => "no .md file found",
-            };
-            println!("  DEL  {} — {}, removed from DB", record.id, reason_label);
+            common::log_change(&ws, Some(&store), &record.id, "delete", "reindex").await;
+            println!("  DEL  {} — {}, removed from DB", record.id, reason);
             removed += 1;
         }
     }

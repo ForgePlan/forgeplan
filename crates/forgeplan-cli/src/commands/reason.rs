@@ -1,5 +1,6 @@
 use forgeplan_core::artifact::sanitize::sanitize_for_hint;
-use forgeplan_core::db::store::{LanceStore, NewArtifact};
+use forgeplan_core::db::auxiliary::AuxiliaryStore;
+use forgeplan_core::db::store::{ArtifactRecord, NewArtifact};
 use forgeplan_core::fpf::contexts;
 use forgeplan_core::fpf::core::adi::AdiRecord;
 use forgeplan_core::hints::{self, Hint};
@@ -8,7 +9,7 @@ use forgeplan_core::llm::reason::ArtifactContext;
 use forgeplan_core::projection;
 use forgeplan_core::projection::error::sanitize_error_chain;
 
-use crate::commands::common;
+use crate::commands::common::{self, ReadSource};
 
 /// Default architecture hint when no custom file exists.
 const DEFAULT_ARCHITECTURE_HINT: &str = "\
@@ -16,27 +17,83 @@ Forgeplan is a Rust CLI + MCP server. \
 Storage: LanceDB (embedded, tables + vectors). \
 Architecture: forgeplan-core (shared library) + forgeplan-cli + forgeplan-mcp. \
 Driver traits: StorageDriver, EmbedDriver, MemoryDriver, LlmDriver. \
-Embedding: local BGE-M3 via fastembed (no API needed). \
+Embedding: local BGE-M3 via tract (no API needed). \
 Files in .forgeplan/ are authoritative, LanceDB syncs from them.";
 
-/// FPF sections for the ADI prompt, from whichever knowledge source this
-/// workspace has.
-///
-/// The FPF corpus lives in the legacy `fpf_spec` table, which a
-/// constellation-migrated workspace has retired. Rather than reopen a retired
-/// table to enrich one prompt, the migrated path answers "no context" — the
-/// ADI run proceeds with strictly less input, which the caller's
-/// `ctx.is_some()` branch already reports honestly ("No FPF sections
-/// found").
+/// Read FPF prompt sections from the auxiliary KB on either workspace layout.
 async fn fpf_context_for(
-    store: &Option<LanceStore>,
+    workspace: &std::path::Path,
     title: &str,
     body: &str,
 ) -> anyhow::Result<Option<String>> {
-    match store {
-        Some(store) => reason::build_fpf_context(store, title, body).await,
-        None => Ok(None),
+    let store = AuxiliaryStore::open_existing(workspace).await?;
+    reason::build_fpf_context_auxiliary(&store, title, body).await
+}
+
+/// Resolve the artifact and all graph-derived prompt metadata from one read source.
+async fn artifact_context_for(
+    source: &ReadSource,
+    input: &str,
+    architecture_hint: String,
+) -> anyhow::Result<(ArtifactRecord, ArtifactContext)> {
+    let (record, raw_relations) =
+        match source {
+            ReadSource::Legacy(store) => {
+                let id = store.resolve_id(input).await?.ok_or_else(|| {
+                    anyhow::anyhow!("Artifact '{input}' not found\nFix: forgeplan list")
+                })?;
+                let record = store.get_record(&id).await?.ok_or_else(|| {
+                    anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list")
+                })?;
+                let relations = store.get_relations(&record.id).await.unwrap_or_default();
+                (record, relations)
+            }
+            ReadSource::Captured(read) => {
+                let id = read.resolve_id(input).ok_or_else(|| {
+                    anyhow::anyhow!("Artifact '{input}' not found\nFix: forgeplan list")
+                })?;
+                let record = read.get_record(&id).cloned().ok_or_else(|| {
+                    anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list")
+                })?;
+                let relations = read.get_relations(&record.id);
+                (record, relations)
+            }
+        };
+
+    let mut relations = Vec::with_capacity(raw_relations.len());
+    for (target_id, rel_type) in raw_relations {
+        let title = match source {
+            ReadSource::Legacy(store) => store
+                .get_record(&target_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|record| record.title)
+                .unwrap_or_default(),
+            ReadSource::Captured(read) => read
+                .get_record(&target_id)
+                .map(|record| record.title.clone())
+                .unwrap_or_default(),
+        };
+        relations.push((target_id, rel_type, title));
     }
+    let bounded_context = match source {
+        ReadSource::Legacy(store) => contexts::detect_for_artifact(store, &record.id)
+            .await
+            .unwrap_or(None),
+        ReadSource::Captured(read) => {
+            contexts::detect_for_artifact_captured(read, &record.id).await?
+        }
+    };
+    let context = ArtifactContext {
+        status: record.status.clone(),
+        depth: record.depth.clone(),
+        r_eff_score: record.r_eff_score,
+        relations,
+        architecture_hint: Some(architecture_hint),
+        bounded_context,
+    };
+    Ok((record, context))
 }
 
 /// Load architecture hint: .forgeplan/prompts/architecture.md if exists, else default.
@@ -64,10 +121,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
     // open lock-free: the read source is a fresh capture, and the write
     // block below re-acquires the workspace lock through the tolerant
     // helper like every other mutator.
-    let (ws, lock_free_store) = match common::open_store_tolerating_constellation().await? {
-        (ws, Some(store)) => (ws, Some(store)),
-        (ws, None) => (ws, None),
-    };
+    let (ws, read_source) = common::open_read_source().await?;
 
     // PRD-071 hint contract + PRD-077 FR-008: when LLM is unavailable, emit a
     // structured `Fix:` line so the agent has a deterministic next step.
@@ -88,98 +142,15 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             anyhow::bail!("LLM not configured");
         }
     };
-    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    //
-    // The record and relation set are resolved through
-    // whichever read source this workspace has: the legacy store, or a fresh
-    // capture on a migrated workspace. The record shape is identical either
-    // way (`ArtifactRecord`), so nothing downstream branches on layout.
-    let (record, raw_relations) = match &lock_free_store {
-        Some(store) => {
-            let id = store
-                .resolve_id(id)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
-            let record = store.get_record(&id).await?.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Artifact '{}' not found\n\
-                     Fix: forgeplan list",
-                    id
-                )
-            })?;
-            let relations = store.get_relations(&record.id).await.unwrap_or_default();
-            (record, relations)
-        }
-        None => {
-            let read = common::workspace_read(&ws).await?;
-            let canonical = read
-                .resolve_id(id)
-                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
-            let record = read.get_record(&canonical).cloned().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Artifact '{}' not found\n\
-                     Fix: forgeplan list",
-                    canonical
-                )
-            })?;
-            let relations = read.get_relations(&record.id);
-            (record, relations)
-        }
-    };
-
-    // Build artifact context from store metadata, enriching relations with titles.
-    //
-    // ONE capture for the whole loop: `workspace_read` walks the entire
-    // workspace, so re-capturing per relation would make the prompt cost
-    // scale with the edge count and could answer from different bytes at
-    // different moments.
-    let migrated_read = if lock_free_store.is_none() {
-        Some(common::workspace_read(&ws).await?)
-    } else {
-        None
-    };
-    let mut relations = Vec::with_capacity(raw_relations.len());
-    for (target_id, rel_type) in &raw_relations {
-        let title = match (&lock_free_store, &migrated_read) {
-            (Some(store), _) => store
-                .get_record(target_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|r| r.title)
-                .unwrap_or_default(),
-            (None, Some(read)) => read
-                .get_record(target_id)
-                .map(|r| r.title.clone())
-                .unwrap_or_default(),
-            (None, None) => String::new(),
-        };
-        relations.push((target_id.clone(), rel_type.clone(), title));
-    }
-    // Detect bounded context for this artifact
-    let bounded_context = match &lock_free_store {
-        Some(store) => contexts::detect_for_artifact(store, &record.id)
-            .await
-            .unwrap_or(None),
-        // Bounded-context detection walks the legacy relation table; on a
-        // migrated workspace that table is retired, so the ADI prompt runs
-        // without that extra context rather than reopening a retired
-        // projection to compute it.
-        None => None,
-    };
-
-    let artifact_context = ArtifactContext {
-        status: record.status.clone(),
-        depth: record.depth.clone(),
-        r_eff_score: record.r_eff_score,
-        relations,
-        architecture_hint: Some(load_architecture_hint()),
-        bounded_context,
-    };
+    // Resolve slug/display identity, relation titles and bounded context from
+    // the same capture. No recapture can mix a changed title or graph into the
+    // record that is about to be sent to the provider.
+    let (record, artifact_context) =
+        artifact_context_for(&read_source, id, load_architecture_hint()).await?;
 
     // Build FPF context if requested
     let fpf_context = if fpf {
-        match fpf_context_for(&lock_free_store, &record.title, &record.body).await {
+        match fpf_context_for(&ws, &record.title, &record.body).await {
             Ok(ctx) => {
                 if ctx.is_some() {
                     println!("  FPF context injected into ADI prompt");
@@ -380,7 +351,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         // On a migrated workspace the tolerant helper returns `None` for the
         // store and the note id is allocated from the canonical markdown,
         // so neither half of this write touches the retired index.
-        drop(lock_free_store);
+        drop(read_source);
         let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
         // Convert LLM output to structured AdiRecord. The closure owns its
@@ -448,8 +419,8 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             Some(store) => {
                 let note_id = store.next_id("NOTE").await?;
                 let artifact = build(&note_id, 0)?;
-                // PRD-073 file-first: helpers handle projection writes for
-                // both the new note and the bidirectional link rendering.
+                // PRD-073 file-first: create the note's canonical projection;
+                // the outgoing provenance edge is written below.
                 let ctx = projection::MutationContext::new(&ws, &lock, Some(store));
                 projection::create_artifact_with_projection(&ctx, &artifact).await?;
                 note_id
@@ -513,8 +484,231 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
 // ─────────────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
+    use super::{ReadSource, artifact_context_for, common, fpf_context_for, reason};
     use forgeplan_core::artifact::sanitize::sanitize_for_hint;
     use forgeplan_core::projection::error::sanitize_error_chain;
+
+    fn context_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        for directory in forgeplan_core::workspace::ARTIFACT_DIRS {
+            std::fs::create_dir_all(ws.join(directory)).unwrap();
+        }
+        std::fs::write(
+            ws.join("prds/PRD-017-trust-context.md"),
+            "---\nid: PRD-017\nslug: prd-trust-context\nkind: prd\ntitle: Trust context\n\
+             status: draft\ndepth: deep\ncreated_at: 2026-01-01T00:00:00Z\n\
+             links:\n  - target: RFC-004\n    relation: based_on\n---\n\n\
+             ## Problem\n\nKeep the reasoning prompt grounded in its captured graph.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("rfcs/RFC-004-captured-architecture.md"),
+            "---\nid: RFC-004\nkind: rfc\ntitle: Captured architecture\n\
+             status: active\ndepth: standard\ncreated_at: 2026-01-01T00:00:00Z\n\
+             ---\n\n## Design\n\nUse the real relation graph.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("notes/NOTE-009-unlinked-note.md"),
+            "---\nid: NOTE-009\nkind: note\ntitle: Unlinked note\n\
+             status: draft\ndepth: tactical\ncreated_at: 2026-01-01T00:00:00Z\n\
+             ---\n\nAn unlinked note.\n",
+        )
+        .unwrap();
+        (tmp, ws)
+    }
+
+    #[tokio::test]
+    async fn reason_context_keeps_record_relations_titles_and_cluster_in_one_capture() {
+        let (_tmp, ws) = context_workspace();
+        let source = ReadSource::Captured(common::workspace_read(&ws).await.unwrap());
+        std::fs::write(
+            ws.join("prds/PRD-017-trust-context.md"),
+            "---\nid: PRD-017\nslug: prd-trust-context\nkind: prd\ntitle: Trust context\n\
+             status: active\ndepth: standard\nlinks:\n  - target: NOTE-009\n    relation: refines\n\
+             ---\n\n## Problem\n\nA different graph and record after the capture.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("rfcs/RFC-004-captured-architecture.md"),
+            "---\nid: RFC-004\nkind: rfc\ntitle: Changed architecture\n\
+             status: active\ndepth: standard\n---\n\nChanged after the capture.\n",
+        )
+        .unwrap();
+
+        let (record, context) = artifact_context_for(
+            &source,
+            "prd-trust-context",
+            "Architecture input".to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(record.id, "PRD-017");
+        assert_eq!(context.status, "draft");
+        assert_eq!(context.depth, "deep");
+        assert_eq!(
+            context.relations,
+            vec![(
+                "RFC-004".to_string(),
+                "based_on".to_string(),
+                "Captured architecture".to_string(),
+            )],
+        );
+        assert_eq!(
+            context.bounded_context,
+            Some(("Context-1 (RFC)".to_string(), 2, 1.0)),
+        );
+        let metadata = reason::build_metadata_section(&context);
+        assert!(metadata.contains("RFC-004 — \"Captured architecture\" (based_on)"));
+        assert!(metadata.contains("**Cluster**: Context-1 (RFC)"));
+        assert!(metadata.contains("**Cohesion**: 100%"));
+
+        let fresh = ReadSource::Captured(common::workspace_read(&ws).await.unwrap());
+        let (_, context) =
+            artifact_context_for(&fresh, "PRD-017", "Architecture input".to_string())
+                .await
+                .unwrap();
+        assert_eq!(context.status, "active");
+        assert_eq!(context.depth, "standard");
+        assert_eq!(
+            context.relations,
+            vec![(
+                "NOTE-009".to_string(),
+                "refines".to_string(),
+                "Unlinked note".to_string(),
+            )],
+        );
+        assert_eq!(
+            context.bounded_context,
+            Some(("Context-1 (PRD)".to_string(), 2, 1.0)),
+        );
+        assert!(!ws.join("lance").exists());
+        let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        drop(lock);
+    }
+
+    #[tokio::test]
+    async fn reason_context_matches_legacy_metadata_for_the_same_real_records_and_relations() {
+        use forgeplan_core::db::store::{LanceStore, NewArtifact};
+        use forgeplan_core::projection;
+
+        let (_tmp, ws) = context_workspace();
+        let read = common::workspace_read(&ws).await.unwrap();
+        let store = LanceStore::init(&ws).await.unwrap();
+        let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        {
+            let ctx = projection::MutationContext::new(&ws, &lock, Some(&store));
+            for record in read.records() {
+                projection::sync_artifact_from_file(
+                    &ctx,
+                    &NewArtifact {
+                        id: record.id.clone(),
+                        kind: record.kind.clone(),
+                        status: record.status.clone(),
+                        title: record.title.clone(),
+                        body: record.body.clone(),
+                        depth: record.depth.clone(),
+                        author: record.author.clone(),
+                        parent_epic: record.parent_epic.clone(),
+                        valid_until: record.valid_until.clone(),
+                        tags: record.tags.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            }
+            for (source, target, relation) in read.get_all_relations() {
+                projection::sync_relation_from_file(&ctx, &source, &target, &relation)
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(lock);
+        let legacy = ReadSource::Legacy(store);
+        let captured = ReadSource::Captured(read);
+        for id in ["PRD-017", "prd-17", "prd-trust-context"] {
+            let (legacy_record, legacy_context) =
+                artifact_context_for(&legacy, id, "Architecture input".to_string())
+                    .await
+                    .unwrap();
+            let (captured_record, captured_context) =
+                artifact_context_for(&captured, id, "Architecture input".to_string())
+                    .await
+                    .unwrap();
+            assert_eq!(legacy_record.id, "PRD-017");
+            assert_eq!(legacy_record.id, captured_record.id);
+            assert_eq!(legacy_record.body, captured_record.body);
+            assert_eq!(legacy_context.status, "draft");
+            assert_eq!(legacy_context.depth, "deep");
+            assert_eq!(
+                legacy_context.bounded_context,
+                Some(("Context-1 (RFC)".to_string(), 2, 1.0)),
+            );
+            assert_eq!(
+                reason::build_metadata_section(&legacy_context),
+                reason::build_metadata_section(&captured_context),
+            );
+        }
+        for source in [&legacy, &captured] {
+            let error = artifact_context_for(source, "PRD-404", String::new())
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("Artifact 'PRD-404' not found"));
+            assert!(error.to_string().contains("Fix: forgeplan list"));
+        }
+    }
+
+    #[tokio::test]
+    async fn reason_fpf_context_reads_real_auxiliary_sections_without_legacy_tables() {
+        use forgeplan_core::db::auxiliary::AuxiliaryStore;
+        use forgeplan_core::db::store::FpfChunk;
+
+        let (_tmp, ws) = context_workspace();
+        assert_eq!(
+            fpf_context_for(&ws, "Trust context", "").await.unwrap(),
+            None
+        );
+        let store = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        store
+            .insert_fpf_chunks(
+                &[FpfChunk {
+                    id: "fpf-B.3".to_string(),
+                    section_id: "B.3".to_string(),
+                    parent_section: None,
+                    title: "Trust calculus".to_string(),
+                    body: "Use explicit evidence.".to_string(),
+                    line_count: 1,
+                    file_path: "B.3.md".to_string(),
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+        let expected = "\n\n## Relevant FPF Patterns (from knowledge base)\n\n\
+                        ### B.3 — Trust calculus\nUse explicit evidence.\n\n";
+        assert_eq!(
+            fpf_context_for(&ws, "Trust context", "Unused body.")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(expected),
+        );
+        assert_eq!(
+            fpf_context_for(&ws, "Unrelated policy", "Trust")
+                .await
+                .unwrap(),
+            None,
+        );
+        for table in ["artifacts.lance", "evidence.lance", "relations.lance"] {
+            assert!(!ws.join("lance").join(table).exists());
+        }
+    }
 
     /// Adversarial `config.yaml::llm.provider` — control bytes + ANSI
     /// escape + bidi override + newline. Pre-fix, this value landed
@@ -606,54 +800,6 @@ mod tests {
         // (`lower.contains("auth")` / `lower.contains("401")`) still works.
         assert!(cleaned.contains("auth failed"));
         assert!(cleaned.contains("401"));
-    }
-
-    /// Reason.rs error path emits exactly ONE `Fix:` line per error
-    /// branch — pin the contract at the format-string level.
-    /// PRD-071 / Wave 1.5 SEC-C3 (CR-C3): pre-fix, the missing-LLM
-    /// path emitted two `Fix:` lines (one from `require_llm_config()`
-    /// anyhow message, one from `reason.rs::eprintln!`). Post-fix, the
-    /// duplicate eprintln is removed — `require_llm_config` is the
-    /// canonical owner. This test pins the canonical format string so
-    /// a future contributor cannot accidentally reintroduce the
-    /// double-Fix.
-    ///
-    /// We cannot grep the live binary at unit-test time, but we CAN
-    /// assert that the documented owner string actually contains
-    /// `Fix:` exactly once — guards against an accidental deletion
-    /// of the Fix: line from `require_llm_config` that would leave the
-    /// agent with zero Fix: hints (the inverse regression of CR-C3).
-    #[test]
-    fn require_llm_config_error_contains_exactly_one_fix_marker() {
-        // Build the error message we expect `require_llm_config` to
-        // produce when `llm:` is missing. Pull it from the actual code
-        // path by simulating the config-missing branch — we can't call
-        // `require_llm_config()` directly without a workspace, so we
-        // assert against a stable substring contract instead.
-        //
-        // The canonical owner is `crates/forgeplan-cli/src/commands/common.rs::require_llm_config`.
-        // Its anyhow message includes `Fix: edit .forgeplan/config.yaml::llm or export ...`.
-        // Reason.rs MUST NOT add a second `Fix:` line after surfacing
-        // that error — the test below pins the contract.
-        let canonical_owner_msg = "LLM not configured. Missing `llm:` block in .forgeplan/config.yaml — \
-             the `reason` command requires an external LLM provider.\n\
-             Fix: edit .forgeplan/config.yaml and add an `llm:` block; \
-             then export the API key via .forgeplan/secrets.env\n\
-             Copy-paste:";
-        // Sanitised form mirrors reason.rs: `sanitize_error_chain(&e)`.
-        // Build an anyhow error to feed through the sanitiser identical
-        // to the production path.
-        let err: anyhow::Error = anyhow::anyhow!("{}", canonical_owner_msg);
-        let safe = sanitize_error_chain(&err);
-        // Count `Fix:` occurrences — must be exactly 1 (the canonical
-        // owner's line). If a contributor accidentally adds a second
-        // `Fix:` to `require_llm_config()`, this assertion fires.
-        let fix_count = safe.matches("Fix:").count();
-        assert_eq!(
-            fix_count, 1,
-            "require_llm_config message must contain EXACTLY one Fix: line (PRD-071 contract). \
-             Reason.rs::run does not emit its own Fix: for this branch. Got {fix_count} in:\n{safe}"
-        );
     }
 
     /// Adversarial config.yaml::llm.model — control bytes injected via

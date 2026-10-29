@@ -15,6 +15,8 @@ translations:
   ru: spec-vs-prd-tasting-test
 ---
 
+> **Scope of the examples.** Endpoints, thresholds, timings and Vault outcomes below are a worked illustration, not measured production results. The four-phase/13-section framing is this series' adaptation, not the universal BMAD PRD format. A specification is a testable contract, not an executed test. Graph notifications and business-metric alerts require an explicitly configured monitor or human review; writing a link or trigger does not install one.
+
 ## The symptom: "we followed the doc, but the user says it doesn't work"
 
 A developer walks into a discussion with the project manager and says: "The feature is done - everything in the PRD is covered." The manager nods, opens the app, tries it - and a minute later frowns: "But that's not what we wanted."
@@ -31,7 +33,7 @@ I've seen this situation in a dozen teams. It almost always has one root cause: 
 
 A PRD speaks the language of intent. "Add tags to notes." "Make search faster." "Let the user undo an action." This is useful as a compass - everyone on the team understands the goal.
 
-But "add tags to notes" is not a description of system behavior. It's a description of what the user should end up with. **Exactly how** tags are added, **what happens** for different inputs, **where** the boundary between normal behavior and an error sits - the PRD doesn't answer any of that.
+But "add tags to notes" alone does not describe behavior. A PRD can and should include acceptance criteria and observable requirements; a spec adds the precise inputs, outputs, errors and boundaries needed for this contract.
 
 A Specification does.
 
@@ -45,7 +47,7 @@ With a spec - no such surprises. If it was written before the code, the develope
 
 ## The "out of scope" section is mandatory
 
-The most important section in a Specification is the one that almost never appears in a PRD. That's the explicit statement of **what is not in scope for this spec**.
+The section I emphasize here is **what is not in scope for this spec**. PRDs also need scope and non-goals; this is not a distinction exclusive to specifications.
 
 Example. The spec for the endpoint `POST /notes/:id/tags` explicitly states:
 
@@ -84,17 +86,15 @@ If you have ten specs - they have dozens of such links. If you have a hundred - 
 
 Without a dependency graph, changing one spec triggers an invisible chain reaction. Today you change the tag storage schema - and two weeks later someone notices that the search spec was relying on the old schema. Another month later, the migration spec has the same issue. The team catches these discrepancies as they surface in the product.
 
-With a dependency graph - a spec change automatically opens up linked specs for review. You change the schema, and the system says "you should check the search and migration specs - they depended on the old schema." The team looks in fifteen minutes, sees that migration is fine but search isn't. They open the search spec, update it, record the delta. Two hours later, all three specs are in sync.
-
-The graph isn't "yet another document to maintain." It's automatic protection against desynchronization, without which your spec system degrades into ten parallel truths.
+With a dependency graph and a configured change-review process, a schema change can identify search and migration specs that need attention. A person or integration must open and conduct that review. The graph alone neither updates those specs nor guarantees synchronization; the fifteen-minute/two-hour sequence is illustrative.
 
 ## R_eff inside a specification
 
 In a previous post in this series I walked through the R_eff formula - a reliability rating for a decision through its weakest evidence link, weighted by context-match level. The same logic applies inside a spec.
 
-Each requirement in a spec rests on evidence. "Tag search under 200ms" rests on either your own measurement (CL3), a colleague's benchmark (CL2), vendor documentation (CL1), or the author's intuition (CL0).
+Evidence for "tag search under 200ms" should state its actual workload and limitations. CL describes context match, not a fixed ranking by author: your own irrelevant benchmark can be low-congruence, and external evidence can match closely.
 
-A spec whose requirements rest only on intuition has an R_eff close to zero - you can publish it as a contract, but the implementation will almost certainly fail to satisfy the requirements. A spec backed by fresh measurements on your own load has an R_eff near one - you can use it as a promise.
+R_eff is a heuristic summary of the recorded evidence, not a calibrated probability of implementation success. A high score is not a performance promise, and a low score does not prove the requirement impossible. ForgePlan's recursive score also accounts for evidence type, expiry and dependency contributions; it is not a minimum over F/G/R axes.
 
 The difference matters at the point of approving the spec. If R_eff is low - it's too early to approve. Collect the evidence first, bring R_eff up to an acceptable level, then approve. That's protection against "we approved the spec, started building, two weeks later realized the requirement is impossible." Better to spend two weeks on measurements upfront than two weeks reworking the implementation.
 
@@ -108,10 +108,10 @@ I'll call it `notes-tagging-spec`. Four sections:
 
 - **Behavior**: four endpoints (POST to add, PATCH to rename, DELETE to remove, GET to search), each with detailed descriptions of inputs, outputs, and errors.
 - **Invariants**: a tag is unique per user; the tag name is stored with case preserved but compared case-insensitively; maximum 100 tags per note, 10,000 unique tags per user.
-- **Review triggers**: the spec must be revisited if the tag-per-note maximum is reached by more than 5% of users; or if tag search time exceeds 200ms at the 95th percentile.
+- **Review triggers**: revisit if more than 5% of users have at least 80 tags per note; or if tag search exceeds 200ms at the 95th percentile.
 - **Out of scope**: tag hierarchy, colors, cross-device sync, sharing a tag with another user.
 
-The spec - two pages. Through it, the developer knows what to write. The project manager knows what to accept. Six months later, when load grows, the review triggers fire on their own - the system says "the 5% trigger has been exceeded, the spec needs a review." The team sits down, looks - yes, it's time to add indexes. They update with a delta.
+The spec gives the developer a contract and the project manager acceptance criteria. In this illustration, six months later a separately configured metric alert or a scheduled human review detects the 5% threshold. The team investigates whether indexes are the appropriate fix, then records the change as a delta. This is not automatic product telemetry supplied by a prose trigger.
 
 That's what a spec working as a living contract looks like, rather than "a document we wrote and forgot."
 

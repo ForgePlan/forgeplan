@@ -3,7 +3,7 @@ title: forgeplan discover list
 description: "Перечислить все сессии обнаружения существующих систем в рабочем пространстве"
 ---
 
-`forgeplan discover list` выводит каждую сессию обнаружения, хранящуюся в рабочем пространстве - активные и завершённые - с ID, статусом, временем создания и кратким обзором покрытия. Это индексное представление всех сессий.
+`forgeplan discover list` выводит сохранённые сессии с колонками Session ID, Project, Status, Phase и Findings. Команда читает файлы сессий, не открывая индекс артефактов.
 
 ## Когда использовать
 
@@ -14,8 +14,8 @@ description: "Перечислить все сессии обнаружения 
 
 ## Когда НЕ использовать
 
-- Чтобы просмотреть результаты одной сессии - используйте [`discover show`](/docs/cli/discover-show/).
-- Чтобы начать новую сессию - используйте [`discover start`](/docs/cli/discover-start/).
+- Для результатов одной сессии используйте [`discover show`](/ru/docs/cli/discover-show/).
+- Для новой сессии используйте [`discover start`](/ru/docs/cli/discover-start/).
 
 ## Использование
 
@@ -44,13 +44,13 @@ forgeplan discover complete disc-002
 
 ## Что вы увидите
 
-Таблица (или список) с одной строкой на сессию, обычно показывающая:
+Колонки таблицы:
 
-- **ID сессии** (`disc-NNN`)
-- **Статус** - активная / завершённая
-- **Создана** - временная метка ISO
-- **Количество находок** - сколько вызовов `discover_finding` было сделано для этой сессии
-- **Покрытие** - краткий обзор уровней (какие из code/git/tests/docs были затронуты)
+- **Session ID** - копируйте фактический ID; `disc-002` выше приведён для примера.
+- **Project** - имя проекта, возможно сокращённое.
+- **Status** - сохранённый статус сессии.
+- **Phase** - текущая фаза исследования, не сводка покрытия.
+- **Findings** - число сохранённых находок.
 
 ## Как это работает
 
@@ -62,7 +62,23 @@ discover list → pick an ID → discover show / complete
 
 ## См. также
 
-- [`forgeplan discover`](/docs/cli/discover/) - родительская команда
-- [`forgeplan discover start`](/docs/cli/discover-start/) - создать новую сессию
-- [`forgeplan discover show`](/docs/cli/discover-show/) - просмотреть конкретную сессию
-- [`forgeplan discover complete`](/docs/cli/discover-complete/) - завершить сессию
+- [`forgeplan discover`](/ru/docs/cli/discover/) - родительская команда
+- [`forgeplan discover start`](/ru/docs/cli/discover-start/) - создать сессию
+- [`forgeplan discover show`](/ru/docs/cli/discover-show/) - просмотреть сессию
+- [`forgeplan discover complete`](/ru/docs/cli/discover-complete/) - завершить сессию
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan discover list --help`.
+
+```text
+List all discovery sessions in the workspace
+
+Usage: forgeplan discover list
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

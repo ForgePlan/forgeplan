@@ -3,13 +3,13 @@ title: forgeplan dispatch
 description: "Compute a parallel-safe work plan for N sub-agents - buckets, serial queue, reasoning. Read-only; the entry point for multi-agent orchestration."
 ---
 
-`forgeplan dispatch` plans parallel work for several agents at once. You tell it how many agents are available; it splits the candidate artifacts into one bucket per agent, plus a serial queue for whatever cannot run in parallel. The goal: every bucket can be worked simultaneously without two agents touching the same files.
+`forgeplan dispatch` proposes buckets for the available agents and a serial queue. It is advisory, not a file lock or a guarantee that different agents' buckets are disjoint. In this source revision, overlap checks compare a candidate only with items already in the same bucket; overlapping artifacts can land in different buckets. Review cross-bucket file ownership before parallel execution.
 
 How the planner avoids conflicts:
 
 - **Active claims are skipped** - if another agent has already claimed an artifact (see [`forgeplan claim`](/docs/cli/claim/)), it is excluded from the plan.
-- **File overlap is checked** - when two artifacts touch the same files (the planner uses the **Jaccard similarity**, an overlap measure: 0.3 means 30% or more of the file paths match), the second one is pushed to the serial queue instead of getting its own bucket.
-- **Dependencies are respected** - if A blocks B in the dependency graph, B never enters a bucket until A is done.
+- **File overlap is checked within each bucket** using Jaccard similarity, `|A ∩ B| / |A ∪ B|`, over declared path strings. A candidate moves to the serial queue only if no bucket fits; missing `affected_files` is serialized. Globs are not expanded into an exhaustive write set.
+- **Structural dependencies are checked** - unresolved blockers are omitted from parallel buckets. This is a snapshot, not a lock against subsequent changes.
 - **Optional filters** - `--epic` / `--kind` narrow the candidate set to one Epic or one artifact kind.
 
 Read-only: this command never modifies the workspace. After dispatch, each agent must call [`forgeplan claim`](/docs/cli/claim/) on its bucket item before touching files. Mirrors [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) on the MCP side - LLM-driven orchestrators usually use the MCP tool, shell scripts use this CLI.
@@ -62,7 +62,7 @@ forgeplan dispatch [OPTIONS] --agents <AGENTS>
 forgeplan dispatch --agents 3 --kind prd
 ```
 
-Returns three buckets of draft PRDs that can be worked in parallel without file conflicts. The orchestrator hands `buckets[0]` to agent 0, `buckets[1]` to agent 1, and so on.
+Returns up to three populated buckets. Review overlaps across buckets before assigning them. The orchestrator hands `buckets[0]` to agent 0, `buckets[1]` to agent 1, and so on; empty buckets are possible.
 
 ### Example 2: Replan an entire Epic, regardless of status
 
@@ -78,7 +78,7 @@ Plans across all artifacts in `EPIC-005`, including active and superseded ones (
 forgeplan dispatch --agents 2 --overlap-threshold 0.15 --json
 ```
 
-Lowers the file-overlap threshold to 0.15 (15% shared file paths instead of the default 30%) - so even modest overlaps send work to the serial queue instead of running in parallel. Use this when agents keep colliding on shared files.
+Lowers the Jaccard threshold to 0.15. This rejects more within-bucket placements but does not fix the cross-bucket limitation described above. Claims are coordination signals, not exclusive file access.
 
 ## How it fits the workflow
 
@@ -91,3 +91,33 @@ Multi-agent work is a four-step loop: `dispatch` → `claim` → work → `relea
 - [`forgeplan release`](/docs/cli/release/) - return a slot to the pool
 - [`forgeplan claims`](/docs/cli/claims/) - monitor in-flight work
 - [CLI overview](/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan dispatch --help`.
+
+```text
+Compute a parallel-safe work plan for N sub-agents (PRD-057 dispatcher)
+
+Usage: forgeplan dispatch [OPTIONS] --agents <AGENTS>
+
+Options:
+  -n, --agents <AGENTS>
+          Number of sub-agents the orchestrator can hand work to (>=1, max 64)
+      --epic <EPIC>
+          Optional filter: only artifacts with this parent Epic ID
+  -t, --kind <KIND>
+          Optional filter: only consider artifacts of this kind (prd/rfc/spec/...)
+  -s, --status <STATUS>
+          Status filter (default `draft`; pass `any` for all states) [default: draft]
+      --overlap-threshold <OVERLAP_THRESHOLD>
+          Jaccard threshold for file-overlap conflict detection (default 0.3) [default: 0.3]
+      --json
+          Output as JSON for machine consumption
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -3,7 +3,7 @@ title: forgeplan migrate
 description: "Apply schema migrations to an existing workspace after upgrading the Forgeplan binary"
 ---
 
-`forgeplan migrate` runs pending schema migrations against the LanceDB tables in `.forgeplan/lance/`. Forgeplan occasionally adds columns or changes table structure between releases (e.g. v0.17 → v0.18 added columns for BM25 and Russian morphology). `migrate` applies those changes in-place, preserving all artifacts, links, and evidence, without forcing a destructive reinit.
+`forgeplan migrate` opens the legacy LanceDB store, which runs pending schema migrations. It is not Constellation layout migration. The selected build refuses a Constellation-owned layout before opening the legacy store; preserve its markers and use its documented `index` flow.
 
 ## When to use
 
@@ -14,7 +14,7 @@ description: "Apply schema migrations to an existing workspace after upgrading t
 ## When NOT to use
 
 - On a brand-new workspace created by the current binary - there is nothing to migrate.
-- As a substitute for rebuilding the search index - migrations change schema, not content. For index rebuilds use [`forgeplan scan-import`](/docs/cli/scan-import/).
+- As a content rebuild - use the appropriate `reindex`/`index` path. `scan-import` imports external Markdown, including on migrated workspaces; it is not a canonical index rebuild.
 - As a recovery tool for corrupted workspaces - migrations assume the LanceDB files are structurally valid. For corruption, restore from [`forgeplan export`](/docs/cli/export/) backup.
 
 ## Usage
@@ -40,7 +40,7 @@ forgeplan migrate              # apply any pending schema changes
 forgeplan health               # verify workspace is clean
 ```
 
-The standard post-upgrade sequence. `migrate` is a no-op if nothing changed, so it's safe to run unconditionally after every upgrade.
+This is a legacy-layout upgrade example. Check the binary and layout first; help registration is not a compatibility guarantee.
 
 ### Example 2: Fixing "missing column" errors
 
@@ -52,7 +52,7 @@ forgeplan list
 # OK
 ```
 
-If a command fails with a schema-level error, `migrate` is usually the one-step fix.
+A schema error needs diagnosis against the installed version; this command is not a guaranteed one-step fix.
 
 ### Example 3: Safe rollback path (if migrate is not enough)
 
@@ -60,10 +60,8 @@ If a command fails with a schema-level error, `migrate` is usually the one-step 
 forgeplan export --output pre-migrate-backup.json
 cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)
 forgeplan migrate
-# if something goes wrong:
-rm -rf .forgeplan
-forgeplan init -y
-forgeplan import pre-migrate-backup.json
+# If migration fails, stop and retain the original plus its backup.
+# Diagnose the version/layout mismatch before selecting a recovery procedure.
 ```
 
 Always back up before running migrations against production workspaces with meaningful artifact history.
@@ -78,19 +76,35 @@ Always back up before running migrations against production workspaces with mean
 4. `forgeplan health` - verify the workspace is clean
 5. Resume normal work (`forgeplan new`, `forgeplan validate`, etc.)
 
-If `migrate` is insufficient (e.g. a breaking schema change), fall back to the export + reinit + import cycle documented in [`forgeplan init`](/docs/cli/init/).
+If migration fails, preserve the workspace and backup. Reinitialization is not a generic rollback or Constellation recovery path.
 
 ## Safety notes
 
 - **Always export before migrating production workspaces.** `migrate` is designed to be non-destructive, but new binaries can have bugs. [`forgeplan export`](/docs/cli/export/) is cheap and fast; run it first.
 - **`migrate` is idempotent.** Running it twice in a row is safe - the second run detects no pending migrations.
-- **`.forgeplan/lance/` is gitignored** - if migration leaves it in a weird state on one machine, `rm -rf .forgeplan/lance && forgeplan scan-import` will rebuild the index from tracked markdown.
-- **Schema version is tied to the binary.** Don't mix binaries of different versions against the same workspace without running `migrate` in between.
+- **Preserve `.forgeplan/lance/` for diagnosis.** Do not delete protocol markers or retired-table backups. `scan-import` is not an index rebuild.
+- **Use the binary intended for this layout.** Legacy migration does not make arbitrary versions compatible.
 
 ## See also
 
 - [`forgeplan export`](/docs/cli/export/) - mandatory safety backup before upgrading
 - [`forgeplan import`](/docs/cli/import/) - rollback path if migration fails
-- [`forgeplan init`](/docs/cli/init/) - last-resort full reinit
-- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild the derived index from markdown
+- [`forgeplan init`](/docs/cli/init/) - deliberate initialization/config replacement
+- [`forgeplan reindex`](/docs/cli/reindex/) - layout-specific reconciliation
 - [`forgeplan health`](/docs/cli/health/) - post-migration verification
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan migrate --help`.
+
+```text
+Run schema migrations on existing workspace
+
+Usage: forgeplan migrate
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

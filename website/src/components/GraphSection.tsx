@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { COLORS } from '../tokens';
 
-// Real artifact graph from Forgeplan dogfood
+// Authored graph illustration using dogfood artifact IDs, not a live workspace view.
 const NODES = [
   // Level 0: root
   { id: 'EPIC-001', x: 310, y: 30, type: 'epic' },
@@ -77,7 +77,7 @@ export default function GraphSection() {
           <div className="flex flex-col justify-between p-6 lg:p-10 border-r border-forge-line h-full">
             <div>
               <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-4" style={{ opacity: fade(0.02) }}>
-                DEPENDENCY GRAPH
+                DEPENDENCY GRAPH EXAMPLE
               </p>
 
               <h2 className="font-heading text-4xl lg:text-[52px] font-normal leading-[1.1]" style={{ opacity: fade(0.04), transform: `translateY(${(1 - fade(0.04)) * 10}px)` }}>
@@ -89,7 +89,7 @@ export default function GraphSection() {
               <div className="space-y-4">
                 <div style={{ opacity: fade(0.18) }}>
                   <p className="font-mono text-xs text-forge-ember">forgeplan graph</p>
-                  <p className="text-sm text-forge-dim mt-1">Visualize the full dependency tree. See how Epic → PRD → RFC → ADR connect.</p>
+                  <p className="text-sm text-forge-dim mt-1">Visualize linked artifacts. See how Epic → PRD → RFC → ADR connect.</p>
                 </div>
                 <div style={{ opacity: fade(0.28) }}>
                   <p className="font-mono text-xs text-forge-ember">forgeplan blocked</p>

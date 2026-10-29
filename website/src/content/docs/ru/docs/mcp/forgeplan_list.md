@@ -1,6 +1,6 @@
 ---
 title: forgeplan_list
-description: "Выводит список артефактов с необязательными фильтрами по типу/статусу/тегу. Возвращает ID, тип, статус и заголовок для каждого артефакта."
+description: "Краткий список артефактов с необязательными фильтрами по типу и статусу."
 ---
 
 Возвращает отфильтрованный перечень артефактов в рабочем пространстве. Это самый экономичный вызов для обнаружения - агенты используют его для ответов на вопросы, такие как "какие PRD активны?" или "сколько у нас просроченных ADR?" без получения полного содержимого. Для полнотекстового обнаружения агенту следует использовать `forgeplan_search`.
@@ -19,25 +19,19 @@ description: "Выводит список артефактов с необяза
 |---|---|---|---|
 | `kind` | `string` | no | Фильтр по типу (`prd`, `rfc`, `adr`, ...). |
 | `status` | `string` | no | Фильтр по статусу (`draft`, `active`, `stale`, `superseded`, `deprecated`). |
+| `workspace` | `string \| null` | no | Явный абсолютный путь workspace или путь с `~/`. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ListParams`_
 
 ## Возвращает
 
-Массив JSON с краткими сведениями об артефактах - ID, тип, статус, заголовок и несколько полей фронтматтера (глубина, теги, updated_at). Содержимое намеренно опущено; используйте `forgeplan_get`, когда требуется полное содержимое.
-
-Пример структуры ответа:
-
-```json
-{
-  "count": 3,
-  "artifacts": [
-    { "id": "PRD-042", "kind": "prd", "status": "active", "title": "Auth system", "depth": "standard" },
-    { "id": "PRD-041", "kind": "prd", "status": "active", "title": "FPF rules", "depth": "deep" },
-    { "id": "PRD-040", "kind": "prd", "status": "draft", "title": "Scoring intelligence", "depth": "standard" }
-  ]
-}
-```
+JSON-текст payload — объект с `artifacts`, `total`, `_next_action`,
+не массив верхнего уровня и не поле `count`. У краткой записи есть
+`id`, `kind`, `status`, `title`, `id_canonical`, `id_display`, необязательные
+`slug`, `predicted_number`, `assigned_number`. Полей `depth`, `tags`,
+`updated_at`, `body` нет; полное содержимое читайте через `forgeplan_get`.
+MCP-фильтра `tag` нет. Nullable-поля `kind`, `status`, `workspace`
+необязательны, а не требуют передачи ключа со значением null.
 
 ## Пример вызова
 
@@ -67,3 +61,58 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ListParams`_
 - [`forgeplan_get`](/ru/docs/mcp/forgeplan_get/) - читать полное содержимое одного артефакта
 - [`forgeplan_search`](/ru/docs/mcp/forgeplan_search/) - полнотекстовое / семантическое обнаружение
 - [`forgeplan_health`](/ru/docs/mcp/forgeplan_health/) - агрегированное состояние проекта
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+List artifacts with optional kind/status filters. Returns ID, kind, status, and title for each artifact.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `kind` | нет | string \| null | Filter by kind (optional) |
+| `status` | нет | string \| null | Filter by status (optional) |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "kind": {
+      "default": null,
+      "description": "Filter by kind (optional)",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "default": null,
+      "description": "Filter by status (optional)",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "ListParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

@@ -3,7 +3,7 @@ title: forgeplan session
 description: "Показать текущее состояние сессии методологии и следующий шаг"
 ---
 
-Показывает текущее состояние сессии методологии - в какой фазе цикла Forgeplan вы находитесь (роутинг, Shape, Validate, Code, Evidence, Activate) и какой должен быть следующий шаг. Это команда «где я?» как для агентов, так и для людей.
+Показывает сохранённые фазу сессии, активный артефакт, глубину, режим enforcement и рекомендательные шаги. Фазы: `idle`, `routing`, `shaping`, `coding`, `evidence`, `pr`. Validate, reason и activate - действия процесса, не дополнительные сохранённые состояния сессии.
 
 ## Когда использовать
 
@@ -15,7 +15,7 @@ description: "Показать текущее состояние сессии м
 ## Когда не использовать
 
 - Вы хотите список задач → используйте `TODO.md` или ваш трекер задач
-- Вы хотите узнать состояние проекта → используйте [`forgeplan health`](/docs/cli/health/)
+- Для состояния проекта есть [`forgeplan health`](/ru/docs/cli/health/).
 
 ## Использование
 
@@ -47,7 +47,7 @@ forgeplan session --reset
 
 ## Интерпретация вывода
 
-Пример вывода:
+Иллюстрация shaping-сессии, не точный записанный вывод:
 
 ```
 Session: shaping
@@ -57,33 +57,42 @@ Session: shaping
   Last transition:  2026-04-11 14:05 (routing → shaping)
 ```
 
-Фазы соответствуют циклу Forgeplan:
+Сохранённые фазы:
 
-| Фаза          | Значение                                                  |
-|---------------|-----------------------------------------------------------|
-| `idle`        | Нет активной задачи                                       |
-| `routing`     | Выполнение `forgeplan route` - определение глубины/конвейера |
-| `shaping`     | Написание разделов MUST в новом PRD/RFC/ADR               |
-| `validating`  | Выполнение `forgeplan validate` до состояния PASS         |
-| `reasoning`   | Генерация гипотез ADI (глубина Standard+)                 |
-| `coding`      | Реализация изменения                                      |
-| `evidence`    | Создание EvidencePack и связывание                        |
-| `activating`  | Выполнение `activate` после R_eff > 0                     |
+| Фаза | Смысл |
+|---|---|
+| `idle` | Нет активной задачи сессии |
+| `routing` | Выбор глубины и конвейера |
+| `shaping` | Формирование и валидация решения |
+| `coding` | Реализация |
+| `evidence` | Сбор и ревью доказательств |
+| `pr` | Подготовка pull request |
 
-Состояние хранится в `.forgeplan/session.yaml` и сохраняется между вызовами CLI. Используйте `--reset`, если состояние зависло или просрочено.
+Файл состояния - `.forgeplan/session.yaml`. `--reset` очищает фазу и поля активной сессии; не валидирует артефакты, не устраняет задолженность и не проходит гейты.
 
 ## Как это работает
 
-`session` - это индикатор фазы внутри принудительного цикла:
-
-```
-routing → shaping → validating → reasoning → coding → evidence → activating
-```
-
-Каждая успешная команда продвигает сессию вперёд. Если вы видите одну и ту же фазу в течение нескольких часов, это сигнал к тому, чтобы сдвинуться с места - либо завершить фазу, либо сбросить состояние.
+Фаза сессии и lifecycle-фаза артефакта различаются. Применимые validate → reason → code → evidence → review → activate остаются обязательными, но не каждая успешная команда двигает сессию. Перед исправлением устаревшего состояния проверьте артефакт и настоящую работу; reset не должен обходить гейт.
 
 ## См. также
 
-- [`forgeplan route`](/docs/cli/route/) - определить глубину и конвейер
-- [`forgeplan health`](/docs/cli/health/) - состояние проекта
-- [Единый рабочий процесс](/docs/guides/git-workflow/) - полный цикл
+- [`forgeplan route`](/ru/docs/cli/route/) - глубина и конвейер
+- [`forgeplan health`](/ru/docs/cli/health/) - задолженность
+- [Рабочий процесс](/ru/docs/guides/git-workflow/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan session --help`.
+
+```text
+Show methodology session state (current phase, active artifact)
+
+Usage: forgeplan session [OPTIONS]
+
+Options:
+      --reset    Reset session to Idle
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

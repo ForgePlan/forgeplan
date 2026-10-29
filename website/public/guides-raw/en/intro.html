@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What a decision log is and why a team needs one - Forgeplan Guides</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 18px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  ul, ol { color: var(--text-2); font-size: 17px; line-height: 1.65; list-style: none; padding-left: 0; margin: 16px 0; }
+  /* Plain inline lists (no class) - narrow for readability, like paragraphs.
+     Grid lists (.deflist, .audience-grid, ...) override via their own styles. */
+  main > ul, main > ol { max-width: 820px; }
+  ul li, ol li { margin-bottom: 12px; padding-left: 28px; position: relative; }
+  ul li::before { content: "▸"; position: absolute; left: 6px; top: 0; color: var(--accent); font-family: var(--font-mono); font-size: 17px; line-height: 1.65; }
+  ol { counter-reset: list-counter; }
+  ol li::before { content: counter(list-counter, decimal-leading-zero); counter-increment: list-counter; position: absolute; left: 0; top: 1px; color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; font-weight: 500; }
+  ol li { padding-left: 36px; }
+  /* Reset for classes with own numbering / custom layout - disable global bullets */
+  .deflist, .deflist li { padding-left: 0; margin-bottom: 0; }
+  .deflist li::before { content: none; }
+  .ba-cell ul, .ba-cell li { padding-left: 0; }
+  .ba-cell li::before { content: none; }
+  .ba-cell li { padding-left: 14px; }
+  .ba-cell li::before { content: "·"; position: absolute; left: 0; top: -2px; color: var(--text-3); font-size: 20px; font-family: var(--font-mono); }
+  code { font-family: var(--font-mono); font-size: 14.5px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bg); transition: border-color .15s ease; }
+  a:hover { border-color: var(--accent); }
+
+  /* Audience grid */
+  .audience-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 24px 0 0; }
+  @media (max-width: 720px) { .audience-grid { grid-template-columns: 1fr; } }
+  .audience-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 24px 24px; }
+  .audience-card .role-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+  .audience-card .role-title { font-size: 17px; font-weight: 500; color: var(--text); margin: 0 0 10px; line-height: 1.3; }
+  .audience-card .role-body { font-size: 14px; color: var(--text-2); line-height: 1.55; margin: 0 0 8px; }
+  .audience-card .role-pain { font-size: 13px; color: var(--text-3); border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; font-style: italic; }
+
+  /* Use-case grid */
+  .usecase-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 0; }
+  @media (max-width: 960px) { .usecase-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .usecase-grid { grid-template-columns: 1fr; } }
+  .usecase-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 22px; border-top: 2px solid var(--accent); }
+  .usecase-card .uc-domain { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .usecase-card .uc-title { font-size: 15px; font-weight: 500; color: var(--text); margin: 0 0 8px; line-height: 1.35; }
+  .usecase-card .uc-body { font-size: 13px; color: var(--text-2); line-height: 1.55; margin: 0; }
+
+  /* Compare chart */
+  .compare-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 24px 0 0; }
+  .compare-wrap .compare-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 6px; }
+  .compare-wrap .compare-title { font-size: 18px; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  .compare-wrap .chart-host { position: relative; height: 320px; }
+  .compare-wrap .compare-note { font-size: 12.5px; color: var(--text-3); margin-top: 14px; line-height: 1.5; max-width: 760px; }
+
+  /* Definition list (6 fields) */
+  .deflist { margin: 16px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: none; }
+  @media (max-width: 960px) { .deflist { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .deflist { grid-template-columns: 1fr; } }
+  .deflist li { background: var(--bg-1); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 0; padding: 14px 16px 16px; }
+  .deflist .def-num { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; margin-bottom: 6px; }
+  .deflist .def-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 6px; }
+  .deflist .def-body { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+
+  /* Start-here grid */
+  .start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 0; }
+  @media (max-width: 640px) { .start-grid { grid-template-columns: 1fr; } }
+  .start-link { display: block; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; color: var(--text-1); border-bottom: 1px solid var(--line-2); transition: all .15s ease; }
+  .start-link:hover { border-color: var(--accent); color: var(--text); }
+  .start-link .start-who { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .start-link .start-where { font-size: 14px; color: var(--text); }
+  .start-link .start-arrow { float: right; color: var(--accent); }
+
+  .aside { border-left: 2px solid var(--accent); background: var(--accent-bg); padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--text-1); border-radius: 0; max-width: 820px; }
+
+  .ba-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0 0; }
+  @media (max-width: 720px) { .ba-grid { grid-template-columns: 1fr; } }
+  .ba-cell { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px 22px; }
+  .ba-cell .ba-head { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 12px; }
+  .ba-cell.ba-bad .ba-head { color: var(--err); }
+  .ba-cell.ba-good .ba-head { color: var(--ok); }
+  .ba-cell ul { margin: 0; padding-left: 18px; }
+  .ba-cell li { color: var(--text-2); font-size: 13.5px; line-height: 1.55; margin-bottom: 6px; }
+
+  .closing { margin: 48px 0 0; padding: 28px 32px 30px; background: var(--bg-1); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; }
+  .closing p { color: var(--text-1); font-size: 15.5px; max-width: 820px; }
+
+  hr.sep { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">DECISION LOG · FOUNDATION</p>
+  <h1>What a decision log is and why a team needs one</h1>
+  <p class="lead">
+    Every six months, in every team, the same question comes up: «why did
+    we do it this way». Sometimes someone remembers. More often, nobody
+    does. That recurring pain grew into a separate engineering practice:
+    decision logging. The specific formats (ADR, DDR), the six mandatory
+    fields of a record, why «average» misleads when you weigh evidence,
+    and why every record needs a revisit condition.
+  </p>
+
+  <hr class="sep">
+
+  <h2>What a decision log is</h2>
+  <p>
+    A decision log is an engineering practice of recording every
+    architectural and product choice in one structured format. The goal
+    is that a year from now anyone can open a record and understand:
+    <b class="k">what</b> was decided, <b class="k">why</b> exactly that
+    way, and <b class="k">under what conditions</b> the question needs to
+    be revisited.
+  </p>
+  <p>
+    An analogy from software: git stores the history of changes to code.
+    Who changed what, and when; any version is easy to return to. A
+    decision log does the same thing for decisions: who chose one of the
+    options, when, and <b class="k">why</b>.
+  </p>
+  <p>
+    An analogy for anyone who does not work with git: picture the logbook
+    of a ship's captain. Every serious decision goes in there - why the
+    course was changed, why the speed was adjusted, what the conditions
+    were at the time, and under what circumstances you would return to the
+    original plan. Six months later the captain or their successor can
+    open the log and see the whole picture.
+  </p>
+  <p>
+    The practice has established format names. ADR was worked out by
+    engineering teams and became a shared language. DDR and Journal Entry
+    in this series are our own working conventions, not a ratified
+    external standard:
+  </p>
+  <ul>
+    <li><b class="k">ADR</b> (Architecture Decision Record) - a short record of an architectural decision. Minimum: context, decision, consequences.</li>
+    <li><b class="k">DDR</b> (Detailed Decision Record) - an extended form where evidence and revisit conditions are recorded explicitly. This is our series' working convention; we dig into it further below.</li>
+    <li><b class="k">Journal Entry</b> - a simple format for teams whose architecture changes often: date, event and reason only.</li>
+  </ul>
+
+  <hr class="sep">
+
+  <h2>A familiar scenario</h2>
+  <p>
+    Monday, work chat. A new developer asks: «Why do we use library X
+    here instead of Y? I see X in the code, but the project documentation
+    says almost nothing about it».
+  </p>
+  <p>
+    Silence in the chat for ten minutes. Someone finally answers: «We
+    discussed this six months ago. There was a long argument, we picked
+    X. I don't remember the reasons - something about performance, I
+    think. Or the license. Alex will know for sure, but he's on holiday
+    now».
+  </p>
+  <p>
+    Familiar? This is the standard scenario that repeats in most teams.
+    Not because the team is bad, but because there is no place where
+    decisions are <b class="k">required</b> to land. The chat scrolls
+    away. The wiki is forgotten. A file called
+    «meeting-notes-2025-03-12.docx» sits in a shared folder and nobody
+    opens it, because nobody knows what is in it.
+  </p>
+  <p>
+    A decision log is an attempt to give decisions a concrete place. Not
+    «one more subscription tool», but a file next to the code, in a clear
+    structure, with mandatory fields. When a new developer asks «why X»
+    six months later, the answer is one link to a file - not «I think we
+    discussed it».
+  </p>
+
+  <hr class="sep">
+
+  <h2>Is this for you?</h2>
+  <p>
+    Four typical readers for whom decision logging pays off visibly. You
+    may recognise one of them - yourself, or a colleague.
+  </p>
+
+  <div class="audience-grid">
+
+    <div class="audience-card">
+      <div class="role-tag">PRODUCT MANAGER / TEAM LEAD</div>
+      <div class="role-title">The team reopens old arguments every few months</div>
+      <p class="role-body">
+        Every six months somebody asks «why did we do it this way», and
+        nobody remembers. The team sits down, spends a couple of days
+        rethinking it, and reaches the same conclusion. Six months later -
+        again.
+      </p>
+      <div class="role-pain">
+        It hurts most after a key person leaves.
+      </div>
+    </div>
+
+    <div class="audience-card">
+      <div class="role-tag">AI ENGINEER · SHIPS CODE WITH AN AGENT</div>
+      <div class="role-title">The agent may lack context at session start</div>
+      <p class="role-body">
+        A new session with Claude Code, Cursor or another assistant may
+        lack the reasons for choosing library X over Y. Without them,
+        the agent may propose a rejected option. Give it access to the
+        record and instructions to read it, or explicitly load it into the session.
+      </p>
+      <div class="role-pain">
+        Records need somewhere to live, and the agent needs access
+        and explicit instructions to read the relevant decisions.
+      </div>
+    </div>
+
+    <div class="audience-card">
+      <div class="role-tag">AUTOMATION ENGINEER</div>
+      <div class="role-title">Process rules are scattered across chat and tribal memory</div>
+      <p class="role-body">
+        «Check the data for duplicates first, then run the processing, then
+        notify the team». The rules exist, but they are written down
+        nowhere as a contract. When the person who remembered them leaves
+        - the automation breaks. When a new task arrives - it gets
+        rewritten from scratch.
+      </p>
+      <div class="role-pain">
+        Process rules are decisions too, and they need a place.
+      </div>
+    </div>
+
+    <div class="audience-card">
+      <div class="role-tag">DEVELOPER ON A TEAM OF 5+ PEOPLE</div>
+      <div class="role-title">Context leaks away between shifts and weeks</div>
+      <p class="role-body">
+        You picked up a ticket a colleague started two weeks ago. The
+        code is half-written, the comments hint at things, but
+        <b class="k">why</b> this particular structure was chosen is
+        unclear. You go to the author. The author does not remember. You
+        reconstruct the logic through messages and guesswork.
+      </p>
+      <div class="role-pain">
+        The bigger the team, the faster context washes out.
+      </div>
+    </div>
+
+  </div>
+
+  <hr class="sep">
+
+  <h2>What «a decision» means in this approach</h2>
+  <p>
+    When I say «decision», I mean a concrete structure of six mandatory
+    fields. If even one field is missing, it is not a decision - it is a
+    record with a hole in it. These six fields are the working convention
+    of the DDR format (Detailed Decision Record) that we use in this
+    series of lessons, not a universally accepted external standard.
+  </p>
+
+  <ol class="deflist">
+    <li>
+      <div class="def-num">01 · CONTEXT</div>
+      <div class="def-title">The situation the decision was taken in</div>
+      <div class="def-body">What was known. Which constraints applied. Which requirements existed. Without this, a year later nobody can tell how far the decision still applies.</div>
+    </li>
+    <li>
+      <div class="def-num">02 · OPTIONS</div>
+      <div class="def-title">What was considered</div>
+      <div class="def-body">At least three. Not «X or Y», but three full options with brief pros and cons. Otherwise the choice is almost always a false one.</div>
+    </li>
+    <li>
+      <div class="def-num">03 · EVIDENCE</div>
+      <div class="def-title">What the choice rested on</div>
+      <div class="def-body">Concrete references: a measurement on our own data, documentation, a colleague's experience. Every piece of evidence carries a reliability assessment relative to our context.</div>
+    </li>
+    <li>
+      <div class="def-num">04 · DECISION</div>
+      <div class="def-title">One option, one line</div>
+      <div class="def-body">Exactly what was chosen. No «we settled on», no «we decided to try» - a concrete statement you can check against.</div>
+    </li>
+    <li>
+      <div class="def-num">05 · REJECTED</div>
+      <div class="def-title">Why the others did not work</div>
+      <div class="def-body">Every rejected alternative with a concrete reason. Not «it did not work», but «it did not work, because X». A year later that reason is either still valid or out of date.</div>
+    </li>
+    <li>
+      <div class="def-num">06 · REVISIT CONDITION</div>
+      <div class="def-title">When to come back to this question</div>
+      <div class="def-body">The most important and most often skipped section. On which event, metric or date the decision needs another look. A person or explicitly configured external automation performs the check; the record does not initiate it itself.</div>
+    </li>
+  </ol>
+
+  <div class="aside">
+    The sixth section is the main difference between a living decision and
+    a dead monument. Without it a record becomes «we did write something
+    down, leave it alone» a year later, even when the context has
+    completely changed. People sometimes call this section an «expiry
+    condition» or a «trigger for revisit» - the idea is the same.
+  </div>
+
+  <hr class="sep">
+
+  <h2>Why artifacts instead of chats or wikis</h2>
+  <p>
+    The main objection I hear: «We already write everything in Slack,
+    Notion or Confluence. Why yet another format?» The answer: it is not
+    about the amount, it is about the format. Free text does not force
+    you to record what turns out to be needed a year later.
+  </p>
+  <p>
+    Here is an illustrative comparison: for the same hypothetical team,
+    look at what percentage of decisions still have a readable rationale
+    six months later. The percentages below are a teaching illustration,
+    not measured statistics; we have no measurements to cite. The intended
+    contrast concerns how the format prompts recording the essentials,
+    not how «correctly» people use a tool.
+  </p>
+
+  <div class="compare-wrap">
+    <div class="compare-tag">ILLUSTRATIVE EXAMPLE · A HYPOTHETICAL 12-PERSON TEAM · 6 MONTHS</div>
+    <h3 class="compare-title">Percentage of decisions that still have a readable rationale after six months</h3>
+    <div class="chart-host">
+      <canvas id="formatChart"></canvas>
+    </div>
+    <p class="compare-note">
+      All four formats formally allow you to «record a decision». The
+      difference is that some formats leave the author free to skip the
+      essentials (the rationale, the rejected alternatives, the revisit
+      condition), while others make those fields mandatory. The stricter
+      the structure - the higher the survival rate after six months. The
+      percentages on the chart show the order of the gap in this
+      illustration, not measured data.
+    </p>
+  </div>
+
+  <hr class="sep">
+
+  <h2>Before and after: one day in a team's life</h2>
+  <p>
+    To stay out of pure theory - a comparison of two teams working on the
+    same typical task: «choose a payment provider for a new European
+    market».
+  </p>
+
+  <div class="ba-grid">
+    <div class="ba-cell ba-bad">
+      <div class="ba-head">WITHOUT A DECISION LOG</div>
+      <ul>
+        <li>Monday: a chat discussion, four messages arguing for different options.</li>
+        <li>Wednesday: a one-hour meeting, provider A is picked.</li>
+        <li>Friday: a developer starts the integration.</li>
+        <li>Four months later: a lawyer raises a tax reporting question. Nobody remembers whether it was considered during the choice.</li>
+        <li>The team sits down for two weeks and compares providers all over again.</li>
+        <li>Result: two weeks of lost time, and the risk of repeating it in six months.</li>
+      </ul>
+    </div>
+    <div class="ba-cell ba-good">
+      <div class="ba-head">WITH A DECISION LOG</div>
+      <ul>
+        <li>Monday: a chat discussion - the same four messages.</li>
+        <li>Tuesday: 30 minutes filling in a decision record against the six-field template.</li>
+        <li>Wednesday: a half-hour meeting (shorter, because the options are already written down).</li>
+        <li>Friday: a developer starts the integration, reads the record first.</li>
+        <li>Four months later: the lawyer raises the question. Open the record - tax reporting was considered separately. If not, open a review for an hour.</li>
+        <li>Result: half an hour now, two hours in four months. Instead of two weeks.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="sep">
+
+  <h2>Use-cases across domains</h2>
+  <p>
+    Although the examples above were about software development, decision
+    logging applies anywhere a team makes decisions that will later be
+    hard to reconstruct. Six concrete domains.
+  </p>
+
+  <div class="usecase-grid">
+
+    <div class="usecase-card">
+      <div class="uc-domain">PRODUCT</div>
+      <div class="uc-title">Choosing an integration vendor</div>
+      <p class="uc-body">
+        A payment provider, an analytics tool, an SMS vendor. A year
+        later - the market has moved, the technology has changed. A record
+        with revisit conditions lets you come back on a trigger instead of
+        on somebody's sudden recollection.
+      </p>
+    </div>
+
+    <div class="usecase-card">
+      <div class="uc-domain">INFRASTRUCTURE</div>
+      <div class="uc-title">Choosing a database architecture</div>
+      <p class="uc-body">
+        Which database, which message broker, which caching system.
+        Decisions with a three-to-five-year horizon. Without a record, a
+        year later it hurts most for new team members who walk around
+        asking «why is it done this way».
+      </p>
+    </div>
+
+    <div class="usecase-card">
+      <div class="uc-domain">SECURITY</div>
+      <div class="uc-title">Threat model and risk zones</div>
+      <p class="uc-body">
+        Which threats are accepted, which are not. Without a record, a
+        year later an audit asks «why did you not protect this vector»
+        and nobody remembers that it was consciously left unprotected.
+      </p>
+    </div>
+
+    <div class="usecase-card">
+      <div class="uc-domain">MACHINE LEARNING</div>
+      <div class="uc-title">Choosing a model and its parameters</div>
+      <p class="uc-body">
+        Which base model, which dataset, which decision thresholds. After
+        six months the model is stale and the metrics have drifted - a
+        review with a record takes a day, without a record it takes two
+        weeks of «let us first reconstruct how we ever chose this».
+      </p>
+    </div>
+
+    <div class="usecase-card">
+      <div class="uc-domain">EMBEDDED SYSTEMS</div>
+      <div class="uc-title">Choosing a protocol and a microcontroller</div>
+      <p class="uc-body">
+        Decisions that stay in the hardware for five to ten years. Three
+        years later a new developer tries to understand why there is a
+        slow protocol here instead of a fast one. Without a record nobody
+        remembers that only the slow one was cheap.
+      </p>
+    </div>
+
+    <div class="usecase-card">
+      <div class="uc-domain">B2B SALES</div>
+      <div class="uc-title">Decisions about major accounts</div>
+      <p class="uc-body">
+        We agreed to a 15% discount because the customer had strong
+        negotiating leverage. Eight months later the customer asks for
+        more. The record shows that the earlier decision was a
+        compromise, not the norm - and the team can decline confidently.
+      </p>
+    </div>
+
+  </div>
+
+  <hr class="sep">
+
+  <h2>Why this matters right now, in the age of AI</h2>
+  <p>
+    One specific turn made me invest in this: AI changes how we make
+    decisions, and not for the better by default.
+  </p>
+  <p>
+    When a developer writes code with an agent (Claude Code, Cursor,
+    Codex), a new session may lack the history behind choosing library X.
+    If the reasons for choosing X and rejecting Y are not in its context,
+    the agent may propose Y again. This depends on the available context
+    and session settings; it does not necessarily happen at every start.
+  </p>
+  <p>
+    A smarter model alone does not replace project context. The model needs
+    <b class="k">something to read at the start</b>: give it access to the
+    records and instructions to read the relevant files, or explicitly load
+    them into the session. A file next to the code does not load itself into
+    context or guarantee that the agent reads or correctly applies it.
+  </p>
+  <p>
+    The same logic applies to automation: give the agent the current process
+    rules and instruct it to read them. «Check duplicates first, then send
+    the notification, do not send after 22:00» - these are process rules
+    written as decisions. Access makes the record available to consult,
+    but correct execution of the process still needs to be checked.
+  </p>
+
+  <div class="aside">
+    The short version: decision records can provide context for AI agents.
+    Keep them accessible and explicitly say what to read, or load the
+    relevant records into the session. This helps communicate conventions
+    but does not guarantee that they will be followed.
+  </div>
+
+  <hr class="sep">
+
+  <h2>What comes next</h2>
+  <p>
+    The cards below lead to the next breakdowns. You can go through them
+    in order - one a day. Or open the one closest to your current task.
+  </p>
+
+  <div class="start-grid">
+    <a class="start-link" href="how-to-use.html">
+      <div class="start-who">PRACTICE · LEVEL ZERO PART 2</div>
+      <div class="start-where">Introducing decision logging to your team <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="decision-cycle.html">
+      <div class="start-who">FORMAL CYCLE</div>
+      <div class="start-where">How one decision gets formulated <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="trust-calculus.html">
+      <div class="start-who">3D INTERACTIVE</div>
+      <div class="start-where">Trust Calculus in F/G/R space <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="bmad-cycle.html">
+      <div class="start-who">FROM IDEA TO FEATURE</div>
+      <div class="start-where">BMAD · 13-step PRD · adversarial review <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="lifecycle-cycle.html">
+      <div class="start-who">LIFECYCLE</div>
+      <div class="start-where">What happens after a record is activated: stale / renew / supersede <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="fpf-cycle.html">
+      <div class="start-who">META FRAMEWORK</div>
+      <div class="start-where">The First Principles Framework as the parent rail <span class="start-arrow">→</span></div>
+    </a>
+  </div>
+
+  <div class="closing">
+    <p>
+      <b class="k">The point:</b> your team's decisions are first-class
+      objects, just like code. They need a storage location, a clear format
+      and a revisit condition that tells the team when to return to a question.
+      To use records with AI, give the agent access and instructions to read
+      them, or explicitly load the relevant context. Having a log alone
+      does not guarantee reading or correct application.
+    </p>
+  </div>
+
+</main>
+
+<script>
+(function () {
+  if (typeof Chart === 'undefined') return;
+  var ctx = document.getElementById('formatChart');
+  if (!ctx) return;
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: [
+        'Chat messages',
+        'Free-form wiki notes',
+        'A bare ADR template',
+        'A six-mandatory-field record'
+      ],
+      datasets: [{
+        label: '% of decisions with a readable rationale after 6 months',
+        data: [8, 22, 48, 87],
+        backgroundColor: [
+          'rgba(239, 68, 68, 0.55)',
+          'rgba(245, 158, 11, 0.55)',
+          'rgba(245, 158, 11, 0.75)',
+          'rgba(255, 90, 31, 0.85)'
+        ],
+        borderColor: [
+          'rgba(239, 68, 68, 0.9)',
+          'rgba(245, 158, 11, 0.9)',
+          'rgba(245, 158, 11, 1)',
+          'rgba(255, 90, 31, 1)'
+        ],
+        borderWidth: 1,
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      indexAxis: 'y',
+      scales: {
+        x: {
+          beginAtZero: true,
+          max: 100,
+          ticks: {
+            color: 'rgba(163, 163, 163, 0.85)',
+            font: { family: 'JetBrains Mono, monospace', size: 11 },
+            callback: function (v) { return v + '%'; }
+          },
+          grid: { color: 'rgba(255, 255, 255, 0.06)' }
+        },
+        y: {
+          ticks: {
+            color: 'rgba(229, 229, 229, 0.92)',
+            font: { family: 'Inter, sans-serif', size: 12.5 }
+          },
+          grid: { display: false }
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(11, 11, 11, 0.95)',
+          borderColor: 'rgba(255, 90, 31, 0.7)',
+          borderWidth: 1,
+          titleColor: '#f5f5f5',
+          bodyColor: '#e5e5e5',
+          callbacks: {
+            label: function (ctx) { return ctx.parsed.x + '% of decisions survive 6 months'; }
+          }
+        }
+      }
+    }
+  });
+})();
+</script>
+
+</body>
+</html>

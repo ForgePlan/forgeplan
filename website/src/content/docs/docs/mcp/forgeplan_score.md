@@ -23,18 +23,20 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::ScoreParams`_
 
 ## Returns
 
-The computed R_eff plus a breakdown per linked EvidencePack, showing each evidence's verdict, congruence level, lifecycle `status`, decay factor, and an `excluded` flag for displaced (terminal-status) packs. If no evidence is linked, returns `r_eff: 0.0` with an explanation - this is the "blind spot" signal.
+The response includes `r_eff`, `self_score`, F-G-R fields, `weakest_link`, `factors`, `decay_penalty`, and an `evidence` array. Each evidence entry includes `verdict`, `congruence_level`, `score`, `expired`, `status`, and `excluded`. A decision without current supporting evidence scores zero; EvidencePack leaves can have their own score. The recursive computation can also be limited by a linked artifact, not only a directly attached EvidencePack.
 
-Example response shape:
+The `evidence[].score` breakdown uses flat own-merit scoring; recursive `r_eff` additionally accounts for evidence type and dependency penalties, so those surfaces can differ. Output verdict strings here are `Supports`/`Weakens`/`Refutes`; authored evidence input keys use lowercase verdict values. Expired eligible evidence returns 0.1 before verdict arithmetic, including an expired refuting pack: the emitted catalog's unconditional refutes statement below does not describe that exception.
+
+Illustrative response excerpt for two unexpired supporting measurement packs, not a captured score:
 
 ```json
 {
   "id": "PRD-042",
-  "r_eff": 0.87,
-  "limiting_evidence": "EVID-056",
-  "breakdown": [
-    { "id": "EVID-057", "verdict": "supports", "cl": 3, "score": 1.0 },
-    { "id": "EVID-056", "verdict": "supports", "cl": 2, "score": 0.87 }
+  "r_eff": 0.9,
+  "weakest_link": "EVID-056",
+  "evidence": [
+    { "id": "EVID-057", "verdict": "Supports", "congruence_level": 3, "score": 1.0, "expired": false, "status": "active", "excluded": false },
+    { "id": "EVID-056", "verdict": "Supports", "congruence_level": 2, "score": 0.9, "expired": false, "status": "active", "excluded": false }
   ]
 }
 ```
@@ -55,7 +57,7 @@ With typical agent context:
 
 ## Typical sequence
 
-`forgeplan_new evidence` → `forgeplan_update` (structured fields: verdict/CL/evidence_type) → `forgeplan_link` → `forgeplan_score` → if > 0 → `forgeplan_activate`. For stale detection, score is also called after `forgeplan_decay` to see which artifacts dropped below threshold.
+`forgeplan_new evidence` → `forgeplan_update` (literal structured keys `verdict`, `congruence_level`, `evidence_type`) → `forgeplan_link` → `forgeplan_score` → review all activation gates before `forgeplan_activate`. A positive score alone is not activation acceptance. On legacy layouts this call persists the derived cached score; on migrated layouts it computes from the captured canonical view. Its registration is not proof that every layout or input was exercised.
 
 ## CLI equivalent
 
@@ -67,3 +69,48 @@ With typical agent context:
 - [`forgeplan_link`](/docs/mcp/forgeplan_link/) - how evidence is attached
 - [`forgeplan_decay`](/docs/mcp/forgeplan_decay/) - evidence TTL management
 - [`forgeplan_health`](/docs/mcp/forgeplan_health/) - aggregated R_eff dashboard
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores) over the artifact's CURRENT evidence — packs with a terminal status (superseded/deprecated) are excluded from the min (ADR-020) but stay listed with `excluded: true`. An active refutes pack still zeroes the score.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `id` | yes | string | Artifact ID to score |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "Artifact ID to score",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "ScoreParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

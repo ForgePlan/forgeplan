@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use crate::constellation::workspace_read::WorkspaceRead;
 use crate::db::store::ArtifactRecord;
 
 /// A detected bounded context (cluster of related artifacts).
@@ -169,28 +170,135 @@ fn name_from_members(members: &[String], index: usize) -> String {
 
 /// Detect which bounded context a specific artifact belongs to.
 ///
-/// Returns (cluster_name, member_count, cohesion) or None if the artifact
-/// is a singleton (no links). Runs full graph detection internally.
+/// Returns (cluster_name, member_count, cohesion), including the `Unlinked`
+/// group for singletons, or None if the artifact is absent from the graph.
 pub async fn detect_for_artifact(
     store: &crate::db::store::LanceStore,
     artifact_id: &str,
 ) -> anyhow::Result<Option<(String, usize, f64)>> {
     let all_records = store.list_records(None).await?;
     let all_relations = store.get_all_relations().await?;
-    let edges: Vec<(String, String)> = all_relations
+    Ok(detect_for_artifact_from_records(
+        &all_records,
+        &all_relations,
+        artifact_id,
+    ))
+}
+
+/// Detect an artifact's bounded context from one captured record and relation set.
+///
+/// Shares the legacy detector, including the `Unlinked` group for singletons.
+pub async fn detect_for_artifact_captured(
+    read: &WorkspaceRead,
+    artifact_id: &str,
+) -> anyhow::Result<Option<(String, usize, f64)>> {
+    Ok(detect_for_artifact_from_records(
+        read.records(),
+        &read.get_all_relations(),
+        artifact_id,
+    ))
+}
+
+fn detect_for_artifact_from_records(
+    records: &[ArtifactRecord],
+    relations: &[(String, String, String)],
+    artifact_id: &str,
+) -> Option<(String, usize, f64)> {
+    let edges: Vec<(String, String)> = relations
         .iter()
         .map(|(s, t, _)| (s.clone(), t.clone()))
         .collect();
-    let ctxs = detect(&all_records, &edges);
-    Ok(ctxs
+    detect(records, &edges)
         .into_iter()
         .find(|c| c.members.iter().any(|m| m == artifact_id))
-        .map(|c| (c.name, c.members.len(), c.cohesion)))
+        .map(|c| (c.name, c.members.len(), c.cohesion))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn captured_artifact_context_matches_legacy_graph_and_unlinked_members() {
+        use crate::db::store::{LanceStore, NewArtifact};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        for directory in crate::workspace::ARTIFACT_DIRS {
+            std::fs::create_dir_all(ws.join(directory)).unwrap();
+        }
+        for (directory, id, kind, links) in [
+            (
+                "prds",
+                "PRD-001",
+                "prd",
+                "links:\n  - target: PRD-002\n    relation: based_on\n  - target: PRD-404\n    relation: refines\n",
+            ),
+            ("prds", "PRD-002", "prd", ""),
+            ("notes", "NOTE-001", "note", ""),
+        ] {
+            std::fs::write(
+                ws.join(directory).join(format!("{id}.md")),
+                format!(
+                    "---\nid: {id}\nkind: {kind}\ntitle: Context {id}\nstatus: draft\n\
+                     depth: standard\n{links}---\n\n## Summary\n\nContext fixture.\n"
+                ),
+            )
+            .unwrap();
+        }
+        let read = crate::constellation::facade::open_workspace_read(
+            &ws,
+            None,
+            crate::constellation::capture::CaptureLimits::default(),
+        )
+        .await
+        .unwrap();
+        assert!(!ws.join("lance").exists());
+
+        let store = LanceStore::init(&tmp.path().join("legacy/.forgeplan"))
+            .await
+            .unwrap();
+        for record in read.records() {
+            store
+                .create_artifact(&NewArtifact {
+                    id: record.id.clone(),
+                    kind: record.kind.clone(),
+                    status: record.status.clone(),
+                    title: record.title.clone(),
+                    body: record.body.clone(),
+                    depth: record.depth.clone(),
+                    author: record.author.clone(),
+                    parent_epic: record.parent_epic.clone(),
+                    valid_until: record.valid_until.clone(),
+                    tags: record.tags.clone(),
+                })
+                .await
+                .unwrap();
+        }
+        for (source, target, relation) in read.get_all_relations() {
+            store
+                .add_relation(&source, &target, &relation)
+                .await
+                .unwrap();
+        }
+
+        for (id, expected) in [
+            ("PRD-001", Some(("Context-1 (PRD)".to_string(), 2, 0.5))),
+            ("PRD-002", Some(("Context-1 (PRD)".to_string(), 2, 0.5))),
+            ("NOTE-001", Some(("Unlinked".to_string(), 1, 0.0))),
+            ("PRD-404", None),
+            ("DOES-NOT-EXIST", None),
+        ] {
+            let captured = detect_for_artifact_captured(&read, id).await.unwrap();
+            let legacy = detect_for_artifact(&store, id).await.unwrap();
+            assert_eq!(captured, expected, "{id}");
+            assert_eq!(legacy, expected, "{id}");
+        }
+        assert!(
+            !ws.join("lance").exists(),
+            "context detection must remain read-only"
+        );
+    }
 
     fn record(id: &str) -> ArtifactRecord {
         ArtifactRecord {

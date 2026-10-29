@@ -5,31 +5,36 @@ description: How Forgeplan measures trust in decisions
 
 ## Why This Matters
 
-Most teams make decisions based on intuition, experience, or authority ("the senior engineer said so"). This works until it does not. When a production incident happens and someone asks "why did we think this would work?", the answer is usually "we just... thought it would."
+When a decision is challenged, its evidence should make the reasoning
+inspectable instead of relying solely on the authority of its author.
 
 Evidence-based decision making replaces "trust me" with "here is the data." It is not about bureaucracy -- it is about knowing which of your decisions are solid and which are standing on untested assumptions. Forgeplan's R_eff score gives you a single number that answers: **how much should I trust this decision?**
 
-The most valuable insight is not a high score -- it is finding a low one. A decision with R_eff = 0.1 tells you exactly where your risk lives, before it becomes a production incident.
+A low score is useful because it points you to evidence and dependencies
+that need review; inspect the breakdown to locate the reason.
 
 ## The Principle
 
-**Trust is not a feeling. It's a measurement.**
+**Trust claims need inspectable evidence.**
 
-Every decision in Forgeplan has an R_eff score -- a number that tells you how reliable it is, based on actual evidence.
+R_eff is a product heuristic over declared evidence, not a calibrated
+probability that a decision is correct. A high score cannot certify an
+unmeasured claim or detect every missing assumption.
 
 ## R_eff Formula
 
 ```
-R_eff = min(evidence_scores)
+R_eff = min(current eligible evidence scores, eligible dependency contributions)
 ```
 
 **Not average -- minimum.** Your decision is only as strong as your weakest evidence. Three strong proofs + one untested assumption = untested decision.
 
 ```mermaid
 flowchart TD
-  V["Verdict\nsupports=1.0 | weakens=0.5 | refutes=0.0"] --> S["score = verdict - CL_penalty"]
+  V["Fresh verdict\nsupports=1.0 | weakens=0.5 | refutes=0.0"] --> S["score = max(0, verdict - CL - type)"]
   CL["CL Penalty\nCL3=0.0 | CL2=0.1 | CL1=0.4 | CL0=0.9"] --> S
-  S --> R["R_eff = min(all evidence scores)\nWeakest link, never average"]
+  T["Type penalty\ntest/measurement=0 | benchmark=0.1 | audit=0.2"] --> S
+  S --> R["Minimum over current eligible evidence\nand eligible dependency contributions"]
 ```
 
 This design choice is deliberate. Averaging would let strong evidence mask weak spots. Imagine a bridge: if three pillars are solid but one is cracked, you do not average the pillar strength. You fix the cracked one.
@@ -37,8 +42,22 @@ This design choice is deliberate. Averaging would let strong evidence mask weak 
 ## Evidence Score Calculation
 
 ```
-evidence_score = max(0, verdict_score - CL_penalty)
+fresh_recursive_evidence_score = max(0, verdict_score - CL_penalty - type_modifier)
 ```
+
+This is the recursive engine used by the explicit `score` report. Type
+modifiers are 0 for `test`/`measurement`, 0.1 for `benchmark`, 0.2 for `audit`.
+An expired item returns 0.1 before that arithmetic, even if its verdict is
+`refutes`. Eligible `based_on`/`informs` dependency contributions incur 0.1;
+`refines`/`depends_on` incur 0. The engine skips draft/terminal dependencies
+and evidence-exempt Note/Memory dependencies. A leaf EvidencePack can score
+from its own structured fields.
+
+The flat `r_eff`/`raw_evidence_score`, captured `r_eff_score`, CLI evidence
+breakdown and `r_eff_ci.point` omit type modifiers and recursion, so those
+fields can differ from the recursive result. The confidence band is also
+a heuristic, not a statistical confidence interval. None of these is
+`min(F,G,R)` or a literal universal algorithm from current upstream FPF.
 
 ### Verdict Scores
 
@@ -63,40 +82,53 @@ How close is the evidence to your actual context? Evidence from your own project
 
 ### A Worked Example
 
-You are deciding whether to use LanceDB for artifact storage. You gather three pieces of evidence:
+Illustrative data, not a captured benchmark: suppose you gather these three
+packs for a LanceDB storage decision, with no lowering dependency contribution:
 
-1. **Your benchmark on 10K records**: supports (1.0) at CL2 (tested in a PoC, not production) -> score = 1.0 - 0.1 = **0.9**
-2. **LanceDB Rust SDK documentation**: supports (1.0) at CL1 (external docs) -> score = 1.0 - 0.4 = **0.6**
-3. **A Hacker News comment about production use**: weakens (0.5) at CL1 (external, unverified) -> score = 0.5 - 0.4 = **0.1**
+1. **A hypothetical benchmark on 10K records**: supports at CL2, `benchmark` -> recursive score = 1.0 - 0.1 - 0.1 = **0.8**
+2. **LanceDB Rust SDK documentation**: supports at CL1, `measurement` -> score = 1.0 - 0.4 = **0.6**
+3. **An unverified production concern**: weakens at CL1, `measurement` -> score = 0.5 - 0.4 = **0.1**
 
 ```
-R_eff = min(0.9, 0.6, 0.1) = 0.1 -- AT RISK
+R_eff = min(0.8, 0.6, 0.1) = 0.1 -- AT RISK
 ```
 
-The weak link is the unverified production concern. To improve R_eff, you need either stronger evidence about production readiness (run your own production test, CL3) or remove that concern from your evidence set if it is not relevant to your use case.
+Adding a stronger pack cannot raise an unchanged minimum while the weak
+eligible pack remains. Re-verify the concern, link the replacement evidence
+and preserve the old pack through justified lifecycle displacement. Do not
+delete or relabel inconvenient evidence merely to improve the number.
 
 ## Which packs participate in the min
 
-R_eff ranges over the artifact's **current** evidence only. Packs with a terminal lifecycle status — `superseded` or `deprecated` — are excluded from the min: a displaced pack stays in the graph as history (and stays listed in `forgeplan score` with an "excluded from min" mark), but it no longer speaks for present reliability. Draft evidence **does** count (it is the normal state of a fresh measurement before activation), and an **active** `refutes` pack still zeroes the score.
+Only **current** eligible evidence enters the minimum: terminal `superseded`
+and `deprecated` packs remain history but are excluded; draft evidence counts.
+A fresh eligible `refutes` pack contributes zero. Expired items instead
+contribute 0.1 under the current implementation, regardless of verdict.
 
 The honest way to clear a stale weak pack is displacement, not deletion or verdict editing: link the re-verification pack, then `forgeplan supersede <old> --by <new>`. If *all* linked packs are terminal, the artifact degrades to "no active evidence" (R_eff 0.0) — recovery requires the replacement pack to be linked, not merely to exist. A refutes/weakens pack terminated *without* a successor is flagged by the `unbacked_displacement` anomaly.
 
 ## Evidence Decay
 
-Evidence has a TTL (`valid_until` field). When it expires:
+Evidence may have an expiry date in `valid_until`; without a date, this
+scorer does not expire it. When the date passes:
 
-- Evidence is **not deleted** -- it becomes **stale**
-- Score drops to **0.1** (stale is not the same as absent)
-- `forgeplan stale` detects expired evidence
-- `forgeplan renew` extends validity with new evidence
+- The evidence is **not deleted**; expiry detection reports it without changing persisted status.
+- Its score becomes **0.1**, not a gradual decline toward the date.
+- `forgeplan stale` detects overdue dates where that command supports the workspace layout.
+- `renew` updates the date/reason under its stored-status guard; it does not gather new evidence. An expired record still stored as `active` cannot take `active → active` renewal.
 
 Decay exists because the world changes. Your benchmark from six months ago was run on a different version of the library, different hardware, different data volume. Stale evidence is not worthless -- it tells you something was true once. But it should not give you full confidence in the present.
 
 ## Creating Evidence
 
+The command/output example is illustrative. Use actual results and the IDs
+returned by your workspace, not the sample's measurements or score:
+
 ```bash
 # Create evidence pack
 forgeplan new evidence "Auth benchmark -- JWT 2ms, 12 tests pass"
+# Prepare evidence-body.md outside .forgeplan/ with actual details and fields below
+forgeplan update EVID-001 --body @evidence-body.md
 
 # Link to the decision it supports
 forgeplan link EVID-001 PRD-001 --relation informs
@@ -124,25 +156,32 @@ evidence_type: measurement
 | `congruence_level` | 0-3 | How close is the evidence context to your actual context? |
 | `evidence_type` | measurement / test / benchmark / audit | What kind of evidence is this? |
 
-Without these fields, the R_eff parser cannot extract scoring data and defaults to CL0 (0.9 penalty). This is the single most common reason for unexpectedly low R_eff scores.
+Missing/unrecognised `verdict` or missing/invalid CL declaration fails closed
+to CL0 (0.9 penalty). `evidence_type` has a separate modifier and defaults to
+`measurement` in the parser; declaring all three remains the evidence protocol.
 
 ### What Makes Good Evidence
 
-- **Tests that pass in CI** -- CL3, evidence_type: test. The most reliable form because they run in your actual codebase.
-- **Benchmarks on your data** -- CL3, evidence_type: benchmark. Measures performance in your real context.
+- **Tests that pass in CI** -- `evidence_type: test`; CL3 only when the tested context matches the claim, not merely because CI ran.
+- **Benchmarks on representative data** -- `evidence_type: benchmark`; CL3 requires matching code, environment and scale. Even CL3 carries the 0.1 benchmark modifier in recursive scoring.
 - **PoC in a related module** -- CL2, evidence_type: measurement. Good but not as strong as production evidence.
 - **External documentation** -- CL1, evidence_type: measurement. Useful but carries a 0.4 penalty. Supplement with your own testing.
 
 ## Trust Thresholds
+
+These are review labels, not lifecycle activation gates or calibrated
+probabilities. Passing a numeric threshold does not accept a decision automatically.
 
 | R_eff | Status | Action |
 |-------|--------|--------|
 | >= 0.5 | Adequate | Decision can be accepted |
 | < 0.5 | Needs Review | Add evidence or reconsider |
 | < 0.3 | AT RISK | Decision unreliable, re-evaluate |
-| 0.0 | Blind Spot | No evidence at all |
+| 0.0 | Investigate | No eligible evidence, refutation, penalties or dependency effects |
 
-A **blind spot** (R_eff = 0.0) is the most dangerous state. It means you made a decision with zero supporting evidence. `forgeplan health` prominently flags these because they represent unknown risk.
+A zero score is not synonymous with an empty evidence set: a fresh refutation
+can also produce zero. Inspect evidence, dependency factors and health's
+separate blind-spot diagnostics before deciding what to repair.
 
 ## Commands
 
@@ -155,11 +194,11 @@ forgeplan health            # Full project health dashboard
 
 ## Gotchas
 
-- **Forgetting structured fields in evidence body.** This is the number one mistake. Without `verdict`, `congruence_level`, and `evidence_type`, the parser assigns CL0 and your R_eff drops to near zero.
+- **Forgetting structured claims.** Missing/unrecognised verdict or missing/invalid CL forces CL0. Declare verdict, congruence_level and evidence_type; prose or copied fields alone do not establish a measurement.
 - **Over-claiming CL3.** A benchmark you ran once on your laptop is not CL3. CL3 means the evidence was gathered in the same context where the decision will be applied -- same codebase, same environment, same scale.
 - **Ignoring "weakens" evidence.** If you find evidence that a chosen approach has problems, record it with `verdict: weakens`. Hiding inconvenient evidence does not make it go away; it just makes your R_eff dishonest.
-- **Never refreshing evidence.** Benchmarks and test results have shelf lives. Set `valid_until` to 90-180 days and address stale evidence when `forgeplan health` flags it.
-- **Linking evidence to the wrong artifact.** Evidence should be linked to the decision it supports, not to the Epic or to an unrelated PRD. A mislinked evidence pack provides no R_eff benefit.
+- **Never refreshing evidence.** Choose an expiry date appropriate to the claim; 90–180 days is an example review cadence, not a built-in default. Re-test before extending it.
+- **Linking evidence to the wrong artifact.** Link it to the decision whose claim it actually supports; an Epic can also legitimately need evidence. A relation does not justify evidence irrelevant to that claim.
 
 ## Gotchas and migration notes
 
@@ -178,9 +217,9 @@ Before v0.17.2, `extract_field` did not track multi-line comment state. The
 placeholder line `congruence_level: 0 | 1 | 2 | 3 (CL3=...)` was matched
 as if it were a real structured field, the non-numeric value failed to parse,
 `explicit_cl` became `None`, and the parser silently defaulted to CL3 (no
-penalty). This meant **every evidence artifact created via the default template
-since v0.17.0 had its real `congruence_level` shadowed** - R_eff was
-artificially inflated across the workspace.
+penalty). Template-derived evidence since v0.17.0 could have its real CL
+shadowed. [PROB-034](https://github.com/ForgePlan/forgeplan/blob/c852f40c515085d328f02e4b275edda37279a610/.forgeplan/problems/PROB-034-multi-line-html-comments-in-evidence-template-shadow-real-structured-fields-critical.md)
+records the v0.17.1/v0.17.2 A/B case; it is not a measured census of every pack.
 
 v0.17.2 implements a proper multi-line comment state machine that skips all
 lines between `<!--` and `-->`.
@@ -198,15 +237,11 @@ R_eff.
 
 ### SourceTier precedence - conservative `min()` rule
 
-When an artifact has both a `source_tier` tag and an explicit
-`congruence_level` in its Structured Fields, the system takes
-`min(tier_cl, explicit_cl)` - the **more conservative** value wins. A tag can
-never upgrade trust beyond what the structured fields claim.
-
-This protects against CL upgrade attacks via tag manipulation: tagging an
-artifact `source_tier=T1` does not override an explicit `congruence_level: 0`
-in the body. See [`forgeplan tag` - Source Tier and CL mapping](/docs/cli/tag/#source-tier-and-cl-mapping-v0170-prd-035)
-for the full tier-to-CL table and examples.
+The current scoring parser reads standalone body `source_tier:` and
+`congruence_level:` fields, not an arbitrary tag spelling. With both present,
+it takes `min(tier_cl, explicit_cl)`; T1/T2/T3 map to CL3/CL2/CL1.
+Thus body `source_tier: T1` cannot override explicit `congruence_level: 0`.
+Do not assume `forgeplan tag ... source_tier=T1` is the same parser input.
 
 ## Related
 

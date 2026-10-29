@@ -7,8 +7,15 @@ use crate::commands::common;
 use crate::ui;
 
 pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let all_records = store.list_records(None).await?;
+    let (_, source) = common::open_read_source().await?;
+    let legacy_records;
+    let all_records = match &source {
+        common::ReadSource::Legacy(store) => {
+            legacy_records = store.list_records(None).await?;
+            legacy_records.as_slice()
+        }
+        common::ReadSource::Captured(read) => read.records(),
+    };
 
     if all_records.is_empty() {
         println!("No artifacts found.");
@@ -21,10 +28,13 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> a
         // for display-id input it normalises case+padding. Fall back to
         // the legacy uppercase-match if resolver returns None (covers edge
         // case where DB id differs from any resolve path).
-        let canonical = store.resolve_id(target_id).await?;
+        let canonical = match &source {
+            common::ReadSource::Legacy(store) => store.resolve_id(target_id).await?,
+            common::ReadSource::Captured(read) => read.resolve_id(target_id),
+        };
         let upper_input = target_id.to_uppercase();
         all_records
-            .into_iter()
+            .iter()
             .filter(|r| match &canonical {
                 Some(c) => r.id == *c,
                 None => r.id.to_uppercase() == upper_input,
@@ -33,11 +43,11 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> a
     } else if ci {
         // CI mode: validate active + stale (stale = expired but still live decisions)
         all_records
-            .into_iter()
+            .iter()
             .filter(|r| r.status == "active" || r.status == "stale")
             .collect()
     } else {
-        all_records
+        all_records.iter().collect()
     };
 
     if to_validate.is_empty()
@@ -58,7 +68,10 @@ Fix: forgeplan list",
     for record in &to_validate {
         // #446 — the link-less reconstruction made body-links-drift compare
         // against an empty set and warn on correctly linked artifacts.
-        let fm = store.frontmatter_map_with_links(record).await;
+        let fm = match &source {
+            common::ReadSource::Legacy(store) => store.frontmatter_map_with_links(record).await,
+            common::ReadSource::Captured(read) => read.frontmatter_map_with_links(record),
+        };
 
         let kind = record.kind.parse::<ArtifactKind>().unwrap_or_else(|_| {
             if !json {

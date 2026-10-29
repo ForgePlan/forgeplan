@@ -3,7 +3,7 @@ title: forgeplan_discover_start
 description: "Запускает сессию обнаружения brownfield. Возвращает структурированный протокол (7 фаз: detect/structure/code/git/tests/docs/synthesize), которому следует ИИ-агент для составления карты существующей кодовой базы."
 ---
 
-Запускает новую **сессию обнаружения brownfield** - структурированный протокол, которому агент следует, когда он попадает в существующую кодовую базу без предварительных артефактов ForgePlan. Вместо того чтобы агент изобретал собственный порядок исследования, ForgePlan возвращает семифазный протокол (detect / structure / code / git / tests / docs / synthesize) с явными приоритетами уровней источников, и затем агент проходит по нему, вызывая `forgeplan_discover_finding` для каждого наблюдения. При вызове `forgeplan_discover_complete` собранные результаты синтезируются в предлагаемые PROBs / PRDs / RFCs (выводятся на печать, не создаются автоматически).
+Запускает **сессию исследования существующей системы** и возвращает семифазный протокол (detect / structure / code / git / tests / docs / synthesize). Агент читает источники и фиксирует наблюдения через `forgeplan_discover_finding`. `forgeplan_discover_complete` отмечает завершение и возвращает счётчики; health и синтез последующих предложений остаются отдельной работой агента.
 
 **Категория**: Обнаружение Brownfield
 
@@ -18,16 +18,15 @@ description: "Запускает сессию обнаружения brownfield.
 
 ## Приоритет уровней источников
 
-Протокол обеспечивает строгий порядок приоритетов, чтобы результаты основывались на авторитетных доказательствах, а не на расхождениях в документации:
+Протокол задаёт агенту приоритет источников, но не проверяет их содержимое и истинность:
 
-| Уровень | Источник | Почему |
-|------|--------|-----|
-| **1** | Исходный код (`src/`, `lib/`, `app/`) | Истина в последней инстанции - код это то, что фактически выполняется. |
-| **2** | История Git (`git log`, коммиты, теги, примечания к выпускам) | Намерения с течением времени - раскрывает решения, откаты и траекторию. |
-| **3** | Тесты (`tests/`, `spec/`) | Поведенческие контракты - закрепляет предполагаемую семантику. |
-| **4** | Документация (`README`, `docs/`, вики) | Последний, потому что часто устаревает по сравнению с кодом. |
+| Уровень | Источники | Роль |
+|---------|-----------|------|
+| **1** | Код, история Git, манифесты пакетов | Реализация и записанные намерения |
+| **2** | Тесты, JSDoc-комментарии, CI-конфигурация | Ожидания от поведения и контекст |
+| **3** | Документация, README, wiki | Утверждения для сверки с более сильными основаниями |
 
-Результаты из более высокого уровня переопределяют результаты из более низкого уровня при их конфликте.
+Разрешайте противоречия по конкретным доказательствам. Номер уровня не делает утверждение верным автоматически.
 
 ## Входные параметры
 
@@ -39,22 +38,15 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::DiscoverStart
 
 ## Возвращает
 
-Дескриптор сессии плюс полная полезная нагрузка протокола:
+Возвращает `session_id`, `project_name`, `session_status`, `current_phase` и вложенный `protocol` с полями `version`, `phases`, `source_tier_rules`. У фазы есть `phase`, `order`, `name`, `instructions`. Устаревающее поле `status` также относится к сессии, не к артефактам.
+
+Например, правила уровней в возвращаемом протоколе:
 
 ```json
 {
-  "session_id": "discover-legacy-billing-service-2026-04-11T10:15:00Z",
-  "project_name": "legacy-billing-service",
-  "phases": [
-    { "name": "detect",     "goal": "Обнаружение стека технологий, системы сборки, языков", "tier_order": [1, 4] },
-    { "name": "structure",  "goal": "Составление карты модулей верхнего уровня и границ",        "tier_order": [1] },
-    { "name": "code",       "goal": "Чтение точек входа и критически важных модулей",      "tier_order": [1, 3] },
-    { "name": "git",        "goal": "Сканирование истории коммитов на предмет решений / откатов", "tier_order": [2] },
-    { "name": "tests",      "goal": "Идентификация поведенческих контрактов и пробелов",     "tier_order": [3, 1] },
-    { "name": "docs",       "goal": "Согласование документации и кода (отметить расхождения)",        "tier_order": [4, 1] },
-    { "name": "synthesize", "goal": "Предложение PROBs / PRDs / RFCs на основе результатов",   "tier_order": [] }
-  ],
-  "instructions": "Для каждой фазы просматривайте файлы в указанном порядке уровней, затем вызывайте forgeplan_discover_finding для каждого наблюдения. Завершите с помощью forgeplan_discover_complete."
+  "t1": ["code", "git", "package manifests"],
+  "t2": ["tests", "JSDoc comments", "CI configs"],
+  "t3": ["docs/ directory", "README files", "wiki"]
 }
 ```
 
@@ -72,11 +64,11 @@ forgeplan_discover_start
 forgeplan_discover_finding (tier=1, phase=detect,    …)
 forgeplan_discover_finding (tier=1, phase=structure, …)
 forgeplan_discover_finding (tier=1, phase=code,      …)
-forgeplan_discover_finding (tier=2, phase=git,       …)
-forgeplan_discover_finding (tier=3, phase=tests,     …)
-forgeplan_discover_finding (tier=4, phase=docs,      …)
+forgeplan_discover_finding (tier=1, phase=git,       …)
+forgeplan_discover_finding (tier=2, phase=tests,     …)
+forgeplan_discover_finding (tier=3, phase=docs,      …)
 forgeplan_discover_complete (session_id)
-    ↓ выводит предлагаемые PROBs / PRDs / RFCs
+    ↓ агент читает наблюдения и отдельно готовит предложения следующих работ
 ```
 
 Ожидается, что агент будет выполнять итерации по каждой фазе - он может выдавать множество результатов для каждой фазы, прежде чем перейти к следующей.
@@ -89,5 +81,50 @@ forgeplan_discover_complete (session_id)
 
 - [Обзор MCP](/ru/docs/mcp/)
 - [`forgeplan_discover_finding`](/ru/docs/mcp/forgeplan_discover_finding/) - добавить одно наблюдение
-- [`forgeplan_discover_complete`](/ru/docs/mcp/forgeplan_discover_complete/) - завершить + синтезировать артефакты
+- [`forgeplan_discover_complete`](/ru/docs/mcp/forgeplan_discover_complete/) — завершить сессию и получить сводку сохранённых наблюдений
 - [`forgeplan_health`](/ru/docs/mcp/forgeplan_health/) - состояние проекта после обнаружения
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Start a brownfield discovery session. Returns a structured protocol (7 phases: detect/structure/code/git/tests/docs/synthesize) that the AI agent follows to map an existing codebase. ForgePlan provides the protocol; the agent parses code and reports findings via forgeplan_discover_finding.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `project_name` | да | string | Project name for the discovery session |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "project_name": {
+      "description": "Project name for the discovery session",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "project_name"
+  ],
+  "title": "DiscoverStartParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

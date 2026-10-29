@@ -106,8 +106,8 @@ TOTAL                               0/0  (  0%)
 | Artifact | Type | Relation |
 |----------|------|----------|
 | PRD-<id> | PRD | based_on |
-| SPEC-<id> | Spec | implements |
-| ADR-<id> | ADR | decided_by |
+| SPEC-<id> | Spec | based_on |
+| ADR-<id> | ADR | informs |
 
 ---
 

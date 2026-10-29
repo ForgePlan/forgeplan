@@ -3,10 +3,8 @@ title: forgeplan list
 description: "List artifacts with filters - primary inventory command"
 ---
 
-List artifacts in the current workspace, optionally filtered by kind, status,
-tag, or creation date. This is the primary inventory command - use it to
-answer "what do we have in this project?" before planning, routing, or
-searching.
+List artifacts in the selected workspace, optionally filtered by kind, status or tag.
+There is no creation-date flag.
 
 ## When to use
 
@@ -70,9 +68,9 @@ Default output is a table with four columns:
 | `STATUS` | Lifecycle: draft / active / superseded / deprecated / stale |
 | `TITLE`  | Human-readable title from frontmatter                     |
 
-Rows are sorted by `created` descending (newest first). With `--json`, each
-record includes full frontmatter plus `score` and `R_eff` where available -
-useful piped into `jq` for dashboards.
+JSON returns a bare array of summaries with `id`, `kind`, `status` and `title`,
+not full frontmatter or scores. Use `get` for content. This command does not
+specify an independent creation-date sort.
 
 ## How it fits
 
@@ -93,3 +91,23 @@ artifacts without evidence.
 - [`forgeplan search`](/docs/cli/search/) - smart keyword + semantic search
 - [`forgeplan health`](/docs/cli/health/) - project-level dashboard
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan list --help`.
+
+```text
+List artifacts
+
+Usage: forgeplan list [OPTIONS]
+
+Options:
+  -t, --type <TYPE>      Filter by kind (prd, epic, spec, rfc, adr, etc.)
+  -s, --status <STATUS>  Filter by status (draft, active, etc.)
+      --tag <TAG>        Filter by tag. Supports "key=value" or bare "key" (matches any value). Examples: --tag source=code, --tag legacy
+      --json             Output as JSON for machine consumption
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

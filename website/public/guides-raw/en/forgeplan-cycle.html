@@ -1,0 +1,759 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A project cycle · Forgeplan as an operational layer - ForgePlan</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --info: #60a5fa;
+
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    /* Depth gradient: tactical → standard → deep → critical */
+    --dp-tac:  #737373;  /* tactical · subdued */
+    --dp-std:  #60a5fa;  /* standard · blue · обычный поток */
+    --dp-deep: #ff5a1f;  /* deep · brand accent · архитектурный выбор */
+    --dp-crit: #f59e0b;  /* critical · amber · максимум внимания */
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+
+  .dp-tac  { color: var(--dp-tac);  font-weight: 500; }
+  .dp-std  { color: var(--dp-std);  font-weight: 500; }
+  .dp-deep { color: var(--dp-deep); font-weight: 500; }
+  .dp-crit { color: var(--dp-crit); font-weight: 500; }
+
+  /* Pipeline */
+  .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; }
+  .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+  .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
+
+  /* Concept block */
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
+  .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
+  .concept .analogy + .analogy { margin-top: 12px; }
+
+  .deflist { margin: 16px 0 0; padding: 0; list-style: none; counter-reset: deflist; }
+  .deflist li { position: relative; padding: 10px 0 10px 36px; border-top: 1px solid var(--line); font-size: 14.5px; color: var(--text-2); line-height: 1.55; }
+  .deflist li:last-child { border-bottom: 1px solid var(--line); }
+  .deflist li::before { counter-increment: deflist; content: "0" counter(deflist); position: absolute; left: 0; top: 13px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .deflist li b { color: var(--text); font-weight: 500; }
+  .deflist li .term { color: var(--accent); font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.02em; }
+
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
+
+  /* Code block (terminal-like) */
+  .code-block {
+    background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0;
+    padding: 16px 20px; margin: 16px 0 0;
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
+    color: var(--text-1); white-space: pre-wrap; overflow-x: auto;
+  }
+  .code-block .cb-tag { display: block; font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; font-weight: 500; font-family: var(--font-mono); }
+  .code-block .cb-prompt { color: var(--accent-soft); }
+  .code-block .cb-comment { color: var(--text-3); }
+  .code-block .cb-out { color: var(--text-2); }
+  .code-block .cb-ok { color: var(--ok); }
+  .code-block .cb-warn { color: var(--warn); }
+  .code-block .cb-emph { color: var(--accent); }
+  .code-block .cb-key { color: var(--accent-soft); }
+  .code-block .cb-val { color: var(--text); }
+
+  /* POS analogy split (Concept 1) */
+  .pos-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
+  .pos-col { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 18px; }
+  .pos-col.head { border-top: 2px solid var(--text-3); }
+  .pos-col.tool { border-top: 2px solid var(--accent); }
+  .pos-col .pos-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 4px; color: var(--text-3); }
+  .pos-col.tool .pos-tag { color: var(--accent); }
+  .pos-col .pos-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 12px; line-height: 1.3; }
+  .pos-list { margin: 0; padding-left: 18px; color: var(--text-1); font-size: 13.5px; line-height: 1.7; }
+  .pos-list li { margin: 4px 0; }
+  .pos-col .pos-foot { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--text-3); }
+  .pos-col.tool .pos-foot { color: var(--accent); }
+
+  /* Artifact type grid (Concept 2) */
+  .arts-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 22px 0 0; }
+  .art-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px 16px; position: relative; }
+  .art-card .art-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .art-card .art-prefix { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 6px; }
+  .art-card .art-q { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); margin-bottom: 8px; line-height: 1.4; }
+  .art-card .art-q strong { color: var(--text); font-weight: 500; }
+  .art-card .art-desc { font-size: 13px; color: var(--text-1); line-height: 1.55; }
+
+  /* Artifact DAG (clean horizontal lanes) */
+  .art-dag { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px 18px; margin: 22px 0 0; }
+  .art-dag .dag-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+  .lanes { display: grid; gap: 10px; }
+  .lane { display: grid; grid-template-columns: 110px 1fr; gap: 18px; align-items: center; padding: 6px 0; }
+  .lane .lane-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+  .lane .nodes { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .node { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 6px 11px; font-family: var(--font-mono); font-size: 12px; color: var(--text-1); }
+  .node.epic   { border-color: var(--accent); color: var(--accent-soft); background: rgba(255, 90, 31, 0.06); }
+  .node.prd    { border-color: var(--info);   color: #93c5fd; background: rgba(96, 165, 250, 0.06); }
+  .node.rfc    { border-color: var(--info);   color: #93c5fd; background: rgba(96, 165, 250, 0.06); }
+  .node.adr    { border-color: var(--ok);     color: #86efac; background: rgba(34, 197, 94, 0.06); }
+  .node.spec   { border-color: var(--ok);     color: #86efac; background: rgba(34, 197, 94, 0.06); }
+  .node.evid   { border-color: var(--warn);   color: #fcd34d; background: rgba(245, 158, 11, 0.06); }
+  .arr { color: var(--text-3); font-family: var(--font-mono); font-size: 14px; letter-spacing: -0.05em; }
+  .arr.up { color: var(--warn); }
+
+  /* Depth levels chart (Concept 3) */
+  .depth-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 22px 0 0; }
+  .depth-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 14px 18px; }
+  .depth-card.tac  { border-top: 2px solid var(--dp-tac); }
+  .depth-card.std  { border-top: 2px solid var(--dp-std); }
+  .depth-card.deep { border-top: 2px solid var(--dp-deep); }
+  .depth-card.crit { border-top: 2px solid var(--dp-crit); }
+  .depth-card .d-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 4px; }
+  .depth-card.tac  .d-tag { color: var(--dp-tac); }
+  .depth-card.std  .d-tag { color: var(--dp-std); }
+  .depth-card.deep .d-tag { color: var(--dp-deep); }
+  .depth-card.crit .d-tag { color: var(--dp-crit); }
+  .depth-card .d-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; margin-bottom: 8px; }
+  .depth-card .d-pipe { font-family: var(--font-mono); font-size: 11px; color: var(--text-2); letter-spacing: 0.02em; line-height: 1.5; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); min-height: 36px; }
+  .depth-card .d-pipe.none { color: var(--text-4); font-style: italic; }
+  .depth-card .d-when { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
+
+  /* Quality gates table */
+  .gates-wrap { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; overflow: hidden; margin: 22px 0 0; }
+  .gates-head { padding: 14px 20px; background: var(--bg-3); border-bottom: 1px solid var(--line-2); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .gates-head .gh-tag { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; color: var(--text); }
+  .gates-head .gh-cmd { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+  .gate-row { padding: 14px 20px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 28px 160px 1fr 100px; gap: 16px; align-items: center; }
+  .gate-row:last-child { border-bottom: none; }
+  .gate-row .g-num { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; color: var(--text-3); }
+  .gate-row .g-name { font-family: var(--font-mono); font-size: 12px; color: var(--text); font-weight: 500; letter-spacing: 0.02em; }
+  .gate-row .g-desc { font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .gate-row .g-status { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; border-radius: 0; text-align: center; }
+  .gate-row .g-status.pass { background: rgba(34, 197, 94, 0.12); color: #86efac; }
+
+  /* Activate timeline */
+  .activate-timeline { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; margin: 22px 0 0; }
+  .at-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 16px; }
+  .at-steps { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; }
+  .at-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 10px 14px; }
+  .at-step.active { border-color: var(--accent); background: rgba(255, 90, 31, 0.04); }
+  .at-step.terminal { border-color: var(--text-3); opacity: 0.85; }
+  .at-step .as-state { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .at-step.active .as-state { color: var(--accent); }
+  .at-step .as-rule { font-size: 12.5px; color: var(--text-1); line-height: 1.45; }
+  .at-arrow { display: flex; align-items: center; justify-content: center; color: var(--text-3); font-family: var(--font-mono); font-size: 14px; }
+
+  /* Worked example */
+  .worked { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px 24px; margin: 22px 0 0; }
+  .worked-step { display: grid; grid-template-columns: 110px 1fr; gap: 18px; padding: 16px 0; border-top: 1px solid var(--line); }
+  .worked-step:first-of-type { border-top: none; padding-top: 4px; }
+  .worked-step .step-num { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); padding-top: 2px; }
+  .worked-step.crit .step-num { color: var(--accent); }
+  .worked-step .step-content h4 { margin: 0 0 6px; font-size: 15px; color: var(--text); font-weight: 500; line-height: 1.35; }
+  .worked-step .step-content p { margin: 0; font-size: 13.5px; color: var(--text-2); line-height: 1.55; }
+  .worked-step .step-content code { font-size: 12px; }
+
+  /* Inline deep-link */
+  .deep-link { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; text-decoration: none; transition: border-color .2s, background .2s; }
+  .deep-link:hover { border-color: var(--accent); background: rgba(255, 90, 31, 0.04); }
+  .deep-link .dl-text { display: flex; flex-direction: column; gap: 2px; }
+  .deep-link .dl-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
+  .deep-link .dl-title { font-family: var(--font-sans); font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.35; }
+  .deep-link .dl-arrow { font-family: var(--font-mono); font-size: 18px; color: var(--accent); letter-spacing: -0.05em; }
+
+  /* Cross-links (3 cards row) */
+  .cross-links { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 22px 0 0; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; position: relative; }
+  .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
+  .next-step h3 { font-size: 15.5px; line-height: 1.3; }
+  .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 0; transition: background .2s; }
+  .next-step a.ns-link:hover { background: var(--accent-bg); }
+
+  /* Teaching */
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
+  .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
+  .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .teaching ol li b { color: var(--text); font-weight: 500; }
+
+  /* 10-types footnote table */
+  .tax-foot { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 20px 18px; margin: 18px 0 0; }
+  .tax-foot .tf-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 10px; }
+  .tax-foot table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .tax-foot th, .tax-foot td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+  .tax-foot th { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); font-weight: 500; }
+  .tax-foot tr:last-child td { border-bottom: none; }
+  .tax-foot td.t-name { font-family: var(--font-mono); color: var(--text); font-weight: 500; }
+  .tax-foot td.t-usage { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .tax-foot td.t-usage.core { color: var(--accent); }
+  .tax-foot td.t-usage.sit  { color: var(--text-3); }
+
+  .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .pipeline { grid-template-columns: 1fr; }
+    .pipe-arrow { display: none; }
+    .pos-split { grid-template-columns: 1fr; }
+    .arts-grid { grid-template-columns: 1fr; }
+    .depth-grid { grid-template-columns: 1fr 1fr; }
+    .cross-links { grid-template-columns: 1fr; }
+    .at-steps { grid-template-columns: 1fr; }
+    .at-arrow { display: none; }
+    h1 { font-size: 32px; }
+    .concept { padding: 22px 20px 24px; }
+    .gate-row { grid-template-columns: 1fr 80px; gap: 8px; }
+    .gate-row .g-num, .gate-row .g-desc { grid-column: 1 / -1; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <!-- ============ HERO ============ -->
+  <p class="eyebrow">A project cycle · operational practice</p>
+  <h1>Forgeplan as an operational layer</h1>
+  <p class="lead">
+    <b class="k">Forgeplan</b> provides a CLI and MCP server alongside a repository.
+    It automates parts of artifact handling; people and agents still have to justify decisions and verify results.
+  </p>
+  <p>Interface examples refer to the inspected <code>0.39.0+constellation.s1.1</code> source snapshot, not the public <code>0.38.0</code> release. Captured help establishes syntax; source review and retained observations establish the stated behavior limits. No new runtime result is claimed.</p>
+
+  <!-- ============ MINI-PIPELINE ============ -->
+  <div class="pipeline">
+    <div class="pipe-box">
+      <div class="step-tag">01 · Operational layer</div>
+      <div class="step-title">A POS analogy for methodology tools</div>
+      <div class="step-desc">CLI + .forgeplan/ + MCP server</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">02 · Artifacts + DAG</div>
+      <div class="step-title">10 selected kinds · 6 highlighted</div>
+      <div class="step-desc">PRD · RFC · ADR · Spec · Epic · Evidence</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">03 · Depth + Gates</div>
+      <div class="step-title">Depth modes and aliases</div>
+      <div class="step-desc"><span class="dp-tac">tac</span> · <span class="dp-std">std</span> · <span class="dp-deep">deep</span> · <span class="dp-crit">crit</span></div>
+    </div>
+  </div>
+
+  <!-- ============ CONCEPT 01 · OPERATIONAL LAYER ============ -->
+  <h2>01 · An operational layer for decisions</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 01 · a point-of-sale analogy</div>
+    <h3 class="concept-h">The waiter takes the order; the terminal tracks prices and discounts</h3>
+    <p class="analogy">
+      Picture a restaurant’s point-of-sale terminal handling prices, tax,
+      discounts, and loyalty balances while the waiter takes an order.
+      The division is between <b class="k">making a substantive choice</b>
+      and <b class="k">recording it consistently</b>.
+    </p>
+    <p class="analogy">
+      Forgeplan is comparable to that terminal, but its adaptations are not identical
+      to every upstream methodology. BMAD informs product planning, OpenSpec informs deltas,
+      Quint Code informs evidence-oriented assurance, and FPF informs reasoning.
+      The product has its own templates, validators, FGR heuristics, and R_eff engine.
+      None of these integrations replaces inspection of the underlying evidence.
+    </p>
+
+    <!-- POS split: что в голове vs что в инструменте -->
+    <div class="pos-split">
+      <div class="pos-col head">
+        <div class="pos-tag">Before · remembered by the team</div>
+        <div class="pos-title">Things a shared process must specify</div>
+        <ul class="pos-list">
+          <li>Which PRD sections the local template requires</li>
+          <li>Which delta verbs the implementation supports</li>
+          <li>Where ADRs live and how their metadata is stored</li>
+          <li>How evidence fields differ from trust-assessment rubrics</li>
+          <li>How to compare serious alternatives using ADI</li>
+          <li>Which graph edges represent dependencies</li>
+        </ul>
+        <div class="pos-foot">Explicit conventions, not a memory contest</div>
+      </div>
+      <div class="pos-col tool">
+        <div class="pos-tag">After · supported by tools</div>
+        <div class="pos-title">What Forgeplan provides</div>
+        <ul class="pos-list">
+          <li><code>forgeplan new prd "Feature title"</code> · a local template, not a verbatim upstream BMAD checklist</li>
+          <li><code>forgeplan validate</code> · kind- and depth-dependent structural checks</li>
+          <li><code>.forgeplan/</code> · Markdown sources and derived index data</li>
+          <li><code>forgeplan score</code> · R_eff; <code>forgeplan fgr</code> · a separate FGR heuristic</li>
+          <li><code>forgeplan reason</code> · an LLM prompt requesting 3+ approaches, not a parser-enforced count</li>
+          <li><code>forgeplan graph</code> · Mermaid graph text for inspection</li>
+        </ul>
+        <div class="pos-foot">Adaptations with explicit implementation boundaries</div>
+      </div>
+    </div>
+
+    <p style="margin-top: 22px;">
+      Workspace initialization creates <code>.forgeplan/</code>.
+      The following commands illustrate creating an ADR; this is not a captured transcript.
+    </p>
+
+    <div class="code-block">
+      <span class="cb-tag">Authored terminal example · creating an ADR</span>
+<span class="cb-prompt">$</span> forgeplan init
+<span class="cb-comment"># Inspect initialization output before continuing.</span>
+
+<span class="cb-prompt">$</span> forgeplan new adr <span class="cb-val">"Vault architecture: Express + SQLite + Ollama + Anthropic"</span>
+<span class="cb-comment"># Use the actual returned ID and file path.</span>
+<span class="cb-comment"># Fill context, decision, alternatives, and consequences.</span>
+<span class="cb-comment"># Record evidence requirements and review conditions.</span>
+<span class="cb-comment"># Select depth explicitly for the real task.</span>
+<span class="cb-comment"># A review condition does not install an event monitor.</span>
+<span class="cb-emph">Next:</span> forgeplan reason ADR-001
+    </div>
+
+    <p style="margin-top: 14px;">
+      Complete the template actually returned by the tool.
+      The checked ADR template separates Context, Decision, Alternatives Considered,
+      Consequences, Evidence Requirements, and Valid Until, with additional depth-specific material.
+      Three alternatives are a local prompt convention, not a universal FPF threshold.
+      A generated template is not a completed reasoning record.
+    </p>
+
+    <p style="margin-top: 14px;">
+      The MCP server exposes tools to a connected client. The client’s instructions,
+      tool access, and agent behavior determine whether it retrieves the relevant PRD and ADR.
+      For “add logging to the auth service,” ask it to inspect those records and verify the references.
+      Providing access is <b class="k">not a guarantee of automatic retrieval</b>
+      or of compliance with every previous decision.
+    </p>
+
+    <div class="insight">
+      <div class="insight-tag">Distinguish framework concepts from product calculations</div>
+      <p>
+        Upstream FPF uses ordinal F (rigor of expression), G (ClaimScope), and claim-specific R.
+        Forgeplan instead computes Formality, Granularity, and Reliability on 0–1 scales:
+        overall FGR is <b class="k">cube_root(F × G × R)</b>. Quint Code’s reference has
+        textual FGR guidance and a separate formality/reliability calculator; these are not one shared formula.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ CONCEPT 02 · ARTIFACTS + DAG ============ -->
+  <h2>02 · Artifact kinds and the dependency graph</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 02 · artifact types</div>
+    <h3 class="concept-h">Six highlighted kinds, with explicit relationships</h3>
+    <p class="analogy">
+      Imagine requirements in Jira, design discussions in Confluence, ADRs in
+      <code>docs/</code>, and evidence in PR comments or benchmark files.
+      If their relationships exist only in the author’s memory, a later reader
+      may not know why gRPC was chosen over REST.
+    </p>
+    <p class="analogy">
+      Forgeplan stores records in a file-based workspace. Six kinds are highlighted here;
+      the table selects ten kinds, not the entire core taxonomy or every MCP creation enum.
+    </p>
+
+    <!-- 6 core artifact type cards -->
+    <div class="arts-grid">
+      <div class="art-card">
+        <div class="art-tag">PRD</div>
+        <div class="art-prefix">prefix · prd-</div>
+        <div class="art-q"><strong>What?</strong> What to build, and for whom</div>
+        <div class="art-desc">Product requirements. Upstream BMAD places PRD work in Planning, not a “Delivery” phase. Write functional requirements as “[Actor] can [capability]” rather than embedding implementation choices.</div>
+      </div>
+      <div class="art-card">
+        <div class="art-tag">RFC</div>
+        <div class="art-prefix">prefix · rfc-</div>
+        <div class="art-q"><strong>How?</strong> Possible ways to implement it</div>
+        <div class="art-desc">A proposal with alternatives: “We are considering REST versus gRPC; here are the options.” It opens a technical discussion rather than declaring the final choice.</div>
+      </div>
+      <div class="art-card">
+        <div class="art-tag">ADR</div>
+        <div class="art-prefix">prefix · adr-</div>
+        <div class="art-q"><strong>Why?</strong> Why this choice</div>
+        <div class="art-desc">An accepted architectural decision linked to proposals and evidence. Active files are editable through authorized updates. Use an explicit replacement when the decision changes; activation is not technical immutability.</div>
+      </div>
+      <div class="art-card">
+        <div class="art-tag">Spec</div>
+        <div class="art-prefix">prefix · spec-</div>
+        <div class="art-q"><strong>Contract?</strong> How the system behaves</div>
+        <div class="art-desc">API contracts and data models. The target delta parser supports ADDED / MODIFIED / REMOVED. Upstream OpenSpec also supports RENAMED; that does not establish target support. See <a href="spec-cycle.html">the specification cycle</a>.</div>
+      </div>
+      <div class="art-card">
+        <div class="art-tag">Epic</div>
+        <div class="art-prefix">prefix · epic-</div>
+        <div class="art-q"><strong>Group?</strong> What several PRDs share</div>
+        <div class="art-desc">Groups related work around a larger goal. An Epic can organize multiple PRDs; it is not a separate mandatory Critical pipeline inferred from the label.</div>
+      </div>
+      <div class="art-card">
+        <div class="art-tag">Evidence</div>
+        <div class="art-prefix">prefix · evid-</div>
+        <div class="art-q"><strong>Observed?</strong> What supports or challenges the choice</div>
+        <div class="art-desc">Tests, measurements, benchmarks, or audits with scope and provenance. The scorer reads verdict and CL declarations and an evidence type. R_eff aggregates eligible contributions; it does not read a 0–9 F/G/R triplet as a universal trust formula.</div>
+      </div>
+    </div>
+
+    <p style="margin-top: 22px;">
+      Metadata and typed links make relationships inspectable. The following is schematic, not an exact generated file or a complete typed-edge specification:
+    </p>
+
+    <div class="code-block">
+      <span class="cb-tag">Schematic frontmatter · example IDs, not a captured file</span>
+<span class="cb-comment">---</span>
+<span class="cb-key">id:</span> <span class="cb-val">adr-001</span>
+<span class="cb-key">type:</span> <span class="cb-val">adr</span>
+<span class="cb-key">title:</span> <span class="cb-val">"Vault architecture: Express + SQLite + Ollama"</span>
+<span class="cb-key">depth:</span> <span class="cb-val">deep</span>
+<span class="cb-key">status:</span> <span class="cb-val">active</span>
+<span class="cb-key">related_artifacts:</span>
+  - <span class="cb-val">prd-001</span>       <span class="cb-comment"># requirement record</span>
+  - <span class="cb-val">rfc-001</span>       <span class="cb-comment"># proposal record</span>
+  - <span class="cb-val">evidence-001</span>  <span class="cb-comment"># evidence reference; actual links need their relation type</span>
+<span class="cb-key">valid_until:</span> <span class="cb-val">2026-12-01</span>
+<span class="cb-comment">---</span>
+    </div>
+
+    <!-- DAG visualization · clean lanes -->
+    <div class="art-dag">
+      <div class="dag-tag">Illustrative graph roles · not a universal artifact pipeline</div>
+      <div class="lanes">
+        <div class="lane">
+          <span class="lane-tag">intent</span>
+          <div class="nodes">
+            <span class="node epic">EPIC-001</span>
+            <span class="arr">↓</span>
+            <span class="node prd">PRD-001</span>
+            <span style="font-size: 12px; color: var(--text-3); margin-left: 4px;">streaming endpoint · illustrative target: first-token p50 ≤ 800 ms</span>
+          </div>
+        </div>
+        <div class="lane">
+          <span class="lane-tag">discussion</span>
+          <div class="nodes">
+            <span class="node rfc">RFC-001</span>
+            <span style="font-size: 12px; color: var(--text-3); margin-left: 4px;">SSE vs WebSockets vs HTTP/2 push</span>
+          </div>
+        </div>
+        <div class="lane">
+          <span class="lane-tag">decision</span>
+          <div class="nodes">
+            <span class="node adr">ADR-001</span>
+            <span style="font-size: 12px; color: var(--text-3); margin-left: 4px;">Vault architecture · record the rationale and changes</span>
+          </div>
+        </div>
+        <div class="lane">
+          <span class="lane-tag">contract</span>
+          <div class="nodes">
+            <span class="node spec">SPEC-001</span>
+            <span style="font-size: 12px; color: var(--text-3); margin-left: 4px;">GET /query/stream behavior and invariants</span>
+          </div>
+        </div>
+        <div class="lane">
+          <span class="lane-tag">evidence</span>
+          <div class="nodes">
+            <span class="arr up">↑</span>
+            <span class="node evid">EVID-001</span>
+            <span style="font-size: 12px; color: var(--text-3); margin-left: 4px;">proposed SSE vs WS benchmark · informs ADR-001 · no result measured here</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Inspect the chain instead of reconstructing it from memory</div>
+      <p>
+        <code>forgeplan graph</code> emits Mermaid graph text; render it with a compatible viewer.
+        The captured help has no <code>--format mermaid</code> option.
+        A graph can expose the path from requirement to evidence, but only if links are maintained.
+        It makes references inspectable; it does not prove their claims.
+      </p>
+    </div>
+
+    <!-- 10 types footnote -->
+    <div class="tax-foot">
+      <div class="tf-tag">Ten selected artifact kinds · core taxonomy is broader</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Kind</th>
+            <th>Prefix</th>
+            <th>Purpose</th>
+            <th>Usage here</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="t-name">PRD</td><td><code>prd-</code></td><td>Product requirements</td><td class="t-usage core">core</td></tr>
+          <tr><td class="t-name">RFC</td><td><code>rfc-</code></td><td>Technical proposal</td><td class="t-usage core">core</td></tr>
+          <tr><td class="t-name">ADR</td><td><code>adr-</code></td><td>Accepted decision with history</td><td class="t-usage core">core</td></tr>
+          <tr><td class="t-name">Spec</td><td><code>spec-</code></td><td>API contracts and behavior</td><td class="t-usage core">core</td></tr>
+          <tr><td class="t-name">Epic</td><td><code>epic-</code></td><td>Related PRDs around a goal</td><td class="t-usage core">core</td></tr>
+          <tr><td class="t-name">Evidence</td><td><code>evid-</code></td><td>Tests, measurements, benchmarks, audits</td><td class="t-usage core">core</td></tr>
+          <tr><td class="t-name">Problem</td><td><code>prob-</code></td><td>A contextualized bug or risk</td><td class="t-usage sit">situational</td></tr>
+          <tr><td class="t-name">Solution</td><td><code>sol-</code></td><td>Comparison of possible approaches</td><td class="t-usage sit">situational</td></tr>
+          <tr><td class="t-name">Note</td><td><code>note-</code></td><td>A small decision; inspect its actual valid_until</td><td class="t-usage sit">situational</td></tr>
+          <tr><td class="t-name">Refresh</td><td><code>ref-</code></td><td>Reassessment record</td><td class="t-usage sit">situational</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ CONCEPT 03 · DEPTH + GATES ============ -->
+  <h2>03 · Depth calibration and quality checks</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 03 · a screening analogy</div>
+    <h3 class="concept-h">Match the review effort to the task, not one pipeline for everything</h3>
+    <p class="analogy">
+      A cosmetic change and a database migration need different scrutiny.
+      The router proposes a depth based on task signals; project policy
+      and actual risk still need review.
+    </p>
+    <p class="analogy">
+      Think of different screening procedures for different situations.
+      This analogy motivates <b class="k">proportionate review</b>;
+      it is not a description of airport rules or a quality guarantee.
+    </p>
+
+    <!-- 4 depth levels -->
+    <div class="depth-grid">
+      <div class="depth-card tac">
+        <div class="d-tag"><span class="dp-tac">●</span> Tactical</div>
+        <div class="d-title">Minimal artifact pipeline</div>
+        <div class="d-pipe none">pipeline: none</div>
+        <div class="d-when">Cosmetic work or a small rename may fit. This does not waive project checks. Core also has a lightweight Note mode.</div>
+      </div>
+      <div class="depth-card std">
+        <div class="d-tag"><span class="dp-std">●</span> Standard</div>
+        <div class="d-title">PRD + RFC</div>
+        <div class="d-pipe">PRD → RFC</div>
+        <div class="d-when">A bounded feature can fit Standard. Evidence supports completion, but is not another node in this router’s pipeline list.</div>
+      </div>
+      <div class="depth-card deep">
+        <div class="d-tag"><span class="dp-deep">●</span> Deep</div>
+        <div class="d-title">Spec + RFC + ADR</div>
+        <div class="d-pipe">PRD → Spec → RFC → ADR</div>
+        <div class="d-when">Security, public-API, or irreversibility signals can require Deep. Inspect the highest matching signal.</div>
+      </div>
+      <div class="depth-card crit">
+        <div class="d-tag"><span class="dp-crit">●</span> Critical</div>
+        <div class="d-title">Parsed as a Deep alias</div>
+        <div class="d-pipe">Critical → Deep in the core mode parser</div>
+        <div class="d-when">This is not a separate built-in Epic/Adversarial pipeline. Core modes are Note, Tactical, Standard, and Deep.</div>
+      </div>
+    </div>
+
+    <p style="margin-top: 22px;">
+      Inspect the recommendation and its rationale. These are authored examples, not captured classifications:
+    </p>
+
+    <div class="code-block">
+      <span class="cb-tag">Illustrative routing · commands, not a verified transcript</span>
+<span class="cb-prompt">$</span> forgeplan route <span class="cb-val">'Add streaming endpoint GET /query/stream for Vault'</span>
+<span class="cb-out">Illustrative depth:</span> <span class="cb-emph">deep</span>
+<span class="cb-out">Deep pipeline:</span> PRD → Spec → RFC → ADR
+<span class="cb-comment"># Inspect public-API, dependency, and budget implications.</span>
+<span class="cb-comment"># No latency or classification confidence measured here.</span>
+
+<span class="cb-prompt">$</span> forgeplan route <span class="cb-val">'Rename button color from blue to indigo'</span>
+<span class="cb-out">Illustrative depth:</span> <span class="cb-emph">tactical</span>
+<span class="cb-out">Tactical pipeline:</span> <span class="cb-comment">(none)</span>
+<span class="cb-comment"># Confirm there is no behavior change or wider impact.</span>
+    </div>
+
+    <p style="margin-top: 14px;">
+      The keyword rules take the maximum matching signal: security maps to Deep,
+      cross-team to Standard. CLI help describes level 0 as the default, while
+      the handler can auto-select configured LLM routing and escalate. Confidence is heuristic, not measured correctness.
+    </p>
+
+    <!-- Quality gates table -->
+    <div class="gates-wrap">
+      <div class="gates-head">
+        <span class="gh-tag">Three review concerns · not three universal CLI gates</span>
+        <span class="gh-cmd">$ forgeplan validate PRD-018</span>
+      </div>
+      <div class="gate-row">
+        <span class="g-num">01</span>
+        <span class="g-name">PRD structure</span>
+        <span class="g-desc">Check the local kind/depth rules. The local template’s thirteen substantive H2 sections are not an upstream BMAD thirteen-section requirement.</span>
+        <span class="g-status pass">review</span>
+      </div>
+      <div class="gate-row">
+        <span class="g-num">02</span>
+        <span class="g-name">Delta consistency</span>
+        <span class="g-desc">Check base references, supported verbs, and dependency structure where applicable. A PRD validation does not demonstrate all delta behavior.</span>
+        <span class="g-status pass">review</span>
+      </div>
+      <div class="gate-row">
+        <span class="g-num">03</span>
+        <span class="g-name">Reasoning</span>
+        <span class="g-desc">Compare serious alternatives, rejection reasons, and evidence. ADI is Abduction–Deduction–Induction; the product prompt requests 3+ approaches, not an enforced universal threshold.</span>
+        <span class="g-status pass">review</span>
+      </div>
+    </div>
+
+    <p style="margin-top: 14px;">
+      These rows organize manual review; they are not a successful validation result.
+      The selected CLI validate path reports a named legacy-store limitation on migrated workspaces.
+      Captured help proves syntax, not that every handler works on every layout.
+    </p>
+
+    <!-- Activate timeline -->
+    <div class="activate-timeline">
+      <div class="at-tag">Lifecycle sketch · validation is an action, not a persisted status</div>
+      <div class="at-steps">
+        <div class="at-step">
+          <div class="as-state">draft</div>
+          <div class="as-rule">revise through authorized updates</div>
+        </div>
+        <div class="at-arrow">→</div>
+        <div class="at-step">
+          <div class="as-state">validate</div>
+          <div class="as-rule">inspect applicable findings</div>
+        </div>
+        <div class="at-arrow">→</div>
+        <div class="at-step active">
+          <div class="as-state">activate</div>
+          <div class="as-rule">attempt draft → active; files remain editable</div>
+        </div>
+        <div class="at-arrow">→</div>
+        <div class="at-step terminal">
+          <div class="as-state">superseded · deprecated</div>
+          <div class="as-rule">terminal states; stale is a separate review signal/state</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Activation and replacement have different roles</div>
+      <p>
+        <code>forgeplan activate adr-001</code> checks content length, stubs, evidence links,
+        MUST findings, and readiness; callers also handle provenance. It does not lock the file.
+        Create a replacement before <code>forgeplan supersede adr-001 --by adr-002</code>.
+        Expiry detection can list an active record as overdue without rewriting its stored status.
+        Supersede links an existing replacement; it does not create that replacement.
+        <code>forgeplan renew adr-001 --reason "Rechecked applicability" --until 2026-12-01</code>
+        uses the stored-status transition guard. Help calls it stale → active, but being listed overdue
+        does not make an active → active renewal legal; the guard also permits draft → active.
+        <code>forgeplan reopen adr-001 --reason "Context changed"</code> accepts active or stale,
+        creates a new draft with lineage, and deprecates the old record. Neither command is a captured full-profile MCP tool.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ WORKED EXAMPLE ============ -->
+  <h2>Worked illustration · Vault · a streaming endpoint</h2>
+  <p>An authored example of linking intent, contracts, decisions, and evidence. No benchmark or current product run is reported here. Complete the routed artifacts, implementation, and checks before claiming completion.</p>
+  <div class="worked">
+    <div class="worked-step">
+      <div class="step-num">01 · route</div>
+      <div class="step-content">
+        <h4><code>forgeplan route 'Add streaming endpoint GET /query/stream'</code></h4>
+        <p>The example chooses <span class="dp-deep">Deep</span>: PRD → Spec → RFC → ADR. Inspect the real routing response and public-API signals. No half-second response time or automatic agreement is promised.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">02 · new prd</div>
+      <div class="step-content">
+        <h4><code>forgeplan new prd "Streaming endpoint for Vault queries"</code></h4>
+        <p>Complete the generated local PRD template, then create the Spec, RFC, and ADR required by the chosen route. The new command accepts kind and title; it does not infer this example’s deep depth or parent Epic from the title. Set actual metadata and links explicitly through supported tools.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">03 · reason</div>
+      <div class="step-content">
+        <h4><code>forgeplan reason PRD-018</code> · ADI</h4>
+        <p>Compare SSE, WebSockets, and HTTP/2 push with testable consequences. Three alternatives illustrate the local anti-anchoring heuristic. A configured LLM provider is required for reason; missing configuration is an error, not an offline blank-slot output.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">04 · validate</div>
+      <div class="step-content">
+        <h4><code>forgeplan validate PRD-018</code> · inspect actual findings</h4>
+        <p>Review template completeness, applicable contracts, and the reasoning separately. A structural check cannot demonstrate implementation behavior or guarantee full OpenSpec/FPF conformance. Preserve a layout refusal rather than inventing a PASS.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">05 · evidence</div>
+      <div class="step-content">
+        <h4><code>forgeplan new evidence "SSE vs WS benchmark"</code> + <code>link</code></h4>
+        <p>Design a first-token p50 comparison between SSE and WebSockets—for example, at 50 RPS with a 2 KB payload. These are scenario parameters, not observed results. Record revision, method, verdict, congruence_level, evidence_type, and limits. Link with <code>forgeplan link EVID-001 ADR-001 --relation informs</code>, then inspect <code>forgeplan score ADR-001</code>. Do not assume every mutation reconciles every ancestor cache.</p>
+      </div>
+    </div>
+    <div class="worked-step crit">
+      <div class="step-num">06 · activate</div>
+      <div class="step-content">
+        <h4><code>forgeplan activate ADR-001</code> · an explicit transition</h4>
+        <p>If the applicable gates pass, the persisted status is <code>active</code>, not activated (a derived display category). Active bodies remain editable. Evidence scoring keeps its ordinary value until expiry, then contributes 0.1; it does not gradually decay to 0.6. A missing valid_until means no expiry in that scorer. Reassessment needs new observations, not just a later date.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- External docs link -->
+  <a class="deep-link" href="https://forgeplan.dev/docs/methodology/overview" target="_blank" rel="noopener">
+    <div class="dl-text">
+      <span class="dl-tag">Full documentation · forgeplan.dev</span>
+      <span class="dl-title">Methodology Overview · 10 Rules · CLI Reference · MCP Tools · Marketplace</span>
+    </div>
+    <span class="dl-arrow">↗</span>
+  </a>
+
+  <div class="footer">
+    <span>forgeplan-cycle · explainer · v1</span>
+    <span><span class="arrow">→</span> forgeplan · forgeplan.dev</span>
+  </div>
+
+</main>
+
+<script>
+  // This page uses static HTML/CSS for the POS split, artifact grid,
+  // graph lanes, depth cards, review table, and lifecycle sketch.
+  // It does not execute CLI commands or measure runtime results.
+</script>
+</body>
+</html>

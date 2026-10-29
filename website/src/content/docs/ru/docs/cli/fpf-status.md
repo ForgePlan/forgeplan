@@ -3,7 +3,7 @@ title: forgeplan fpf status
 description: "Показать статус базы знаний FPF - источник, количество загруженных разделов, просроченность"
 ---
 
-`forgeplan fpf status` сообщает о состоянии локальной базы знаний **First Principles Framework**: откуда она была загружена, сколько разделов находится в LanceDB, когда она была загружена в последний раз и является ли она просроченной относительно поставляемой спецификации.
+`forgeplan fpf status` сравнивает число Markdown-файлов в default-каталоге установленного FPF с числом загруженных разделов. Это проверка количества, не ревизии или готовности векторов.
 
 Думайте об этом как о `forgeplan health` специально для БЗ FPF.
 
@@ -48,20 +48,21 @@ forgeplan fpf status       # → загружено, N разделов
 
 ## Что вы увидите
 
-Типичные сообщаемые поля:
+Выводимые поля:
 
--   **Источник** - путь / версия спецификации FPF, которая была загружена.
--   **Загруженные разделы** - количество строк в таблице `fpf_kb` LanceDB.
--   **Последняя загрузка** - отметка времени (или "никогда").
--   **Просроченность** - показывает, является ли поставляемая спецификация новее загруженных данных.
--   **Семантический поиск** - показывает, включена ли функция `semantic-search` и присутствуют ли эмбеддинги.
+- **Source / Files** - default-путь скилла и число файлов, если найден.
+- **Ingested** - число разделов/строк либо empty/not initialized.
+- **Status** - `STALE` при различии ненулевого числа исходников и разделов; иначе `UP TO DATE`.
+
+Равные числа не обнаруживают правки внутри файлов. Команда не запоминает
+произвольный предыдущий `--path`, не выводит время загрузки и не доказывает semantic readiness.
 
 ## Как это работает
 
-`fpf status` - это **команда-гейт**: она отвечает на вопрос "моя БЗ FPF готова к использованию прямо сейчас?" прежде чем вы запустите `fpf search`, `fpf check` или `forgeplan reason --fpf`.
+Это просмотр состояния, не гейт готовности семантического поиска.
 
 ```
-fpf ingest  →  fpf status (проверка)  →  fpf search / reason --fpf
+fpf ingest → fpf status (число разделов) → проверить/искать нужный корпус
 ```
 
 ## См. также
@@ -70,3 +71,19 @@ fpf ingest  →  fpf status (проверка)  →  fpf search / reason --fpf
 -   [`forgeplan fpf ingest`](/docs/cli/fpf-ingest/) - заполнить или обновить БЗ
 -   [`forgeplan fpf list`](/docs/cli/fpf-list/) - просмотр содержимого
 -   [`forgeplan health`](/docs/cli/health/) - аналог на уровне проекта
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf status --help`.
+
+```text
+Show FPF knowledge base status — source, ingested count, staleness
+
+Usage: forgeplan fpf status
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

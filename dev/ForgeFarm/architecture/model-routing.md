@@ -6,6 +6,12 @@
 > llm-gateway, Codex config reference, OpenCode, vendor-доки DeepSeek/Kimi/
 > GLM/MiniMax/Qwen, OpenRouter, Cerebras. Адверсариально проверено.
 > Сессии/спавн — в executor-sessions.md; skill-слой — в skill-forge.md.
+>
+> Статус источников: это исследование июля 2026 и предложение ForgeFarm.
+> Здесь не зафиксированы ревизии vendor-доков или протокол замеров;
+> «официально», числа провайдеров и tok/s не подтверждают совместимость
+> сегодняшних версий. Перед использованием конкретной пары нужны её version
+> pins и eval; наличие multi-provider интерфейса не гарантирует tool-use.
 
 
 ### A.1 Прямой ответ: можно ли передавать модели, и есть ли смысл
@@ -24,7 +30,7 @@
 
 **OpenCode.**
 - *Официально и по дизайну:* единственный harness, спроектированный под multi-provider. Каталог models.dev (75+ провайдеров), произвольные провайдеры через `@ai-sdk/openai-compatible` / `@ai-sdk/cerebras` + `options.baseURL` + `{env:VAR}`; **никакого wire-ограничения** — plain Chat Completions работает, значит Cerebras/DeepSeek/локальные модели подключаются напрямую, без gateway. Per-agent модели (`agent.<name>.model = "provider/model"`) маппятся 1:1 на tiers T0–T3. Для ExecutorDriver — `opencode run -m provider/model --agent <a> --format json` + `OPENCODE_CONFIG_CONTENT` (inline JSON per process) + `serve`/`--attach` (daemon-топология).
-- *Вывод:* **канонический дом для «других моделей»**. Ответ на «Cerebras?» — да, сюда: gpt-oss-120b @ ~3000 tok/s — природный T3-движок (validate/repair циклы). Model-swap здесь не ломает harness-контракт, потому что у harness'а нет родного семейства.
+- *Вывод дизайна:* **канонический дом для «других моделей»**. gpt-oss-120b на Cerebras — кандидат для T3; упоминаемые ~3000 tok/s — неподтверждённая здесь внешняя оценка, не наш замер. Multi-provider интерфейс облегчает подключение, но model-swap всё равно требует собственного eval пары, как предписывает A.4.
 
 ### A.2 Архитектура: ExecutorDriver + Model Gateway
 

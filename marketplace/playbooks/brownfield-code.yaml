@@ -2,12 +2,16 @@
 # brownfield-code.yaml — Canonical playbook: legacy code repo onboarding
 # =====================================================================
 #
+# Target applicability: ForgeplanCore steps require the legacy artifacts/
+# evidence/relations tables. Do not recreate retired tables to make this
+# reference run on a Constellation workspace; use a separately scoped fixture.
+#
 # Purpose:
 #   Bring a code-only brownfield repository (50+ commits, no docs) into
 #   Forgeplan's structured world by orchestrating C4 architecture
-#   extraction, ingestion of those docs as forge Notes, git-history
-#   inference for ADR drafts, and a final summary Note linking
-#   everything to EPIC-007.
+#   extraction and ingestion of those docs as forge Notes. The history-mining
+#   and summary-linking portions describe intent, not completed automation.
+#   EPIC-007 in the mapping is an illustrative pre-existing target.
 #
 # When to run:
 #   `forgeplan playbook run brownfield-code --yes`
@@ -27,17 +31,16 @@ schema_version: "1.0"
 name: brownfield-code
 title: "Brownfield code-first onboarding"
 description: |
-  Four-step orchestration that converts a code-heavy brownfield repo
-  into a Forgeplan-managed knowledge graph: run C4 → ingest C4 → mine
-  git history → write summary Note. Each ingest step adheres to the
-  ADR-009 hallucination-proof invariant (every artifact carries a
-  `## Sources` block).
+  Reference four-step flow: run C4 → ingest C4 → request history mining →
+  create a summary Note template. Ingest drafts retain the ADR-009
+  `## Sources` invariant. See the companion mapping's applicability warning:
+  its semantic section fields require a matching source contract.
 
-  Prerequisite: `c4-architecture` plugin and `brownfield-code-pack`
-  skill pack must be installed (see `requires:` block). When either
-  is missing, the corresponding step prints the actionable
-  `fallback_hint:` and aborts (or skips, for the optional history
-  miner).
+  The C4 step needs the installed plugin. In this target, SkillDispatcher
+  only emits an invocation trace and returns the declared output path; it
+  neither checks skill installation nor runs the history miner. The final
+  `new` op accepts kind/title only: it does not fill a summary, apply the
+  input tags, or link imported artifacts. Operators must perform those tasks.
 
 # ---------------------------------------------------------------------
 # Recommendation engine signals (PRD-067 FR-5)
@@ -116,9 +119,9 @@ steps:
     requires: [run-c4-architecture]
     on_error: abort
 
-  # 3. Mine git history for inferred ADR drafts.
-  #    Optional — `on_error: continue` so a missing skill doesn't kill
-  #    the whole flow; user still gets the C4 Notes from step 2.
+  # 3. Request history mining (reference intent).
+  #    Current SkillDispatcher emits a trace only; it does not create
+  #    inferred-adrs.md or validate the install hint below.
   - id: run-history-miner
     delegate_to:
       type: skill
@@ -131,8 +134,8 @@ steps:
     fallback_hint: "forgeplan skill install brownfield-code-pack"
     on_error: continue
 
-  # 4. Summary Note linking everything imported by the run.
-  #    Lives entirely in forgeplan_core, no external deps.
+  # 4. Create a summary Note template, not a populated or linked summary.
+  #    Current `new` ignores input.tags; author and link the Note separately.
   - id: summary-note
     delegate_to:
       type: forgeplan_core

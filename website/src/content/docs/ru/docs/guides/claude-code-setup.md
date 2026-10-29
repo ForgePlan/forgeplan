@@ -73,9 +73,15 @@ forgeplan route "task description"   # определяет глубину
 Просто код. Артефакты не требуются.
 ```
 
+Пример описывает рабочий процесс, а не проверку каждого инструмента на всех
+раскладках workspace. Проверенное покрытие совместимости и оставшиеся
+ограничения описаны в [гайде Constellation](/ru/docs/guides/constellation/).
+
 ## Хуки принудительного исполнения
 
-Хуки в `.claude/hooks/` автоматизируют проверки качества:
+Проектные хуки могут автоматизировать проверки качества. Имена ниже —
+примеры, не скрипты, устанавливаемые `forgeplan setup-skill`: подготовьте
+и проверьте каждый исполняемый скрипт перед включением:
 
 ```bash
 # .claude/hooks/forge-safety-hook.sh
@@ -90,19 +96,29 @@ forgeplan route "task description"   # определяет глубину
 
 ### Настройка хуков
 
+Пример `.claude/settings.json`:
+
 ```json
-// .claude/settings.json
 {
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [".claude/hooks/forge-safety-hook.sh"]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/forge-safety-hook.sh"
+          }
+        ]
       }
     ]
   }
 }
 ```
+
+Использована [схема command-hook Claude Code](https://code.claude.com/docs/en/hooks).
+Скрипт должен разбирать вход инструмента и возвращать описанный блокирующий
+результат: само имя файла не обеспечивает выполнение правила.
 
 ## Конфигурация MCP сервера
 
@@ -120,7 +136,13 @@ forgeplan route "task description"   # определяет глубину
 }
 ```
 
-Это предоставляет AI агентам доступ к 73 инструментам: create, validate, score, search, graph, reason, route, плюс оркестрация playbook'ов, FPF KB, dispatch, claims, и другие.
+Запускает full MCP профиль по умолчанию, включая запись. Имена и схемы
+зависят от версии; см. [обзор MCP](/ru/docs/mcp/) и `tools/list` сервера.
+Для нескольких workspace передавайте `serve --workspace /path/to/project`;
+`workspace` запроса приоритетнее `FORGEPLAN_WORKSPACE`, default сервера и
+поиска от CWD, но не меняет цель обслуживания.
+[Настройка MCP](/ru/docs/guides/mcp-setup/) описывает отдельный
+`constellation-read` профиль и условия auto-index.
 
 ## Интеграция памяти (Hindsight)
 
@@ -134,14 +156,21 @@ forgeplan route "task description"   # определяет глубину
 
 ## Рекомендуемые разрешения
 
+Пример `.claude/settings.json`:
+
 ```json
-// .claude/settings.json
 {
   "permissions": {
     "allow": [
       "Bash(cargo:*)",
       "Bash(forgeplan:*)",
-      "Bash(git:add,commit,status,diff,log,branch,checkout)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
       "Bash(npm:*)",
       "Read",
       "Glob",
@@ -155,6 +184,12 @@ forgeplan route "task description"   # определяет глубину
   }
 }
 ```
+
+Это примеры [permission rules](https://code.claude.com/docs/en/permissions),
+не полноценная shell-песочница. Каждой подкоманде Git нужно отдельное правило:
+список через запятую внутри `Bash(...)` не задаёт альтернативы. Проверьте
+широкие разрешения под свой проект; три deny-шаблона не дают исчерпывающей
+защиты от иначе записанных shell-команд.
 
 ## Настройка нескольких проектов
 

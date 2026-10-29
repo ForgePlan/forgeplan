@@ -2,7 +2,21 @@
 
 # ForgePlan — Agent Enforcement Guide
 
-Как заставить AI-агента ОБЯЗАТЕЛЬНО следовать методологии ForgePlan.
+Ранние примеры проектирования enforcement, не установленная и не готовая к копированию конфигурация.
+
+> Ниже сохранены исходные предложения и примерные локальные правила; они не
+> заменяют действующие `AGENTS.md`/`CLAUDE.md`. Инструкции, регистрация MCP и
+> предупреждения сами по себе не заставляют вызвать tool и не блокируют merge.
+> Выбранный CLI не принимает `serve --mcp`, `status --brief`,
+> `drift --quiet --files`, `drift --ci --fail-on-drift`,
+> `validate --all --fail-on-incomplete`, `coverage --percent` и
+> `score --stale-count`. `context` принимает ID артефакта; зарегистрированного
+> `forgeplan_context` нет. Придуманные hook-переменные и плоский JSON ниже
+> не являются текущим контрактом Claude Code hooks. Поддерживаемые инструкции:
+> [AGENT-HOOKS.ru.md](AGENT-HOOKS.ru.md) и [QUALITY-GATES.ru.md](QUALITY-GATES.ru.md);
+> сверяйте help/catalog выбранной сборки и реальную конфигурацию host.
+> Пороги числа файлов и ADI для Standard+ здесь — примеры локальных правил,
+> не алгоритм Rust router. Этот документ не устанавливает и не меняет native policy.
 
 **5 уровней enforcement** (от мягкого к жёсткому):
 

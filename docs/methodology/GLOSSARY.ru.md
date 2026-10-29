@@ -27,10 +27,10 @@ Directed Acyclic Graph артефактов: Proposal → Specs → Design → T
 Набор доказательств: тесты, benchmarks, measurements. Тип артефакта (`evid-`). Подкрепляет решения измеримыми данными.
 
 ### ID формат
-Каноничный формат: `TYPE-NNN` (uppercase). Примеры: `PRD-001`, `EPIC-042`, `ADR-007`, `PROB-003`, `SOL-001`, `SPEC-015`, `RFC-128`. Для файлов: `TYPE-NNN-kebab-case-title.md` (например `PRD-001-social-login.md`). В коде Rust используется lowercase prefix с датой: `prd-20260321-001`.
+Display ID имеет вид `TYPE-NNN` (uppercase), например `PRD-001`, `EPIC-042`, `ADR-007`. Файл обычно называется `TYPE-NNN-kebab-case-title.md`. Slug (`prd-auth-system`) — отдельная identity, но её глобальная уникальность не доказана; текущий creator обычно назначает display number сразу, а nullable assignment и CI-finalization относятся к поэтапному дизайну ID-assignment.
 
 ### Note
-Микро-решение. Не требует rationale. Авто-истекает через 90 дней. Самый лёгкий тип артефакта. Префикс: `note-`.
+Микро-решение без полного rationale. Интервал review в 90 дней — локальная конвенция, не автоматический default создания. Префикс: `note-`.
 
 ### PRD (Product Requirements Document)
 Документ требований: **что**, **зачем**, **для кого**. Определяет scope и acceptance criteria. Не описывает реализацию. Префикс: `prd-`.
@@ -46,7 +46,7 @@ Directed Acyclic Graph артефактов: Proposal → Specs → Design → T
 ## Скоринг и качество
 
 ### CL (Congruence Level)
-Уровень конгруэнтности 0–3. Показывает насколько evidence переносится между контекстами:
+Локальная шкала конгруэнтности Forgeplan — 0–3. Фиксированные штрафы ниже — эвристика продукта, не универсальные штрафы upstream FPF:
 
 | Уровень | Penalty | Описание |
 |---------|---------|----------|
@@ -59,18 +59,17 @@ Directed Acyclic Graph артефактов: Proposal → Specs → Design → T
 Вычисляемый статус артефакта. **Никогда** не хранится напрямую — всегда рассчитывается на основе текущего состояния:
 
 ```
-UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED → REFRESH_DUE
+STUB → SHAPED → VALIDATED → EVIDENCED → ACTIVATED
 ```
 
 ### Evidence Decay
-Доказательства имеют TTL (`valid_until`). Истёкшие доказательства получают score = 0.1 (слабые, но не отсутствующие). Graduated epistemic debt — чем дольше истёк срок, тем менее надёжно.
+У evidence может быть дата `valid_until`. После её истечения scorer возвращает 0.1, без постепенного снижения со временем. Нет даты — нет expiry в этом расчёте. Обнаружение просрочки само по себе не меняет сохраняемый status.
 
 ### F-G-R Trust Calculus
-Три оси оценки качества знания из FPF:
+Различайте upstream-понятия и адаптацию продукта:
 
-- **Formality** — насколько формализовано знание
-- **Granularity** — уровень детализации
-- **Reliability** — надёжность источника
+- Текущий FPF (revision `34a1ae7145309f8c18b4c8864513e3456d43de71`, B.3/C.2.2/C.2.3): **F** — порядковая строгость выражения (default F0–F9), **G** — множественный ClaimScope, **R** — обоснованность конкретного утверждения. Единой универсальной числовой агрегации или фиксированных CL penalties он не задаёт.
+- Forgeplan `scoring/fgr.rs`: **Formality** — доля пройденных validation rules; **Granularity** — пять проверок полноты содержания; **Reliability** объединяет R_eff, связи и свежесть. Каждая шкала 0–1; общий FGR — `cbrt(F * G * R)`. Это эвристики, не калиброванные вероятности.
 
 ### Pareto Front
 Множество недоминируемых вариантов — ни один не строго хуже по **всем** измерениям одновременно. Используется при сравнении вариантов в SolutionPortfolio.
@@ -79,14 +78,14 @@ UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED → RE
 ```
 R_eff = min(evidence_scores) с CL penalties
 ```
-Trust = weakest link, **НИКОГДА** average. Надёжность решения определяется самым слабым из *текущих* доказательств, а не средним. Пакеты с терминальным статусом (`superseded`/`deprecated`) исключаются из min (ADR-020); активный `refutes` по-прежнему обнуляет score.
+Forgeplan использует weakest-link minimum текущих допустимых evidence, а явный recursive score report — также допустимых зависимостей. Терминальные паки (`superseded`/`deprecated`) исключаются (ADR-020). Непросроченный `refutes` даёт ноль; просроченный evidence сначала получает 0.1. Recursive scorer вычитает также evidence-type modifiers (test/measurement 0, benchmark 0.1, audit 0.2) и штрафы зависимостей. Flat captured score их и рекурсию не включает, поэтому поверхности могут различаться. См. [QUALITY-GATES.ru.md](QUALITY-GATES.ru.md).
 
 ### Stepping Stone
 Вариант, открывающий будущие возможности даже если не оптимален сейчас. Boolean flag в SolutionPortfolio. Учитывается при выборе варианта наряду с R_eff.
 
 ### Valid Until
 TTL артефакта или evidence. По истечении срока:
-- Статус → `REFRESH_DUE`
+- Истечение срока и refresh отделены от сохраняемого lifecycle status; в lifecycle используется `stale`, не `REFRESH_DUE`
 - Evidence score → 0.1
 - Требуется переоценка через RefreshReport
 
@@ -107,10 +106,10 @@ TTL артефакта или evidence. По истечении срока:
 ## Рабочий процесс
 
 ### Adversarial Review
-Протокол ревью из BMAD: ревьюер **ОБЯЗАН** найти проблемы; 0 найденных проблем = повторить ревью. Обеспечивает качество через конструктивную конфронтацию.
+Локально адаптированный протокол: активно искать дефекты и обосновывать findings. Ноль подтверждённых дефектов допустим с указанием scope и непроверенных рисков; Rust adversarial checks выдают `adversarial-too-clean` с COULD. Pinned BMAD prompting просит минимум десять замечаний; native `/forge-cycle` отдельно сохраняет собственную квоту. Эти предписания не доказывают наличие дефектов; глоссарий native policy не меняет.
 
 ### Contextual Chain
-Паттерн из BMAD: выход каждой фазы = вход следующей. Автоматическая передача контекста без потерь. Гарантирует, что ни один результат промежуточного шага не теряется.
+Принятая конвенция передачи результатов: выход каждой фазы использовать как вход следующей. Она помогает явно передавать контекст, но не гарантирует автоматическую передачу без потерь между агентами или tools.
 
 ### Depth Calibration
 4 уровня глубины документирования, определяющих набор создаваемых артефактов:
@@ -123,10 +122,10 @@ TTL артефакта или evidence. По истечении срока:
 | Critical | Подсистема, кросс-команда | Epic → PRD[] → Spec[] → RFC[] → ADR[] |
 
 ### Forge Cycle
-Полный FPF-aligned цикл разработки: Observe → Route → Shape → Sprint → Build → Audit → Fix → Evidence → Commit → PR → Activate → Next. Реализован как `/forge-cycle` команда в Claude Code. Автоматически разрешает конфликты через ADI + WLNK + Reversibility.
+Локальная FPF-aligned конвенция цикла разработки: Observe → Route → Shape → Sprint → Build → Audit → Fix → Evidence → Commit → PR → Activate → Next. Prompt `/forge-cycle` в Claude Code направляет агента; это не Rust executor и не гарантия автоматического завершения или разрешения конфликтов.
 
 ### Forge Mode
-Модель разрешений для AI агентов с 3 зонами доверия (FPF B.3): Green (авто — cargo, forgeplan, git read), Yellow (acceptEdits — файлы), Red (blocked — force push, rm -rf). Реализован через whitelist в settings + PreToolUse blacklist hook.
+Локальная конвенция разрешений Green/Yellow/Red, не стандарт разрешений FPF B.3. Фактический доступ зависит от настроек host и подключённых hooks; иллюстративный config в [FORGEPLAN-GUIDE.ru.md](FORGEPLAN-GUIDE.ru.md) эти контроли не устанавливает и не доказывает.
 
 ### Invariants
 Что **ДОЛЖНО** выполняться всегда. Ненарушимые ограничения. Часть DDR. Если invariant нарушен — решение считается невалидным и требует пересмотра.
@@ -152,16 +151,16 @@ TTL артефакта или evidence. По истечении срока:
 ## AI и интеграция
 
 ### ADI cycle
-Abduction (3+ гипотез) → Deduction (логическая проверка) → Induction (практическая проверка). Цикл рассуждения из FPF. Каждая фаза фильтрует и уточняет результат предыдущей.
+Abduction (кандидатные объяснения) → Deduction (проверяемые следствия) → Induction (сопоставление с evidence), по FPF B.5. Prompt Forgeplan просит 3+ различных альтернативы как локальную эвристику против привязки к первому варианту; parser это число не обеспечивает. Текущий upstream B.5.2 требует серьёзного конкурента или обоснования его отсутствия, не универсального порога в три варианта.
 
 ### FPF (First Principles Framework)
 «Операционная система мышления». Транс-дисциплинарная архитектура для рассуждений. Источник ADI cycle, F-G-R Trust Calculus, Verification Gate и других паттернов Forgeplan.
 
 ### FPF auto-resolve
-Автоматическое разрешение конфликтов/выборов во время `/forge-cycle` Build фазы. Использует ADI цикл: Abduction (3 гипотезы) → Deduction (последствия каждой) → Induction (WLNK + Reversibility → выбор). Спрашивает юзера только при необратимых решениях.
+Native prompt `/forge-cycle` Build использует ADI, weakest-link и обратимость для рекомендации выбора. Его локальные stop conditions включают необратимость, одинаково слабые варианты и влияние на другие PRD/сквозные вопросы. Это инструкции агенту, не Rust resolver и не разрешение сверх текущего задания.
 
 ### LanceDB
-Embedded база данных: structured tables + vector embeddings в одной DB. Source of truth для Forgeplan. Позволяет комбинировать точный поиск по полям и семантический поиск по содержимому.
+Embedded база для структурированных таблиц и векторов. Это производный, восстанавливаемый индекс над canonical Markdown в `.forgeplan/<kind>/`, не источник истины Forgeplan. Constellation публикует неизменяемые поколения индекса; legacy и migrated layout не взаимозаменяемы.
 
 ---
 
@@ -171,19 +170,22 @@ Embedded база данных: structured tables + vector embeddings в одн�
 - [PRD-RFC-ADR-FLOW.md](PRD-RFC-ADR-FLOW.md) — decision tree: какой документ создать
 - [VISION.md](../../VISION.md) — архитектура и data model
 
-## Lifecycle статусы по типу артефакта
+## Сохраняемые lifecycle statuses
 
-| Тип | Lifecycle |
-|-----|-----------|
-| PRD | Draft → Review → Approved → Implementing → Implemented → Closed (или Rejected) |
-| Epic | Draft → Active → Done → Archived (или Cancelled) |
-| Spec | Draft → Approved → Implemented |
-| RFC | Draft → Discussion → Accepted → Implemented → Superseded |
-| ADR | Proposed → Accepted → Deprecated → Superseded |
-| ProblemCard | Draft → Active → Resolved |
-| SolutionPortfolio | Draft → Active → Decided |
-| EvidencePack | Draft → Active → Expired |
-| Note | Active → Expired (auto-expires 90 days) |
-| RefreshReport | Draft → Complete |
+Core lifecycle kinds используют этот набор статусов; у других типов lifecycle
+может отличаться или отсутствовать.
 
-**Важно**: это type-specific lifecycles. Не путать с DerivedStatus (UNDERFRAMED→...→APPLIED), который вычисляется автоматически по полноте цепочки ProblemCard→SolutionPortfolio→ADR→EvidencePack и НЕ хранится как поле.
+```text
+draft --activate--> active
+active --> superseded | deprecated | stale
+stale --renew--> active
+stale --reopen--> deprecated + new draft
+stale --deprecate--> deprecated
+```
+
+`superseded` и `deprecated` — terminal. Review, Approved, Implementing,
+Implemented, Done, Archived, Resolved, Decided, Expired и Complete — описания
+процесса, не дополнительные значения сохраняемого status. `review` — проверка,
+не переход status. Session phases и маркеры lifecycle phase артефакта учитываются
+отдельно, как и DerivedStatus (STUB→SHAPED→VALIDATED→EVIDENCED→ACTIVATED).
+Его labels вычисляются из входов, а не доказывают выполнение всех прежних проверок.

@@ -134,10 +134,7 @@ pub struct SectionBinding {
 
 impl SectionBinding {
     /// The binding for one captured section.
-    pub fn from_capture(
-        section: &CapturedSection,
-        layout_fingerprint: &str,
-    ) -> Self {
+    pub fn from_capture(section: &CapturedSection, layout_fingerprint: &str) -> Self {
         Self {
             section_key: section.canonical_key.clone(),
             parent_key: section.parent_key.clone(),
@@ -279,15 +276,15 @@ impl GenerationManifest {
     pub fn validate_section_membership(&self) -> Result<(), ConstellationError> {
         let mut previous: Option<&str> = None;
         for binding in &self.section_bindings {
-            if let Some(previous) = previous {
-                if binding.section_key.as_str() <= previous {
-                    return Err(ConstellationError::IndexProtocolMismatch {
-                        detail: format!(
-                            "generation {} lists section `{}` out of order or twice after `{}`",
-                            self.generation_id, binding.section_key, previous
-                        ),
-                    });
-                }
+            if let Some(previous) = previous
+                && binding.section_key.as_str() <= previous
+            {
+                return Err(ConstellationError::IndexProtocolMismatch {
+                    detail: format!(
+                        "generation {} lists section `{}` out of order or twice after `{}`",
+                        self.generation_id, binding.section_key, previous
+                    ),
+                });
             }
             previous = Some(binding.section_key.as_str());
             if !self
@@ -792,11 +789,11 @@ mod tests {
     #[test]
     fn the_sections_pin_is_required_and_its_absence_is_torn_state() {
         assert!(
-            TableVersions::new(3, 2, 0).is_publishable() == false,
+            !TableVersions::new(3, 2, 0).is_publishable(),
             "a missing sections pin is a torn set, not a generation with no sections"
         );
-        assert!(TableVersions::new(0, 2, 1).is_publishable() == false);
-        assert!(TableVersions::new(3, 0, 1).is_publishable() == false);
+        assert!(!TableVersions::new(0, 2, 1).is_publishable());
+        assert!(!TableVersions::new(3, 0, 1).is_publishable());
         assert!(
             TableVersions::new(1, 1, 1).is_publishable(),
             "a first publication legitimately pins version 1 on all three tables"
@@ -899,7 +896,8 @@ mod tests {
     fn publication_validation_rejects_a_partial_capture() {
         let mut view = captured();
         view.coverage.invalid = 1;
-        let manifest = GenerationManifest::from_capture(&view, "gen-1", TableVersions::new(1, 1, 1));
+        let manifest =
+            GenerationManifest::from_capture(&view, "gen-1", TableVersions::new(1, 1, 1));
         let err = manifest.validate_for_publication().unwrap_err();
         assert_eq!(err.code(), super::super::DiagnosticCode::SourceBusy);
     }
@@ -972,7 +970,9 @@ mod tests {
 
         // And the current marker validates, so the refusal is not a blanket ban.
         assert!(
-            ProtocolMarker::initializing(3, "local-x", 1).validate().is_ok(),
+            ProtocolMarker::initializing(3, "local-x", 1)
+                .validate()
+                .is_ok(),
             "a marker this build wrote must pass its own gate"
         );
     }
@@ -1080,8 +1080,14 @@ mod tests {
             "abc123",
             None,
         );
-        assert_eq!(descriptor.effective_artifacts_version(&manifest).unwrap(), 3);
-        assert_eq!(descriptor.effective_relations_version(&manifest).unwrap(), 2);
+        assert_eq!(
+            descriptor.effective_artifacts_version(&manifest).unwrap(),
+            3
+        );
+        assert_eq!(
+            descriptor.effective_relations_version(&manifest).unwrap(),
+            2
+        );
         assert_eq!(descriptor.effective_sections_version(&manifest).unwrap(), 4);
 
         // An incomplete triple is refused on every leg, and refused as an
@@ -1194,7 +1200,10 @@ mod tests {
     fn a_manifest_written_before_the_sections_pin_parses_but_is_not_publishable() {
         let legacy = r#"{"artifacts": 7, "relations": 5}"#;
         let versions: TableVersions = serde_json::from_str(legacy).unwrap();
-        assert_eq!(versions.sections, 0, "an absent pin reads as 0, never as a version");
+        assert_eq!(
+            versions.sections, 0,
+            "an absent pin reads as 0, never as a version"
+        );
         assert!(
             !versions.is_publishable(),
             "an incomplete triple is explicitly unavailable, not a generation without sections"

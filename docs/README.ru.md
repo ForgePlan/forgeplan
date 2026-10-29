@@ -2,7 +2,15 @@
 
 # Указатель документации
 
-Производственная документация проекта Forgeplan.
+Документация для участников разработки Forgeplan. Пользовательские инструкции
+по задачам и справочники CLI/MCP находятся [на сайте](https://forgeplan.dev/ru/docs/).
+
+- [Пользовательский гайд Constellation](https://forgeplan.dev/ru/docs/guides/constellation/)
+- [Справочник интерфейсов Constellation](https://forgeplan.dev/ru/docs/reference/constellation/)
+- [Переносимый runbook пилота и отката](operations/CONSTELLATION-PILOT.ru.md)
+
+Constellation описан для scoped-сборки `0.39.0+constellation.s1.1`,
+не для опубликованной `0.38.0`. Это не полная приёмка S1-G/S2.
 
 > **Локальные заметки** (исследования, планирование, сессии, исходные материалы) находятся в `.local/` (gitignored) — не являются частью этого дерева.
 
@@ -11,9 +19,11 @@
 ```
 docs/
 ├── README.md          ← этот файл — навигационный указатель
+├── ROADMAP.md         ← пробелы и приоритеты развития
 ├── methodology/       ← как работает методология Forgeplan (для людей)
+├── architecture/      ← архитектура системы (C4, Constellation)
 ├── operations/        ← хуки агентов, enforcement, защита репозитория (devops)
-└── schemas/           ← формальные схемы артефактов (контракты для валидатора)
+└── schemas/           ← конвенции артефактов и реализованные правила валидации
 ```
 
 **Артефакты** (PRD, RFC, ADR, Epic, Spec, Evidence, Problem, Note) хранятся в рабочем пространстве Forgeplan в `.forgeplan/` — см. раздел [Артефакты](#артефакты) ниже.
@@ -33,7 +43,7 @@ docs/
 | [UNIFIED-WORKFLOW.md](methodology/UNIFIED-WORKFLOW.md) | Интеграция Forgeplan × Orchestra × Hindsight |
 | [USAGE-BY-ROLE.md](methodology/USAGE-BY-ROLE.md) | Как использовать Forgeplan в зависимости от роли |
 | [METHODOLOGY-COURSE.md](methodology/METHODOLOGY-COURSE.md) | Полный курс обучения (формат курса) |
-| [GLOSSARY.md](methodology/GLOSSARY.md) | 31 термин + справочная таблица lifecycle |
+| [GLOSSARY.md](methodology/GLOSSARY.md) | Основные термины и справочная таблица lifecycle |
 | [LESSONS.ru.md](methodology/LESSONS.ru.md) | Lessons learned — dependent sprint verification, audit incidents, улучшения процесса |
 | [agent-protocol.md](methodology/agent-protocol.md) | **Hint contract (PRD-071)** — 5 маркеров (Next/Or/Wait/Done/Fix), good/bad примеры, agent reading protocol |
 | [release-workflow.md](methodology/release-workflow.md) | End-to-end рецепт релиза — dependabot triage gate, version bump, стратегия release/* PR, post-release sync (CLAUDE.md red lines #9 + #10), hotfix flow, антипаттерны |
@@ -56,10 +66,21 @@ docs/
 | [PLAYBOOK-AUTHORING.ru.md](operations/PLAYBOOK-AUTHORING.ru.md) | **v0.26.0+ авторинг playbook'ов** — декларативные YAML-workflow, 5 типов делегации, fallback hints, DAG ordering. **v0.27.0+ Subprocess lifecycle** секция (real dispatchers, kill_on_drop, timeout policy, security model) per ADR-010/PRD-072 |
 | [INGEST-MAPPINGS.ru.md](operations/INGEST-MAPPINGS.ru.md) | **v0.26.0+ авторинг ingest mapping'ов** — перевод output плагинов в forge-артефакты с invariant'ом `## Sources` (PRD-066/SPEC-004) |
 | [QUALITY-GATES.ru.md](operations/QUALITY-GATES.ru.md) | **v0.28.0+ CI quality gates** — все CI-гейты (fmt, clippy, test, health, validate, drift detector) с командами для локального запуска и руководствами по исправлению ошибок. Примечание: `docs/methodology/QUALITY-GATES.md` описывает методологические гейты (R_eff, Verification Gate). |
+| [CONSTELLATION-PILOT.ru.md](operations/CONSTELLATION-PILOT.ru.md) | Переносимый sandbox-пилот: версия, backups, embedding, один writer и откат |
+| [DOCUMENTATION-AUDIT-2026-10-23.ru.md](operations/DOCUMENTATION-AUDIT-2026-10-23.ru.md) | Измеренный аудит документации: источники, покрытие Constellation, исправленный дрейф, проверки и оставшиеся пробелы |
+
+## Архитектура
+
+| Документ | Назначение |
+|---|---|
+| [constellation.md](architecture/constellation.md) | Constellation: поколения, pinned reads, реестр федерации, семантический индекс секций, MCP read-профиль и границы |
+| [c4-context.md](architecture/c4-context.md) | Контекст системы в модели C4 |
+
 
 ## Схемы
 
-Формальные спецификации, которые применяет валидатор.
+Конвенции авторинга; реализованные правила валидации отмечены отдельно.
+Рекомендации не означают автоматическую семантическую проверку.
 
 | Документ | Назначение |
 |---|---|
@@ -74,7 +95,8 @@ docs/
 **Модель хранения (согласно [ADR-003](../.forgeplan/adrs/ADR-003-markdown-files-as-source-of-truth-lancedb-as-index-layer.md)):**
 - **Markdown-файлы** в `.forgeplan/{adrs,rfcs,prds,epics,specs,evidence,problems,solutions,notes,refresh,memory}/` = **источник истины** (отслеживаются git)
 - **LanceDB** в `.forgeplan/lance/` = производный индексный слой (git-ignored, восстанавливаемый)
-- **Конфигурация** `.forgeplan/config.yaml` = локальные LLM-ключи (git-ignored)
+- **Constellation** публикует производные поколения через `.forgeplan/lance/CURRENT.json`; эта раскладка не взаимозаменяема с legacy-индексом.
+- **Конфигурация** `.forgeplan/config.yaml` = настройки workspace, включая LLM и embedding; это не индекс и не тело артефакта. В этом репозитории файл отслеживается git и содержит ссылки на переменные окружения, а не встроенные секреты. Другие проекты могут хранить конфигурацию локально.
 
 **Директории:**
 
@@ -87,30 +109,46 @@ docs/
 | [`.forgeplan/specs/`](../.forgeplan/specs/) | Формальные спецификации (API-контракты, модели данных) |
 | [`.forgeplan/evidence/`](../.forgeplan/evidence/) | EvidencePack — тесты, бенчмарки, измерения |
 | [`.forgeplan/problems/`](../.forgeplan/problems/) | ProblemCard — формулировка проблем с индикаторами anti-Goodhart |
-| [`.forgeplan/solutions/`](../.forgeplan/solutions/) | SolutionPortfolio — 2-3+ варианта с оценкой по слабейшему звену |
-| [`.forgeplan/notes/`](../.forgeplan/notes/) | Микро-решения (автоматически истекают через 90 дней) |
-| [`.forgeplan/refresh/`](../.forgeplan/refresh/) | RefreshReport — переоценка устаревших артефактов |
+| `.forgeplan/solutions/` | SolutionPortfolio — 2-3+ варианта с оценкой по слабейшему звену |
+| [`.forgeplan/notes/`](../.forgeplan/notes/) | Note — небольшие решения; сам тип не гарантирует автоматическое истечение |
+| `.forgeplan/refresh/` | RefreshReport — переоценка устаревших артефактов |
 | [`.forgeplan/memory/`](../.forgeplan/memory/) | Память решений |
 
-**Управление артефактами:** всегда используйте CLI `forgeplan` — не редактируйте YAML frontmatter вручную.
+`solutions/` и `refresh/` показаны как пути, а не ссылки на имеющиеся данные:
+в этом checkout таких каталогов нет. Создавайте артефакты поддерживаемым
+интерфейсом; не добавляйте пустые каталоги ради навигации.
+
+**Управление артефактами:** используйте поддерживаемые CLI/MCP-операции вместо
+ручной правки YAML frontmatter. CLI `validate` работает на legacy и migrated
+Constellation layout; full MCP `forgeplan_validate` также успешно проверен.
+Границы проверки см. в [оговорках пилота](operations/CONSTELLATION-PILOT.ru.md):
+регистрация 76 full tools не означает, что проверено поведение каждого.
 
 ```bash
 forgeplan new prd "Title"        # создать новый артефакт
 forgeplan list -t adr            # список всех ADR
 forgeplan get ADR-003            # прочитать один
-forgeplan validate PRD-024       # проверить качество
+forgeplan validate PRD-024       # проверить схему артефакта
 forgeplan score PRD-024          # вычислить R_eff
-forgeplan reindex                # пересобрать LanceDB-индекс из markdown
+forgeplan index                  # построить/сверить индекс Constellation
+forgeplan reindex                # legacy rebuild; на migrated layout делегирует index
 ```
 
-**Процесс при свежем клонировании:**
+**Новый каталог и существующий клон:**
 
-```bash
-git clone <repo> && cd forgeplan
-forgeplan init -y                # создаёт .forgeplan/lance/ локально (пустую)
-forgeplan reindex                # синхронизирует отслеживаемые markdown в LanceDB
-forgeplan list                   # проверка — должны отображаться все артефакты
-```
+- В действительно новом каталоге вне существующего workspace `forgeplan init -y`
+  создаёт workspace. Обнаружение идёт вверх по дереву; проверьте показанный путь
+  до любых записей.
+- Клон с tracked `.forgeplan/` уже обнаруживается: `init -y` может завершиться
+  раньше, не создав локальные config и индекс. Если `.forgeplan/config.yaml`
+  уже есть, используйте `forgeplan index` для Constellation или `forgeplan reindex`
+  для legacy-раскладки, затем проверьте `forgeplan list` и ожидаемые артефакты.
+- Если локального config нет, сохраните весь `.forgeplan/` и MCP config, затем
+  осознанно создайте config через `forgeplan init --force -y`. Тела артефактов
+  сохраняются, но активным становится default config; custom settings, включая
+  `embedding`, остаются только в backup до ручного переноса. Затем используйте
+  `index` для Constellation или `reindex` для legacy-раскладки.
+  Это не обычная команда восстановления индекса.
 
 ## См. также
 
@@ -122,7 +160,7 @@ forgeplan list                   # проверка — должны отобр�
 
 ## Соглашения
 
-- **Все пути в документах указаны относительно корня репозитория.**
-- **Файлы артефактов в `.forgeplan/` управляются CLI `forgeplan`** — ручное редактирование работает, но может вызвать рассинхронизацию с индексом LanceDB до запуска `reindex`.
-- **Документация методологии здесь является авторитетной** — если руководство и схема расходятся, приоритет у схемы.
-- **Активированные артефакты неизменяемы** — замена через `forgeplan supersede`, историю не переписывать.
+- **Пути к исходникам в тексте указаны относительно корня репозитория, если не оговорено другое.** Markdown-ссылки разрешаются относительно содержащего их документа.
+- **Файлы артефактов в `.forgeplan/` управляются поддерживаемыми CLI/MCP-операциями.** Для восстановления индекса нужен `index` для Constellation или `reindex` для legacy, не `scan-import`.
+- **Методология задаёт конвенции авторинга.** Схемы отделяют рекомендации от реализованной валидации и дополнительных activation gates.
+- **По конвенции активные решения сохраняют как историю** — заменяют через `forgeplan supersede ID --by NEW-ID`, а не переписывают принятое решение. Активация не защищает файл от записи и не означает общего runtime-запрета на обновление body.

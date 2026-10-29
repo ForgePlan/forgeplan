@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The agent protocol cycle · Hint Contract · 5 markers - ForgePlan</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505; --bg-1: #0b0b0b; --bg-2: #141414; --bg-3: #1a1a1a;
+    --text: #f5f5f5; --text-1: #e5e5e5; --text-2: #a3a3a3; --text-3: #737373; --text-4: #525252;
+    --line: rgba(255, 255, 255, 0.06); --line-2: rgba(255, 255, 255, 0.14);
+    --accent: #ff5a1f; --accent-soft: #ff8a5b; --accent-bg: rgba(255, 90, 31, 0.18);
+    --ok: #22c55e; --err: #ef4444; --warn: #f59e0b; --info: #60a5fa;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* Marker semantics */
+    --m-next: #22c55e;  /* primary / go */
+    --m-or:   #60a5fa;  /* fallback / consider */
+    --m-wait: #f59e0b;  /* hold / retry */
+    --m-done: #a3a3a3;  /* terminal / neutral */
+    --m-fix:  #ef4444;  /* error remediation */
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body { line-height: 1.55; -webkit-font-smoothing: antialiased; background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px); background-size: 24px 24px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+
+  .m-next { color: var(--m-next); font-family: var(--font-mono); font-weight: 500; }
+  .m-or   { color: var(--m-or);   font-family: var(--font-mono); font-weight: 500; }
+  .m-wait { color: var(--m-wait); font-family: var(--font-mono); font-weight: 500; }
+  .m-done { color: var(--m-done); font-family: var(--font-mono); font-weight: 500; }
+  .m-fix  { color: var(--m-fix);  font-family: var(--font-mono); font-weight: 500; }
+
+  /* Pipeline */
+  .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; }
+  .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+  .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
+
+  /* Concept */
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
+  .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
+  .concept .analogy + .analogy { margin-top: 12px; }
+
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
+
+  /* Code block */
+  .code-block { background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 20px; margin: 16px 0 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; color: var(--text-1); white-space: pre-wrap; overflow-x: auto; }
+  .code-block .cb-tag { display: block; font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; font-weight: 500; font-family: var(--font-mono); }
+  .code-block .cb-prompt { color: var(--accent-soft); }
+  .code-block .cb-comment { color: var(--text-3); }
+  .code-block .cb-ok { color: var(--ok); }
+
+  /* Tax comparison: before/after */
+  .tax-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
+  .tax-col { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 18px; }
+  .tax-col.bad  { border-top: 2px solid var(--err); }
+  .tax-col.good { border-top: 2px solid var(--ok); }
+  .tax-col .tax-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 4px; }
+  .tax-col.bad  .tax-tag { color: var(--err); }
+  .tax-col.good .tax-tag { color: var(--ok); }
+  .tax-col .tax-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 12px; line-height: 1.35; }
+  .tax-list { margin: 0; padding-left: 18px; color: var(--text-1); font-size: 13.5px; line-height: 1.7; }
+  .tax-list li { margin: 4px 0; }
+  .tax-foot { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .tax-col.bad  .tax-foot { color: var(--err); }
+  .tax-col.good .tax-foot { color: var(--ok); }
+
+  /* 5 rules cards */
+  .rules-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 22px 0 0; }
+  .rule-card { background: var(--bg-2); border: 1px solid var(--line-2); border-top: 2px solid var(--accent); border-radius: 0; padding: 14px 14px 16px; }
+  .rule-card .r-num { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.16em; color: var(--text-3); margin-bottom: 4px; }
+  .rule-card .r-name { font-family: var(--font-mono); font-size: 12px; color: var(--accent); font-weight: 500; margin-bottom: 8px; letter-spacing: 0.04em; }
+  .rule-card .r-desc { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
+
+  /* 5 markers reference card */
+  .markers-table { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; overflow: hidden; margin: 22px 0 0; }
+  .mt-head { padding: 14px 20px; background: var(--bg-3); border-bottom: 1px solid var(--line-2); }
+  .mt-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); }
+  .mt-row { display: grid; grid-template-columns: 110px 1fr 180px; gap: 18px; padding: 14px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+  .mt-row:last-child { border-bottom: none; }
+  .mt-marker { font-family: var(--font-mono); font-size: 13px; font-weight: 500; padding: 4px 10px; border-radius: 0; text-align: center; letter-spacing: 0.02em; }
+  .mt-marker.next { background: rgba(34, 197, 94, 0.14);  color: #86efac; }
+  .mt-marker.or   { background: rgba(96, 165, 250, 0.14); color: #93c5fd; }
+  .mt-marker.wait { background: rgba(245, 158, 11, 0.14); color: #fcd34d; }
+  .mt-marker.done { background: rgba(163, 163, 163, 0.18); color: var(--text-1); }
+  .mt-marker.fix  { background: rgba(239, 68, 68, 0.14);  color: #fca5a5; }
+  .mt-when { font-size: 13.5px; color: var(--text-1); line-height: 1.5; }
+  .mt-action { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.04em; }
+
+  /* Good vs Bad hints */
+  .gvb { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
+  .gvb-col { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 18px; }
+  .gvb-col.good { border-top: 2px solid var(--ok); }
+  .gvb-col.bad  { border-top: 2px solid var(--err); }
+  .gvb-col .gvb-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 12px; }
+  .gvb-col.good .gvb-tag { color: var(--ok); }
+  .gvb-col.bad  .gvb-tag { color: var(--err); }
+  .gvb-snip { background: var(--bg-1); border: 1px solid var(--line); border-radius: 0; padding: 10px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-1); margin-top: 8px; line-height: 1.5; }
+  .gvb-snip + .gvb-snip { margin-top: 8px; }
+  .gvb-snip .why { color: var(--text-3); font-size: 11px; margin-top: 4px; display: block; }
+
+  /* Workflow patterns */
+  .pattern { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px 24px; margin: 18px 0 0; }
+  .pattern .p-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .pattern .p-title { font-size: 17px; color: var(--text); font-weight: 500; margin-bottom: 14px; line-height: 1.3; }
+  .pattern .p-flow { background: var(--bg-3); border: 1px solid var(--line); border-radius: 0; padding: 14px 18px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.7; color: var(--text-1); }
+  .pattern .p-flow .fp-cmd { color: var(--accent-soft); }
+  .pattern .p-flow .fp-step { color: var(--text-2); display: block; margin-left: 20px; }
+  .pattern .p-flow .fp-err  { color: var(--err); display: block; margin-left: 20px; }
+
+  /* Quick reference card */
+  .refcard { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 0; margin: 22px 0 0; overflow: hidden; }
+  .refcard-head { padding: 14px 20px; background: var(--bg-3); border-bottom: 1px solid var(--line-2); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .refcard-head .rc-ver { color: var(--accent); }
+  .refcard-body { padding: 18px 20px; font-family: var(--font-mono); font-size: 13px; line-height: 1.8; color: var(--text-1); }
+  .refcard-body .rc-line { display: grid; grid-template-columns: 90px 1fr; gap: 14px; align-items: baseline; }
+  .refcard-body .rc-marker { color: var(--text); font-weight: 500; }
+  .refcard-foot { padding: 12px 20px; border-top: 1px solid var(--line-2); background: var(--bg-3); font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.1em; }
+
+  /* Cross-links */
+  .cross-links { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; position: relative; }
+  .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
+  .next-step h3 { font-size: 15.5px; line-height: 1.3; }
+  .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 0; transition: background .2s; }
+  .next-step a.ns-link:hover { background: var(--accent-bg); }
+
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
+  .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
+  .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .teaching ol li b { color: var(--text); font-weight: 500; }
+
+  .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .pipeline { grid-template-columns: 1fr; } .pipe-arrow { display: none; }
+    .tax-split, .gvb, .cross-links { grid-template-columns: 1fr; }
+    .rules-grid { grid-template-columns: 1fr 1fr; }
+    .mt-row { grid-template-columns: 1fr; gap: 8px; }
+    .refcard-body .rc-line { grid-template-columns: 1fr; }
+    h1 { font-size: 32px; } .concept { padding: 22px 20px 24px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <!-- HERO -->
+  <p class="eyebrow">Agent interaction cycle · theory</p>
+  <h1>Hint Contract · 5 markers</h1>
+  <p class="lead">
+    When a CLI command or an MCP tool returns a result - what should the agent do next?
+    Without an explicit marker it re-reads CLAUDE.md, guesses, sometimes hallucinates and
+    loops. Every guess costs tokens and risks an error. The <b class="k">Hint Contract</b>
+    is a local design for hint formatting. It reduces ambiguity where implemented,
+    but does not guarantee that an agent will avoid errors.
+  </p>
+
+  <!-- MINI-PIPELINE -->
+  <div class="pipeline">
+    <div class="pipe-box">
+      <div class="step-tag">01 · 5-rule Contract</div>
+      <div class="step-title">Intended format rules</div>
+      <div class="step-desc">Presence · Actionability · Determinism · Conditionality · Consistency</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">02 · 5 markers</div>
+      <div class="step-title">The next-action language</div>
+      <div class="step-desc"><span class="m-next">Next</span> · <span class="m-or">Or</span> · <span class="m-wait">Wait</span> · <span class="m-done">Done</span> · <span class="m-fix">Fix</span></div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">03 · Reading Protocol</div>
+      <div class="step-title">What the agent does</div>
+      <div class="step-desc">execute · fallback · retry · stop · remediate</div>
+    </div>
+  </div>
+
+  <!-- CONCEPT 01 · AGENT TAX -->
+  <h2>01 · Why this contract is needed at all</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 01 · the analogy of traffic lights</div>
+    <h3 class="concept-h">Without an explicit next-action the agent pays a "guessing tax"</h3>
+    <p class="analogy">
+      Imagine a road without traffic lights or signs. At every intersection the driver
+      guesses: who goes first? Is the turn allowed? Do I have to stop? Every guess costs
+      seconds of delay and the risk of a collision. Traffic lights remove the uncertainty:
+      the colour is the action.
+    </p>
+    <p class="analogy">
+      Forgeplan is a methodology engine. Every command or MCP call is one step of a long
+      process (Shape → Validate → Code → Evidence → Activate). When nothing tells the agent
+      what to do after the answer, it:
+    </p>
+
+    <div class="tax-split">
+      <div class="tax-col bad">
+        <div class="tax-tag">The tax · before the contract</div>
+        <div class="tax-title">What an agent does without an explicit next-action</div>
+        <ul class="tax-list">
+          <li>Re-reads CLAUDE.md to reopen the methodology</li>
+          <li>Guesses the next step and sometimes hallucinates a command</li>
+          <li>Loops on the same phase</li>
+          <li>Substitutes a placeholder like <code>EVID-NNN</code> into a real command</li>
+          <li>Sees three equally weighted options - paradox of choice</li>
+        </ul>
+        <div class="tax-foot">tokens · risk of error · loss of context continuity</div>
+      </div>
+      <div class="tax-col good">
+        <div class="tax-tag">The solution · the 5-rule contract</div>
+        <div class="tax-title">What an agent does with an explicit marker</div>
+        <ul class="tax-list">
+          <li>Reads <code>Next:</code> and checks authorization and prerequisites before executing the command</li>
+          <li>On <code>Wait:</code> schedules a retry with a condition</li>
+          <li>On <code>Done.</code> moves to the next task instead of looping</li>
+          <li>On <code>Fix:</code> checks whether the action addresses the error and is authorized</li>
+          <li>On <code>Or:</code> uses the fallback only if the primary is blocked</li>
+        </ul>
+        <div class="tax-foot">explicit next step · less ambiguity · not protection against hallucinations</div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Not "one more rule" · an interface contract</div>
+      <p>
+        The Hint Contract is an <b class="k">intended local format contract</b> for CLI text,
+        CLI JSON, MCP success and MCP error. Individual output sites implement it;
+        it is not a universal engine wrapper. For example,
+        <code>forgeplan score --all --json</code> returns a response without
+        <code>_next_action</code>. Clients must account for the specific response shape.
+        A marker helps identify a suggested next step, but does not establish that the
+        step is sufficient, authorized or correct.
+      </p>
+    </div>
+  </div>
+
+  <!-- CONCEPT 02 · 5-RULE CONTRACT -->
+  <h2>02 · The five rules of the contract</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 02 · five intended format rules</div>
+    <h3 class="concept-h">The rules describe the intended contract, not a guarantee for every response</h3>
+    <p class="analogy">
+      These local rules help hint authors make the next step clearer.
+      Their application is response-specific; current universal coverage has not been established.
+    </p>
+
+    <div class="rules-grid">
+      <div class="rule-card">
+        <div class="r-num">01</div>
+        <div class="r-name">PRESENCE</div>
+        <div class="r-desc">Goal: a next-action or an explicit terminal. Exceptions exist: <code>score --all --json</code> has no <code>_next_action</code>.</div>
+      </div>
+      <div class="rule-card">
+        <div class="r-num">02</div>
+        <div class="r-name">ACTIONABILITY</div>
+        <div class="r-desc">Goal: a complete command with real IDs, not a fragment or placeholder. Prerequisites still need checking.</div>
+      </div>
+      <div class="rule-card">
+        <div class="r-num">03</div>
+        <div class="r-name">DETERMINISM</div>
+        <div class="r-desc">Goal: the same state yields the same hint at a particular output site.</div>
+      </div>
+      <div class="rule-card">
+        <div class="r-num">04</div>
+        <div class="r-name">CONDITIONALITY</div>
+        <div class="r-desc">Goal: an actionable hint or an honest terminal <code>Done.</code>, not an "all done" promise.</div>
+      </div>
+      <div class="rule-card">
+        <div class="r-num">05</div>
+        <div class="r-name">CONSISTENCY</div>
+        <div class="r-desc">Goal: the same meaning in text, JSON and MCP; inspect each response's actual shape separately.</div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Where to read the hint, by surface</div>
+      <p>
+        Where hints are implemented: CLI text · the last lines of stdout
+        (<code>Next:</code>, <code>Fix:</code>, <code>Wait:</code>, <code>Done.</code>); CLI JSON / MCP · the <code>_next_action</code> field.
+        <code>list --json</code> and <code>tree --json</code> retain a bare array for
+        <code>jq</code> compatibility; the hint goes to stderr.
+        <code>forgeplan score --all --json</code> has no <code>_next_action</code>; a missing field alone is not a bug.
+      </p>
+    </div>
+  </div>
+
+  <!-- CONCEPT 03 · 5 MARKERS -->
+  <h2>03 · The five markers · the next-action language</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 03 · 5 markers with a fixed semantics</div>
+    <h3 class="concept-h">How to read markers within the local contract</h3>
+    <p class="analogy">
+      In the intended contract, <code>Next:</code> denotes the primary action,
+      <code>Or:</code> a fallback, and <code>Error:</code> with <code>Fix:</code>
+      the error and proposed remediation. <code>Done.</code> is intended as a separate
+      terminal signal, not proof that every check has been performed.
+    </p>
+
+    <div class="markers-table">
+      <div class="mt-head"><span class="mt-tag">5 hint markers · v0.25.0+</span></div>
+      <div class="mt-row">
+        <div class="mt-marker next">Next:</div>
+        <div class="mt-when">Primary action - the recommended next step. A complete command with real IDs.</div>
+        <div class="mt-action">check prerequisites</div>
+      </div>
+      <div class="mt-row">
+        <div class="mt-marker or">Or:</div>
+        <div class="mt-when">An alternative, when the primary is blocked (for example, the claim is held by another agent).</div>
+        <div class="mt-action">fallback only</div>
+      </div>
+      <div class="mt-row">
+        <div class="mt-marker wait">Wait:</div>
+        <div class="mt-when">Async / TTL state. The condition after which the request should be retried.</div>
+        <div class="mt-action">retry after condition</div>
+      </div>
+      <div class="mt-row">
+        <div class="mt-marker done">Done.</div>
+        <div class="mt-when">A terminal signal for this step under the contract, not proof that every check passed.</div>
+        <div class="mt-action">move on</div>
+      </div>
+      <div class="mt-row">
+        <div class="mt-marker fix">Fix:</div>
+        <div class="mt-when">Proposed remediation paired with <code>Error:</code>. Check that it addresses the cause and is authorized.</div>
+        <div class="mt-action">check remediation</div>
+      </div>
+    </div>
+
+    <!-- Good vs Bad hints -->
+    <h3 style="margin: 28px 0 0; font-size: 16px;">Good vs Bad hints · illustrations, not execution records</h3>
+    <div class="gvb">
+      <div class="gvb-col good">
+        <div class="gvb-tag">✓ Good · v0.25.0+</div>
+        <div class="gvb-snip">
+<span class="m-next">Next:</span> forgeplan score PRD-001
+<span class="why">complete command · example ID, not a result from this lesson</span>
+        </div>
+        <div class="gvb-snip">
+<span class="m-next">Next:</span> forgeplan dispatch --agents 3
+<span class="m-or">Or:</span> forgeplan claim PRD-054 --agent worker-2 --ttl-minutes 30
+<span class="why">primary action + one explicit fallback</span>
+        </div>
+        <div class="gvb-snip">
+<span class="m-fix">Error:</span> Direct status change to 'active' is not allowed.
+<span class="m-fix">Fix:</span> forgeplan activate PRD-001
+<span class="why">the right lifecycle verb · evidence and all applicable checks are still needed before activation</span>
+        </div>
+      </div>
+      <div class="gvb-col bad">
+        <div class="gvb-tag">✗ Bad · pre-v0.25.0 patterns</div>
+        <div class="gvb-snip">
+suggested next: adi
+<span class="why">a bare word without a command · the agent guesses</span>
+        </div>
+        <div class="gvb-snip">
+Try a longer window: --since-hours 720
+<span class="why">a fragment, not a complete command</span>
+        </div>
+        <div class="gvb-snip">
+Either work on a different artifact, wait for TTL expiry,
+or ask the orchestrator for a handoff.
+<span class="why">no primary action · force-releasing a live holder is not an ordinary fallback</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Drift prevention</div>
+      <p>
+        The integration test <code>crates/forgeplan-cli/tests/hint_contract.rs</code> checks
+        selected cases; <code>scripts/audit-hints.sh</code> collects a coverage metric.
+        EVID-086 records a historical 70/70 command run, not current acceptance of
+        all 120 command paths or every MCP response. Those checks were not run here.
+        Their existence does not turn local rules into a universal guarantee
+        of a marker in every response.
+      </p>
+    </div>
+  </div>
+
+  <!-- WORKFLOW PATTERNS -->
+  <h2>Three illustrative work-order patterns</h2>
+  <p>These are authored illustrations, not captured responses or an executed scenario. <code>forgeplan_…(...)</code> is schematic MCP notation, not ready-to-send JSON; <code>forgeplan …</code> lines use CLI syntax. IDs are illustrative: use the IDs actually returned in your workspace. A marker does not replace authorization or prerequisite checks.</p>
+
+  <div class="pattern">
+    <div class="p-tag">Pattern A</div>
+    <div class="p-title">Shape → Validate → Evidence → Score → Activate</div>
+    <p>A validation PASS does not mean activation readiness. First fix the content, obtain truthful evidence and link it to the decision; then inspect the score and all applicable conditions: length, no stubs, evidence links, MUST checks and provenance.</p>
+    <div class="p-flow"><span class="fp-cmd">forgeplan_route("add OAuth login")</span>
+  → <span class="m-next">Next:</span> forgeplan new prd "OAuth login support"
+
+<span class="fp-cmd">forgeplan_new(kind: "prd", title: "OAuth login support")</span>
+  → <span class="m-next">Next:</span> forgeplan validate PRD-042
+
+<span class="fp-cmd">forgeplan_validate("PRD-042")</span>
+  → <span class="m-next">Next:</span> obtain, record and link evidence (pattern B), then forgeplan score PRD-042
+  → <span class="m-fix">Fix:</span> correct the reported content errors, then rerun forgeplan validate PRD-042
+
+<span class="fp-cmd">forgeplan score PRD-042</span>
+  → inspect evidence verdict, congruence, expiry and eligibility, dependency contributions and every activation condition
+
+<span class="fp-cmd">forgeplan_activate("PRD-042")</span> <span class="fp-step">(only when all applicable conditions are met)</span>
+  → <span class="m-done">Done.</span> <span class="fp-step">(only if activation actually succeeds; not executed here)</span></div>
+  </div>
+
+  <div class="pattern">
+    <div class="p-tag">Pattern B</div>
+    <div class="p-title">Recovery after an error</div>
+    <p>Repeating validate and score without changing evidence cannot fix "No evidence linked". First obtain verifiable data, truthfully record it with its source, verdict and congruence_level, and link it to the decision. Support is not assured: the result may refute the decision and require reconsideration.</p>
+    <div class="p-flow"><span class="fp-cmd">forgeplan_activate("PRD-042")</span>
+  → <span class="m-fix">Error:</span> No evidence linked
+  → <span class="m-fix">Fix:</span> obtain truthful data and create an evidence record:
+
+<span class="fp-cmd">forgeplan new evidence "OAuth login verification"</span>
+  → fill the created record with actual data; use its real returned ID
+  → for this illustration, suppose the returned ID is EVID-017:
+<span class="fp-cmd">forgeplan link EVID-017 PRD-042 --relation informs</span>
+<span class="fp-cmd">forgeplan validate PRD-042</span>
+<span class="fp-cmd">forgeplan score PRD-042</span>
+  → resolve remaining issues; inspect every condition in pattern A
+  → retry activate only when all applicable conditions are met; no success is claimed here</div>
+  </div>
+
+  <div class="pattern">
+    <div class="p-tag">Pattern C</div>
+    <div class="p-title">Multi-agent dispatch with a claim conflict</div>
+    <p>Another worker's live claim is a signal not to take the same work: choose another assigned task, or wait for ordinary handoff, release by the holder or TTL expiry and recheck the claim. It is advisory, not a file-access lock. <code>--force</code> is only for explicitly authorized recovery after confirming the holder is no longer working, not an ordinary response to a live conflict.</p>
+    <div class="p-flow"><span class="fp-cmd">forgeplan dispatch --agents 3</span>
+  → <span class="m-next">Next:</span> forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30
+  → <span class="m-or">Or:</span>   forgeplan list --status draft
+
+<span class="fp-cmd">forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30</span>
+  → <span class="m-fix">Error:</span> Already held by worker-2
+  → <span class="m-wait">Wait:</span> ordinary handoff/release or TTL expiry; then recheck the claim
+  → <span class="m-or">Or:</span> move to another assigned task, leaving worker-2's live claim intact</div>
+  </div>
+
+  <!-- QUICK REFERENCE CARD -->
+  <h2>Quick reference</h2>
+  <p>This is a reference for the local contract, not a universal guarantee. If a marker is absent, inspect the specific response and its documentation: <code>forgeplan score --all --json</code> is a known valid exception. Do not invent the next step or treat a marker as authorization to act.</p>
+  <div class="refcard">
+    <div class="refcard-head">
+      <span>FORGEPLAN HINT CONTRACT</span>
+      <span class="rc-ver">v0.25.0+</span>
+    </div>
+    <div class="refcard-body">
+      <div class="rc-line"><span class="m-next rc-marker">Next:</span><span>&lt;command&gt; · check prerequisites and authorization</span></div>
+      <div class="rc-line"><span class="m-or rc-marker">Or:</span><span>&lt;command&gt; · fallback if primary blocks</span></div>
+      <div class="rc-line"><span class="m-wait rc-marker">Wait:</span><span>&lt;condition&gt; · retry after condition</span></div>
+      <div class="rc-line"><span class="m-done rc-marker">Done.</span><span>terminal signal · not confirmation of every check</span></div>
+      <div class="rc-line"><span class="m-fix rc-marker">Fix:</span><span>&lt;command&gt; · check cause-specific remediation (with Error:)</span></div>
+    </div>
+    <div class="refcard-foot">
+      Where implemented: stdout (text) · <code>_next_action</code> (JSON / MCP) · <code>list/tree --json</code> → stderr · <code>score --all --json</code> → no <code>_next_action</code>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>agent-protocol-cycle · explainer · v1</span>
+    <span><span class="arrow">→</span> forgeplan · forgeplan.dev/docs/methodology/agent-protocol</span>
+  </div>
+
+</main>
+
+</body>
+</html>

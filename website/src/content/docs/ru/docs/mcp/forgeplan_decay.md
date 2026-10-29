@@ -14,7 +14,7 @@ description: "Показывает влияние устаревания док�
 - **Перед релизом** - чтобы убедиться, что выпущенные решения не опираются на устаревшие доказательства.
 - **Объяснение падения R_eff** пользователю («почему оценка PRD-039 изменилась с 0.85 на 0.41?»).
 
-Устаревание следует правилу R_eff: просроченные доказательства не удаляются - они понижаются до CL0 с весом 0.1, поэтому самое слабое звено в цепи обрушивает общую оценку.
+Истечение срока не переписывает сохранённый уровень конгруэнтности. Скорер присваивает просроченному допустимому доказательству оценку 0.1; пакеты с терминальным статусом (`superseded`/`deprecated`) исключены из минимума текущих доказательств.
 
 ## Входные параметры
 
@@ -22,21 +22,23 @@ _Входные параметры отсутствуют. Вызовите эт
 
 ## Возвращает
 
+Учебный фрагмент ответа, не измеренное изменение оценки. `r_eff_drop` равен `fresh_r_eff - current_r_eff`.
+
 ```json
 {
-  "decayed": [
+  "entries": [
     {
-      "id": "PRD-039",
-      "kind": "prd",
-      "r_eff_current": 0.41,
-      "r_eff_fresh": 0.85,
-      "delta": -0.44,
+      "artifact_id": "PRD-039",
+      "artifact_title": "Система аутентификации",
+      "current_r_eff": 0.1,
+      "fresh_r_eff": 1.0,
+      "r_eff_drop": 0.9,
       "expired_evidence": [
-        { "id": "EVID-047", "days_expired": 12 }
+        { "id": "EVID-047", "valid_until": "2026-03-30", "days_expired": 12, "score": 0.1 }
       ]
     }
   ],
-  "total_impacted": 1
+  "total_affected": 1
 }
 ```
 
@@ -50,9 +52,9 @@ _Входные параметры отсутствуют. Вызовите эт
 
 1. `forgeplan_stale` - найти просроченные артефакты.
 2. `forgeplan_decay` - посмотреть, каким решениям они нанесли ущерб.
-3. Отсортировать по `delta` по убыванию - сначала с наибольшим влиянием.
-4. `forgeplan_renew` или создать новый `EvidencePack` → `forgeplan_link`.
-5. `forgeplan_score` - подтвердить восстановление R_eff.
+3. Отсортируйте по `r_eff_drop` по убыванию.
+4. Перепроверьте доказательство перед продлением через CLI `forgeplan renew <ID> --reason <REASON> --until <YYYY-MM-DD>` либо создайте и свяжите новый EvidencePack. Зарегистрированного MCP-инструмента `forgeplan_renew` нет.
+5. Запросите `forgeplan_score` и изучите новую оценку. Продление не гарантирует её роста, если остаётся другое слабое звено.
 
 ## Эквивалент CLI
 
@@ -66,3 +68,29 @@ forgeplan decay
 - [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) - пересчитать R_eff для конкретного артефакта.
 - [`forgeplan_journal`](/ru/docs/mcp/forgeplan_journal/) - хронологический обзор с R_eff.
 - [Руководство по методологии](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Show evidence decay impact on R_eff scores. Lists artifacts where expired evidence has degraded quality scores, with current vs fresh R_eff comparison.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| — | — | — | Параметров нет. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "properties": {},
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

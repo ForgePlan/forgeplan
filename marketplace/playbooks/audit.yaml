@@ -2,6 +2,10 @@
 # audit.yaml — Multi-agent adversarial code review playbook (REFERENCE)
 # =====================================================================
 #
+# Target applicability: ForgeplanCore steps still open the legacy artifacts/
+# evidence/relations tables. A Constellation CURRENT.json is not a substitute
+# for those tables; this reference is not migrated-workspace acceptance.
+#
 # **Status: REFERENCE EXAMPLE — predates ADR-011 Phase B Wave 1.**
 #
 #   This playbook ships as a runnable template for the multi-agent audit
@@ -22,8 +26,8 @@
 #   (EVID-098 + EVID-099).
 #
 # Purpose:
-#   Run three audit agents in parallel against a target branch / PR,
-#   collect findings, and synthesize a per-severity report. PRD-073 used
+#   Describe three independent audit perspectives against a target branch / PR.
+#   The current executor runs them sequentially, not concurrently. PRD-073 used
 #   this exact pattern four times during its development — each round
 #   caught CRITICAL / HIGH defects that integration tests had silently
 #   passed (multi-line ratchet gap, tuple drop order, path-traversal in
@@ -37,7 +41,7 @@
 #   feature branch shape (Phase 3a + 3 audit-fix commits) is the
 #   canonical example — see EVID-094 for measurement.
 #
-# Expected duration: 5-10 minutes (three concurrent LLM-driven agents).
+# Duration depends on model/runtime; the historical 5-10 minute estimate is not a guarantee.
 #
 # Where it fits in ForgePlan:
 #   This is the "Audit" step in the methodology loop:
@@ -64,18 +68,22 @@ schema_version: "1.1"
 name: audit
 title: "Multi-agent adversarial code review"
 description: |
-  Three audit agents run in parallel against the current branch:
+  Three independent audit perspectives target the current branch; the
+  current executor dispatches steps sequentially:
 
     1. architect-review — design, patterns, ADR conformance
     2. code-reviewer    — bugs, edge cases, error handling
     3. security-expert  — TOCTOU, races, attack surface, CVE classes
 
-  Each agent is given file:line citations from `git diff main...HEAD`,
-  a severity rubric (CRITICAL/HIGH/MEDIUM/LOW), and an explicit "0
-  findings means insufficient looking" instruction.
+  The intended review contract calls for file:line citations from
+  `git diff main...HEAD`, a severity rubric (CRITICAL/HIGH/MEDIUM/LOW),
+  and the policy "0 findings means insufficient looking".
+  Operators must supply the diff/context and review the reports; the YAML
+  does not inject a git diff or enforce a finding count.
 
-  After all three return, the playbook synthesizes findings by severity
-  and creates a checklist Note for the dev to address before push.
+  The final step creates a template Note with a checklist-oriented title.
+  It does not ingest or synthesize the three reports into that Note;
+  the operator must populate it from the actual findings before push.
 
 # ---------------------------------------------------------------------
 # Recommendation engine signals — recommend this playbook on any non-empty
@@ -97,8 +105,8 @@ requires:
   skills: []
 
 # ---------------------------------------------------------------------
-# Steps — three audits run in parallel (no `requires:` between them),
-# then a synthesis step that fans-in their reports.
+# Steps — three independent audits (no `requires:` between them), executed
+# sequentially today, then a dependent Note-creation step.
 # ---------------------------------------------------------------------
 steps:
 
@@ -158,8 +166,8 @@ steps:
     on_error: continue
     timeout_seconds: 600
 
-  # 4. Synthesis — fan-in three reports into a single checklist Note.
-  #    Captures findings by severity for the dev to address before push.
+  # 4. Create the findings Note template after the three audit steps.
+  #    Report synthesis and checklist population are operator work.
   - id: synthesis
     delegate_to:
       type: forgeplan_core

@@ -1,9 +1,9 @@
 ---
 title: Changelog
-description: "Forgeplan release notes - every public version with added features, fixes, and breaking changes."
+description: "Forgeplan release notes recorded from v0.17.0 onward, plus unreleased changes."
 ---
 
-All notable changes to Forgeplan are documented here. Format loosely follows
+This page includes the changes recorded in the repository from v0.17.0 onward, plus unreleased work. It is not a complete history of every public version. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Semver is `MAJOR.MINOR.PATCH`
 with pre-1.0 minor bumps for breaking changes.
 
@@ -22,6 +22,237 @@ This file starts at v0.17.0. For prior releases, see git tags and the
 corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
+
+### Added
+
+- EN/RU how-to и reference для Constellation: два изолированных проекта,
+  full/read MCP, неоднозначные ID, Git snapshots, явные условия auto-embed
+  и проверка пригодных векторных строк. Contributor-runbook описывает
+  резервные копии, единственного писателя и согласованный откат (PRD-088 / RFC-016).
+
+### Changed
+
+- Для 20 встроенных уроков созданы отдельные EN/RU HTML-источники, включая
+  подписи интерактивных примеров; самостоятельный каталог также имеет EN-вариант.
+- В `AGENTS.md` закреплены волны по зависимостям: общие контракты и схемы до
+  реализации, до 10 готовых независимых задач параллельно, один владелец
+  записи на файл и один владелец сборки.
+
+- CLI/MCP reference генерируется из реального вложенного `--help` и
+  `tools/list` обоих профилей сразу для EN/RU. Генераторы сохраняют ручную
+  прозу вне помеченных блоков, не запускают Cargo и не удаляют страницы;
+  команда `index` имеет отдельный `index-command.md`, не затирает overview.
+  Проверка полноты сверяет интерфейс и покрытие, а не число строк страницы.
+
+### Fixed
+
+- Прежние команды CLI и full MCP работают с выбранным владельцем хранения:
+  чтение, валидация, анализ связей, фазы, FPF, экспорт, история и обслуживание
+  не требуют заново открывать выведенные из эксплуатации legacy-таблицы.
+  Имена команд, инструменты MCP и их параметры сохранены; необязательный
+  read-only профиль не заменяет обычный full-профиль с записью.
+- Экспорт/импорт сохраняет полный канонический Markdown, теги и типизированные
+  связи. Уже объявленные связи считаются восстановленными, а не ошибками
+  повторного добавления. Сохранены старые пакеты с одним телом документа;
+  отсутствующий `depth`, CSV-теги и пробелы в YAML-ссылках не вызывают
+  необязательной перезаписи исходника. Импорт не подменяет источник legacy-кэшем.
+- Повторный `ingest` находит ранее импортированный артефакт даже за ручным
+  документом с тем же заголовком. Неизменившийся источник не создаёт дубль,
+  а `--update` меняет только подходящий импорт. Добавление, замена и удаление
+  исходящей связи не переписывают канонический файл её цели.
+- Парсер восстанавливает метаданные старых вложенных frontmatter-блоков:
+  прежний slug, назначенный номер и записанные в источнике даты. Явные пустые
+  значения не позволяют удалённым тегам, связям и необязательным полям
+  появляться заново из вложенного блока. Точность времени не выдумывается.
+- Изменение правил разбора действительно обновляет производные строки и связи
+  перед публикацией нового поколения индекса. Изменения только метаданных
+  больше не накапливают завершающие переводы строки в теле документа.
+- Обслуживание Constellation отказывает с `source_unavailable`, если исходники
+  прочитаны не полностью. Проверка выполняется до планирования изменений и перед
+  публикацией: повреждённый документ больше не приводит к ложному успешному
+  `migrate` и публикации неполного поколения.
+- `git-sync` обрабатывает удаление и создание даже тогда, когда Git распознаёт
+  похожие файлы как переименование. Перенос файла с тем же ID не удаляет сам
+  артефакт; изменение тела после переноса сохраняет событие с исходным commit hash.
+- Исполняемый пример импорта C4 выбирает раздел `Purpose` и переносит его текст
+  через `section.body`, а не подставляет заглушку для отсутствующего
+  `section.purpose`. Руководство уточняет доступный контекст и состав dry-run JSON.
+
+- Мобильное меню документации обновляет `aria-expanded` у самой кнопки через
+  поддержанный проектный override Starlight, без правки `node_modules`;
+  Escape закрывает меню и возвращает фокус.
+- При встраивании уроков скрипты выполняются однократно, а не повторно из
+  исходного body и собранных блоков. Устранена ошибка Chart.js
+  `Canvas is already in use`. Обёртка уроков выводит собственный `head`
+  вместо общего набора метаданных, сохраняя прежний вариант для остальных страниц.
+- Исправлены документационные расхождения: cache/model prerequisites,
+  `init --force`, source-of-truth, lifecycle и опасные рецепты удаления
+  `.forgeplan/`. Совместимость CLI/full MCP с migrated layout описана
+  раздельно; зарегистрированный инструмент не объявляется принятой runtime-функцией.
+- Metadata discovery отказывает до запуска MCP, если временный каталог лежит
+  внутри существующего workspace, включая символьный путь к нему. Учебные
+  EN/RU-команды останавливаются до записи артефактов, если `init` обнаружил
+  родительский workspace. В MCP-примерах явно привязан `FORGEPLAN_WORKSPACE`;
+  metadata-процесс блокирует повторную загрузку чужой привязки из `.env`.
+  Описан приоритет при запуске обслуживания (#541).
+- Исправлены ссылки опубликованных материалов: уроки после встраивания сохраняют
+  корректный маршрут и язык, блог не использует несуществующие `/blog/en/`,
+  `/blog/ru/` и `/docs/ru/`, ссылки changelog на contributor-документы ведут
+  к существующим файлам репозитория. Skip-link документации ведёт к заголовку
+  Starlight; страница 404 не предлагает отсутствующий RU-маршрут.
+
+- Constellation публикует окна секций с абсолютными смещениями в теле, и
+  склейка окон воспроизводит каждый байт тела - включая заголовки, преамбулу,
+  пробелы и повторяющееся многобайтовое содержимое. Раньше `list_section_spans`
+  отдавала обрезанное содержимое секции, а смещение внутри тела считалось
+  вычитанием адресов копий `String`; и то, и другое теряло байты, и
+  `body_is_fully_covered` отвергал такую публикацию. Теперь секция - это сырой
+  диапазон `raw_range` от начала её заголовка, публикуемая строка несёт
+  диапазон тела и точные байты, преамбула публикуется отдельной строкой, а
+  префикс из одних пробелов присоединяется к первой секции - префикс тела
+  принадлежит ровно одной строке. Первое токен-окно секции начинается с байта
+  0, а не с первого токена: токенизатор, отбрасывающий ведущие пробелы, больше
+  не оставляет их ничьими. Число служебных токенов берётся из постпроцессора
+  токенизатора, а не из пробы `encode(" ", true)`, которая завышала бюджет
+  окна на один токен.
+  Смена раскладки (`s1-token-layout-v1` → `s1-token-layout-v2`) даёт новую
+  identity раскладки, поэтому после обновления требуется переиндексация:
+  `forgeplan index` (или `forgeplan reindex`) - векторы, посчитанные по
+  прежней раскладке, с новой не совпадут.
+- `forgeplan_coverage` больше не отвечает «No code modules detected» на проект,
+  лежащий в каталоге, имя которого начинается с точки: правило исключения
+  каталогов (`.git`, `target`, `docs`…) предназначено для потомков и больше не
+  применяется к самому корню сканирования.
+- `forgeplan_fpf_search` сообщает, что ответ усечён по `limit`: инструмент
+  запрашивает на строку больше, усекает до предела и говорит словами, что
+  совпадений больше. Поле `warning` сохраняет прежний смысл (семантический
+  канал не отработал - сработал keyword-фолбэк).
+
+### Internal
+
+- Исправлены фикстуры выбранных целей: кэш токенизатора (каталог `refs/`
+  перед записью снапшота, снимки под `models--BAAI--bge-m3/snapshots/<rev>` с
+  передачей корня кэша и проверкой `is_available()` до сравнения fingerprint),
+  утверждения о неизменности отображаемых строк (заголовок в 4000 байт),
+  канонизация ожидаемых путей воркспейса в тестах разрешения, вызов
+  `release-notes` с `--output json` вместо `--json`, базовые списки таблиц
+  мигрированного воркспейса (сравнение «до/после» вместо утверждения об
+  отсутствии `evidence.lance`), capability миграции от канонизированной
+  `.forgeplan` вместо корня проекта, изоляция `FORGEPLAN_MODEL_CACHE` в тесте
+  семантического фолбэка, канонические имена файлов фикстуры (без них
+  `reindex` не наполнял legacy-сторону, и сравнение «до/после» сравнивало
+  пустой индекс с непустым) и ожидание заголовка, приведённое к тому, что
+  CommonMark срезает хвостовые пробелы ATX-заголовка.
+- Ограничения проверки этой правки: подтверждено только на macOS/arm64 этой
+  машины. Полная готовность S1-G, аварийные сценарии, Windows/Linux и внешняя
+  миграция индекса не проверялись. Числа относятся к соответствующим
+  историческим срезам, а не к текущей документационной проверке.
+- Lifecycle-переходы (`review`, `activate`, `supersede`, `deprecate`, `renew`,
+  `reopen`) работают на мигрированных workspace. Раньше они отказывались:
+  гейты активации читают граф связей, который Constellation-протокол выводит
+  из обращения, а открывать вышедшую из строения `artifacts.lance`, чтобы
+  насытить предупреждение, нельзя. Новый `lifecycle::canonical` берёт рёбра из
+  того же capture, который публикует reconcile, и пишет переход
+  file-first через общие `projection::*_with_projection`; правила гейтов,
+  переходов и валидации остались одними и теми же (`activation_gates_from`,
+  `sanitize_reason`, `validate_date` выделены и переиспользуются, а не
+  продублированы). Зависимости предупреждений и build-on-draft читаются из
+  того же capture - предупреждение больше не открывает второе хранилище ради
+  ответа «а не устарел ли мой сосед?». Для `renew` добавлен отсутствовавший
+  файловый писатель `valid_until:`; без него ADR-005-путь восстановления
+  устаревших артефактов был недостижим на мигрированном workspace.
+  Порядок `reopen` (создать → связать `based_on` → только потом депрецировать
+  старый) сохранён: сбой до последнего шага оставляет старый артефакт
+  нетронутым. CLI-команды и MCP-инструменты переключаются по владельцу
+  индекса и не открывают вышедшую из строения таблицу ни на одной ветке.
+  `forgeplan score <id>` больше не отказывается: полный `AssuranceReport`
+  (`weakest_link`, факторы, рекурсивный обход, decay, leaf-evidence) теперь
+  считается из того же capture, который публикует reconcile, тем же
+  рекурсивным движком `reff::assurance_recursive` - он обобщён на
+  `reff::AssuranceSource::{Store, Read}`, а не продублирован для второго
+  источника. Отказ был честным, но опирался на неверное допущение: `score
+  <id>` нужен граф связей, а у мигрированного workspace он есть, только в
+  канонической Markdown. `LanceStore` на этой ветке не открывается, кешируемая
+  колонка `r_eff_score` не пишется (её и нет), F-G-R и плоский breakdown
+  считаются из того же снимка. Разбор пакетов и подсчёт связей вынесены в
+  `reff::linked_evidence_items` / `reff::relation_link_count`, чтобы CLI и MCP
+  брали одну и ту же популяцию. Legacy-ветка не тронута: тот же отчёт, та же
+  персистенция, те же числа.
+  `forgeplan score --all` отвечает по capture и работает.
+  Покрыто поведенческими тестами на обеих раскладках:
+  `forgeplan-core/tests/lifecycle_canonical.rs`,
+  `forgeplan-cli/tests/cli_migrated_write.rs` (полный отчёт по цепочке,
+  пропуск draft-зависимости, legacy-числа),
+  `forgeplan-mcp/tests/constellation_migrated_read.rs` (полный отчёт,
+  ADR-020 вытесненный пакет) и
+  `forgeplan-mcp/tests/constellation_migrated_write.rs`. Компиляция не
+  проверялась - свободного места ниже порога сборки.
+
+- `MutationContext` переведён на контракт из трёх зависимостей:
+  `new(workspace, guard: &WorkspaceLock, legacy_sink: Option<&LanceStore>)`.
+  Контекст хранит рабочую директорию, уже удерживаемый вызывающим guard и
+  опциональный сток legacy-индекса; обязательное поле `store` удалено.
+  Общие `projection::*_with_projection` остаются единственным mutation flow:
+  при `Some` работает прежняя связка «каноническая правка → derived index»,
+  при `None` каноническая Markdown-правка выполняется полностью (те же
+  валидации и тот же порядок ошибок), а пропускается только шаг записи в
+  производный индекс - открывать или имитировать `artifacts.lance` на
+  мигрированном workspace нельзя, это воскресило бы вышедшую из строения
+  таблицу.
+  Хелперы без канонической пары (prune orphan-строки, drop строки
+  после soft delete) возвращают новый `MutationError::NoLegacySink`, а не
+  сообщают об успешном derived-действии, которого не было. Ни один хелпер не
+  перезапрашивает `WorkspaceLock`, уже удерживаемый контекстом. Мигрированы
+  все вызывающие в core, CLI и MCP; `git-sync`, `reindex`, `watch` и MCP
+  `capture` / `generate` / `discover_finding` теперь удерживают guard, который
+  раньше не брали - это новая сериализация и 30-секундный таймаут при
+  конкуренции, а не только смена сигнатуры. Добавлен файловый
+  `update_tags_file_first` и поведенческие тесты на обеих раскладках.
+- Исправлены ошибки компиляции Constellation в core, CLI и новых тестах:
+  владение worker, передача worker в асинхронный обработчик, типы ключей и
+  вызовы LanceDB. `cargo check` прошёл для CLI с `semantic-search` и для
+  тестовых целей core с `semantic-search,test-helpers`. Это проверка типов,
+  не подтверждение выполнения тестов или готовности E2E (RFC-015, EVID-179).
+- Федеративный поиск больше не прекращает проверку источников при заполнении
+  лимита выдачи. Поздний недоступный required-источник не скрывается за ранними
+  совпадениями; optional-отказ остаётся явным partial. Для truncation хранится
+  не более limit+1 совпадений. Проверки прошли в 17 Rust federation tests и в
+  настоящих CLI/MCP сценариях на трёх проектах.
+- Записан реальный no-semantic прогон Constellation (EVID-180): 52 Rust tests
+  PASS; CLI/MCP E2E - 20 PASS и 4 FAIL. Подтверждены поиск, qualified get,
+  source failures, Git snapshots и отказ write-tools в read-профиле.
+  Immutable working handles, byte budget ContextPack и разрешение межпроектного
+  ребра графа остаются незакрытыми; финальная приёмка не объявлена.
+
+- Локальная сборка `0.39.0+constellation.s1.1` принята на macOS (EVID-182,
+  снимок `s1-local-v0395`). Это отменяет фразу выше только в части «приёмка не
+  объявлена»: она объявлена позже и только для этой машины - Windows не
+  проверялся, установленный бинарник не менялся. Закрыты четыре дефекта,
+  найденные независимыми ревью. (1) Свежий capture, разошедшийся с
+  опубликованным набором, больше не теряет семантику целиком: он сохраняет
+  проверенный векторный кэш и допускает только строки, чьи canonical key,
+  путь, `input_digest`, `incarnation` и `row_revision` совпадают с текущими
+  захваченными входами; фильтры kind/status применяются до top-K. (2) Счёт
+  семантики ключуется по display id **из capture**, а не из строки индекса:
+  переназначение `id` при неизменном slug/входе больше не переносит score на
+  чужой артефакт; бюджет ANN считает строки артефактов и секций, поэтому
+  секции одного документа не вытесняют другой. (3) `forgeplan search` на
+  мигрированном workspace использует общий `smart::smart_search` - BM25,
+  composite-фильтры (`--depth`, `--with-evidence`, `--no-evidence`, `--since`),
+  graph expansion и прежние поля ответа сохранены; принудительный `--semantic`
+  сообщает `eligible_rows`, `expected_rows` и `semantic_scope`, а не выдаёт
+  пустую выдачу за полный отрицательный ответ. (4) Три paramless
+  MCP-инструмента (`blindspots`, `decay`, `fpf_list`) разрешают workspace лениво
+  через `resolve_workspace_read` + `require_legacy_projection`, поэтому холодный
+  legacy-запуск работает, а env-selected workspace не подменяется
+  launch-каталогом. Матрица: оба feature-режима, 5675 исполненных кейсов.
+  Реальные CLI/MCP сценарии: 42 проверки (векторы модели, Git reset с
+  исключением устаревших векторов, readonly-профиль без записи на диск).
+  Процессные отказы: 28 проверок (POSIX owner lock, SIGKILL владельца, два
+  publisher-процесса, выживание после SIGKILL соседа, typed `source_unavailable`
+  на обоих surface).
+- Локальная сборка `0.39.0+constellation.s1.1` проверена по описанной локальной матрице на macOS (EVID-183, снимок `s1-local-v0396`); четыре оговорки предыдущего среза закрыты исполнением: (a) `constellation pack` отвечает `InsufficientBudget { budget_tokens, smallest_unit_tokens }`, когда бюджет меньше самой маленькой подходящей строки, и сериализует `payload_bytes` при нормальном бюджете; (b) `constellation impact` и `graph` принимают `KEY@src:<hash>` / `@<segment>` / `@<suffix>` и сужают walk к указанному источнику; (c) `constellation_open` запоминает `source_set_digest` каждого источника, а scope-чтения возвращают `snapshot_expired` вместо тихой выдачи новых байт - трёхпроектный федеративный probe: 25/25 PASS, 3 OBSERVED; (d) векторы покрывают всё тело через непрерывные окна секций (реальный документ с 3290-символьным телом получил 4 ready rows и хвостовой токен найден со score 0.541). Дополнительно `--semantic` пропускает model load, когда `count_eligible_semantic` возвращает 0 (CLI без опубликованных векторов отвечает за 0.01 с). Инференс остаётся per-process; daemon - отдельная задача. Матрица v0396: оба feature-режима, 5683 кейса + 10 doctests, 0 падений; fingerprints unchanged между прогонами. Это исторический результат EVID-183, а не повторная приёмка в рамках документационной проверки.
+
 
 ## [0.38.0] - 2026-10-12
 
@@ -256,7 +487,7 @@ whose weakest evidence pack lacks `verdict`/`congruence_level` drops from 1.0 to
 
 33 open Dependabot alerts at release time (8 high / 15 medium / 10 low), one
 Rust, 32 npm - full triage in
-[`docs/operations/dependabot-triage-2026-09-08.md`](docs/operations/dependabot-triage-2026-09-08.md).
+[`docs/operations/dependabot-triage-2026-09-08.md`](https://github.com/ForgePlan/forgeplan/blob/main/docs/operations/dependabot-triage-2026-09-08.md).
 
 - **`lru` LOW (GHSA-rhfx-m35p-ff5j) - accepted-with-justification, carried
   forward.** The only consumer is `tantivy 0.24.2`, which pins `lru 0.12.x`;
@@ -579,7 +810,7 @@ Scope note for scripted consumers: this release adds **no new CLI command, no ne
 - **GHSA-4w2j-m93h-cj5j (HIGH)** - `quinn-proto` 0.11.14 → **0.11.16**. Remote memory exhaustion via unbounded out-of-order stream reassembly; transitive through `reqwest → quinn`.
 - **GHSA-7gcf-g7xr-8hxj** - `serde_with` 3.18.0 → **3.22.0**. `KeyValueMap` serialization panic on an empty sequence; transitive through `lancedb`.
 - **Score-laundering vector closed** - see the `update --status` rejection under **Changed**, plus the new `unbacked_displacement` detector for the successor-free `deprecate` channel that remains legitimately open.
-- **Dependabot triage (RED LINE #10)** - 42 open alerts at cut time (12 HIGH / 20 MEDIUM / 10 LOW). Rust: 2 **addressed** above; `lru` LOW **accepted-with-justification** (pinned at 0.12.x by `tantivy 0.24.2`, fix needs a major bump only tantivy can take; Forgeplan never constructs an `lru` cache or calls `IterMut`). npm: all 39 **scheduled** - they are confined to `website/`, the statically generated docs portal that ships no server and is part of no released artifact, and a blanket `npm update` there is a known build-breaker (peer-major vite conflict, PR #401), so it needs its own PR with a full site build. Full reasoning: [`docs/operations/dependabot-triage-2026-08-17.md`](docs/operations/dependabot-triage-2026-08-17.md).
+- **Dependabot triage (RED LINE #10)** - 42 open alerts at cut time (12 HIGH / 20 MEDIUM / 10 LOW). Rust: 2 **addressed** above; `lru` LOW **accepted-with-justification** (pinned at 0.12.x by `tantivy 0.24.2`, fix needs a major bump only tantivy can take; Forgeplan never constructs an `lru` cache or calls `IterMut`). npm: all 39 **scheduled** - they are confined to `website/`, the statically generated docs portal that ships no server and is part of no released artifact, and a blanket `npm update` there is a known build-breaker (peer-major vite conflict, PR #401), so it needs its own PR with a full site build. Full reasoning: [`docs/operations/dependabot-triage-2026-08-17.md`](https://github.com/ForgePlan/forgeplan/blob/main/docs/operations/dependabot-triage-2026-08-17.md).
 
 ### Internal
 
@@ -1587,7 +1818,7 @@ PROB-051 itself).
   `tantivy → lance → lancedb`; no direct exploit surface. Carry-forward
   to v0.30.0 - accepted-with-justification, re-evaluate on
   tantivy 0.25 release. Full triage:
-  [`docs/operations/dependabot-triage-2026-05-05.md`](docs/operations/dependabot-triage-2026-05-05.md).
+  [`docs/operations/dependabot-triage-2026-05-05.md`](https://github.com/ForgePlan/forgeplan/blob/main/docs/operations/dependabot-triage-2026-05-05.md).
 
 ### Added (CI infrastructure, methodology)
 
@@ -1709,7 +1940,7 @@ PROB-051 itself).
      `#[cfg(test)]`. Release binaries silently ignore both env vars;
      only test builds honour them for fixture wiring. Closes the
      v0.28.0 release-notes promise (audit S-2 escalation, see
-     [`docs/operations/phase-b-real-e2e-2026-05-03.md`](docs/operations/phase-b-real-e2e-2026-05-03.md)
+     [`docs/operations/phase-b-real-e2e-2026-05-03.md`](https://github.com/ForgePlan/forgeplan/blob/main/docs/operations/phase-b-real-e2e-2026-05-03.md)
      F-RUNTIME-7).
 
   2. **Struct-API path** (PR-E Round 6 audit HIGH-1, found by
@@ -1820,7 +2051,7 @@ forgeplan health clean.
   wires the drift detector as the final gate of the Architecture Health workflow
   (after `forgeplan health` + `forgeplan validate`). Closes PROB-050 A-30
   "preventive value theoretical" finding (was doc-only, now enforced in CI).
-- See [`docs/operations/QUALITY-GATES.ru.md`](docs/operations/QUALITY-GATES.ru.md)
+- See [`docs/operations/QUALITY-GATES.ru.md`](https://github.com/ForgePlan/forgeplan/blob/main/docs/operations/QUALITY-GATES.ru.md)
   for full CI gate reference (fmt / clippy / test / health / validate /
   drift-check), including how to run each gate locally and fix common failures.
 

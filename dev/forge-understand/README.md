@@ -1,15 +1,20 @@
 # forge-understand (MVP)
 
-Proves the full loop behind a Forgeplan "project understanding view": **scan a
-whole repo → understand it → render an interactive HTML map** — the same kind of
-artifact [`effective-html`](../effective-html) produces, but driven over an
-*entire project* (forgeplan artifacts **and** freeform docs **and** code), and
-packaged as our own thing.
+An experimental June–July 2026 loop for a proposed Forgeplan "project understanding
+view": **sample a repository → synthesise an interactive HTML map**. It combines
+forgeplan artifacts, freeform documentation and code, using the visual style of
+[`effective-html`](../effective-html). It is not a shipped `forgeplan map`
+command, an exhaustive repository audit or proof of accuracy for every project.
 
 > **Key correction this MVP encodes:** `effective-html` does **not** scan your
 > project. It is only the *renderer* (the "how the HTML looks" half). The
 > scanning + understanding is done by Claude Code's agent loop. This tool
 > packages **both halves** into one runnable loop.
+>
+> The JSON renderer spike, the proposed map pack and ForgeFarm are distinct
+> experiments/designs. `MASTER-SPEC.md` records a target architecture, not installed
+> CLI/MCP/web functionality. Static maps retain historical counts and explanations;
+> they do not query the current workspace or certify current runtime behavior.
 
 ## The loop
 
@@ -44,7 +49,7 @@ node run.mjs --repo /path/to/some/project
 node run.mjs --model opus --out ./out/map.html --no-open
 ```
 
-Requirements: the `claude` CLI on PATH (you already have it) and Node 18+.
+Requirements: an authenticated, compatible `claude` CLI on PATH and Node 18+.
 
 ## What's deliberately minimal
 
@@ -87,6 +92,7 @@ took **~18 minutes** — motivating the Phase-2 parallel multi-agent scan.
 ## Attribution / license
 
 The bundled style reference (`skills/forge-diagram/references/architecture-example.html`)
-and the visual language come from the `html-effectiveness` corpus by Thariq
-Shihipar (MIT) and `effective-html` by plannotator (MIT). MIT-licensed; adapted
-here for whole-repository understanding maps.
+comes from `effective-html` by plannotator (MIT). Its nested `html-effectiveness`
+corpus by Thariq Shihipar carries Apache-2.0 in that corpus's own `LICENSE`;
+the wrapper's MIT license does not relabel the nested material. Preserve the
+applicable upstream notices when reusing either source.

@@ -4,8 +4,48 @@ use std::collections::BTreeMap;
 pub type Frontmatter = BTreeMap<String, serde_yaml::Value>;
 
 /// Parse YAML frontmatter from markdown content.
-/// Returns `(frontmatter, body)` where body is everything after the closing `---`.
+///
+/// Legacy projections wrap an already-rendered artifact in another metadata
+/// block. Supplement that wrapper from its original frontmatter without
+/// replacing explicit outer values or removing any bytes from the body.
+/// Repeated wrappers must declare the same identity to be followed.
 pub fn parse_frontmatter(content: &str) -> anyhow::Result<(Frontmatter, String)> {
+    let (fm, body) = parse_frontmatter_borrowed(content)?;
+    Ok((fm, body.to_string()))
+}
+
+/// The same metadata interpretation without copying the remaining document.
+pub(crate) fn parse_frontmatter_borrowed(content: &str) -> anyhow::Result<(Frontmatter, &str)> {
+    let (mut fm, body) = parse_frontmatter_slice(content)?;
+    if fm.get("id").and_then(|v| v.as_str()).is_some()
+        && fm.get("kind").and_then(|v| v.as_str()).is_some()
+    {
+        let mut remaining = body;
+        while remaining.trim_start().starts_with("---") {
+            let Ok((inner, next)) = parse_frontmatter_slice(remaining) else {
+                break;
+            };
+            if inner.get("id").is_some_and(|id| fm.get("id") != Some(id))
+                || inner
+                    .get("kind")
+                    .is_some_and(|kind| fm.get("kind") != Some(kind))
+            {
+                break;
+            }
+            let is_wrapper = inner.contains_key("id") && inner.contains_key("kind");
+            for (key, value) in inner {
+                fm.entry(key).or_insert(value);
+            }
+            if !is_wrapper {
+                break;
+            }
+            remaining = next;
+        }
+    }
+    Ok((fm, body))
+}
+
+fn parse_frontmatter_slice(content: &str) -> anyhow::Result<(Frontmatter, &str)> {
     let content = content.trim_start();
     if !content.starts_with("---") {
         anyhow::bail!("No YAML frontmatter found (missing opening ---)");
@@ -23,9 +63,9 @@ pub fn parse_frontmatter(content: &str) -> anyhow::Result<(Frontmatter, String)>
     // Body starts after closing --- and newline
     let body_start = 3 + end + 4; // "---" + yaml + "\n---"
     let body = if body_start < content.len() {
-        content[body_start..].trim_start_matches('\n').to_string()
+        content[body_start..].trim_start_matches('\n')
     } else {
-        String::new()
+        ""
     };
     Ok((fm, body))
 }
@@ -370,6 +410,89 @@ pub fn has_tag_in(tags: &[String], key: &str, value: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_projection_preserves_identity_metadata_and_unmodified_body() {
+        let body = "---\nassigned_number: 1\ncreated: 2026-10-24\npredicted_number: 1\nslug: note-compatibility-source\nupdated: 2026-10-24\nsource_hash: original-input\nstatus: draft\n---\n\n## Decision\n\nKeep NOTE-002.\n";
+        let content = format!(
+            "---\nid: NOTE-001\nkind: note\nstatus: active\ntitle: Compatibility source\n---\n\n{body}"
+        );
+        let (fm, actual_body) = parse_frontmatter_borrowed(&content).unwrap();
+
+        assert_eq!(actual_body, body);
+        assert_eq!(
+            slug_from_frontmatter(&fm),
+            Some("note-compatibility-source")
+        );
+        assert_eq!(assigned_number_from_frontmatter(&fm), Some(1));
+        assert_eq!(predicted_number_from_frontmatter(&fm), Some(1));
+        assert_eq!(fm["created"].as_str(), Some("2026-10-24"));
+        assert_eq!(fm["source_hash"].as_str(), Some("original-input"));
+        assert_eq!(fm["status"].as_str(), Some("active"));
+    }
+
+    #[test]
+    fn legacy_memory_projection_retains_its_exact_timestamp_and_category() {
+        let body = "---\nid: mem-compatibility\nkind: memory\ncategory: convention\ncreated: 2026-10-24T08:07:25.802334+00:00\n---\n\nCanonical files are authoritative.\n";
+        let content =
+            format!("---\nid: mem-compatibility\nkind: memory\nstatus: active\n---\n\n{body}");
+        let (fm, actual_body) = parse_frontmatter(&content).unwrap();
+
+        assert_eq!(actual_body, body);
+        assert_eq!(fm["category"].as_str(), Some("convention"));
+        assert_eq!(
+            fm["created"].as_str(),
+            Some("2026-10-24T08:07:25.802334+00:00")
+        );
+    }
+
+    #[test]
+    fn repeated_matching_projections_keep_outer_values_and_explicit_nulls() {
+        let content = "---\nid: NOTE-001\nkind: note\nstatus: active\nassigned_number: null\ncreated_at: null\n---\n\n---\nid: NOTE-001\nkind: note\nstatus: draft\n---\n\n---\nslug: note-original\npredicted_number: 1\nassigned_number: 1\ncreated: 2026-10-24\n---\n\nKeep this body.\n";
+        let (fm, body) = parse_frontmatter(content).unwrap();
+
+        assert_eq!(slug_from_frontmatter(&fm), Some("note-original"));
+        assert_eq!(predicted_number_from_frontmatter(&fm), Some(1));
+        assert!(fm["assigned_number"].is_null());
+        assert!(fm["created_at"].is_null());
+        assert_eq!(fm["status"].as_str(), Some("active"));
+        assert!(body.starts_with("---\nid: NOTE-001\nkind: note\nstatus: draft\n"));
+        assert!(body.ends_with("Keep this body.\n"));
+    }
+
+    #[test]
+    fn body_frontmatter_cannot_rebind_the_outer_artifact_identity() {
+        for inner in [
+            "id: NOTE-002\nkind: note\nslug: note-foreign\ncreated: 2026-10-24",
+            "id: NOTE-001\nkind: prd\nslug: prd-foreign\ncreated: 2026-10-24",
+        ] {
+            let body = format!("---\n{inner}\n---\n\nA quoted artifact.\n");
+            let content = format!("---\nid: NOTE-001\nkind: note\n---\n\n{body}");
+            let (fm, actual_body) = parse_frontmatter(&content).unwrap();
+
+            assert_eq!(actual_body, body);
+            assert_eq!(fm["id"].as_str(), Some("NOTE-001"));
+            assert_eq!(fm["kind"].as_str(), Some("note"));
+            assert_eq!(slug_from_frontmatter(&fm), None);
+            assert!(!fm.contains_key("created"));
+        }
+    }
+
+    #[test]
+    fn a_non_projection_or_malformed_body_is_not_promoted_to_metadata() {
+        let non_projection =
+            "---\nslug: note-original\n---\n\n---\nslug: note-example\ncreated: 2026-10-24\n---\n";
+        let (fm, _) = parse_frontmatter(non_projection).unwrap();
+        assert_eq!(slug_from_frontmatter(&fm), Some("note-original"));
+        assert!(!fm.contains_key("created"));
+
+        let body = "---\nThis is ordinary prose, not a YAML mapping.\n---\n";
+        let content = format!("---\nid: NOTE-001\nkind: note\n---\n\n{body}");
+        let (fm, actual_body) = parse_frontmatter(&content).unwrap();
+        assert_eq!(actual_body, body);
+        assert_eq!(fm["id"].as_str(), Some("NOTE-001"));
+        assert!(!fm.contains_key("created"));
+    }
 
     #[test]
     fn tags_from_frontmatter_sequence() {

@@ -120,17 +120,18 @@
   <p class="eyebrow">teaching-assets · index · v1</p>
   <h1>Интерактивные разборы методологии</h1>
   <p class="lead">
-    Восемь самодостаточных страниц, которые объясняют ForgePlan-методологию через аналогии,
-    визуализации и worked examples. Каждая открывается двойным кликом, читается одним человеком,
-    идёт по сценарию от концепции до cli-команды. Ниже - три способа найти нужный разбор:
-    через вопрос, через рекомендуемый порядок, или через тему.
+    Каталог из двадцати самодостаточных страниц, которые объясняют ForgePlan-методологию через
+    аналогии, визуализации и worked examples. Каждая открывается двойным кликом, читается одним
+    человеком, идёт по сценарию от концепции до cli-команды. Этот файл - отдельная точка входа
+    в каталог. Ниже - три способа найти нужный разбор: через вопрос, через основной маршрут,
+    или через тему.
   </p>
 
   <div class="stats">
-    <span class="stat">пар <strong>10</strong> разборов</span>
-    <span class="stat">шесть <strong>теоретических</strong></span>
-    <span class="stat">три <strong>интерактива</strong></span>
-    <span class="stat">один <strong>landing</strong> (этот файл)</span>
+    <span class="stat"><strong>20</strong> разборов в каталоге</span>
+    <span class="stat"><strong>15</strong> теоретических</span>
+    <span class="stat"><strong>4</strong> интерактивных</span>
+    <span class="stat"><strong>1</strong> инструментальный</span>
   </div>
 
   <!-- WHERE TO START -->
@@ -161,10 +162,11 @@
   </div>
 
   <!-- READING ORDER -->
-  <h2>Рекомендуемый порядок чтения</h2>
+  <h2>Основной маршрут · десять разборов</h2>
   <p>
-    Каждый последующий разбор опирается на предыдущие. Можно скакать, но если читаете впервые -
-    сверху вниз даёт наименьшие пробелы.
+    Десять разборов, которые образуют основной маршрут: каждый следующий опирается на
+    предыдущие. Можно скакать, но если читаете впервые - сверху вниз даёт наименьшие пробелы.
+    Это подборка, а не весь каталог: остальные десять разборов собраны в разделе «По теме» ниже.
   </p>
   <div class="order">
 
@@ -201,8 +203,8 @@
           <span class="oc-tag">одна фича</span>
           <span class="oc-pill theory">теория</span>
         </div>
-        <div class="oc-title">BMAD · 13-step PRD · Adversarial Review</div>
-        <div class="oc-sub">Четыре фазы воронки (Brainstorming → Modeling → Architecting → Delivery), 13 секций PRD из которых 3 критичные (Non-Goals, Risks, Open Questions), и adversarial review чужими глазами как third quality gate.</div>
+        <div class="oc-title">BMAD · локальный PRD-макет · Adversarial Review</div>
+        <div class="oc-sub">Фазы upstream BMAD: Analysis (необязательная) → Planning → Solutioning → Implementation. Макет из 13 секций PRD и 3 выделенные секции (Non-Goals, Risks, Open Questions) — локальное учебное упражнение, не требования upstream. Ревью свежими глазами — локальный третий quality gate.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -228,7 +230,7 @@
           <span class="oc-pill tool">meta</span>
         </div>
         <div class="oc-title">Forgeplan как operational layer</div>
-        <div class="oc-sub">POS для методологий: CLI + MCP + .forgeplan/ забирают на себя FPF, BMAD, OpenSpec, QuintCode. 10 типов артефактов (6 в активном ходу) с DAG зависимостей. Четыре depth-уровня и три quality gates в одном <code>validate</code>.</div>
+        <div class="oc-sub">POS для методологий: CLI + MCP + .forgeplan/ связывают FPF, BMAD, OpenSpec, QuintCode с DAG зависимостей. Урок выбирает историческую подборку из 10 типов, а не все 17 вариантов текущего ArtifactKind; 6 выделены для примеров. Четыре depth-уровня и три quality gates в одном <code>validate</code>.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -241,7 +243,7 @@
           <span class="oc-pill interactive">3D-граф</span>
         </div>
         <div class="oc-title">DAG Explorer · артефакты в 3D</div>
-        <div class="oc-sub">Plotly 3D scatter с узлами-артефактами и линиями-рёбрами. Knowledge Vault MVP как реальный пример: 22 артефакта, 30 связей, фильтры по типам. Покажет паттерны (здоровая цепочка / blindspot / orphan / разветвление) и трейсируемость одной картинкой.</div>
+        <div class="oc-sub">Plotly 3D scatter с узлами-артефактами и линиями-рёбрами. Knowledge Vault MVP — авторский учебный набор, не замер реального проекта: 24 узла, 23 логических ребра (22 связи + триггер), 29 отрисованных сегментов из-за повторного отображения 6 evidence-связей. Фильтры по типам показывают здоровые цепочки, blindspot, orphan и ветвления.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -267,7 +269,7 @@
           <span class="oc-pill theory">теория</span>
         </div>
         <div class="oc-title">Lifecycle · от draft до terminal</div>
-        <div class="oc-sub">State machine с 5 состояниями и 6 переходами: draft → active → {superseded | deprecated | stale} → renew/reopen. Аналогия паспорта с визой. Stale как «забытое состояние», требующее явного решения.</div>
+        <div class="oc-sub">Пять хранимых состояний. У superseded/deprecated нет исходящих переходов. Reopen из active/stale создаёт новый draft с lineage и связью based_on, а старый артефакт переводит в deprecated. Renew использует общий guard draft/stale → active, не терминальные состояния. Active остаётся редактируемым; обнаружение просрочки не переписывает статус.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -293,7 +295,7 @@
           <span class="oc-pill theory">теория</span>
         </div>
         <div class="oc-title">Multi-agent · dispatch · claim · release</div>
-        <div class="oc-sub">Координация 2-5 agent'ов в одном репо без конфликтов. Planner режет работу на конфликт-free buckets, worker берёт под себя с TTL, release возвращает в pool. WIP=1 hard limit. Adversarial review всегда в отдельном agent'е.</div>
+        <div class="oc-sub">Учебная координация 2–5 агентов в одном репо. Dispatch учитывает claims и эвристики пересечения объявленных файлов; отсутствие конфликтов не гарантируется. Claim с TTL — рекомендательная отметка намерения, не блокировка доступа. WIP=1 и отдельный reviewer — локальные правила работы, не ограничения runtime.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -318,7 +320,7 @@
       <div class="tc-tag">если ищете про процесс разработки</div>
       <div class="tc-title">От строки в Slack до production</div>
       <ul>
-        <li><a href="bmad-cycle.html">bmad-cycle</a> · BMAD-воронка и 13-step PRD</li>
+        <li><a href="bmad-cycle.html">bmad-cycle</a> · фазы BMAD и локальное упражнение с PRD из 13 секций</li>
         <li><a href="spec-cycle.html">spec-cycle</a> · спецификация поведения системы</li>
         <li><a href="forgeplan-cycle.html">forgeplan-cycle</a> · depth-routing и quality gates</li>
         <li><a href="dag-explorer.html">dag-explorer</a> · граф артефактов в 3D</li>
@@ -332,7 +334,7 @@
       <ul>
         <li><a href="lifecycle-cycle.html">lifecycle-cycle</a> · полный state machine с stale</li>
         <li><a href="spec-cycle.html">spec-cycle</a> · delta + DAG + decay-триггеры</li>
-        <li><a href="forgeplan-cycle.html">forgeplan-cycle</a> · activate как точка невозврата</li>
+        <li><a href="forgeplan-cycle.html">forgeplan-cycle</a> · activate как переход статуса и проверка качества, не запрет редактирования</li>
       </ul>
     </div>
 
@@ -346,14 +348,39 @@
       </ul>
     </div>
 
+    <div class="topic-card">
+      <div class="tc-tag">если ищете основы и форматы</div>
+      <div class="tc-title">С чего начинается журнал решений</div>
+      <ul>
+        <li><a href="intro.html">intro</a> · что такое журнал решений и зачем он нужен команде</li>
+        <li><a href="how-to-use.html">how-to-use</a> · как ввести практику в команду</li>
+        <li><a href="artifacts-overview.html">artifacts-overview</a> · как вести артефакты команды</li>
+        <li><a href="adi-overview.html">adi-overview</a> · ADI как ежедневная практика</li>
+        <li><a href="ddr-format.html">ddr-format</a> · как выглядит хороший DDR</li>
+        <li><a href="fpf-overview.html">fpf-overview</a> · FPF: карта согласованности</li>
+        <li><a href="trust-calculus-overview.html">trust-calculus-overview</a> · Trust Calculus: три оси</li>
+        <li><a href="evidence-and-decay.html">evidence-and-decay</a> · почему у доказательств есть срок годности</li>
+        <li><a href="fpf-cycle.html">fpf-cycle</a> · FPF как родительская рамка</li>
+        <li><a href="first-artifact.html">first-artifact</a> · первый артефакт за 20 минут</li>
+      </ul>
+    </div>
+
   </div>
 
   <!-- EXTERNAL DOCS -->
   <h2>Полная документация</h2>
+  <a class="ext-link" href="/ru/guides/">
+    <div class="el-text">
+      <span class="el-tag">forgeplan.dev · каталог разборов</span>
+      <span class="el-title">Полный каталог · двадцать разборов с описаниями и метками</span>
+    </div>
+    <span class="el-arrow">↗</span>
+  </a>
+
   <a class="ext-link" href="https://forgeplan.dev/docs/methodology/overview" target="_blank" rel="noopener">
     <div class="el-text">
       <span class="el-tag">forgeplan.dev · официальные docs</span>
-      <span class="el-title">Methodology Overview · 10 Rules · CLI Reference (~80 команд) · MCP Reference · Marketplace</span>
+      <span class="el-title">Methodology Overview · 10 Rules · CLI Reference (120 command paths) · MCP Reference · Marketplace</span>
     </div>
     <span class="el-arrow">↗</span>
   </a>

@@ -1,17 +1,15 @@
 ---
 title: forgeplan decompose
-description: "Break an approved PRD into an RFC with implementation phases and sub-tasks using AI"
+description: "Print AI-generated RFC task suggestions from a PRD without creating artifacts."
 ---
 
-`forgeplan decompose` takes an approved PRD and asks the LLM to produce a
-matching RFC: implementation phases, sub-tasks per phase, and a dependency
-ordering. It bridges the gap between "we know what we want" (PRD) and "here is
-the sprint plan" (RFC) without forcing the author to restructure requirements
-by hand.
+`forgeplan decompose` reads a PRD and sends its title and body to the configured
+LLM to suggest RFC tasks and dependencies. It prints the model's response.
+It does **not** create an RFC, set checkboxes, or add links.
 
-The output is a draft RFC artifact with filled **Implementation Phases**
-checkboxes, linked back to the source PRD via an `implements` relation. You
-still review and edit it - decompose is a first draft, not the final word.
+Review the suggestions, create the necessary RFCs with `forgeplan new rfc`,
+then link each to the PRD with `--relation refines`. Validation and approval
+are workflow prerequisites you check yourself, not enforced by this command.
 
 ## When to use
 
@@ -23,7 +21,7 @@ still review and edit it - decompose is a first draft, not the final word.
 ## When NOT to use
 
 - Depth is **Tactical** - go straight to code
-- PRD is still a stub (missing Problem, Goals, FR) - decompose will hallucinate phases
+- PRD is still a stub - incomplete requirements can produce unsupported suggestions
 - An RFC for this PRD already exists - use `forgeplan update` or supersede flow instead
 - You disagree with the PRD's goals - fix the PRD first, don't paper over it with an RFC
 
@@ -55,10 +53,8 @@ forgeplan validate PRD-019
 forgeplan decompose PRD-019
 ```
 
-Reads `PRD-019`, sends its Problem/Goals/FR/Non-Goals to the LLM, and creates
-`RFC-0XX` linked with `implements: PRD-019`. The generated RFC contains an
-**Implementation Phases** section with unchecked boxes ready for progress
-tracking.
+Reads `PRD-019` and prints LLM-generated task suggestions. Create and fill the
+RFC artifacts separately; replace example IDs with the IDs actually returned.
 
 ### Example 2: Full pipeline from idea to sprint plan
 
@@ -68,19 +64,20 @@ forgeplan new prd "OAuth2 login flow"             # -> PRD-042
 # ... fill MUST sections ...
 forgeplan validate PRD-042                        # PASS
 forgeplan reason PRD-042 --fpf                    # ADI cycle
-forgeplan decompose PRD-042                       # -> RFC-018 draft
-forgeplan validate RFC-018                        # sanity check
+forgeplan decompose PRD-042                       # prints suggestions only
+forgeplan new rfc "OAuth2 implementation"         # record the returned RFC ID
+# Fill the RFC body, link it to PRD-042 with --relation refines, then validate it.
 ```
 
-After decompose, open `RFC-018` in your editor, tighten phase descriptions,
-and start checking boxes as phases complete.
+After reviewing the output, create and fill the RFCs before implementation.
+Check off phase items only when the corresponding work is complete.
 
 ## Output interpretation
 
-Decompose prints the created RFC ID and a summary of generated phases:
+The model's output varies. This is an illustrative plan, not a creation receipt:
 
 ```
-Created RFC-018 (draft) linked to PRD-042
+Suggested tasks for PRD-042:
   Phase 1: Authentication provider abstraction (3 tasks)
   Phase 2: OAuth2 flow implementation (5 tasks)
   Phase 3: Session persistence + refresh (4 tasks)
@@ -112,3 +109,22 @@ Shape → Validate → Reason → [decompose] → Code → Evidence → Activate
 - [`forgeplan validate`](/docs/cli/validate/) - gate for decomposition input
 - [`forgeplan generate`](/docs/cli/generate/) - generate content for any artifact kind
 - [Methodology: PRD → RFC flow](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan decompose --help`.
+
+```text
+Decompose a PRD into RFC tasks using AI
+
+Usage: forgeplan decompose <ID>
+
+Arguments:
+  <ID>  PRD artifact ID to decompose
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

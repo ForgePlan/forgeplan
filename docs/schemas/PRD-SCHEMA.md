@@ -25,23 +25,27 @@
 | **Deep** | 3-5 days | All sections + User Research + Metrics Plan | New subsystem |
 | **Critical** | 1-2 weeks | Everything + Stakeholder Sign-offs + Risk Analysis | Payment system |
 
-## Required Sections
+The depth table and section checklist below are **authoring conventions**, not
+a complete executable validator specification. Durations are planning examples,
+not automatic depth thresholds. The implemented checks are described separately.
+
+## Authoring Checklist
 
 ### For all depth levels:
 
-| # | Section | Required? | Validation |
+| # | Section | Authoring expectation | Content guidance (not automatic enforcement) |
 |---|---------|-----------|------------|
-| 1 | **Meta Header** | ✅ MUST | Status, Author, Created, Updated, Priority |
-| 2 | **Problem Statement** | ✅ MUST | >= 2 sentences, contains "because" / "impact" |
+| 1 | **Meta Header** | Include | `id` and `status`; record Author, Created, Updated and Priority for traceability |
+| 2 | **Problem Statement** | Include | Explain the problem and its impact; sentence count and causal wording are review guidance |
 | 3 | **Goals** | ✅ MUST | >= 1 goal, each measurable |
 | 4 | **Non-Goals** | ✅ MUST | >= 1 item (scope boundary) |
 | 5 | **Functional Requirements** | ✅ MUST | >= 1 REQ with Priority (Must/Should/Could) |
-| 6 | **Success Metrics** | ✅ MUST | >= 1 KPI with Current + Target |
+| 6 | **Success Metrics** | Recommended; validator MUST at Deep | KPIs with Current + Target |
 | 7 | **Related Artifacts** | ✅ MUST | Links to SPEC/RFC/ADR if exist |
 
 ### For Standard+:
 
-| # | Section | Required? | Validation |
+| # | Section | Authoring expectation | Content guidance (not automatic enforcement) |
 |---|---------|-----------|------------|
 | 8 | **Target Audience** | ✅ MUST | >= 1 persona with description |
 | 9 | **User Stories** | SHOULD | "As a [role], I want [X], so that [Y]" |
@@ -51,51 +55,73 @@
 
 ### For Deep/Critical:
 
-| # | Section | Required? | Validation |
+| # | Section | Authoring expectation | Content guidance (not automatic enforcement) |
 |---|---------|-----------|------------|
 | 13 | **Timeline** | ✅ MUST | Milestones with dates |
 | 14 | **Stakeholders** | ✅ MUST | Sign-off checkboxes |
 | 15 | **Acceptance Criteria** | ✅ MUST | Given/When/Then format |
 | 16 | **Competitive Analysis** | COULD | If applicable |
 
-## Validation Rules (from BMAD)
+## Implemented Validation and Review Guidance
 
-### Quality Gates
+`validate` checks metadata presence (`id`, `status`), required sections,
+placeholders and depth-specific content. The status-presence rule does not
+itself establish whether a value is a valid lifecycle status. Problem section
+presence is checked; a causal explanation or two sentences is not guaranteed by
+that check. Success Metrics is a MUST in the Deep rules. Problem density of
+50 words is SHOULD at Standard and MUST at Deep. These checks do not prove that
+goals are truly measurable or that requirements are mutually consistent.
 
-1. **Completeness** — all MUST sections are filled (not placeholders)
+Activation is separate: it can also reject insufficient length, missing evidence
+or stub content even when validation has no MUST findings. CLI `validate` works
+on legacy and migrated Constellation layouts; full MCP `forgeplan_validate`
+was also exercised successfully. See the [pilot compatibility notes (RU)](../operations/CONSTELLATION-PILOT.ru.md).
+
+### Human Review Checklist
+
+1. **Completeness** — fill required content rather than placeholders
 2. **Measurability** — each Goal has a numerical target
 3. **Traceability** — each REQ has a unique ID (REQ-N)
-4. **Density** — Problem Statement >= 50 words
+4. **Density** — explain the problem substantively; implemented 50-word severity depends on depth as noted above
 5. **Scope Clarity** — Non-Goals >= 1 item
 6. **No Implementation Leakage** — PRD describes WHAT, not HOW
 7. **Consistency** — Goals and Requirements do not contradict each other
 
 ### Adversarial Review (from BMAD)
 
-When reviewing a PRD, the reviewer **MUST** find at least 1 issue:
-- Unmeasurable Goal?
+Actively look for defects and support each finding with a concrete reason:
+- Unmeasurable goal?
 - Missing edge case?
 - Unrealistic timeline?
 - Forgotten stakeholder?
 - Security/privacy concern?
 
-If the reviewer found zero issues — **review more carefully**.
+Zero confirmed defects is acceptable. State the review scope and unexamined
+risks; never invent a finding to meet a quota. The optional CLI `--adversarial`
+checks may emit `adversarial-too-clean` when no issue is found; its severity is
+**COULD**, not a blocking MUST.
 
 ## Numbering
 
 | Format | Example |
 |--------|---------|
-| ID | `PRD-NNN` (sequential per project) |
+| ID | `PRD-NNN` (display number allocated per kind within a project) |
 | File | `PRD-{NNN}-{kebab-case-title}.md` |
-| Path | `docs/prds/PRD-042-social-login.md` |
+| Path | `.forgeplan/prds/PRD-042-social-login.md` |
 
 ## Status Lifecycle
 
+```text
+draft --activate--> active
+active --> superseded | deprecated | stale
+stale --renew--> active
+stale --reopen--> deprecated + new draft
+stale --deprecate--> deprecated
 ```
-Draft → Review → Approved → Implementing → Implemented → Closed
-                    ↓
-               Rejected (with reason)
-```
+
+`superseded` and `deprecated` are terminal. Review, approval, implementation and
+closure may describe process stages, but are not stored `status` values.
+`review` does not create a lifecycle status.
 
 ## Progress Bars (same format as RFC)
 

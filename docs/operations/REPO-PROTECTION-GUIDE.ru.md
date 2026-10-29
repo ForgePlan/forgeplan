@@ -4,9 +4,16 @@
 
 Практический гайд по настройке защиты GitHub репозитория для проектов с dev-based workflow и AI-агентами (Claude Code, Cursor, etc).
 
+> Это примеры настройки отдельно разрешённого репозитория, не описание live
+> rules ForgePlan и не разрешение их менять. Примерные merge methods/review
+> counts не заменяют более строгую политику этого проекта. Native settings,
+> hooks, rulesets и credentials здесь не меняются. Защита зависит от plan,
+> visibility, enforcement, выбранных refs, имён required checks и bypass credentials.
+> Live remote protection test не выполнялся.
+
 ## Требования
 
-- GitHub Free (public repo) или GitHub Team (private repo)
+- GitHub plan/visibility с поддержкой выбранных rules и security features; доступность различается для public/private и personal/organization repos
 - `gh` CLI установлен и авторизован
 - CI workflow (GitHub Actions)
 
@@ -177,7 +184,7 @@ EOF
 | `strict_required_status_checks_policy` | `true` | PR должен быть up-to-date с main |
 | `do_not_enforce_on_create` | `true` | Не блокировать создание веток |
 | `bypass_actors.actor_id: 5` | Repository Admin | Экстренный bypass |
-| `allowed_merge_methods` | `["merge", "squash"]` | Merge commit для releases, squash для features |
+| `allowed_merge_methods` | пример `["merge", "squash"]` | Общий пример, не правило merge-commit-only этого проекта |
 
 ### 2.2 Dev branch protection
 
@@ -258,14 +265,16 @@ gh api repos/${FULL}/rulesets --method POST --input - <<'EOF'
 EOF
 ```
 
-Только admin может создавать/удалять tags. Агенты не смогут случайно тегировать.
+В примере исключён repository-admin role. Агент с admin/bypass credentials
+также может поставить tag: «агент» не класс прав GitHub. Rules должны быть
+active и применимыми; наличие bypass не даёт разрешения его использовать.
 
 ---
 
 ## Шаг 3: Security Features
 
 ```bash
-# Secret scanning — блокирует push с токенами/ключами
+# Push protection распознаёт поддерживаемые secret patterns, не любой секрет.
 gh api repos/${FULL} --method PATCH --input - <<'EOF'
 {
   "security_and_analysis": {
@@ -341,6 +350,10 @@ fi
 exit 0
 ```
 
+Примеры hooks проверяют буквальные строки настроенных `Bash` calls.
+Это не parser, sandbox или защита всех клиентов/эквивалентных команд.
+Запреты репозитория обязательны и при пропуске детектором.
+
 ### 4.3 Настройка в settings.json
 
 ```json
@@ -379,16 +392,12 @@ gh api repos/${FULL}/rulesets/RULESET_ID
 gh api repos/${FULL} --jq '.security_and_analysis'
 ```
 
-### Тест защиты (должен fail):
+### Не проверять защиту фальшивым push в настоящий main
 
-```bash
-# Попробуй push напрямую в main — должно быть rejected
-git checkout main
-echo "test" >> README.md
-git add README.md && git commit -m "test direct push"
-git push origin main
-# Expected: rejected by ruleset
-```
+Read-only inspection выше показывает настройки, а не receipt отклонённого push.
+Negative test требует отдельного разрешения, disposable repository и identity
+без bypass. С admin bypass из примера настоящий push «должен упасть» может
+успешно изменить protected history. Это не безвредная проверка.
 
 ---
 
@@ -408,7 +417,9 @@ EOF
 
 ## Quick Setup Script
 
-Одна команда для нового проекта:
+Исторический пример настройки, не idempotent installer. Он создаёт новые
+rulesets и скрывает часть ошибок; финальный `Done!` не доказывает успех.
+До reliance на защиту нужно изучить ответы каждой операции и итоговые rules.
 
 ```bash
 #!/bin/bash
@@ -451,6 +462,11 @@ echo "Done! Verify: gh api repos/${FULL}/rulesets"
 
 ## Матрица: что защищает от чего
 
+Галочка означает условное покрытие при включённой применимой настройке,
+не полное предотвращение. Dependabot сообщает известные advisories, а не сам
+блокирует каждый vulnerable release. Secret detection покрывает поддерживаемые
+patterns. Bypass identity и disabled rules обходят показанные barriers.
+
 | Угроза | Local Hook | CI | Ruleset | Security |
 |--------|:----------:|:--:|:-------:|:--------:|
 | Push в main/dev напрямую | | | ✅ | |
@@ -472,7 +488,9 @@ A: Для public repos — нет, GitHub Free достаточно. Для priv
 A: Проверь что CI checks прошли (имена jobs должны точно совпадать с `required_status_checks.context`).
 
 **Q: Как временно отключить protection?**
-A: Используй bypass (ты admin) или измени `enforcement` на `"evaluate"` (будет предупреждать, но не блокировать).
+A: Не обходите и не ослабляйте rules ради завершения agent task. Отдельное
+policy change одобряет уполномоченный owner с проверкой доступных режимов plan;
+`evaluate` доступен не везде. Admin capability сама по себе не authorization.
 
 **Q: Как добавить review requirement для команды?**
 A: Измени `required_approving_review_count` на `1` (или больше) в PR rule.

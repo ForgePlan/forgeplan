@@ -5,7 +5,7 @@ description: "List live claims in the workspace - who is working on what right n
 
 `forgeplan claims` lists every active claim in the workspace - which agent is currently working on which artifact, and how soon their claim expires. Claims are sorted by time-to-expiry, soonest first, so the most urgent slots appear at the top. Expired claims are skipped (treated as released).
 
-Read-only and lock-free: an orchestrator can poll this once per second without slowing down agents that are writing claims. If a claim file is corrupt or oversized, it is silently skipped and counted under `skipped` in the output - `forgeplan health` can then surface it for cleanup.
+Read-only and lock-free: listing does not take the claim writer's lock. This does not guarantee that frequent polling has no performance cost. Corrupt or oversized claim files are skipped and counted under `skipped`; inspect the claim directory when this count is nonzero.
 
 Mirrors [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) on the MCP side.
 
@@ -18,7 +18,7 @@ Mirrors [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) on the MCP side.
 
 ## When NOT to use
 
-- You need lifecycle state (`draft` / `active` / `superseded`) - that is separate from claims; use [`forgeplan list`](/docs/cli/list/) or `forgeplan show <id>`.
+- You need lifecycle state (`draft` / `active` / `superseded`) - use [`forgeplan list`](/docs/cli/list/) or `forgeplan get <id>`.
 - You want to modify state - this command only reads. Use [`forgeplan claim`](/docs/cli/claim/) to acquire and [`forgeplan release`](/docs/cli/release/) to drop.
 - You need long-term audit history - claims are temporary (max 24-hour TTL). For historical records, query [`forgeplan activity`](/docs/cli/activity/).
 
@@ -44,7 +44,7 @@ forgeplan claims [OPTIONS]
 forgeplan claims
 ```
 
-Prints a table of live claims sorted by expiry. Typical output:
+Illustrative table, not a captured runtime transcript:
 
 ```text
 ID        agent      expires_in   note
@@ -66,7 +66,7 @@ Filters the active claims down to a specific worker. Useful in a dispatcher scri
 forgeplan claims --json | jq '.skipped'
 ```
 
-A non-zero `skipped` value means at least one claim file failed to parse or exceeded the maximum size - these used to be dropped silently, now they are surfaced explicitly. Run [`forgeplan health`](/docs/cli/health/) next to identify which file is broken.
+A nonzero `skipped` value means at least one claim file failed to parse or exceeded the size limit. Inspect `.forgeplan/claims/`; the count alone does not identify the broken file.
 
 ## How it fits the workflow
 
@@ -78,3 +78,20 @@ This is the monitoring layer of the multi-agent loop. Between `dispatch` rounds,
 - [`forgeplan claim`](/docs/cli/claim/) - acquire a claim
 - [`forgeplan release`](/docs/cli/release/) - drop a claim
 - [`forgeplan dispatch`](/docs/cli/dispatch/) - multi-agent work plan
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan claims --help`.
+
+```text
+List active claims (sorted by expiry, soonest first)
+
+Usage: forgeplan claims [OPTIONS]
+
+Options:
+      --json     Output as JSON for machine consumption
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

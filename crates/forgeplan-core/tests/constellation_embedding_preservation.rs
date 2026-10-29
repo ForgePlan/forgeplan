@@ -1504,6 +1504,107 @@ async fn pending_jobs(
     manifest.pending_jobs
 }
 
+/// Admission must reach compute without first marking the whole corpus
+/// pending. Unselected units stay eligible and complete in later batches.
+#[tokio::test]
+async fn admission_bounds_pending_writes_and_later_batches_finish_the_corpus() {
+    resume_admission();
+    let tmp = TempDir::new().unwrap();
+    for dir in ARTIFACT_DIRS {
+        std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+    }
+    let batch_limit = forgeplan_core::constellation::facade::MAX_PREPARED_BATCH;
+    // More than one batch even when no cached tokenizer can produce sections.
+    for ordinal in 1..=batch_limit + 1 {
+        std::fs::write(
+            tmp.path()
+                .join("notes")
+                .join(format!("NOTE-{ordinal:03}-queue.md")),
+            format!(
+                "---\nid: NOTE-{ordinal:03}\nkind: note\nstatus: draft\n\
+                 title: Bounded queue {ordinal}\n---\n\nDistinct input {ordinal}.\n"
+            ),
+        )
+        .unwrap();
+    }
+    let capability = capability_for(&tmp);
+    let index_root = capability.index_root();
+    maintain_index(&capability, CaptureLimits::default(), deadline())
+        .await
+        .unwrap();
+    let (_, manifest) = pinned_descriptor_and_manifest(index_root).await;
+    let expected_keys: std::collections::BTreeSet<String> = manifest
+        .source_entries
+        .iter()
+        .map(|entry| entry.canonical_key.clone())
+        .chain(
+            manifest
+                .section_bindings
+                .iter()
+                .map(|section| section.section_key.clone()),
+        )
+        .collect();
+    assert!(expected_keys.len() > batch_limit);
+    let profile = profile_a();
+    let mut prepared = prepare_embedding_batch(&capability, &profile, deadline())
+        .await
+        .unwrap();
+    let mut completed = std::collections::BTreeSet::new();
+    loop {
+        let batch_keys: std::collections::BTreeSet<String> = prepared
+            .inputs
+            .iter()
+            .map(|input| input.job.canonical_key.clone())
+            .collect();
+        assert!(batch_keys.len() <= batch_limit);
+        let durable_keys: std::collections::BTreeSet<String> =
+            pending_jobs(index_root).await.into_keys().collect();
+        assert_eq!(
+            durable_keys, batch_keys,
+            "a fresh batch must not write pending state for deferred units"
+        );
+        let outcome = complete_embedding_batch(
+            &capability,
+            &prepared,
+            &vectors_for(&prepared, 0.25),
+            deadline(),
+        )
+        .await
+        .unwrap();
+        assert!(outcome.stale.is_empty());
+        assert!(outcome.cannot_judge.is_empty());
+        assert_eq!(
+            outcome
+                .published
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            batch_keys
+        );
+        for key in outcome.published {
+            assert!(completed.insert(key), "a completed unit was admitted again");
+        }
+        prepared = prepare_embedding_batch(&capability, &profile, deadline())
+            .await
+            .unwrap();
+        if prepared.inputs.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(completed, expected_keys, "deferred units must not be lost");
+    assert!(pending_jobs(index_root).await.is_empty());
+    let coverage = search_pinned_semantic(
+        index_root,
+        &vec![0.25; forgeplan_core::db::schema::EMBEDDING_DIM as usize],
+        &profile.profile_id(),
+        1,
+        &NO_FILTER,
+    )
+    .await
+    .unwrap();
+    assert_eq!(coverage.eligible_rows, expected_keys.len());
+}
+
 /// A reconcile between two admissions must not remint the pending jobs.
 ///
 /// Before this, every reconcile published a fresh generation because every

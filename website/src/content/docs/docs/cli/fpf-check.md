@@ -3,15 +3,15 @@ title: forgeplan fpf check
 description: "Check which FPF rules match a given artifact and what action they recommend"
 ---
 
-`forgeplan fpf check <ID>` evaluates every active **First Principles Framework** rule against a single artifact and prints the matches - grouped by action (EXPLORE / INVESTIGATE / EXPLOIT) and annotated with the FPF section each rule is derived from.
+`forgeplan fpf check <ID>` evaluates active rules against one artifact. It prints the highest-priority matching rule, other matches in priority order, and optionally unmatched names. Actions are EXPLORE / INVESTIGATE / EXPLOIT; this report does not fetch an FPF section citation for each rule.
 
 It's the per-artifact projection of [`fpf rules`](/docs/cli/fpf-rules/) and [`fpf dashboard`](/docs/cli/fpf-dashboard/).
 
 ## When to use
 
 - **Before activating a PRD/RFC/ADR** - confirm no INVESTIGATE rules are still firing.
-- **When `forgeplan validate` passes but you want deeper reasoning review** - rules catch things validation can't (e.g. "too few hypotheses for Deep depth").
-- **While debugging a stuck artifact** - see exactly which rule is blocking progress.
+- **After structural validation** - inspect the active rules' metadata and evidence-quality signals; the built-in rules do not count ADI hypotheses.
+- **While debugging a stuck artifact** - inspect matching recommendations without treating every match as a blocking gate.
 - **During adversarial review** - use rule output as a structured critique checklist.
 
 ## When NOT to use
@@ -44,7 +44,7 @@ forgeplan fpf check [OPTIONS] <ID>
 ## Examples
 
 ```bash
-# Default: show matched rules grouped by action
+# Default: winning rule and other priority-ordered matches
 forgeplan fpf check PRD-019
 
 # Show unmatched rules too (useful while debugging why a rule didn't fire)
@@ -56,32 +56,21 @@ forgeplan fpf check ADR-005 --json
 
 ## How explore / investigate / exploit thresholds work
 
-Each bounded context the artifact belongs to has three derived R_eff values:
+`explore_reff`, `investigate_reff`, and `exploit_reff` are configuration thresholds, not three derived reliability scores. The built-in rules use these concrete conditions:
 
-- **`explore_reff`** - how well-covered the hypothesis space is. Low → EXPLORE rules fire ("generate alternatives").
-- **`investigate_reff`** - how strong the evidence is for the hypotheses that exist. Low → INVESTIGATE rules fire ("attach better evidence").
-- **`exploit_reff`** - whether the chosen path clears the "ready to commit" bar. High → EXPLOIT rules unlock activation.
+| Rule | Condition | Action |
+|---|---|---|
+| `blind-spot` | draft and R_eff < 0.01 | EXPLORE |
+| `weak-evidence` | active/stale and R_eff < 0.5 | INVESTIGATE |
+| `orphan-active` | active and no links | EXPLORE |
+| `medium-quality` | 0.5 ≤ R_eff < 0.7 | INVESTIGATE |
+| `ready-to-build` | R_eff ≥ 0.7 and overall quality ≥ 0.6 | EXPLOIT |
 
-Thresholds are calibrated per depth:
-
-| Depth     | Needs EXPLORE clear | Needs INVESTIGATE clear | Needs EXPLOIT clear |
-|-----------|---------------------|-------------------------|---------------------|
-| Tactical  | -                   | -                       | -                   |
-| Standard  | recommended         | recommended             | required            |
-| Deep      | required            | required                | required            |
-| Critical  | required + review   | required + review       | required + review   |
-
-For Deep/Critical artifacts, `fpf check` is effectively a pre-activation gate: fix INVESTIGATE rules before calling `forgeplan activate`.
+A nonempty `fpf.rules` configuration replaces the built-in rules. `fpf check` itself neither activates an artifact nor changes lifecycle gates. Follow the applicable validation, ADI, review, and evidence requirements separately.
 
 ## How it fits
 
-`fpf check` reads:
-
-1. The artifact row from LanceDB (kind, depth, status, R_eff, linked evidence).
-2. The active rule set from the FPF rule engine (PRD-041).
-3. FPF KB sections cited by each rule (PRD-042).
-
-...and produces a human-readable report plus a machine-readable summary consumed by `fpf dashboard` and `forgeplan validate` (PRD-043 methodology integrity).
+The selected CLI implementation reads artifact records and relations, resolves active rules, and evaluates enriched metadata. It does not load KB section bodies to justify matches. Do not recreate retired tables to run it. `--json` emits the matched/unmatched/winning result with a summary and next-action hint.
 
 ## See also
 
@@ -91,3 +80,24 @@ For Deep/Critical artifacts, `fpf check` is effectively a pre-activation gate: f
 - [`forgeplan validate`](/docs/cli/validate/) - structural validation
 - [`forgeplan reason`](/docs/cli/reason/) - generate more hypotheses when EXPLORE rules fire
 - [`forgeplan score`](/docs/cli/score/) - R_eff inputs behind the thresholds
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf check --help`.
+
+```text
+Check which FPF rules match a given artifact
+
+Usage: forgeplan fpf check [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID (e.g. PRD-041)
+
+Options:
+      --verbose  Show unmatched rule names too
+      --json     Output full RuleCheckResult as JSON
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

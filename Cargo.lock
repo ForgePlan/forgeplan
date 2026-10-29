@@ -2354,6 +2354,7 @@ dependencies = [
  "futures",
  "globset",
  "hf-hub",
+ "lance",
  "lance-io",
  "lancedb",
  "libc",

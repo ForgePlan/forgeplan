@@ -38,6 +38,8 @@ use super::ConstellationError;
 use super::durability::DurabilityTrackingStore;
 use super::storage;
 
+const AUTO_CLEANUP_INTERVAL_KEY: &str = "lance.auto_cleanup.interval";
+
 /// Vector dimension, reused from the existing `db` layer so a workspace built
 /// by either path agrees on the embedding column.
 pub use crate::db::schema::EMBEDDING_DIM;
@@ -1289,16 +1291,30 @@ impl IndexTables {
     pub async fn restore_artifacts_to(
         &self,
         published_version: u64,
+        workspace: &std::path::Path,
     ) -> Result<u64, ConstellationError> {
-        restore_to_published(self.artifacts_table(), "artifacts", published_version).await
+        restore_to_published(
+            self.artifacts_table(),
+            "artifacts",
+            published_version,
+            workspace,
+        )
+        .await
     }
 
     /// Rewind the relations writer to the published baseline.
     pub async fn restore_relations_to(
         &self,
         published_version: u64,
+        workspace: &std::path::Path,
     ) -> Result<u64, ConstellationError> {
-        restore_to_published(self.relations_table(), "relations", published_version).await
+        restore_to_published(
+            self.relations_table(),
+            "relations",
+            published_version,
+            workspace,
+        )
+        .await
     }
 
     /// Rewind the sections writer to the published baseline.
@@ -1309,8 +1325,15 @@ impl IndexTables {
     pub async fn restore_sections_to(
         &self,
         published_version: u64,
+        workspace: &std::path::Path,
     ) -> Result<u64, ConstellationError> {
-        restore_to_published(self.sections_table(), "sections", published_version).await
+        restore_to_published(
+            self.sections_table(),
+            "sections",
+            published_version,
+            workspace,
+        )
+        .await
     }
 
     /// Publish a vector onto an **existing** section row, conditionally.
@@ -1449,14 +1472,16 @@ pub async fn open_wrapped_connection(
 /// would each see half the closure and `finish_writes` would report the other
 /// half as untouched.
 ///
-/// `params` and `namespace_client` are bare `None` because `lancedb` does not
-/// re-export `WriteParams` or `LanceNamespace` (`lib.rs:266-268` re-exports only
-/// `Session` and `ObjectStoreRegistry`), so naming them would force a direct
-/// `lance` dependency for no benefit.
+/// Creation uses the default write and namespace parameters. Retention is
+/// established explicitly below because our generation manifests pin versions
+/// independently of Lance's age-based cleanup policy.
+/// The caller holds the owner; each retention commit takes the lock for the
+/// explicitly supplied canonical workspace, never an inferred parent path.
 pub async fn create_active_tables(
     index_root: &std::path::Path,
     marker: &super::manifest::ProtocolMarker,
     wrapper: Arc<DurabilityTrackingStore>,
+    workspace: &std::path::Path,
 ) -> Result<IndexTables, ConstellationError> {
     marker.validate()?;
 
@@ -1521,6 +1546,9 @@ pub async fn create_active_tables(
     let sections = iter.next().ok_or_else(|| ConstellationError::Io {
         detail: "table creation produced no sections table".to_string(),
     })?;
+    retain_managed_table_versions(&artifacts, "artifacts", workspace).await?;
+    retain_managed_table_versions(&relations, "relations", workspace).await?;
+    retain_managed_table_versions(&sections, "sections", workspace).await?;
     Ok(IndexTables {
         connection,
         artifacts,
@@ -1564,10 +1592,14 @@ pub async fn create_active_tables(
 /// cannot be opened. There is no fallback to latest and no silent creation:
 /// a missing table on an index that claims to be active is a broken index,
 /// not a first run, and bootstrap decides that case.
+///
+/// The caller holds the owner. Retention commits lock the supplied canonical
+/// workspace individually; genuinely read-only opens use the separate reader.
 pub async fn open_active_tables(
     index_root: &std::path::Path,
     marker: &super::manifest::ProtocolMarker,
     wrapper: Arc<DurabilityTrackingStore>,
+    workspace: &std::path::Path,
 ) -> Result<IndexTables, ConstellationError> {
     // Shadow the parameter with its trait-object form. `Arc::clone` is
     // `impl<T: ?Sized> Clone for Arc<T>` and does **not** unsize on the way
@@ -1692,6 +1724,9 @@ pub async fn open_active_tables(
         database,
     );
 
+    retain_managed_table_versions(&artifacts, "artifacts", workspace).await?;
+    retain_managed_table_versions(&relations, "relations", workspace).await?;
+    retain_managed_table_versions(&sections, "sections", workspace).await?;
     Ok(IndexTables {
         connection,
         artifacts,
@@ -2276,6 +2311,7 @@ async fn restore_to_published(
     table: &lancedb::Table,
     role: &str,
     published_version: u64,
+    workspace: &std::path::Path,
 ) -> Result<u64, ConstellationError> {
     table.checkout(published_version).await.map_err(|e| {
         ConstellationError::IndexGenerationUnavailable {
@@ -2284,20 +2320,99 @@ async fn restore_to_published(
             ),
         }
     })?;
-    table.restore().await.map_err(|e| ConstellationError::Io {
-        detail: format!("restore of the {role} table failed: {e}"),
-    })?;
+    let dataset = table
+        .dataset()
+        .ok_or_else(|| ConstellationError::Io {
+            detail: format!("the managed {role} table is not native"),
+        })?
+        .get()
+        .await
+        .map_err(|e| ConstellationError::Io {
+            detail: format!("cannot read the published {role} dataset: {e}"),
+        })?;
+    let latest_version = dataset
+        .latest_version_id()
+        .await
+        .map_err(|e| ConstellationError::Io {
+            detail: format!("cannot read the latest {role} version before restore: {e}"),
+        })?;
+    let transaction = lance::dataset::transaction::Transaction::new(
+        latest_version,
+        lance::dataset::transaction::Operation::Restore {
+            version: published_version,
+        },
+        None,
+    );
+    // Restore also restores the old cleanup configuration. That commit must
+    // not collect the original pin before the retention policy is reapplied.
+    {
+        let _guard = crate::workspace::acquire_workspace_lock(workspace)
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("cannot lock the workspace to restore {role}: {e}"),
+            })?;
+        lance::dataset::write::CommitBuilder::new(dataset)
+            .with_skip_auto_cleanup(true)
+            .execute(transaction)
+            .await
+            .map_err(|e| ConstellationError::Io {
+                detail: format!("restore of the {role} table failed: {e}"),
+            })?;
+    }
     table
         .checkout_latest()
         .await
         .map_err(|e| ConstellationError::Io {
             detail: format!("could not return the {role} writer to latest after restore: {e}"),
         })?;
+    retain_managed_table_versions(table, role, workspace).await?;
     // The head created by the restore. Distinct from `published_version` by
     // construction, and recorded as itself.
     table.version().await.map_err(|e| ConstellationError::Io {
         detail: format!("cannot read the {role} version after restore: {e}"),
     })
+}
+
+/// Only owned writer paths call this; pinned and read-only opens do not.
+/// Removing the interval disables automatic cleanup. Zero would instead run
+/// cleanup on every commit and could remove versions a generation still pins.
+async fn retain_managed_table_versions(
+    table: &lancedb::Table,
+    role: &str,
+    workspace: &std::path::Path,
+) -> Result<(), ConstellationError> {
+    let dataset = table
+        .dataset()
+        .ok_or_else(|| ConstellationError::Io {
+            detail: format!("the managed {role} table is not native"),
+        })?
+        .get()
+        .await
+        .map_err(|e| ConstellationError::Io {
+            detail: format!("cannot read retention policy for {role}: {e}"),
+        })?;
+    if !dataset
+        .manifest()
+        .config
+        .contains_key(AUTO_CLEANUP_INTERVAL_KEY)
+    {
+        return Ok(());
+    }
+    let _guard = crate::workspace::acquire_workspace_lock(workspace)
+        .await
+        .map_err(|e| ConstellationError::Io {
+            detail: format!("cannot lock the workspace for {role} retention: {e}"),
+        })?;
+    table
+        .as_native()
+        .ok_or_else(|| ConstellationError::Io {
+            detail: format!("the managed {role} table is not native"),
+        })?
+        .delete_config_keys(&[AUTO_CLEANUP_INTERVAL_KEY])
+        .await
+        .map_err(|e| ConstellationError::Io {
+            detail: format!("cannot preserve managed versions for {role}: {e}"),
+        })
 }
 
 #[cfg(test)]
@@ -2306,6 +2421,104 @@ mod tests {
 
     fn field_names(schema: &Schema) -> Vec<&str> {
         schema.fields().iter().map(|f| f.name().as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn managed_restore_retains_the_original_pinned_version_and_its_data() {
+        use arrow_array::{RecordBatch, StringArray};
+        use futures::TryStreamExt;
+        use lancedb::query::ExecutableQuery;
+
+        async fn values(table: &lancedb::Table) -> Vec<String> {
+            let batches: Vec<RecordBatch> = table
+                .query()
+                .execute()
+                .await
+                .unwrap()
+                .try_collect()
+                .await
+                .unwrap();
+            batches
+                .iter()
+                .flat_map(|batch| {
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .unwrap()
+                        .iter()
+                        .map(|value| value.unwrap().to_string())
+                })
+                .collect()
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let connection = lancedb::connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Utf8,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(StringArray::from(vec!["before"]))],
+        )
+        .unwrap();
+        let table = connection
+            .create_table("retention", batch)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .as_native()
+            .unwrap()
+            .update_config([
+                ("lance.auto_cleanup.interval".into(), "1".into()),
+                ("lance.auto_cleanup.older_than".into(), "0ms".into()),
+                ("lance.auto_cleanup.retain_versions".into(), "1".into()),
+            ])
+            .await
+            .unwrap();
+        let pinned = table.version().await.unwrap();
+        let mut tags = table.tags().await.unwrap();
+        // Protect only fixture construction. Production must preserve the
+        // untagged pin through recovery and subsequent ordinary writes.
+        tags.create("setup-pin", pinned).await.unwrap();
+        table
+            .update()
+            .column("value", "'after'")
+            .execute()
+            .await
+            .unwrap();
+        tags.delete("setup-pin").await.unwrap();
+        drop(tags);
+
+        restore_to_published(&table, "artifacts", pinned, tmp.path())
+            .await
+            .unwrap();
+        let restored_pin = table.checkout(pinned).await;
+        assert!(
+            restored_pin.is_ok(),
+            "recovery must preserve the original published pin: {restored_pin:?}"
+        );
+        assert_eq!(values(&table).await, ["before"]);
+        table.checkout_latest().await.unwrap();
+        table
+            .update()
+            .column("value", "'after-recovery'")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(values(&table).await, ["after-recovery"]);
+        let retained_pin = table.checkout(pinned).await;
+        assert!(
+            retained_pin.is_ok(),
+            "later writes must not garbage-collect a published pin: {retained_pin:?}"
+        );
+        assert_eq!(values(&table).await, ["before"]);
     }
 
     #[test]
@@ -2467,7 +2680,11 @@ mod tests {
             let field = schema
                 .field_with_name(name)
                 .unwrap_or_else(|e| panic!("missing {name}: {e}"));
-            assert_eq!(field.data_type(), &DataType::UInt64, "{name} is a byte offset");
+            assert_eq!(
+                field.data_type(),
+                &DataType::UInt64,
+                "{name} is a byte offset"
+            );
             assert!(!field.is_nullable(), "{name} cannot be null");
         }
     }

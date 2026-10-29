@@ -30,11 +30,12 @@ rules:
       file_glob: "**/c4-mini/components/*.md"
       front_matter:
         kind: component
+      heading_path: ["Purpose"]
     target:
       kind: note
     fields:
       title: "{{ front_matter.name | default(value=\"Unnamed component\") }}"
-      summary: "{{ section.purpose | default(value=\"(no purpose section)\") }}"
+      summary: "{{ section.body | default(value=\"(no purpose section)\") | trim }}"
     sources_section:
       include: true
       format: "{path}:{line_start}-{line_end}"

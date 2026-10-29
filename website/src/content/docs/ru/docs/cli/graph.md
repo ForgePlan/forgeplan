@@ -5,8 +5,10 @@ description: "Генерирует граф зависимостей связа�
 
 Выводит граф зависимостей всех связанных артефактов в формате Mermaid. В отличие от
 [`tree`](/docs/cli/tree/), который показывает только иерархию родитель/потомок, `graph`
-отображает каждую типизированную связь (`informs`, `supersedes`, `blocks`, `relates_to`
-и т.д.) как ребро - полный DAG решений.
+показывает типизированные связи `informs`, `based_on`, `refines`, `supersedes`
+и `parent_epic` как `belongs_to`. Циклы возможны; DAG не гарантируется.
+
+Отдельный федеративный интерфейс - `constellation graph`.
 
 ## Когда использовать
 
@@ -52,7 +54,8 @@ forgeplan graph > deps.mmd
 Рендеринг в PNG с помощью mermaid-cli:
 
 ```bash
-forgeplan graph > deps.mmd && mmdc -i deps.mmd -o deps.png
+forgeplan graph | sed '/^Next:/d' > deps.mmd
+mmdc -i deps.mmd -o deps.png
 ```
 
 JSON для пользовательского интерфейса:
@@ -63,7 +66,8 @@ forgeplan graph --json | jq '.edges | length'
 
 ## Интерпретация вывода
 
-Стандартный вывод - это синтаксис Mermaid `graph TD`:
+Рендерер выводит `graph LR`; в stdout также может быть завершающая подсказка `Next:`.
+Ниже ручная иллюстрация, не точный вывод команды:
 
 ```
 graph TD
@@ -80,17 +84,14 @@ graph TD
 
 | Синтаксис          | Значение                                            |
 |-----------------|----------------------------------------------------|
-| `A --> B`       | Родитель/потомок (структурная связь)               |
-| `A -.informs.-> B` | Типизированное ребро из фронтматтера ссылки      |
-| `A -.supersedes.-> B` | Ребро жизненного цикла, новое замещает старое |
-| Метка узла      | `<ID><br/><title>`                                 |
+| `belongs_to` | Направление от потомка к родителю `parent_epic` |
+| Подпись ребра | Записанный тип связи |
+| Идентификатор узла | ID артефакта; заголовки рендерер не загружает |
 
-Активные артефакты получают сплошную обводку; замещённые/устаревшие - пунктирную
-(если ваш рендерер поддерживает определения классов, выводимые в начале
-графа).
-
-С опцией `--json` оболочка имеет вид `{ nodes: [...], edges: [...] }` - готово для
-Cytoscape, D3 или любой другой библиотеки графов.
+Стили зависят от типа артефакта и состояния гипотезы, не общего lifecycle-статуса.
+JSON содержит `edges` с `from`, `to`, `relation`, а также `brownfield_only`
+и `_next_action`; массива `nodes` нет. `--brownfield-only` в этом обработчике
+фильтрует Mermaid, но не список рёбер JSON.
 
 ### Пример отрисованной диаграммы
 
@@ -121,3 +122,21 @@ blocked →  неразрешённые зависимости (планиров
 - [`forgeplan order`](/docs/cli/order/) - топологический порядок
 - [`forgeplan blocked`](/docs/cli/blocked/) - блокирующие зависимости
 - [`forgeplan link`](/docs/cli/link/) - создание типизированных рёбер
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan graph --help`.
+
+```text
+Generate mermaid dependency graph of linked artifacts
+
+Usage: forgeplan graph [OPTIONS]
+
+Options:
+      --json             Output as JSON for machine consumption
+      --brownfield-only  Issue #287 Phase F: filter edges to brownfield kinds only (UC / GLOS / INV / SCEN / HYP / DM). Pipeline edges (PRD / RFC / ADR / EPIC / SPEC) are dropped from output. Domain-model subgraph clusters are preserved
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -3,13 +3,13 @@ title: forgeplan coverage
 description: "Show decision coverage per code module - which parts of the codebase have no linked ADR/PRD."
 ---
 
-`forgeplan coverage` cross-references the modules discovered by `forgeplan scan`
-against the `Affected Files` sections in every artifact, and reports which modules
-have **no** documented decision. Uncovered modules are blind spots: code you are
-running without any documented reasoning behind it.
+`forgeplan coverage` scans the codebase itself, then matches module paths against
+`Affected Files` in active PRD, RFC and ADR artifacts. An uncovered module has no
+matching decision in that set; it is a documentation-review candidate, not proof
+that its code has no rationale.
 
 This is the "do we know why this exists?" view of the project. Paired with `drift`
-(do ADRs still match code?) it gives you a complete codebase ⟷ artifacts reconciliation.
+(do ADRs still match code?) it helps review codebase ⟷ artifact relationships.
 
 ## When to use
 
@@ -20,7 +20,7 @@ This is the "do we know why this exists?" view of the project. Paired with `drif
 
 ## When NOT to use
 
-- Before running `forgeplan scan` - coverage needs a module inventory first.
+- You need a persisted module inventory — coverage scans on each invocation; `scan` is an optional preview.
 - On tiny projects with 1–2 files - the signal is low.
 
 ## Usage
@@ -42,11 +42,11 @@ forgeplan coverage [OPTIONS]
 ### Standard coverage report
 
 ```bash
-forgeplan scan         # refresh module list
+forgeplan scan         # optional preview; coverage performs its own scan
 forgeplan coverage
 ```
 
-Output:
+Illustrative report (invented modules/counts, not literal CLI output):
 
 ```text
 Decision coverage
@@ -72,18 +72,18 @@ overall coverage: 62% (5 of 8 modules)
 forgeplan coverage --backfill
 ```
 
-Adds a placeholder `## Affected Files` section to artifacts that don't have one,
-making them visible to coverage and drift going forward. You'll still need to fill
-the list by hand, but the structure is ready.
+Adds a placeholder `## Affected Files` section to active PRD/RFC/ADR artifacts
+that lack one. Fill it with actual paths; the placeholder is not evidence of
+real coverage.
 
 ### Focus on uncovered modules
 
 ```bash
-forgeplan coverage --json | jq '.uncovered[]'
+forgeplan coverage
 ```
 
-Produces a flat list you can feed into a backlog generator: "write an ADR for each
-uncovered module."
+Inspect the uncovered-module section in the text report. This command has no
+`--json` option in the selected build.
 
 ## Output interpretation
 
@@ -93,8 +93,8 @@ uncovered module."
 | uncovered | module with zero artifact references - document reasoning!        |
 | overall   | percentage of scanned modules with at least one decision           |
 
-A healthy project sits above 70% coverage. Below 50% means you're coding by instinct.
-100% is usually over-documentation - some utility modules don't need ADRs.
+Choose documentation priorities from module risk and importance. The CLI does
+not define universal healthy/unhealthy thresholds of 70%, 50% or 100% coverage.
 
 ## How it fits the workflow
 
@@ -107,8 +107,25 @@ from vibes into a prioritized list.
 
 ## See also
 
-- [`forgeplan scan`](/docs/cli/scan/) - populate the module inventory
+- [`forgeplan scan`](/docs/cli/scan/) - preview source modules without persisting an inventory
 - [`forgeplan drift`](/docs/cli/drift/) - the other half of codebase reconciliation
 - [`forgeplan new adr`](/docs/cli/new/) - create the missing documentation
-- [`forgeplan health`](/docs/cli/health/) - includes coverage in project-level summary
+- [`forgeplan health`](/docs/cli/health/) - separate artifact-health summary, not a coverage threshold
 - [CLI overview](/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan coverage --help`.
+
+```text
+Show decision coverage per code module
+
+Usage: forgeplan coverage [OPTIONS]
+
+Options:
+      --backfill  Backfill "Affected Files" section into artifacts missing it
+  -h, --help      Print help
+  -V, --version   Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -47,11 +47,12 @@ forgeplan blocked
 
 ## Что вы видите
 
-Панель мониторинга группирует вывод в три блока:
+Панель выводит четыре блока:
 
-1.  **Ограниченные контексты** - каждый контекст (например, `search`, `scoring`, `fpf-kb`) с агрегированным R_eff, количеством артефактов и флагами слепых пятен.
-2.  **Оценки качества** - explore_reff / investigate_reff / exploit_reff для каждого контекста, показывающие, где доверие наиболее сильно.
-3.  **Рекомендуемые действия** - одно из `EXPLORE` (недостаточно гипотез), `INVESTIGATE` (гипотезы существуют, но доказательства слабые) или `EXPLOIT` (доказательства сильные, можно выпускать).
+1. **Bounded contexts** - графовые кластеры, участники и связность.
+2. **Quality (F-G-R)** - число артефактов по продуктовым оценкам Formality/Granularity/Reliability.
+3. **Next Actions** - рекомендации `EXPLORE`, `INVESTIGATE`, `EXPLOIT` по артефактам.
+4. **Pipeline** - сводка конвейера.
 
 Рекомендация по действию поступает от того же движка правил, который отображается командой [`forgeplan fpf rules`](/docs/cli/fpf-rules/).
 
@@ -59,11 +60,11 @@ forgeplan blocked
 
 `fpf dashboard` - это визуальный синтез PRD-041 (движок правил FPF) и PRD-043 (целостность методологии). Он считывает:
 
--   Метаданные артефактов (тип, статус, R_eff) из LanceDB
--   Активные правила из FPF KB
+-   Метаданные артефактов (тип, статус, R_eff) из выбранного workspace
+- Правила конфигурации workspace либо встроенные defaults, не загруженный корпус
 -   Связи доказательств и уровни конгруэнтности
 
-...и проецирует их на ось исследование→изучение→использование, определённую в разделе B FPF (Trust Calculus).
+Это эвристики продукта, не буквальные шкалы upstream FPF. Наличие команды в help само по себе не подтверждает её работу на всех раскладках workspace.
 
 ## См. также
 
@@ -72,3 +73,19 @@ forgeplan blocked
 -   [`forgeplan fpf check`](/docs/cli/fpf-check/) - соответствие правил для каждого артефакта
 -   [`forgeplan health`](/docs/cli/health/) - аналог на уровне артефактов
 -   [Руководство по методологии](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf dashboard --help`.
+
+```text
+Show FPF dashboard — bounded contexts, quality scores, explore-exploit actions
+
+Usage: forgeplan fpf dashboard
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

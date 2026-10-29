@@ -25,17 +25,12 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::LinkParams`_
 
 ## Возвращает
 
-Подтверждение с сохранённым ребром. Граф обновляется немедленно и отобразится при следующем вызове `forgeplan_graph` / `forgeplan_health` / `forgeplan_score`.
+Возвращает `message` и, только при фактической автоактивации, ID источника в `auto_activated`, а также подсказку и метаданные workspace/согласования индекса. Проверьте результат согласования и перечитайте канонические связи: сама запись связи не доказывает публикацию индекса.
 
-Пример структуры ответа:
+Иллюстративный фрагмент:
 
 ```json
-{
-  "ok": true,
-  "source": "EVID-057",
-  "target": "PRD-042",
-  "relation": "informs"
-}
+{ "message": "Linked: EVID-057 --informs--> PRD-042" }
 ```
 
 ## Пример вызова
@@ -46,7 +41,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::LinkParams`_
 
 С типичным контекстом агента:
 
-> Агент завершил реализацию, создал EVID-057 с результатами бенчмарков и теперь связывает его с PRD, чтобы оценка стала зелёной.
+> Агент записывает реальные результаты проверки в EVID-057 и связывает их с PRD; следующую оценку нужно прочитать, а не предполагать.
 
 ```json
 { "source": "EVID-057", "target": "PRD-042", "relation": "informs" }
@@ -54,7 +49,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::LinkParams`_
 
 ## Типичная последовательность
 
-`forgeplan_new` (доказательство) → `forgeplan_update` (структурированные поля) → `forgeplan_link` → `forgeplan_score` (теперь > 0) → `forgeplan_activate`. Для декомпозиции Epic: `forgeplan_new` (epic) → `forgeplan_new` (prd) → `forgeplan_link relation=based_on` → повторить.
+`forgeplan_new` (evidence) → `forgeplan_update` (реальные доказательства и поля `verdict`, `congruence_level`, `evidence_type`) → `forgeplan_link` → прочитать `forgeplan_score` → выполнить применимые гейты активации и политики. Связь не гарантирует положительную оценку: `refutes` может её обнулить, а конечные доказательства исключаются. Дочерние PRD связываются с Epic через `based_on`; эта связь не меняет статус жизненного цикла.
 
 ## Эквивалент в CLI
 
@@ -66,3 +61,83 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::LinkParams`_
 - [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) - использует граф связей для R_eff
 - [`forgeplan_graph`](/ru/docs/mcp/forgeplan_graph/) - визуализирует граф связей
 - [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) - версия связи `supersedes` с сохранением состояния
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Link two artifacts with a typed relationship. Valid types: informs, based_on, supersedes, contradicts, refines.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `auto_activate_source_if_complete` | нет | boolean | Issue #288: optional auto-activate of the source artifact when this<br>link completes the evidence pack. When `true` AND the source is an<br>evidence artifact in draft status AND its body declares both<br>`verdict` and `congruence_level` structured fields AND R_eff &gt; 0<br>after the link lands, the source is silently activated<br>(draft → active) in the same call. The response carries<br>`auto_activated` so the caller knows the transition happened.<br>Defaults to `false` so pre-#288 callers see no behaviour change. |
+| `relation` | нет | RelationKind | Relationship type (default: informs) |
+| `replace` | нет | boolean | Issue #286: idempotent upsert mode. When `true` and an edge between<br>`(source, target)` already exists with a DIFFERENT relation, the old<br>edge is deleted and a new one with `relation` is added in a single<br>call. Without this, the additive path errors on<br>"relation already exists" or returns a parallel-edge state that the<br>caller cannot fix without `forgeplan_unlink`. Defaults to `false` for<br>backward compatibility with pre-#286 callers. |
+| `source` | да | string | Source artifact ID |
+| `target` | да | string | Target artifact ID |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$defs": {
+    "RelationKind": {
+      "enum": [
+        "informs",
+        "based_on",
+        "supersedes",
+        "contradicts",
+        "refines"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "auto_activate_source_if_complete": {
+      "default": false,
+      "description": "Issue #288: optional auto-activate of the source artifact when this\nlink completes the evidence pack. When `true` AND the source is an\nevidence artifact in draft status AND its body declares both\n`verdict` and `congruence_level` structured fields AND R_eff > 0\nafter the link lands, the source is silently activated\n(draft → active) in the same call. The response carries\n`auto_activated` so the caller knows the transition happened.\nDefaults to `false` so pre-#288 callers see no behaviour change.",
+      "type": "boolean"
+    },
+    "relation": {
+      "$ref": "#/$defs/RelationKind",
+      "description": "Relationship type (default: informs)"
+    },
+    "replace": {
+      "default": false,
+      "description": "Issue #286: idempotent upsert mode. When `true` and an edge between\n`(source, target)` already exists with a DIFFERENT relation, the old\nedge is deleted and a new one with `relation` is added in a single\ncall. Without this, the additive path errors on\n\"relation already exists\" or returns a parallel-edge state that the\ncaller cannot fix without `forgeplan_unlink`. Defaults to `false` for\nbackward compatibility with pre-#286 callers.",
+      "type": "boolean"
+    },
+    "source": {
+      "description": "Source artifact ID",
+      "type": "string"
+    },
+    "target": {
+      "description": "Target artifact ID",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "source",
+    "target"
+  ],
+  "title": "LinkParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

@@ -1252,6 +1252,42 @@ impl ForgeplanServer {
 
 // ── Helpers ──────────────────────────────────────────────────
 
+async fn build_route_fpf_context(
+    workspace: &Path,
+    description: &str,
+) -> anyhow::Result<Option<String>> {
+    let auxiliary = forgeplan_core::db::auxiliary::AuxiliaryStore::open_existing(workspace).await?;
+    forgeplan_core::llm::reason::build_fpf_context_auxiliary(&auxiliary, description, "").await
+}
+
+async fn build_reason_artifact_context(
+    read: &ReadSource,
+    record: &ArtifactRecord,
+) -> anyhow::Result<forgeplan_core::llm::reason::ArtifactContext> {
+    let relations = read
+        .get_relations(&record.id)
+        .await?
+        .into_iter()
+        .map(|(id, relation)| (id, relation, String::new()))
+        .collect();
+    let bounded_context = match read {
+        ReadSource::Workspace(view) => {
+            forgeplan_core::fpf::contexts::detect_for_artifact_captured(view, &record.id).await?
+        }
+        ReadSource::Legacy(store) => {
+            forgeplan_core::fpf::contexts::detect_for_artifact(store, &record.id).await?
+        }
+    };
+    Ok(forgeplan_core::llm::reason::ArtifactContext {
+        status: record.status.clone(),
+        depth: record.depth.clone(),
+        r_eff_score: record.r_eff_score,
+        relations,
+        architecture_hint: None,
+        bounded_context,
+    })
+}
+
 fn json_result<T: serde::Serialize>(data: &T) -> CallToolResult {
     match serde_json::to_string_pretty(data) {
         Ok(json) => CallToolResult::success(vec![Content::text(json)]),
@@ -3492,7 +3528,10 @@ impl ForgeplanServer {
         let mut total_passed = 0;
 
         for record in &to_validate {
-            let fm = record.frontmatter_map();
+            let fm = match &read {
+                ReadSource::Workspace(view) => view.frontmatter_map_with_links(record),
+                ReadSource::Legacy(store) => store.frontmatter_map_with_links(record).await,
+            };
             let kind = record
                 .kind
                 .parse::<ArtifactKind>()
@@ -3674,8 +3713,8 @@ impl ForgeplanServer {
                 (target, evidence_dtos, report, link_count)
             }
             ReadSource::Workspace(view) => {
-                // No lock, no store, no cache column: the captured view IS the
-                // artifact here, and the report is a pure function of it.
+                // No store or cache column: the report is a pure function of
+                // the captured view selected under the workspace guard.
                 let Some(target) = view.get_record(&p.id).cloned() else {
                     return Ok(artifact_not_found(&p.id));
                 };
@@ -3686,22 +3725,7 @@ impl ForgeplanServer {
                 };
                 let report = match reff::assurance_report_captured(&p.id, view).await {
                     Ok(report) => report,
-                    Err(e) => {
-                        tracing::warn!(
-                            target = "scoring",
-                            error = %e,
-                            id = %p.id,
-                            "MCP forgeplan_score could not walk the captured graph"
-                        );
-                        reff::AssuranceReport {
-                            artifact_id: p.id.clone(),
-                            r_eff: 0.0,
-                            self_score: 0.0,
-                            weakest_link: None,
-                            decay_penalty: 0.0,
-                            factors: vec![format!("Error: {e}")],
-                        }
-                    }
+                    Err(e) => return Ok(safe_err_result("captured assurance graph", e)),
                 };
                 let link_count = match reff::relation_link_count(&graph, &p.id).await {
                     Ok(count) => count,
@@ -3848,17 +3872,14 @@ impl ForgeplanServer {
             _ => {}
         }
 
-        // ADR-003 / PROB-048 / PRD-073 file-first: helper does pre-sync for
-        // both sides, the add_relation, then post-render for both sides.
-        // sync_before/render_after are no-ops when the target is not local
-        // (cross-workspace reference) so the previous warn-and-continue
-        // behavior is preserved by the helper's natural laziness.
+        // ADR-003 / PROB-048 / PRD-073: pre-sync canonical participants into
+        // the derived index, then render only the changed outgoing source.
+        // An incoming edge does not authorize rewriting the target's file.
+        // Non-local target pre-sync remains best-effort.
         //
-        // Issue #286: `replace: true` selects the upsert helper, which
-        // collapses any pre-existing edge between `(source, target)` onto
-        // the requested relation. Without the flag we keep the strict
-        // additive helper that rejects duplicates and parallel-different-
-        // relation edges — matching the pre-#286 behaviour exactly.
+        // `replace: true` selects the idempotent upsert helper and its existing
+        // many-edge policy. Otherwise use the ordinary additive helper and
+        // preserve its duplicate-rejection behavior.
         let ctx = projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref());
         let upsert_outcome = if p.replace {
             match projection::replace_link_with_projection(&ctx, &p.source, &p.target, &relation)
@@ -3976,18 +3997,14 @@ impl ForgeplanServer {
         // Fresh read: the pre-link snapshot predates this very mutation, and on a
         // migrated workspace the auto-activate decision below is about the
         // committed Markdown, not about what the capture saw before it.
-        let post_link_source = match self.read_source_for(&ws, legacy_sink.clone()).await {
-            Ok(source) => source.get_record(&p.source).await.unwrap_or(None),
-            Err(e) => {
-                tracing::warn!(
-                    target = "read",
-                    error = %e,
-                    id = %p.source,
-                    "post-link re-read failed; auto-activate check skipped"
-                );
-                None
-            }
-        };
+        let post_link_view = self
+            .read_source_for(&ws, legacy_sink.clone())
+            .await
+            .map_err(safe_mcp_error)?;
+        let post_link_source = post_link_view
+            .get_record(&p.source)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
         if let Some(src_record) = post_link_source
             && src_record.kind.eq_ignore_ascii_case("evidence")
             && src_record.status.eq_ignore_ascii_case("draft")
@@ -4018,9 +4035,8 @@ impl ForgeplanServer {
                 // rather than a degraded "activate it next" hint. Leaving that
                 // branch in place would make the flag silently mean something
                 // different depending on the workspace layout.
-                let post_link_view = self.read_source_for(&ws, legacy_sink.clone()).await.ok();
-                if p.auto_activate_source_if_complete && post_link_view.is_some() {
-                    let activate_outcome = match post_link_view.as_ref().unwrap() {
+                if p.auto_activate_source_if_complete {
+                    let activate_outcome = match &post_link_view {
                         ReadSource::Legacy(store) => {
                             match forgeplan_core::lifecycle::activate(store, &p.source, false).await
                             {
@@ -4701,47 +4717,33 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<RouteParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Try Level 1 (LLM) if workspace has LLM config, with FPF context if available.
-        // ADR-016 Phase 3c: SoftFallback read resolution (worktree-aware, no gate,
-        // no lock). The nested FPF-context store now reuses the already-resolved
-        // worktree-aware `store` instead of a second `require_store()` lookup
-        // (which would have pulled the default-workspace store, ignoring the
-        // `workspace` param — a silent cross-workspace read).
-        let result = if let Ok(r) = self.resolve_workspace_read(p.workspace.as_deref()).await {
-            let ws = r.workspace_dir;
-            if let Ok(config) = workspace::load_config(&ws) {
-                if let Some(llm_cfg) = config.llm {
-                    let llm_cfg = llm_cfg.with_env_overrides().with_workspace_dir(ws.clone());
-                    // Try to build FPF context from the resolved store.
-                    let fpf_ctx = match r.legacy_store.as_deref() {
-                        Some(store) => forgeplan_core::llm::reason::build_fpf_context(
-                            store,
+        // Routing needs workspace configuration and the auxiliary knowledge
+        // base, not an artifact projection. A missing workspace retains the
+        // standalone classifier; an unreadable configured KB is an error.
+        let resolved = self
+            .resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::SoftFallback)
+            .await;
+        let result = match resolved {
+            Ok((ws, _via)) => match workspace::load_config(&ws) {
+                Ok(config) => {
+                    if let Some(llm_cfg) = config.llm {
+                        let llm_cfg = llm_cfg.with_env_overrides().with_workspace_dir(ws.clone());
+                        let fpf_ctx = build_route_fpf_context(&ws, &p.description)
+                            .await
+                            .map_err(|e| safe_mcp_error_anyhow(&e))?;
+                        forgeplan_core::routing::route_with_llm_and_context(
                             &p.description,
-                            "",
+                            &llm_cfg,
+                            fpf_ctx.as_deref(),
                         )
                         .await
-                        .ok()
-                        .flatten(),
-                        // A migrated workspace has no legacy FPF store to read:
-                        // its knowledge base is not in `artifacts.lance`, so the
-                        // LLM route runs without that extra context rather than
-                        // opening a retired projection for it.
-                        None => None,
-                    };
-                    forgeplan_core::routing::route_with_llm_and_context(
-                        &p.description,
-                        &llm_cfg,
-                        fpf_ctx.as_deref(),
-                    )
-                    .await
-                } else {
-                    forgeplan_core::routing::route(&p.description)
+                    } else {
+                        forgeplan_core::routing::route(&p.description)
+                    }
                 }
-            } else {
-                forgeplan_core::routing::route(&p.description)
-            }
-        } else {
-            forgeplan_core::routing::route(&p.description)
+                Err(_) => forgeplan_core::routing::route(&p.description),
+            },
+            Err(_) => forgeplan_core::routing::route(&p.description),
         };
         let first_kind = result
             .pipeline
@@ -5154,33 +5156,19 @@ impl ForgeplanServer {
 
         match supersede {
             Ok(result) => {
-                // ADR-003 / PROB-048 file-first: render store → file. Both the
-                // superseded artifact (new status + supersede link) and the
-                // replacement (incoming reverse link) are written. A migrated
-                // workspace already wrote both — the edge lives in the source
-                // file's `links:` block — so there is no store row to render.
-                if let Some(store) = legacy_sink.as_deref() {
-                    if let Err(e) =
+                // Only the superseded source changes status/outgoing links.
+                // Its replacement receives an incoming edge, not a canonical
+                // edit; rendering that cache would rewrite unrelated metadata.
+                // A migrated source has already performed its canonical write.
+                if let Some(store) = legacy_sink.as_deref()
+                    && let Err(e) =
                         forgeplan_core::projection::render_after_mutation(&ws, store, &canonical_id)
                             .await
-                    {
-                        tracing::warn!(
-                            "post-mutation render for superseded {} failed: {e}",
-                            canonical_id
-                        );
-                    }
-                    if let Err(e) = forgeplan_core::projection::render_after_mutation(
-                        &ws,
-                        store,
-                        &replacement_id,
-                    )
-                    .await
-                    {
-                        tracing::warn!(
-                            "post-mutation render for replacement {} failed: {e}",
-                            replacement_id
-                        );
-                    }
+                {
+                    tracing::warn!(
+                        "post-mutation render for superseded {} failed: {e}",
+                        canonical_id
+                    );
                 }
                 // PRD-056: supersede is terminal — advance phase to Done.
                 maybe_advance_phase(
@@ -5651,28 +5639,32 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<AnomaliesParams>,
     ) -> Result<CallToolResult, McpError> {
-        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no
-        // `-32602` gate). The journal-write lock below keys on the resolved
-        // `ws`, so per-workspace isolation is preserved.
-        //
-        // One source choice, before anything is opened: a Constellation-owned
-        // workspace is read from a fresh capture of the canonical Markdown, so
-        // an artifact written since the previous call is visible here.
-        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
+        // Keep the read-side resolution policy, but serialize the whole
+        // owner-selection/capture/scan/persist sequence with canonical writers.
+        // Capturing before this lock would let a waiting scan overwrite the
+        // journal with observations from a workspace that no longer exists.
+        let (ws, _via) = match self
+            .resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::SoftFallback)
+            .await
+        {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
-
-        // Audit-r3 M3 note, updated: the anomalies scan is now a PURE read.
-        // It loads `.forgeplan/anomalies-journal.jsonl` for observed_at
-        // continuity and writes nothing back — persistence belongs to the
-        // writer (`persist_anomaly_journal`), which MCP deliberately does not
-        // call. So the workspace lock below no longer guards a last-writer-wins
-        // save; it keeps this read from interleaving with a concurrent writer
-        // on the same journal file, and it is the only lock this handler takes.
         let _lock_guard = match forgeplan_core::workspace::acquire_workspace_lock(&ws).await {
             Ok(g) => g,
             Err(e) => return Ok(safe_err_result("workspace lock", e)),
+        };
+        let legacy_store = if forgeplan_core::constellation::facade::workspace_is_migrated(&ws) {
+            None
+        } else {
+            match self.get_or_open_store(&ws).await {
+                Ok(store) => Some(store),
+                Err(e) => return Ok(safe_err_result("", e)),
+            }
+        };
+        let read = match self.read_source_for(&ws, legacy_store).await {
+            Ok(read) => read,
+            Err(e) => return Ok(safe_err_result("", e)),
         };
 
         // Parse + validate filter inputs. Bad shapes fail loud so callers
@@ -5730,21 +5722,36 @@ impl ForgeplanServer {
             since: since_filter,
             kind: kind_filter,
         };
-        let report = match &read {
+        let scan = match &read {
             ReadSource::Workspace(view) => {
-                match forgeplan_core::anomalies::detect_anomalies_captured(view, &ws, &filter).await
+                match forgeplan_core::anomalies::detect_anomalies_captured_with_journal(
+                    view, &ws, &filter,
+                )
+                .await
                 {
                     Ok(r) => r,
                     Err(e) => return Ok(safe_err_result("detect_anomalies", e)),
                 }
             }
             ReadSource::Legacy(store) => {
-                match forgeplan_core::anomalies::detect_anomalies(store, &ws, &filter).await {
+                match forgeplan_core::anomalies::detect_anomalies_with_journal(store, &ws, &filter)
+                    .await
+                {
                     Ok(r) => r,
                     Err(e) => return Ok(safe_err_result("detect_anomalies", e)),
                 }
             }
         };
+        if let Err(e) = forgeplan_core::anomalies::persist_anomaly_journal(&ws, &scan.journal).await
+        {
+            // Preserve the existing best-effort journal contract: the scan is
+            // still valid, but the next `since` poll may see fresh timestamps.
+            tracing::warn!(
+                error = %e,
+                "anomaly journal write failed; since will lose observation history"
+            );
+        }
+        let report = scan.report;
 
         // Audit-r3 HIGH-1 / F3: shared next-action helper so MCP and CLI
         // emit identical hint strings (PRD-071 parity).
@@ -6076,11 +6083,9 @@ impl ForgeplanServer {
         };
 
         let report = match &read {
-            ReadSource::Workspace(view) => {
-                forgeplan_core::health::health_report_captured(view)
-                    .await
-                    .map_err(|e| safe_mcp_error_anyhow(&e))?
-            }
+            ReadSource::Workspace(view) => forgeplan_core::health::health_report_captured(view)
+                .await
+                .map_err(|e| safe_mcp_error_anyhow(&e))?,
             ReadSource::Legacy(store) => forgeplan_core::health::health_report(store)
                 .await
                 .map_err(|e| safe_mcp_error_anyhow(&e))?,
@@ -7191,31 +7196,9 @@ impl ForgeplanServer {
             .with_env_overrides()
             .with_workspace_dir(ws.clone());
 
-        // Build artifact context for enriched ADI prompt
-        let raw_relations = read.get_relations(&record.id).await.unwrap_or_default();
-        let relations: Vec<(String, String, String)> = raw_relations
-            .into_iter()
-            .map(|(id, rel)| (id, rel, String::new())) // MCP: no title lookup needed
-            .collect();
-        let artifact_context = forgeplan_core::llm::reason::ArtifactContext {
-            status: record.status.clone(),
-            depth: record.depth.clone(),
-            r_eff_score: record.r_eff_score,
-            relations,
-            architecture_hint: None, // MCP callers are AI agents — they already know the architecture
-            // The bounded-context catalogue lives in the FPF knowledge base,
-            // which is a legacy projection table. On a migrated workspace there
-            // is none to read, and the prompt runs without it rather than
-            // opening a retired database.
-            bounded_context: match resolved.legacy_store.as_deref() {
-                Some(store) => {
-                    forgeplan_core::fpf::contexts::detect_for_artifact(store, &record.id)
-                        .await
-                        .unwrap_or(None)
-                }
-                None => None,
-            },
-        };
+        let artifact_context = build_reason_artifact_context(&read, &record)
+            .await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let (analysis, _adi_output) = match forgeplan_core::llm::reason::reason(
             &llm_config,
@@ -7512,6 +7495,7 @@ impl ForgeplanServer {
                     "valid_until": r.valid_until,
                     "created_at": r.created_at,
                     "updated_at": r.updated_at,
+                    "tags": r.tags,
                 })
             })
             .collect();
@@ -7636,7 +7620,10 @@ impl ForgeplanServer {
                 continue;
             }
 
-            let existing = read.get_record(id).await.unwrap_or(None);
+            let existing = read
+                .get_record(id)
+                .await
+                .map_err(|e| safe_mcp_error_anyhow(&e))?;
             if existing.is_some() && !force {
                 skipped += 1;
                 continue;
@@ -7646,11 +7633,12 @@ impl ForgeplanServer {
                 // PRD-073 audit H3: helper removes file + relations + DB row
                 // in lockstep so re-import via force=true doesn't strand
                 // the OLD markdown file.
-                let _ = projection::delete_artifact_with_projection(
+                projection::delete_artifact_with_projection(
                     &projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref()),
                     id,
                 )
-                .await;
+                .await
+                .map_err(|e| safe_mcp_error_anyhow(&anyhow::Error::new(e)))?;
             }
 
             let new_art = NewArtifact {
@@ -7663,14 +7651,21 @@ impl ForgeplanServer {
                 author: art["author"].as_str().map(String::from),
                 parent_epic: art["parent_epic"].as_str().map(String::from),
                 valid_until: art["valid_until"].as_str().map(String::from),
-                tags: Vec::new(),
+                tags: art["tags"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             };
 
             // PRD-073 audit H3: file-first helper writes the markdown
             // projection alongside the LanceDB row; previous direct
             // `store.create_artifact` left every imported artifact in
             // DB-only state (live-confirmed in audit testing).
-            if let Err(e) = projection::create_artifact_with_projection(
+            if let Err(e) = projection::import_artifact_with_projection(
                 &projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref()),
                 &new_art,
             )
@@ -7681,8 +7676,8 @@ impl ForgeplanServer {
             imported += 1;
         }
 
-        // PRD-073 H6 (audit follow-up): batch helper deduplicates pre-sync
-        // + post-render per unique participant.
+        // Preserve complete imported files and count already-declared bundle
+        // edges as restored without rendering a legacy cache over their bytes.
         let link_triples: Vec<(String, String, String)> = data["relations"]
             .as_array()
             .map(|relations| {
@@ -7700,7 +7695,7 @@ impl ForgeplanServer {
                     .collect()
             })
             .unwrap_or_default();
-        let relations_imported = match projection::add_links_batch_with_projection(
+        let relations_imported = match projection::import_links_with_projection(
             &projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref()),
             &link_triples,
         )
@@ -10343,7 +10338,10 @@ impl ForgeplanServer {
         &self,
         Parameters(_p): Parameters<EmptyParams>,
     ) -> Result<CallToolResult, McpError> {
-        let entries = phase5_discover_playbooks();
+        let scope = phase5_scope_for(self, None, DetectionPolicy::SoftFallback)
+            .await
+            .unwrap_or_default();
+        let entries = phase5_discover_playbooks(&scope);
         let arr: Vec<serde_json::Value> = entries
             .iter()
             .map(|e| {
@@ -10390,17 +10388,17 @@ impl ForgeplanServer {
         Parameters(p): Parameters<PlaybookShowParams>,
     ) -> Result<CallToolResult, McpError> {
         use forgeplan_core::playbook::loader::load_playbook;
+        let scope = phase5_scope_for(self, None, DetectionPolicy::SoftFallback)
+            .await
+            .unwrap_or_default();
 
         // HIGH-S1: canonicalize + confine path; emit only a generic error
         // (no full path echoed back).
-        let resolved = match phase5_resolve_target(&p.target) {
+        let resolved = match phase5_resolve_target(&p.target, &scope) {
             Ok(path) => path,
             Err(_msg) => {
                 return Ok(err_hinted(
-                    &format!(
-                        "playbook target `{}` not resolvable",
-                        sanitize_for_hint(&p.target)
-                    ),
+                    "playbook target not resolvable",
                     "List discoverable playbooks: `forgeplan_playbook_list`.",
                 ));
             }
@@ -10442,7 +10440,7 @@ impl ForgeplanServer {
         hinted_result(
             &serde_json::json!({
                 "playbook": pb,
-                "source_path": phase5_redact_path(&resolved),
+                "source_path": phase5_redact_path(&resolved, &scope),
             }),
             next_action,
         )
@@ -10465,9 +10463,12 @@ impl ForgeplanServer {
         Parameters(p): Parameters<PlaybookValidateParams>,
     ) -> Result<CallToolResult, McpError> {
         use forgeplan_core::playbook::loader::load_playbook;
+        let scope = phase5_scope_for(self, None, DetectionPolicy::SoftFallback)
+            .await
+            .unwrap_or_default();
 
         // HIGH-S1: confine `file` to allowed roots + canonicalize.
-        let resolved = match phase5_validate_path(&p.file) {
+        let resolved = match phase5_validate_path(&p.file, &scope) {
             Ok(c) => c,
             Err(_) => {
                 return Ok(err_hinted(
@@ -10491,7 +10492,7 @@ impl ForgeplanServer {
                 }
             };
 
-        let redacted_path = phase5_redact_path(&resolved);
+        let redacted_path = phase5_redact_path(&resolved, &scope);
 
         match load_playbook(&yaml) {
             Ok(pb) => {
@@ -10558,23 +10559,29 @@ impl ForgeplanServer {
         // This security check fires BEFORE workspace resolution so tests that
         // test the security gate don't need a fully-initialised LanceStore.
         if !p.yes && !p.dry_run {
-            let safe = sanitize_for_hint(&p.target);
+            let safe = if p.target.contains('/')
+                || p.target.contains('\\')
+                || p.target.ends_with(".yaml")
+                || p.target.ends_with(".yml")
+            {
+                "<path>".to_string()
+            } else {
+                sanitize_for_hint(&p.target)
+            };
             return Ok(err_hinted(
                 "playbook run requires `yes: true` confirmation (ADR-009 security gate)",
                 format!("forgeplan_playbook_run target=\"{safe}\" yes=true"),
             ));
         }
+        let scope = phase5_scope_for(self, p.workspace.as_deref(), DetectionPolicy::Strict).await?;
 
         // HIGH-S1: canonicalize + confine path; emit only a generic error
         // (no full path echoed back).
-        let resolved = match phase5_resolve_target(&p.target) {
+        let resolved = match phase5_resolve_target(&p.target, &scope) {
             Ok(path) => path,
             Err(_msg) => {
                 return Ok(err_hinted(
-                    &format!(
-                        "playbook target `{}` not resolvable",
-                        sanitize_for_hint(&p.target)
-                    ),
+                    "playbook target not resolvable",
                     "List discoverable playbooks: `forgeplan_playbook_list`.",
                 ));
             }
@@ -10649,7 +10656,7 @@ impl ForgeplanServer {
             // PRD-078 Phase 3 (W3 FR-007): inject trace even in dry-run path.
             let mut base = serde_json::json!({
                 "playbook": pb.name,
-                "source_path": phase5_redact_path(&resolved),
+                "source_path": phase5_redact_path(&resolved, &scope),
                 "dry_run": true,
                 "steps": steps,
             });
@@ -10747,7 +10754,7 @@ impl ForgeplanServer {
         // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
         let mut base = serde_json::json!({
             "playbook": pb.name,
-            "source_path": phase5_redact_path(&resolved),
+            "source_path": phase5_redact_path(&resolved, &scope),
             "report": report,
         });
         if let Some(obj) = base.as_object_mut() {
@@ -10782,9 +10789,12 @@ impl ForgeplanServer {
         // pointing the agent at the CLI, which has the full pipeline
         // available (it links serde_yaml directly).
 
+        let scope = phase5_scope_for(self, None, DetectionPolicy::SoftFallback)
+            .await
+            .unwrap_or_default();
         // HIGH-S1: confine both paths to allowed roots; emit only generic
         // errors (no full path echo to the client).
-        let mapping_canon = match phase5_validate_path(&p.mapping) {
+        let mapping_canon = match phase5_validate_path(&p.mapping, &scope) {
             Ok(c) => c,
             Err(_) => {
                 return Ok(err_hinted(
@@ -10794,7 +10804,7 @@ impl ForgeplanServer {
                 ));
             }
         };
-        let source_canon = match phase5_validate_path(&p.source) {
+        let source_canon = match phase5_validate_path(&p.source, &scope) {
             Ok(c) => c,
             Err(_) => {
                 return Ok(err_hinted(
@@ -10835,8 +10845,8 @@ impl ForgeplanServer {
         //
         // HIGH-S6: hint uses redacted paths so the MCP client never sees
         // the host's absolute filesystem layout.
-        let mapping_redacted = phase5_redact_path(&mapping_canon);
-        let source_redacted = phase5_redact_path(&source_canon);
+        let mapping_redacted = phase5_redact_path(&mapping_canon, &scope);
+        let source_redacted = phase5_redact_path(&source_canon, &scope);
         let next_action = format!(
             "forgeplan ingest --mapping {} --source {}{}{}",
             shell_quote(&mapping_redacted),
@@ -11891,17 +11901,9 @@ async fn phase5_read_yaml_bounded(
 /// HIGH-S6 (Audit Round 1): the MCP server should not leak absolute on-disk
 /// paths to the client (which may be a hostile agent). We strip the
 /// workspace prefix when possible and otherwise return only the file name.
-fn phase5_redact_path(path: &std::path::Path) -> String {
-    if let Ok(cwd) = std::env::current_dir()
-        && let Ok(stripped) = path.strip_prefix(&cwd)
-    {
-        return stripped.display().to_string();
-    }
-    if let Some(ws) = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| forgeplan_core::workspace::find_workspace(&cwd))
-        && let Some(parent) = ws.parent()
-        && let Ok(stripped) = path.strip_prefix(parent)
+fn phase5_redact_path(path: &std::path::Path, scope: &Phase5Scope) -> String {
+    if let Some(root) = scope.workspace_root()
+        && let Ok(stripped) = path.strip_prefix(root)
     {
         return stripped.display().to_string();
     }
@@ -11969,25 +11971,65 @@ fn phase5_redact_loader_error(
     }
 }
 
+/// The directories a Phase 5 call may read from.
+///
+/// Phase 5 tools (playbooks, ingest mappings) read files straight from
+/// disk. The scope follows the **effective request workspace** — the
+/// workspace the resolver chain selects for this call — and not the
+/// process working directory: a call that addresses workspace Y must
+/// read Y's playbooks, and must not reach into whatever directory the
+/// server happens to have been started in.
+///
+/// The scope is derived without opening a Lance store: scoping a path
+/// must never create tables (or `change_log` rows) in the workspace it
+/// scopes.
+#[derive(Clone, Debug, Default)]
+struct Phase5Scope {
+    /// The effective workspace's `.forgeplan/` directory.
+    workspace_dir: Option<PathBuf>,
+}
+
+impl Phase5Scope {
+    /// Scope covering one resolved workspace directory.
+    fn from_workspace_dir(workspace_dir: PathBuf) -> Self {
+        Self {
+            workspace_dir: Some(workspace_dir),
+        }
+    }
+
+    fn workspace_root(&self) -> Option<&Path> {
+        self.workspace_dir.as_deref()?.parent()
+    }
+}
+
+async fn phase5_scope_for(
+    server: &ForgeplanServer,
+    param_workspace: Option<&str>,
+    policy: DetectionPolicy,
+) -> Result<Phase5Scope, McpError> {
+    let (workspace_dir, _) = server
+        .resolve_workspace_dir(param_workspace, policy)
+        .await?;
+    Ok(Phase5Scope::from_workspace_dir(workspace_dir))
+}
+
 /// Roots a Phase 5 file path is permitted to live under (HIGH-S1).
 ///
 /// We accept files under either:
-///   1. The current working directory (typical workspace) — but only after
-///      crossing through a `find_workspace` check so it actually corresponds
-///      to a `.forgeplan/` workspace, **OR**
+///   1. The effective request workspace's root (the directory that owns
+///      `.forgeplan/`) — so a call routed to workspace Y is confined to
+///      Y and cannot read a sibling workspace, **OR**
 ///   2. The `~/.claude/plugins/*/playbooks/` directory tree where Claude
 ///      plugin packs install playbook bundles.
 ///
 /// Each path is canonicalized before the check — we explicitly want to
 /// reject `../../etc/passwd` even when the symlink target is benign.
-fn phase5_allowed_roots() -> Vec<PathBuf> {
+fn phase5_allowed_roots(scope: &Phase5Scope) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
 
     // 1. Workspace root (parent of `.forgeplan/`).
-    if let Ok(cwd) = std::env::current_dir()
-        && let Some(ws) = forgeplan_core::workspace::find_workspace(&cwd)
-        && let Some(parent) = ws.parent()
-        && let Ok(canon) = parent.canonicalize()
+    if let Some(root) = scope.workspace_root()
+        && let Ok(canon) = root.canonicalize()
     {
         roots.push(canon);
     }
@@ -12007,12 +12049,28 @@ fn phase5_allowed_roots() -> Vec<PathBuf> {
 /// [`phase5_allowed_roots`] (HIGH-S1). Returns the canonicalized path on
 /// success and a generic error message (no leaked path components) on
 /// failure.
-fn phase5_validate_path(path: &std::path::Path) -> Result<PathBuf, &'static str> {
-    let canon = path.canonicalize().map_err(|_| "path does not exist")?;
+///
+/// A relative path is resolved against the effective workspace root, so
+/// "`.forgeplan/playbooks/x.yaml`" always means the addressed
+/// workspace — never the server's start-up directory.
+fn phase5_validate_path(
+    path: &std::path::Path,
+    scope: &Phase5Scope,
+) -> Result<PathBuf, &'static str> {
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(root) = scope.workspace_root() {
+        root.join(path)
+    } else {
+        return Err("workspace root not resolved");
+    };
+    let canon = candidate
+        .canonicalize()
+        .map_err(|_| "path does not exist")?;
     if !canon.is_file() {
         return Err("path is not a regular file");
     }
-    let roots = phase5_allowed_roots();
+    let roots = phase5_allowed_roots(scope);
     if roots.is_empty() {
         // Be conservative: with no recognized roots we refuse rather than
         // fall through to "anything goes".
@@ -12036,25 +12094,33 @@ struct Phase5DiscoveredPlaybook {
 /// (kept here so the MCP crate doesn't depend on forgeplan-cli internals).
 /// Failed-to-parse files are silently skipped; invariant: returns a list,
 /// never errors.
-fn phase5_discover_playbooks() -> Vec<Phase5DiscoveredPlaybook> {
+fn phase5_discover_playbooks(scope: &Phase5Scope) -> Vec<Phase5DiscoveredPlaybook> {
     use forgeplan_core::playbook::loader::load_playbook;
     let mut out: Vec<Phase5DiscoveredPlaybook> = Vec::new();
     let mut seen_names: HashSet<String> = HashSet::new();
 
-    for path in phase5_playbook_search_paths() {
+    for path in phase5_playbook_search_paths(scope) {
         let yamls = match phase5_collect_yaml_files(&path) {
             Ok(v) => v,
             Err(_) => continue,
         };
         for file in yamls {
+            // Confine each candidate before inspecting its contents or
+            // letting its name participate in discovery deduplication.
+            // In particular, an escaping symlink must not shadow an
+            // allowed workspace playbook with the same declared name.
+            let source = match phase5_validate_path(&file, scope) {
+                Ok(canonical) => canonical,
+                Err(_) => continue,
+            };
             // HIGH-S2: enforce size limit at discovery time so a single
             // oversized YAML cannot blow up `playbook list`.
-            if let Ok(meta) = std::fs::metadata(&file)
+            if let Ok(meta) = std::fs::metadata(&source)
                 && meta.len() > PHASE5_MAX_PLAYBOOK_SIZE
             {
                 continue;
             }
-            if let Ok(yaml) = std::fs::read_to_string(&file) {
+            if let Ok(yaml) = std::fs::read_to_string(&source) {
                 let depth = yaml.bytes().filter(|b| *b == b'{' || *b == b'[').count();
                 if depth > PHASE5_MAX_NESTING {
                     continue;
@@ -12064,7 +12130,7 @@ fn phase5_discover_playbooks() -> Vec<Phase5DiscoveredPlaybook> {
                 {
                     out.push(Phase5DiscoveredPlaybook {
                         playbook: pb,
-                        source: file,
+                        source,
                     });
                 }
             }
@@ -12083,12 +12149,10 @@ fn phase5_discover_playbooks() -> Vec<Phase5DiscoveredPlaybook> {
 /// the project root), so we join `playbooks` directly. Earlier versions
 /// of this helper double-joined `.forgeplan` and produced a path that
 /// never existed on disk — discovery silently returned an empty list.
-fn phase5_playbook_search_paths() -> Vec<PathBuf> {
+fn phase5_playbook_search_paths(scope: &Phase5Scope) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
 
-    if let Ok(cwd) = std::env::current_dir()
-        && let Some(ws) = forgeplan_core::workspace::find_workspace(&cwd)
-    {
+    if let Some(ws) = scope.workspace_dir.as_ref() {
         paths.push(ws.join("playbooks"));
     }
 
@@ -12138,7 +12202,7 @@ fn phase5_collect_yaml_files(dir: &std::path::Path) -> std::io::Result<Vec<PathB
 /// [`phase5_validate_path`] for defense-in-depth: even if a hostile
 /// playbook-discovery root were ever introduced, the same gate will refuse
 /// resolutions that escape the allowed roots.
-fn phase5_resolve_target(target: &str) -> Result<PathBuf, String> {
+fn phase5_resolve_target(target: &str, scope: &Phase5Scope) -> Result<PathBuf, String> {
     let as_path = std::path::Path::new(target);
     let looks_like_path = target.contains('/')
         || target.contains('\\')
@@ -12146,15 +12210,15 @@ fn phase5_resolve_target(target: &str) -> Result<PathBuf, String> {
         || target.ends_with(".yml");
 
     if looks_like_path {
-        return phase5_validate_path(as_path).map_err(|reason| reason.to_string());
+        return phase5_validate_path(as_path, scope).map_err(|reason| reason.to_string());
     }
 
     // Bare-name lookup: rely on discovery to surface only files we already
     // walked, then re-validate the canonical path to remain consistent
     // with the path-mode branch.
-    for entry in phase5_discover_playbooks() {
+    for entry in phase5_discover_playbooks(scope) {
         if entry.playbook.name == target {
-            return phase5_validate_path(&entry.source).map_err(|reason| reason.to_string());
+            return phase5_validate_path(&entry.source, scope).map_err(|reason| reason.to_string());
         }
     }
 
@@ -12273,13 +12337,31 @@ impl rmcp::ServerHandler for ForgeplanServer {
             Ok(_) => forgeplan_core::activity::status::OK,
             Err(_) => forgeplan_core::activity::status::RPC_ERR,
         };
-
-        // Snapshot workspace path if available. Skip logging when
-        // workspace not initialized (first-run `forgeplan_init`).
-        // ADR-016 Phase 2: reads `default_workspace` (the collapsed single
-        // source of truth) instead of the removed `workspace_path`.
-        if let Some(ws) = self.default_workspace.read().await.as_ref() {
-            let ws = ws.clone();
+        // `forgeplan_init` always acts on the server's configured root; it
+        // does not accept a `workspace` argument. Resolve that actual target
+        // after dispatch, including the directory it just created.
+        let workspace_for_log = if tool_name == "forgeplan_init" {
+            workspace::find_workspace(&self.workspace_root).map(Self::canonical_ws_dir)
+        } else {
+            // Honor `workspace` only when this tool's public input schema
+            // declares it. Unknown JSON fields are otherwise ignored by the
+            // handler DTO and must not redirect its observer record.
+            let request_workspace = self
+                .tool_router
+                .get(&tool_name)
+                .and_then(|tool| tool.input_schema.get("properties"))
+                .and_then(serde_json::Value::as_object)
+                .filter(|properties| properties.contains_key("workspace"))
+                .and_then(|_| args_val.get("workspace"))
+                .and_then(serde_json::Value::as_str);
+            self.resolve_workspace_dir(request_workspace, DetectionPolicy::SoftFallback)
+                .await
+                .ok()
+                .map(|(ws, _)| ws)
+        };
+        // Observer resolution remains best-effort; a path-resolution failure
+        // never changes the dispatched tool result.
+        if let Some(ws) = workspace_for_log {
             // PRD-057 FR-009: pass the captured name/version into the
             // activity log so retrospective audits can reconstruct *which*
             // agent did what. Previously this was always `None`.
@@ -15126,11 +15208,20 @@ steps:
     #[tokio::test]
     async fn phase5_resolve_target_rejects_etc_passwd() {
         let _g = test_lock().await;
-        let (_server, _tmp, snap) = isolated_server().await;
+        let (server, _tmp, snap) = isolated_server().await;
+        let workspace_dir = server
+            .default_workspace
+            .read()
+            .await
+            .clone()
+            .expect("isolated server workspace");
+        let scope = Phase5Scope::from_workspace_dir(
+            workspace_dir.canonicalize().expect("workspace exists"),
+        );
         // Even if /etc/passwd exists on the host, our allow-list of roots
         // (workspace + ~/.claude/plugins) excludes it, so the resolver must
         // refuse without leaking content.
-        let err = phase5_resolve_target("/etc/passwd").expect_err("must refuse");
+        let err = phase5_resolve_target("/etc/passwd", &scope).expect_err("must refuse");
         // Error string must NOT contain `/etc/passwd` — generic message only.
         assert!(
             !err.contains("/etc/passwd"),
@@ -15138,14 +15229,22 @@ steps:
         );
         restore_env(snap);
     }
-
     #[tokio::test]
     async fn phase5_resolve_target_rejects_traversal_attempt() {
         let _g = test_lock().await;
-        let (_server, _tmp, snap) = isolated_server().await;
+        let (server, _tmp, snap) = isolated_server().await;
+        let workspace_dir = server
+            .default_workspace
+            .read()
+            .await
+            .clone()
+            .expect("isolated server workspace");
+        let scope = Phase5Scope::from_workspace_dir(
+            workspace_dir.canonicalize().expect("workspace exists"),
+        );
         // `..` traversal — even when the underlying path exists, the
         // canonical form should land outside the allowed roots.
-        let err = phase5_resolve_target("../../../etc/passwd").expect_err("must refuse");
+        let err = phase5_resolve_target("../../../etc/passwd", &scope).expect_err("must refuse");
         assert!(
             !err.contains("/etc/passwd"),
             "error must not echo traversal target, got: {err}"
@@ -15156,7 +15255,16 @@ steps:
     #[tokio::test]
     async fn phase5_resolve_target_accepts_workspace_path() {
         let _g = test_lock().await;
-        let (_server, tmp, snap) = isolated_server().await;
+        let (server, tmp, snap) = isolated_server().await;
+        let workspace_dir = server
+            .default_workspace
+            .read()
+            .await
+            .clone()
+            .expect("isolated server workspace");
+        let scope = Phase5Scope::from_workspace_dir(
+            workspace_dir.canonicalize().expect("workspace exists"),
+        );
         // Write a real playbook inside the workspace. The fixture already
         // created `.forgeplan/playbooks/` so we can reuse it directly.
         let yaml = r#"
@@ -15174,8 +15282,8 @@ steps:
             .join("ws.yaml");
         tokio::fs::write(&pb_path, yaml).await.unwrap();
         // Path-mode resolve should canonicalize and pass the allow-list.
-        let resolved =
-            phase5_resolve_target(pb_path.to_str().unwrap()).expect("workspace path must resolve");
+        let resolved = phase5_resolve_target(pb_path.to_str().unwrap(), &scope)
+            .expect("workspace path must resolve");
         assert!(resolved.ends_with("ws.yaml"));
         restore_env(snap);
     }
@@ -16292,5 +16400,168 @@ mod resolve_workspace_tests {
             "an explicit workspace must land in Z, got {:?}",
             explicit.workspace_dir
         );
+    }
+}
+
+#[cfg(test)]
+mod public_compat_context_tests {
+    use super::*;
+    use forgeplan_core::constellation::capture::CaptureLimits;
+    use forgeplan_core::constellation::facade::{MaintainCapability, maintain_index};
+    use forgeplan_core::db::auxiliary::AuxiliaryStore;
+    use forgeplan_core::db::store::FpfChunk;
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    async fn context_workspace(migrated: bool) -> (TempDir, PathBuf, ReadSource) {
+        let tmp = TempDir::new().expect("temporary workspace");
+        let ws = workspace::init_workspace(tmp.path(), "mcp-context").expect("init workspace");
+        let legacy = if migrated {
+            None
+        } else {
+            Some(Arc::new(
+                LanceStore::init(&ws).await.expect("legacy tables"),
+            ))
+        };
+        for (id, target) in [
+            ("NOTE-001", Some("NOTE-002")),
+            ("NOTE-002", Some("NOTE-003")),
+            ("NOTE-003", None),
+            ("NOTE-004", None),
+        ] {
+            let links = target
+                .map(|target| format!("links:\n  - target: {target}\n    relation: based_on\n"))
+                .unwrap_or_default();
+            let body = format!(
+                "---\nid: {id}\nkind: note\nstatus: draft\ntitle: {id}\ndepth: standard\n\
+                 {links}---\n\n## Summary\n\nA recorded decision about session rotation.\n"
+            );
+            std::fs::write(ws.join("notes").join(format!("{id}.md")), &body)
+                .expect("write canonical note");
+            if let Some(store) = &legacy {
+                store
+                    .create_artifact_for_test(&NewArtifact {
+                        id: id.into(),
+                        kind: "note".into(),
+                        status: "draft".into(),
+                        title: id.into(),
+                        body,
+                        depth: "standard".into(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags: Vec::new(),
+                    })
+                    .await
+                    .expect("seed legacy note");
+                if let Some(target) = target {
+                    store
+                        .add_relation_for_test(id, target, "based_on")
+                        .await
+                        .expect("seed canonical edge");
+                }
+            }
+        }
+        if migrated {
+            let capability = MaintainCapability::for_strict_maintenance(
+                ws.canonicalize().expect("canonical workspace"),
+            );
+            maintain_index(
+                &capability,
+                CaptureLimits::default(),
+                Instant::now() + Duration::from_secs(120),
+            )
+            .await
+            .expect("publish managed workspace");
+        }
+        let server = ForgeplanServer::new(tmp.path().to_path_buf()).await;
+        let (_, _, read) = server
+            .resolve_read_source(Some(ws.to_str().expect("workspace path")))
+            .await
+            .expect("resolve real source");
+        (tmp, ws, read)
+    }
+
+    #[tokio::test]
+    async fn reasoning_context_uses_the_real_cluster_on_both_layouts() {
+        for migrated in [false, true] {
+            let (_tmp, ws, read) = context_workspace(migrated).await;
+            let record = read
+                .get_record("NOTE-001")
+                .await
+                .expect("record read")
+                .expect("record exists");
+            let context = build_reason_artifact_context(&read, &record)
+                .await
+                .expect("reasoning metadata");
+            assert_eq!(
+                context.bounded_context,
+                Some(("Context-1 (Mixed)".into(), 3, 1.0)),
+                "the unrelated fourth note must not enlarge this cluster"
+            );
+            assert_eq!(
+                context.relations,
+                vec![("NOTE-002".into(), "based_on".into(), String::new())]
+            );
+            let metadata = forgeplan_core::llm::reason::build_metadata_section(&context);
+            assert!(metadata.contains("**Members**: 3 artifacts"), "{metadata}");
+            assert!(metadata.contains("**Cohesion**: 100%"), "{metadata}");
+            if migrated {
+                for table in ["artifacts", "relations", "evidence", "change_log"] {
+                    assert!(!ws.join("lance").join(format!("{table}.lance")).exists());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn routing_context_reads_real_auxiliary_patterns_on_both_layouts() {
+        for migrated in [false, true] {
+            let (_tmp, ws, _read) = context_workspace(migrated).await;
+            let auxiliary = AuxiliaryStore::open_or_create(&ws)
+                .await
+                .expect("open the auxiliary knowledge base");
+            auxiliary
+                .insert_fpf_chunks(
+                    &[FpfChunk {
+                        id: "rotation-pattern".into(),
+                        section_id: "B.3".into(),
+                        parent_section: Some("B".into()),
+                        title: "Rotation invariants".into(),
+                        body: "Rotation must preserve the previous credential until confirmation."
+                            .into(),
+                        line_count: 1,
+                        file_path: "B.3.md".into(),
+                        created_at: "2026-10-24T00:00:00".into(),
+                    }],
+                    None,
+                )
+                .await
+                .expect("ingest the real pattern");
+            let context = build_route_fpf_context(&ws, "Rotation invariants")
+                .await
+                .expect("build route context")
+                .expect("matching ingested context");
+            assert!(
+                context.contains("### B.3 — Rotation invariants"),
+                "{context}"
+            );
+            assert!(
+                context
+                    .contains("Rotation must preserve the previous credential until confirmation."),
+                "{context}"
+            );
+            assert!(
+                build_route_fpf_context(&ws, "UnrelatedVocabulary")
+                    .await
+                    .expect("unmatched pattern query")
+                    .is_none()
+            );
+            if migrated {
+                for table in ["artifacts", "relations", "evidence", "change_log"] {
+                    assert!(!ws.join("lance").join(format!("{table}.lance")).exists());
+                }
+            }
+        }
     }
 }

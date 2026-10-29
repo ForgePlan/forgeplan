@@ -21,7 +21,7 @@ use super::capture::{CapturedSourceView, Coverage};
 use super::FORMAT_VERSION;
 use super::SourceDiagnostic;
 use super::jobs::SemanticState;
-use super::manifest::{CurrentDescriptor, GenerationManifest, TableVersions};
+use super::manifest::{CurrentDescriptor, GenerationManifest};
 use crate::constellation::ConstellationError;
 use crate::constellation::storage::PinnedGeneration;
 
@@ -71,27 +71,8 @@ pub enum ReadView {
     /// The published generation, opened and checked out at its exact
     /// versions.
     Persisted {
-        generation_id: String,
-        table_versions: TableVersions,
-        /// Shared immutable manifest — not re-read per question.
-        manifest: Arc<GenerationManifest>,
-        /// The `CURRENT.json` descriptor this generation was selected by.
-        ///
-        /// Kept for the checksum binding and the claimed embedding space. It
-        /// carries **no table versions**: those live only in the manifest, and
-        /// a descriptor that could name a head the manifest never pinned is
-        /// how a reader ended up serving a row set `CURRENT` never claimed.
-        descriptor: CurrentDescriptor,
-        /// The shared lock on that generation's manifest file, held for as
-        /// long as this view lives.
-        ///
-        /// This is what makes "the reader holds one generation until the end
-        /// of the answer" true rather than aspirational. A view that carried
-        /// only the manifest could be answered after GC removed the generation
-        /// its tables were pinned to. Dropping the view releases the lock,
-        /// because the lock lives on a descriptor the kernel drops with the
-        /// last open handle — there is no lease to expire and no cleanup that
-        /// can fail.
+        /// Owns the verified descriptor, manifest and shared generation lock.
+        /// Metadata is borrowed from this one pin, never copied into the view.
         pin: Arc<PinnedGeneration>,
     },
     /// A confirmed capture, used when there is no pointer or the source moved.
@@ -129,16 +110,46 @@ impl ReadView {
     /// # Errors
     ///
     /// [`crate::constellation::ConstellationError::IndexGenerationUnavailable`]
-    /// when the three disagree about `generation_id`, `index_epoch`,
-    /// `checkout_id`, the manifest's own path or checksum, or when `manifest`
-    /// is not the document the pin verified. Never a silent repair: a reader
-    /// that cannot prove which generation it holds returns nothing rather than
-    /// guessing.
+    /// when the descriptor, manifest and pin disagree about their identity,
+    /// source/configuration digests, path or checksum, or published coverage is
+    /// incomplete. Unsupported formats and invalid section membership retain
+    /// their protocol errors. Never a silent repair or a guessed generation.
     pub fn from_manifest(
         manifest: Arc<GenerationManifest>,
         descriptor: CurrentDescriptor,
         pin: Arc<PinnedGeneration>,
     ) -> Result<Self, ConstellationError> {
+        manifest.validate_for_publication().map_err(|error| {
+            if matches!(error, ConstellationError::SourceBusy { .. }) {
+                ConstellationError::IndexGenerationUnavailable {
+                    detail: format!(
+                        "published generation {} has incomplete source coverage",
+                        manifest.generation_id
+                    ),
+                }
+            } else {
+                error
+            }
+        })?;
+        manifest.validate_section_membership()?;
+        if descriptor.format_version != FORMAT_VERSION {
+            return Err(ConstellationError::IndexProtocolMismatch {
+                detail: format!(
+                    "CURRENT declares format_version {}, this build speaks {FORMAT_VERSION}",
+                    descriptor.format_version
+                ),
+            });
+        }
+        if manifest.source_set_digest != descriptor.source_set_digest
+            || manifest.config_digest != descriptor.config_digest
+        {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!(
+                    "manifest {} disagrees with CURRENT about the source set or configuration",
+                    descriptor.manifest_path
+                ),
+            });
+        }
         if manifest.generation_id != descriptor.generation_id {
             return Err(ConstellationError::IndexGenerationUnavailable {
                 detail: format!(
@@ -165,19 +176,13 @@ impl ReadView {
         // The pin is what makes the answer safe; a view that reports a
         // generation it did not actually lock is a view GC is free to delete
         // out from under.
-        if pin.generation_id() != descriptor.generation_id
-            || pin.descriptor().manifest_path != descriptor.manifest_path
-            || pin.descriptor().manifest_sha256 != descriptor.manifest_sha256
-        {
+        if pin.descriptor() != &descriptor {
             return Err(ConstellationError::IndexGenerationUnavailable {
                 detail: format!(
-                    "the pinned generation is `{}` at `{}` (sha {}), not `{}` at `{}` (sha {})",
+                    "the supplied CURRENT descriptor differs from the descriptor verified \
+                     by the pin for `{}` at `{}`",
                     pin.generation_id(),
-                    pin.descriptor().manifest_path,
-                    pin.descriptor().manifest_sha256,
-                    descriptor.generation_id,
-                    descriptor.manifest_path,
-                    descriptor.manifest_sha256
+                    pin.descriptor().manifest_path
                 ),
             });
         }
@@ -205,20 +210,14 @@ impl ReadView {
                 ),
             });
         }
-        Ok(Self::Persisted {
-            generation_id: manifest.generation_id.clone(),
-            table_versions: manifest.table_versions,
-            manifest,
-            descriptor,
-            pin,
-        })
+        Ok(Self::Persisted { pin })
     }
 
     /// The descriptor a persisted view was selected by, and `None` for an
     /// ephemeral one — which has no pointer behind it to describe.
     pub fn descriptor(&self) -> Option<&CurrentDescriptor> {
         match self {
-            Self::Persisted { descriptor, .. } => Some(descriptor),
+            Self::Persisted { pin } => Some(pin.descriptor()),
             Self::Ephemeral { .. } => None,
         }
     }
@@ -227,7 +226,7 @@ impl ReadView {
     /// This does not make an ephemeral source view persisted.
     pub fn semantic_profile_id(&self) -> Option<&str> {
         match self {
-            Self::Persisted { descriptor, .. } => descriptor.profile_id.as_deref(),
+            Self::Persisted { pin } => pin.descriptor().profile_id.as_deref(),
             Self::Ephemeral { vector_cache, .. } => vector_cache
                 .as_ref()
                 .and_then(|pin| pin.descriptor().profile_id.as_deref()),
@@ -270,11 +269,10 @@ impl ReadView {
     /// tag exists to prevent.
     pub fn pinned_versions(&self) -> Option<(u64, u64, u64)> {
         match self {
-            Self::Persisted { table_versions, .. } => Some((
-                table_versions.artifacts,
-                table_versions.relations,
-                table_versions.sections,
-            )),
+            Self::Persisted { pin } => {
+                let versions = pin.manifest().table_versions;
+                Some((versions.artifacts, versions.relations, versions.sections))
+            }
             Self::Ephemeral { .. } => None,
         }
     }
@@ -295,7 +293,7 @@ impl ReadView {
     /// The published manifest behind a persisted view.
     pub fn manifest(&self) -> Option<&GenerationManifest> {
         match self {
-            Self::Persisted { manifest, .. } => Some(manifest),
+            Self::Persisted { pin } => Some(pin.manifest()),
             Self::Ephemeral { .. } => None,
         }
     }
@@ -304,7 +302,7 @@ impl ReadView {
     /// for a persisted view, the capture's snapshot id for an ephemeral one.
     pub fn snapshot_id(&self) -> &str {
         match self {
-            Self::Persisted { generation_id, .. } => generation_id,
+            Self::Persisted { pin } => pin.generation_id(),
             Self::Ephemeral { captured, .. } => &captured.snapshot_id,
         }
     }
@@ -312,7 +310,7 @@ impl ReadView {
     /// Digest of the source set this view reflects.
     pub fn source_set_digest(&self) -> &str {
         match self {
-            Self::Persisted { manifest, .. } => &manifest.source_set_digest,
+            Self::Persisted { pin } => &pin.manifest().source_set_digest,
             Self::Ephemeral { captured, .. } => &captured.source_set_digest,
         }
     }
@@ -320,7 +318,7 @@ impl ReadView {
     /// Checkout identity this view belongs to.
     pub fn checkout_id(&self) -> &str {
         match self {
-            Self::Persisted { manifest, .. } => &manifest.checkout_id,
+            Self::Persisted { pin } => &pin.manifest().checkout_id,
             Self::Ephemeral { captured, .. } => &captured.checkout_id,
         }
     }
@@ -328,7 +326,7 @@ impl ReadView {
     /// Coverage of the source behind this view.
     pub fn coverage(&self) -> Coverage {
         match self {
-            Self::Persisted { manifest, .. } => manifest.coverage,
+            Self::Persisted { pin } => pin.manifest().coverage,
             Self::Ephemeral { captured, .. } => captured.coverage,
         }
     }
@@ -336,7 +334,7 @@ impl ReadView {
     /// When the source behind this view was evaluated.
     pub fn evaluated_at(&self) -> &str {
         match self {
-            Self::Persisted { manifest, .. } => &manifest.evaluated_at,
+            Self::Persisted { pin } => &pin.manifest().evaluated_at,
             Self::Ephemeral { captured, .. } => &captured.evaluated_at,
         }
     }
@@ -374,18 +372,21 @@ impl<T> ReadResult<T> {
     pub fn from_view(payload: T, view: &ReadView) -> Self {
         let coverage = view.coverage();
         let (pending_count, failed_count, semantic_available) = match view {
-            ReadView::Persisted { manifest, .. } => (
-                manifest.pending_jobs.len(),
-                manifest
-                    .source_entries
-                    .iter()
-                    .filter(|e| e.semantic_state == SemanticState::Failed)
-                    .count(),
-                manifest
-                    .source_entries
-                    .iter()
-                    .any(|e| e.semantic_state == SemanticState::Ready),
-            ),
+            ReadView::Persisted { pin } => {
+                let manifest = pin.manifest();
+                (
+                    manifest.pending_jobs.len(),
+                    manifest
+                        .source_entries
+                        .iter()
+                        .filter(|e| e.semantic_state == SemanticState::Failed)
+                        .count(),
+                    manifest
+                        .source_entries
+                        .iter()
+                        .any(|e| e.semantic_state == SemanticState::Ready),
+                )
+            }
             ReadView::Ephemeral { captured, .. } => (
                 captured
                     .entries
@@ -432,7 +433,7 @@ impl<T> ReadResult<T> {
             // "the table is open" would claim section coverage for a capture
             // that published an empty set because its metadata was absent.
             semantic_scope: match view {
-                ReadView::Persisted { manifest, .. } if !manifest.section_bindings.is_empty() => {
+                ReadView::Persisted { pin } if !pin.manifest().section_bindings.is_empty() => {
                     super::jobs::SEMANTIC_SCOPE_WITH_SECTIONS.to_string()
                 }
                 ReadView::Ephemeral { captured, .. } if !captured.sections.is_empty() => {
@@ -444,7 +445,7 @@ impl<T> ReadResult<T> {
             failed_count,
             truncation: None,
             diagnostics: match view {
-                ReadView::Persisted { manifest, .. } => manifest.diagnostics.clone(),
+                ReadView::Persisted { pin } => pin.manifest().diagnostics.clone(),
                 ReadView::Ephemeral { captured, .. } => captured.diagnostics.clone(),
             },
         }
@@ -659,10 +660,6 @@ mod tests {
             crate::constellation::DiagnosticCode::IndexGenerationUnavailable,
             "{err}"
         );
-        assert!(
-            err.to_string().contains("not the one the pin verified"),
-            "the refusal must name the actual problem: {err}"
-        );
     }
 
     /// A descriptor whose checksum disagrees with the pin is refused even when
@@ -687,9 +684,22 @@ mod tests {
             crate::constellation::DiagnosticCode::IndexGenerationUnavailable,
             "{err}"
         );
-        assert!(
-            err.to_string().contains("sha"),
-            "the refusal must name the checksum that disagreed: {err}"
+    }
+
+    #[test]
+    fn a_descriptor_claiming_another_profile_than_the_pin_is_refused() {
+        let (_tmp, root, descriptor) = pinned_fixture();
+        let pin = Arc::new(
+            crate::constellation::storage::pin_generation_read(&root, &descriptor).unwrap(),
+        );
+        let manifest = pin.manifest_arc();
+        let mut other_profile = descriptor;
+        other_profile.profile_id = Some("unverified-profile".to_string());
+
+        let err = ReadView::from_manifest(manifest, other_profile, pin).unwrap_err();
+        assert_eq!(
+            err.code(),
+            crate::constellation::DiagnosticCode::IndexGenerationUnavailable
         );
     }
 

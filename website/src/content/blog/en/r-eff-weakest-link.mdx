@@ -12,6 +12,8 @@ translations:
   ru: r-eff-weakest-link
 ---
 
+> **Scoring clarification, 2026-10-23.** This is a product-specific heuristic, not a probability of truth or a universal FPF law. In target revision `c852f40c`, the recursive report uses `max(0, verdict_base − CL_penalty − type_modifier)` per unexpired pack, then the weakest eligible evidence/dependency contribution. Superseded/deprecated evidence is excluded, draft evidence still counts. Flat captured scores omit type/dependency modifiers and can differ. The worked example below assumes unexpired packs at the article's publication date, no dependency cap, and the recursive engine; the cover's 0–10 bars are only a schematic illustration.
+
 ### The claim
 
 ForgePlan scores every decision artifact with a single number, **R_eff** (effective rigor). The formula is deliberately uncomfortable:
@@ -28,7 +30,7 @@ This post unpacks why the minimum, what the individual evidence scores actually 
 
 ### Why minimum, not average
 
-The decision-quality literature (and lived engineering experience) keeps re-discovering that **a chain of arguments is as strong as its weakest link**. Boole's inequality, the failure-tree literature, the safety-critical-systems community - they all converge on the same intuition: when a single counter-example invalidates a claim, the supporting evidence's worst score is what you should care about.
+The minimum is Forgeplan's chosen bottleneck rule, not a consequence of Boole's inequality. A probability model can require different aggregation: two necessary independent conditions with success probabilities 0.9 give 0.81 jointly, not min(0.9, 0.9). [Current FPF B.3](https://fpf.tools/B.3) requires an applicable model rather than a universal minimum.
 
 Average and median have an obvious failure mode: a single rigorous measurement can statistically mask a sloppy one. Imagine a PRD claiming "this scales to 10K QPS." You have three EvidencePacks:
 
@@ -36,7 +38,7 @@ Average and median have an obvious failure mode: a single rigorous measurement c
 - A code review by two senior engineers - score `0.6`
 - A note saying "tested locally on Mac mini, looked fine" - score `0.1`
 
-The average is `0.53`. The median is `0.6`. Both numbers tell you the PRD is in pretty good shape. But the third evidence is the actual reason your production deploy will fail at 4K QPS, and `min` is the only aggregator that puts that reason on the front page.
+The mean is about 0.53 and the median 0.6. The minimum exposes the weakest recorded support, but a weak anecdote neither causes nor predicts a production failure at 4K QPS. Whether that load works needs a suitable test.
 
 R_eff = 0.1 forces the conversation onto the weakest evidence. Either upgrade that evidence (run the real benchmark) or admit the PRD is not yet trustworthy. The minimum is mean-spirited on purpose.
 
@@ -44,7 +46,7 @@ R_eff = 0.1 forces the conversation onto the weakest evidence. Either upgrade th
 
 An EvidencePack's score is computed from three structured fields plus a TTL.
 
-The structured fields, verbatim from the EvidencePack template:
+A minimal illustrative structured block (not a verbatim full template):
 
 ```markdown
 ## Structured Fields
@@ -54,17 +56,17 @@ congruence_level: 3          # CL3 (best) … CL0 (worst, opposed)
 evidence_type: measurement   # measurement / test / benchmark / audit
 ```
 
-If those fields are missing or malformed, the parser silently drops the pack to CL0 (penalty 0.9), and the pack's score collapses to ~0.1. This is the failure mode behind PROB-034 - HTML comments in the template were being parsed as data, and the parser was returning bogus structured fields. The hotfix (v0.17.2) tightened the parser; the lesson lives in `feedback_evidence_structured_fields.md` in our memory bank.
+Absent/unrecognized `verdict` or absent congruence declaration forces CL0 in the current parser; a missing type defaults to measurement. That does not force every malformed pack to exactly 0.1: verdict, type and expiry also matter. PROB-034 was a different historical defect: multiline comments shadowed the real CL and the old fallback inflated it to CL3. v0.17.2 fixed comment skipping.
 
-#### Verdict (0.0 / -1.0 sign + magnitude)
+#### Verdict bases (1.0 / 0.5 / 0.0)
 
 The verdict tells the scorer which direction the evidence pulls:
 
 - `supports` - the evidence is consistent with the parent decision; full positive contribution.
-- `weakens` - the evidence is inconsistent in ways that don't fully invalidate the decision; partial negative contribution.
-- `refutes` - the evidence directly contradicts the parent decision; the score is forced near zero regardless of CL.
+- `weakens` — base 0.5, reduced by CL and type penalties; this is a nonnegative score, not a signed negative contribution.
+- `refutes` — base 0.0, so an unexpired pack scores exactly zero. The expiry branch returns 0.1 before verdict handling, including for a refuting pack.
 
-The asymmetry matters. A `supports` verdict at CL2 contributes meaningfully. A `weakens` verdict at CL2 drags the score noticeably. A `refutes` verdict at any CL says "this decision is not yet defensible, period."
+For unexpired eligible evidence, `supports` starts at 1.0, `weakens` at 0.5 and `refutes` at 0.0 before applicable penalties. Expiry and eligibility are separate branches; inspect them before interpreting the final score.
 
 #### Congruence Level (CL3-CL0)
 
@@ -75,17 +77,17 @@ CL captures the contextual fidelity of the evidence - does it actually measure t
 | CL3 | `0.0` | Same context as the decision. Best - production data, real users, the actual workload. |
 | CL2 | `0.1` | Adjacent context. Staging environment, similar workload, comparable scale. |
 | CL1 | `0.4` | Different context, related domain. Lab benchmark; different language but similar pattern. |
-| CL0 | `0.9` | Opposed or unrelated context. Anecdote, single-machine spike, hand-waving. Effectively a refutation by absence. |
+| CL0 | `0.9` | Very poor or unrelated fit. Lack of useful support is not itself evidence that the claim is false. |
 
-The penalty is subtracted from a unit score, so CL0 evidence starts from `0.1` even if its verdict is `supports`. This is why the evidence-pack ritual matters - writing `congruence_level: 3` on a single-machine spike is technically possible, but it's also the kind of thing that gets caught in code review and tagged as PROB.
+A supports/measurement pack at CL0 scores 0.1 while unexpired. A one-machine test can be highly congruent for a one-machine claim; a production label alone cannot establish congruence. Record the claim and tested conditions before choosing CL.
 
-#### Evidence type (descriptive, used for routing)
+#### Evidence type and score surfaces
 
-`measurement / test / benchmark / audit` - this field doesn't directly affect the score, but it routes the evidence into the right rendering bucket in `forgeplan get` output, and downstream tooling (the upcoming `forgeplan compare` command) uses it to align same-type evidence across competing solutions.
+The recursive engine subtracts 0 for measurement/test, 0.1 for benchmark and 0.2 for audit. Flat captured scores and some evidence breakdown fields omit this modifier. Therefore those displays can disagree with the recursive report; do not treat every displayed number as the same calculation. The old `compare` mention was a proposal, not a supported command contract.
 
 #### TTL and decay
 
-Every EvidencePack carries a `valid_until` field. Past that date, the pack's score drops to `0.1` regardless of verdict and CL. Six months ago's benchmark on six months ago's workload is not, mathematically, the same evidence as today's benchmark. Decay is honest.
+`valid_until` is optional. With no date the scorer does not expire the pack. With a date, the normal score holds until expiry, then returns 0.1 before verdict/CL/type arithmetic. This is a discrete product rule, not gradual physical decay or proof that every old observation is useless.
 
 ### A worked example
 
@@ -100,7 +102,7 @@ evidence_type: benchmark
 valid_until: 2026-08-01
 ```
 
-Computed score: `0.9` (full supports × CL3, no decay).
+Recursive score while unexpired: `1 − 0 − 0.1 = 0.9` (supports, CL3, benchmark).
 
 **EVID-B** - adversarial code review by two engineers, identified one edge case (concurrent write contention).
 
@@ -111,7 +113,7 @@ evidence_type: audit
 valid_until: 2026-06-01
 ```
 
-Computed score: `0.55` (weakens verdict × CL2 penalty 0.1, the verdict-asymmetry knocks it from a hypothetical 0.9 down).
+Recursive score while unexpired: `0.5 − 0.1 − 0.2 = 0.2` (weakens, CL2, audit). The original 0.55 was not produced by this formula.
 
 **EVID-C** - note from a developer saying "I ran it on my MacBook, felt fast."
 
@@ -125,23 +127,22 @@ valid_until: 2026-12-01
 Computed score: `0.10` (CL0 penalty kills it; "supports" verdict can't rescue CL0).
 
 ```
-R_eff(PRD-XYZ) = min(0.9, 0.55, 0.10) = 0.10
+R_eff(PRD-XYZ) = min(0.9, 0.2, 0.10) = 0.10
 ```
 
-The PRD is at R_eff = 0.10. Not 0.52 (average). Not 0.55 (median). 0.10. The MacBook anecdote is the bottleneck.
+Under these assumptions, R_eff is 0.10; the mean would be 0.40 and median 0.20. At a later date, expiry changes the inputs, so this is not expected output for a run today.
 
-This is a feature, not a bug. The right move is to either upgrade EVID-C (run the benchmark on the real workload) or strike it from the EvidencePack list. R_eff is a forcing function for evidence hygiene.
+Improve weak evidence or justify a scope/lineage change with new evidence. Do not remove a relevant warning just to raise a score; retain counterevidence and the reason for any supersession or deprecation.
 
 ### How to read a real R_eff number
 
-Field manual:
+Reading guidance, not release policy:
 
-- **R_eff ≥ 0.8** - defensible. You can ship and survive a postmortem.
-- **0.5 ≤ R_eff < 0.8** - mid-quality. Identify the weakest evidence; either upgrade it or accept a known risk.
-- **0.2 ≤ R_eff < 0.5** - under-evidenced. The decision is more aspiration than analysis. Don't activate.
-- **R_eff < 0.2** - folklore. There's at least one EvidencePack acting as theatre. Strip it or replace it.
+- A low score identifies a recorded bottleneck; inspect its claim, context, freshness and provenance.
+- A high score does not prove safety, correctness, readiness or that every requirement was tested.
+- Neither number replaces applicable activation gates or the team's release criteria.
 
-In practice, most artifacts spend their early lifecycle in the `0.2 → 0.5` band, climb to `0.5 → 0.8` as evidence matures, and only the highest-stakes ADRs reach `> 0.8`. That's the expected gradient. A workspace where every artifact is at R_eff = 0.95 is probably not measuring honestly.
+No population study is supplied for the original claim that most artifacts pass through particular score bands. No threshold here is a calibrated probability of surviving a postmortem.
 
 ### The phrase to remember
 

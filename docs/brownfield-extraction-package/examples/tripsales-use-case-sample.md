@@ -66,6 +66,10 @@ lifecycle_state: "draft"
 
 # UC-003 — Confirm an order
 
+Historical extraction sample, not verification evidence for Forgeplan.
+Unlinked invariant and related-use-case IDs below illustrate the source
+project's graph; the package does not ship those artifacts.
+
 ## Overview
 An order participant (either the forwarder who will execute transport, or the cargo_owner whose goods are being moved) confirms their commitment to the order. When both parties have confirmed, a subsequent `trips.start` call can advance the order to `fulfillment`.
 
@@ -77,10 +81,10 @@ An order participant (either the forwarder who will execute transport, or the ca
 GraphQL mutation `orders_Confirm(id: Int!)`. Typically invoked from a UI button labelled "Confirm order" or "Подтвердить заказ" on the order detail screen.
 
 ## Preconditions
-1. Order exists ([INV-001](../invariants.md#inv-001)).
-2. Caller is authenticated ([INV-002](../invariants.md#inv-002)).
-3. Caller's company is in `{order.cargo_owner_id, order.forwarder_id, order.operator_id}` ([INV-003](../invariants.md#inv-003)).
-4. Order is in a state where confirmation can still advance it ([INV-005](../invariants.md#inv-005)).
+1. Order exists (`INV-001`).
+2. Caller is authenticated (`INV-002`).
+3. Caller's company is in `{order.cargo_owner_id, order.forwarder_id, order.operator_id}` (`INV-003`).
+4. Order is in a state where confirmation can still advance it (`INV-005`).
 
 ## Main flow (forwarder path — happy)
 1. Forwarder employee submits `orders_Confirm(order_id)`.
@@ -88,7 +92,7 @@ GraphQL mutation `orders_Confirm(id: Int!)`. Typically invoked from a UI button 
 3. System checks participation; proceeds.
 4. System loads the related sales_order.
 5. System sets `order.status = 'forwarder_confirmed'`.
-6. System initializes cargo entity with `available_at` derived from `order.form.pickup_date` ([INV-012](../invariants.md#inv-012)).
+6. System initializes cargo entity with `available_at` derived from `order.form.pickup_date` (`INV-012`).
 7. System enqueues a cargo markings generation job (attempts=50, exponential backoff starting at 10s).
 8. System updates the Elasticsearch search index.
 9. System emits `OrderConfirmedByForwarder` domain event.
@@ -118,16 +122,16 @@ Same as above but step 5 sets status to `cargo_owner_confirmed`; steps 6-7 (carg
 - `OrderConfirmedByCargoOwner` — payload: `{ order_id, cargo_owner_id, timestamp }`.
 
 ## Business rules applied
-- [INV-001](../invariants.md#inv-001) — order must exist.
-- [INV-002](../invariants.md#inv-002) — caller must be authenticated.
-- [INV-003](../invariants.md#inv-003) — authorization: participant-only.
-- [INV-005](../invariants.md#inv-005) — status transition rules.
-- [INV-012](../invariants.md#inv-012) — cargo initialized only on forwarder confirm.
+- `INV-001` — order must exist.
+- `INV-002` — caller must be authenticated.
+- `INV-003` — authorization: participant-only.
+- `INV-005` — status transition rules.
+- `INV-012` — cargo initialized only on forwarder confirm.
 
 ## Related use cases
-- [UC-002 Accept a quote](../use-cases.md#uc-002) — creates the order with initial status (precursor).
-- [UC-007 Start a trip](../use-cases.md#uc-007) — requires both confirmations to transition to fulfillment (successor).
-- [UC-009 Cancel an order](../use-cases.md#uc-009) — can be invoked from forwarder_confirmed with cascade behavior (alternative path out).
+- `UC-002` Accept a quote — creates the order with initial status (precursor).
+- `UC-007` Start a trip — requires both confirmations to transition to fulfillment (successor).
+- `UC-009` Cancel an order — can be invoked from forwarder_confirmed with cascade behavior (alternative path out).
 
 ## Open questions
 <!-- confidence:speculation -->

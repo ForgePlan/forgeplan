@@ -16,7 +16,7 @@ updated: YYYY-MM-DD
 | Valid Until | YYYY-MM-DD |
 | Target | ADR-<id> (решение которое подтверждаем/опровергаем) |
 
-<!-- REQUIRED for R_eff scoring. Legal values documented in templates/evidence/README.md. -->
+<!-- REQUIRED for R_eff scoring. Legal direction/CL values: docs/methodology/QUALITY-GATES.md. Review outcomes PASS/CONCERNS/BLOCKER are separate from scoring directions supports/weakens/refutes. -->
 
 ## Structured Fields
 

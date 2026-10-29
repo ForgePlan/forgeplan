@@ -3,20 +3,20 @@ title: forgeplan tree
 description: "Показать иерархию артефактов в виде ASCII-дерева - представление декомпозиции"
 ---
 
-Отображает иерархию артефактов в виде ASCII-дерева. Используйте это, чтобы понять, как декомпозируется работа: Epic → PRD → RFC → ADR, а также прикреплённые Spec, Evidence и Note. Связи родитель/потомок определяются по полю `parent` во frontmatter и типизированным связям [`forgeplan link`](/docs/cli/link/).
+Показывает однородительскую проекцию типизированных связей; `parent_epic` используется при отсутствии выбранного родительского ребра. Обработчик выбирает первого распознанного родителя, не полный граф зависимостей.
 
 ## Когда использовать
 
 - Ввод нового сотрудника в курс дела - «покажи мне декомпозицию»
 - Аудит Epic перед спринтом - просмотр всех дочерних элементов в одном представлении
 - Подготовка сводки по релизу - все PRD, сгруппированные по Epic
-- Выборочная проверка сирот (артефактов без связей) - артефакты без родителя отображаются вверху
+- Изучение корней, которые не обязательно являются сиротами без связей в health.
 
 ## Когда не использовать
 
-- Вам нужны перекрёстные связи (а не только родитель/потомок) → используйте [`forgeplan graph`](/docs/cli/graph/)
-- Вам нужен порядок выполнения → используйте [`forgeplan order`](/docs/cli/order/)
-- Вам нужен плоский список → используйте [`forgeplan list`](/docs/cli/list/)
+- Для всех связей есть [`forgeplan graph`](/ru/docs/cli/graph/).
+- Для порядка есть [`forgeplan order`](/ru/docs/cli/order/).
+- Для плоского списка есть [`forgeplan list`](/ru/docs/cli/list/).
 
 ## Использование
 
@@ -33,7 +33,7 @@ forgeplan tree [OPTIONS] [ID]
 ## Опции
 
 ```text
-      --depth <DEPTH>  Максимальная глубина (по умолчанию: без ограничений) [default: 99]
+      --depth <DEPTH>  Максимальная глубина [default: 99; конечная]
       --json           Вывод в формате JSON
   -h, --help           Вывести справку
   -V, --version        Вывести версию
@@ -61,7 +61,7 @@ forgeplan tree EPIC-003 --depth 1
 
 ## Интерпретация вывода
 
-Дерево использует стандартные символы для рисования рамок. Типичный фрагмент:
+Иллюстрация декомпозиции, не точные runtime-колонки (там также kind, R_eff и progress):
 
 ```
 EPIC-003 [active]  Search, Discovery, Intelligence
@@ -73,9 +73,9 @@ EPIC-003 [active]  Search, Discovery, Intelligence
     └── RFC-005 [draft]   Graph expansion
 ```
 
-Каждый узел показывает: `<ID> [<status>] <title>`. Дочерние элементы имеют отступ под своим родителем. Дочерний элемент, связанный с несколькими родителями, появляется под каждым из них - это ожидаемо и выявляет общие зависимости.
+Потомок показывается у первого распознанного родителя, не у всех. Полные типизированные связи смотрите через `forgeplan graph`.
 
-Сироты (артефакты без родителя) появляются на верхнем уровне - если вы видите `PRD-007`, плавающий рядом с `EPIC-003`, он является кандидатом на то, чтобы стать дочерним элементом существующего Epic или нового.
+Корень может иметь осмысленные связи без выбранного родителя: это не тот же тест, что health-orphan. Сохранённая справка говорит «unlimited», но фактический default - конечная глубина 99.
 
 ## Как это вписывается
 
@@ -86,7 +86,28 @@ EPIC-003 [active]  Search, Discovery, Intelligence
 
 ## См. также
 
-- [`forgeplan graph`](/docs/cli/graph/) - полная диаграмма Mermaid
-- [`forgeplan order`](/docs/cli/order/) - топологический порядок выполнения
-- [`forgeplan blocked`](/docs/cli/blocked/) - что ещё не может начаться
-- [Модель артефактов](/docs/methodology/overview/)
+- [`forgeplan graph`](/ru/docs/cli/graph/) - полный граф
+- [`forgeplan order`](/ru/docs/cli/order/) - порядок
+- [`forgeplan blocked`](/ru/docs/cli/blocked/) - зависимости
+- [Модель артефактов](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan tree --help`.
+
+```text
+Show artifact hierarchy as ASCII tree
+
+Usage: forgeplan tree [OPTIONS] [ID]
+
+Arguments:
+  [ID]  Root artifact ID (shows all roots if omitted)
+
+Options:
+      --depth <DEPTH>  Maximum depth (default: unlimited) [default: 99]
+      --json           Output as JSON
+  -h, --help           Print help
+  -V, --version        Print version
+```
+<!-- forgeplan-runtime:end -->

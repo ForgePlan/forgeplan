@@ -1,18 +1,18 @@
 ---
 title: forgeplan review
-description: "Pre-activation gate - runs validation plus lifecycle checklist and reports READY / BLOCKED / NEEDS-ATTENTION."
+description: "Read-only validation and methodology-gate review: PASSED, FAILED or BLOCKED."
 ---
 
-`forgeplan review` is the human-facing gate you run **right before** `forgeplan activate`.
-It bundles `validate` (MUST/SHOULD rules) with a lifecycle checklist (is there a parent?
-is there evidence? is R_eff > 0? is the depth appropriate?) and returns one of three
-verdicts:
+`forgeplan review` runs validation and shared methodology gates without changing
+the artifact. The CLI renderer reports:
 
-- **READY** - validation passes and all lifecycle boxes are ticked. Safe to activate.
-- **NEEDS-ATTENTION** - SHOULDs or non-blocking lifecycle items flagged, but you can proceed if you accept the risk.
-- **BLOCKED** - MUST failures or missing critical links. Activate will refuse.
+- **Review PASSED** — no MUST failures and the body-length, evidence-link and stub gates pass.
+- **Review FAILED** — MUST findings exist.
+- **Review BLOCKED** — methodology gates fail without MUST findings.
 
-Where `validate` tells you *what rules fired*, `review` tells you *what to do next*.
+SHOULD findings and dependency-on-draft warnings are printed separately. This
+is not a calculated R_eff/F-G-R/route dashboard. A passed review does not replace
+checking the current status transition or the CLI activation provenance gate.
 
 ## When to use
 
@@ -23,7 +23,7 @@ Where `validate` tells you *what rules fired*, `review` tells you *what to do ne
 ## When NOT to use
 
 - On Notes / Problems - they don't need a validation gate to activate.
-- In CI pipelines - use `validate --ci` instead (machine-readable, exit codes).
+- For CI exit-code gating — `review` reports findings but does not return failure solely for a failed review; inspect the appropriate validation/health gate separately.
 
 ## Usage
 
@@ -52,34 +52,19 @@ forgeplan review <ID>
 forgeplan review PRD-001
 ```
 
-Output when ready:
+Illustrative clean output excerpt (not a captured run):
 
 ```text
-PRD-001 - Auth System
-  Validation:       PASS (0 MUST, 1 SHOULD)
-  Parent link:      EPIC-002 ✓
-  Evidence:         EVID-012, EVID-015 (2 linked)
-  R_eff:            0.90
-  FGR:              F=3 G=3 R=2 (overall 2.67)
-  Depth:            Standard (matches route)
-  Lifecycle:        draft → active
-
-  Verdict: READY - run `forgeplan activate PRD-001`
+Review PASSED
+Ready to activate
 ```
 
-Output when blocked:
+With MUST failures the heading is `Review FAILED`, followed by findings. When
+only methodology gates fail, it is `Review BLOCKED`, with
+`Methodology gates not met (see warnings below)`.
 
-```text
-PRD-004 - Search Intelligence
-  Validation:       FAIL (2 MUST errors)
-    - Missing section: Non-Goals
-    - FR list empty
-  Parent link:      (none)
-  Evidence:         (none - blind spot)
-  R_eff:            0.00
-
-  Verdict: BLOCKED - fix MUST errors, link parent, add evidence
-```
+The command also emits contextual hints. It does not print the fabricated
+parent/evidence/R_eff/FGR/route checklist that a separate context report may summarize.
 
 ### Reviewing before batch activate
 
@@ -93,28 +78,27 @@ Quick triage of a sprint's worth of deliverables.
 
 ## Output interpretation
 
-| Verdict          | Meaning                                           | Next action                    |
-|------------------|---------------------------------------------------|--------------------------------|
-| READY            | Validation clean, evidence present, R_eff > 0     | `forgeplan activate <ID>`      |
-| NEEDS-ATTENTION  | SHOULDs or minor gaps - no MUST failures          | Fix what you can, then activate|
-| BLOCKED          | MUST failures or R_eff = 0 on a decision          | Do not activate; fix first     |
+| CLI heading | Meaning | Action |
+|---|---|---|
+| Review PASSED | MUST and methodology gates pass | Check transition and remaining activation requirements |
+| Review FAILED | MUST findings | Fix the reported findings |
+| Review BLOCKED | Body length, evidence-link or stub gate not met | Address the printed warnings |
 
-The checklist also calls out common drift: missing parent link, stale evidence, depth
-mismatch (route says Deep but artifact is Tactical).
+The evidence-link gate checks linkage, not a positive computed R_eff.
 
 ## How it fits the workflow
 
 ```
-code → new evidence → link → score → REVIEW → activate
+code → new evidence → link → score → REVIEW
                                         │
-                                        ├── READY        → activate
-                                        ├── ATTENTION    → fix SHOULDs (optional)
-                                        └── BLOCKED      → fix MUSTs (required)
+                                        ├── PASSED → check remaining activation requirements
+                                        ├── FAILED → fix MUSTs
+                                        └── BLOCKED → fix methodology gates
 ```
 
-Think of `review` as the final readout the lifecycle engine shows you before flipping
-the state. It is purely advisory when you have a clean setup, and a lifesaver when you
-don't.
+Review is a read-only pre-activation report, not an automatic state change.
+Lightweight kinds skip methodology gates, while structured decisions are checked
+for sufficient body content, evidence linkage and remaining template stubs.
 
 ## See also
 
@@ -123,3 +107,22 @@ don't.
 - [`forgeplan score`](/docs/cli/score/) - R_eff input to the review checklist
 - [`forgeplan fgr`](/docs/cli/fgr/) - F-G-R triple shown in the report
 - [CLI overview](/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan review --help`.
+
+```text
+Review an artifact — run validation and show lifecycle checklist
+
+Usage: forgeplan review <ID>
+
+Arguments:
+  <ID>  Artifact ID
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

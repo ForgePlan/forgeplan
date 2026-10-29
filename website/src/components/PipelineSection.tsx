@@ -3,11 +3,11 @@ import { COLORS } from '../tokens';
 
 // Pipeline steps — vertical timeline stations
 const STEPS = [
-  { word: 'SHAPE', desc: 'Define what you\'re building and why. PRD, Brief, or nothing — route decides.', start: 0.04 },
-  { word: 'VALIDATE', desc: 'Check against quality gates. 30+ rules per artifact type. No stubs allowed.', start: 0.14 },
-  { word: 'REASON', desc: 'Generate 3+ hypotheses. Test predictions. Reach justified conclusions — not gut calls.', start: 0.24 },
-  { word: 'BUILD', desc: 'Code with confidence. Every pub fn gets a test. Format, lint, audit before commit.', start: 0.34 },
-  { word: 'PROVE', desc: 'Create evidence. Link it. Score it. R_eff > 0 or the work isn\'t done.', start: 0.44 },
+  { word: 'SHAPE', desc: 'Define what you are building and why. Route suggests a depth and artifact pipeline.', start: 0.04 },
+  { word: 'VALIDATE', desc: 'Check type- and depth-specific rules. Resolve MUST findings before activation; command support depends on workspace layout.', start: 0.14 },
+  { word: 'REASON', desc: 'Explore alternatives. Forgeplan prompts for 3+ hypotheses, a local anti-anchoring heuristic. Check predictions against evidence.', start: 0.24 },
+  { word: 'BUILD', desc: 'Project practice: test public functions; format, lint and audit before commit.', start: 0.34 },
+  { word: 'PROVE', desc: 'Create and link evidence. Review its score and limits. A positive R_eff alone is not acceptance.', start: 0.44 },
 ];
 
 
@@ -102,7 +102,7 @@ export default function PipelineSection() {
             {/* Top block: DEPTH ROUTING label + tree */}
             <div className="relative z-10 flex-1 flex flex-col">
               <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-2" style={{ opacity: fade(0.12) }}>
-                DEPTH ROUTING
+                WORKFLOW EXAMPLES
               </p>
               <svg className="w-full flex-1" viewBox="0 0 600 700" fill="none" aria-hidden="true" preserveAspectRatio="xMinYMin meet" style={{ marginLeft: '-30px' }}>
               {/* Main trunk — ends with ember dot at bottom */}
@@ -156,11 +156,11 @@ export default function PipelineSection() {
                 <text x="470" y="382" fontFamily="Geist Mono, monospace" fontSize="15" fill={COLORS.ember}>→ Full Review</text>
               </g>
 
-              {/* Critical — 5 artifacts: Epic, PRD[], Spec[], RFC[], ADR[] */}
+              {/* Epic-scale example, not a separate Rust routing depth: critical aliases Deep. */}
               <g opacity={fade(0.44)}>
                 <line x1="35" y1="500" x2="90" y2="500" stroke={COLORS.ember} strokeWidth="2" />
                 <circle cx="90" cy="500" r="6" fill={COLORS.ember} />
-                <text x="108" y="505" fontFamily="Geist Mono, monospace" fontSize="16" fontWeight="600" fill={COLORS.ember}>Critical</text>
+                <text x="108" y="505" fontFamily="Geist Mono, monospace" fontSize="16" fontWeight="600" fill={COLORS.ember}>Epic scale</text>
                 <line x1="90" y1="500" x2="90" y2="630" stroke={COLORS.ember} strokeWidth="1" />
                 <line x1="90" y1="530" x2="145" y2="530" stroke={COLORS.ember} strokeWidth="1" />
                 <text x="155" y="535" fontFamily="Geist Mono, monospace" fontSize="15" fill={COLORS.fg}>Epic</text>
@@ -182,7 +182,7 @@ export default function PipelineSection() {
             {/* Bottom block: ADI */}
             <div className="relative z-10 flex-shrink-0 mt-4">
               <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-3" style={{ opacity: fade(0.53) }}>
-                ADI REASONING CYCLE
+                ADI REASONING · 3+ IS A LOCAL HEURISTIC
               </p>
               <div className="grid grid-cols-3 gap-3">
                 {ADI.map((card, i) => (

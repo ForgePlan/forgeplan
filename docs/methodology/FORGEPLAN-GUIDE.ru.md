@@ -38,12 +38,21 @@ Skill установится в выбранные агенты. После эт
 brew install forgeplan/tap/forgeplan
 # Homebrew 6.0+: если отклонено с "untrusted tap", выполните `brew trust forgeplan/tap` один раз и повторите.
 
-# Из исходников (Rust)
-cargo install forgeplan
+# Из checkout исходников (не рецепт установки из crates.io)
+git clone https://github.com/ForgePlan/forgeplan.git && cd forgeplan
+cargo install --path crates/forgeplan-cli --features semantic-search
 
 # Или скачать binary из GitHub Releases
 # https://github.com/ForgePlan/forgeplan/releases
 ```
+
+Релизные бинарники включают семантический поиск; обычная Cargo-сборка выключает
+feature по умолчанию. Веса отдельные: `forgeplan setup` готовит кэш BGE-M3.
+Для офлайн-инференса нужен полный snapshot. Приоритет кэша:
+`FORGEPLAN_MODEL_CACHE` → `~/.forgeplan/models` → platform/legacy fallback
+при отсутствии home; `HF_HOME` не переопределяет кэш tract.
+В действительно новом workspace `init -y --with-model` явно запрашивает
+скачивание. Уже инициализированный workspace может завершить init раньше.
 
 ### 3. MCP Server (для AI агентов)
 
@@ -64,13 +73,18 @@ cargo install forgeplan
 
 ## Быстрый старт (5 минут)
 
+Используйте новый каталог вне существующего workspace. Обнаружение идёт вверх
+по родителям: `init -y` может ничего не сделать, найдя родительский `.forgeplan/`.
+Проверьте показанный путь до записи. Для клона с tracked артефактами см.
+[указатель документации](../README.ru.md): локальный config и reindex.
+
 ```bash
 # 1. Инициализировать workspace
 forgeplan init
 
 # 2. Определить что делать
-forgeplan route "Добавить OAuth2 аутентификацию"
-# → Depth: Deep, Pipeline: PRD → Spec → RFC → ADR
+forgeplan route "Добавить OAuth2 аутентификацию" --level 0
+# Изучите рекомендацию; это не результат выполнения или приёмки.
 
 # 3. Создать первый артефакт
 forgeplan new prd "OAuth2 Authentication"
@@ -79,7 +93,7 @@ forgeplan new prd "OAuth2 Authentication"
 forgeplan health
 ```
 
-> **Alias**: `fpl` = `forgeplan`. Создайте symlink: `ln -s $(which forgeplan) /usr/local/bin/fpl`
+> **Alias**: `fpl` = `forgeplan`. После source-install его создаёт `forgeplan setup --skip-model`.
 
 ---
 
@@ -99,10 +113,10 @@ forgeplan health
 Или используй автоматический routing:
 
 ```bash
-forgeplan route "описание задачи"
+forgeplan route "описание задачи" --level 0
 ```
 
-Движок анализирует ключевые слова (security → Deep+, breaking change → Deep+, cross-team → Standard+) и выдаёт рекомендацию мгновенно, без LLM.
+`--level 0` явно выбирает keyword routing без LLM. Обычный `route` может попытаться вызвать настроенную LLM и дальнейший анализ; отсутствие `--explain` не гарантирует офлайн-работу.
 
 ### Вопрос 2: "Какой артефакт?"
 
@@ -123,7 +137,9 @@ forgeplan review PRD-001
 # → Ready to activate? NO
 ```
 
-Если MUST пусто — activate. Если нет — доработай.
+Если MUST findings остались, доработайте документ. Их отсутствие необходимо
+для обычной gated activation, но недостаточно: активация отдельно проверяет
+длину, evidence и заглушки. Review не меняет status.
 
 ### Главное правило
 
@@ -132,6 +148,22 @@ forgeplan review PRD-001
 ---
 
 ## Все команды (по категориям)
+
+### Раскладка workspace и доступность интерфейсов
+
+Примеры команд ниже не доказывают универсальную совместимость CLI/MCP.
+Оговорки Constellation относятся к scoped-сборке `0.39.0+constellation.s1.1`,
+не к опубликованной `0.38.0`.
+
+| Операция | Совместимый legacy layout | Migrated Constellation layout |
+|---|---|---|
+| CLI `validate` | Успешно проверен | Успешно проверен |
+| Full MCP `forgeplan_validate` | Интерфейс валидации | Успешно упражнён на migrated артефактах |
+| Остальные зарегистрированные full tools | Проверять контракт | Не выводить поддержку из регистрации |
+
+См. [пользовательский гайд](https://forgeplan.dev/ru/docs/guides/constellation/),
+[справочник интерфейсов](https://forgeplan.dev/ru/docs/reference/constellation/)
+и [переносимый пилот](../operations/CONSTELLATION-PILOT.ru.md).
 
 ### Создание и управление артефактами
 
@@ -163,7 +195,7 @@ forgeplan review PRD-001
 | `forgeplan score [id]` | R_eff quality score | `forgeplan score PRD-001` |
 | `forgeplan fgr [id]` | F-G-R scores (Formality, Granularity, Reliability) | `forgeplan fgr` |
 | `forgeplan estimate <id>` | Effort estimate по грейдам (Jun/Mid/Sen/PS/AI) | `forgeplan estimate PRD-022` |
-| `forgeplan estimate <id> --grade mid` | Подсветить конкретный грейд | `forgeplan estimate PRD-022 --grade junior` |
+| `forgeplan estimate <id> --grade middle` | Подсветить конкретный грейд | `forgeplan estimate PRD-022 --grade junior` |
 | `forgeplan estimate <id> --my-grade` | Грейд из config grade_profile | `forgeplan estimate PRD-022 --my-grade` |
 
 ### Lifecycle
@@ -175,7 +207,9 @@ forgeplan review PRD-001
 | `forgeplan supersede <id> --by <new>` | Active → Superseded + chain warnings | `forgeplan supersede PRD-001 --by PRD-002` |
 | `forgeplan deprecate <id> --reason "..."` | Active → Deprecated | `forgeplan deprecate PRD-001 --reason "Cancelled"` |
 
-**Правило:** Notes и Problems не требуют validation gate. PRD, RFC, ADR, Epic, Spec — MUST rules должны пройти.
+**Правило:** PRD, RFC, ADR, Epic и Spec имеют validation gates. Notes и Problems
+не используют тот же schema gate; дополнительные lifecycle checks всё равно
+зависят от типа и глубины. Успешный `validate` не равен готовности к активации.
 
 ### Dashboards и аналитика
 
@@ -185,7 +219,7 @@ forgeplan review PRD-001
 | `forgeplan status` | Краткий dashboard | `forgeplan status` |
 | `forgeplan blindspots` | Артефакты без evidence, orphans | `forgeplan blindspots` |
 | `forgeplan journal` | Timeline решений с R_eff | `forgeplan journal --risk` |
-| `forgeplan fpf` | FPF dashboard: contexts + F-G-R + actions | `forgeplan fpf` |
+| `forgeplan fpf dashboard` | FPF dashboard: contexts + F-G-R + actions | `forgeplan fpf dashboard` |
 | `forgeplan stale` | Артефакты с expired valid_until | `forgeplan stale` |
 | `forgeplan decay` | Impact expired evidence на R_eff | `forgeplan decay` |
 | `forgeplan progress [id]` | Checkbox progress bars | `forgeplan progress` |
@@ -194,7 +228,7 @@ forgeplan review PRD-001
 
 | Команда | Что делает | Пример |
 |---------|-----------|--------|
-| `forgeplan route "<description>"` | Rule-based depth + pipeline (no LLM) | `forgeplan route "Add OAuth2"` |
+| `forgeplan route "<description>" --level 0` | Keyword-only depth + pipeline, без LLM | `forgeplan route "Add OAuth2" --level 0` |
 | `forgeplan route "<desc>" --explain` | + LLM объяснение | `forgeplan route "Add OAuth2" --explain` |
 | `forgeplan calibrate [id]` | Suggest depth для существующего артефакта | `forgeplan calibrate PRD-001` |
 
@@ -206,7 +240,16 @@ forgeplan review PRD-001
 | `forgeplan reason <id>` | ADI reasoning cycle | `forgeplan reason PRD-001 --json` |
 | `forgeplan decompose <id>` | PRD → RFC задачи через AI | `forgeplan decompose PRD-001` |
 | `forgeplan capture "<decision>"` | Записать решение как Note/ADR | `forgeplan capture "Use Redis for cache"` |
-| `forgeplan search <query> --semantic` | Semantic vector search | `forgeplan search "auth" --semantic` |
+
+### Локальный semantic search (LLM provider не нужен)
+
+`forgeplan search "auth" --semantic` требует сборку с `semantic-search`
+и полный совместимый кэш модели, а не `llm` config. На migrated layout нужны
+также опубликованный embedding profile и eligible vectors; forced semantic
+ошибки не означают обещанный keyword fallback. Выполните явно `index`, затем
+`embed`. Для автоматического drain дополнительно нужны активный
+`config.embedding` (`model: bge-m3`) и live maintenance; ручной `embed`
+эту настройку не сохраняет.
 
 ### MCP Server
 
@@ -214,7 +257,13 @@ forgeplan review PRD-001
 forgeplan serve  # запустить MCP server (stdio transport)
 ```
 
-73 MCP tools — все команды выше доступны через MCP protocol.
+В scoped Constellation-сборке зарегистрированы 76 full tools и отдельные 9 tools
+профиля `constellation-read`. `full` — default, с сохранением записи.
+Startup maintenance и request workspace выбираются по-разному. `--workspace`
+задаёт server default, но явный binding `FORGEPLAN_WORKSPACE` приоритетнее для
+startup maintenance. Request предпочитает явный workspace, затем environment,
+server default и cwd. Read-profile handle не запускает maintenance и не
+принимает произвольные пути.
 
 ---
 
@@ -230,7 +279,7 @@ forgeplan serve  # запустить MCP server (stdio transport)
 forgeplan estimate PRD-022
 ```
 
-Выводит таблицу:
+Иллюстративный estimate output (эвристические часы, не измеренные длительности):
 
 ```
 Estimate for PRD-022: AI Estimation Engine
@@ -278,7 +327,7 @@ forgeplan estimate PRD-022 --json           # машинный вывод
 
 **Fibonacci complexity** (1, 2, 3, 5, 8, 13) → base Senior hours (3h, 5h, 8h, 13h, 21h, 34h).
 
-**Confidence** зависит от полноты артефакта:
+**Confidence** — эвристика полноты, не измеренная точность прогноза. Baseline 10%, затем:
 - Есть FR в PRD: +30%
 - Есть Implementation Phases в RFC: +25%
 - Есть Spec: +15%
@@ -359,7 +408,7 @@ forgeplan new evidence "Benchmark: LanceDB vs SQLite insert performance"
 
 ### ВАЖНО: Structured Fields
 
-EvidencePack **обязательно** должен содержать structured fields в body:
+Заполняйте structured fields и реальные наблюдения. Числа ниже **иллюстративны**, это не выполненный benchmark; не копируйте их как evidence:
 
 ```markdown
 ## Measurements
@@ -381,14 +430,14 @@ evidence_type: benchmark
 | `congruence_level` | `0`-`3` | CL3 = same context (лучший). CL0 = opposed context (penalty 0.9) |
 | `evidence_type` | `measurement` / `test` / `benchmark` / `audit` | Тип доказательства |
 
-**Без этих полей** R_eff parser не найдёт данные и выставит CL0 → R_eff = 0.1 вместо 1.0.
+Missing/unknown verdict или отсутствие CL declaration приводит к CL0; plain undeclared pack получает около 0.1. `evidence_type` отдельно имеет default measurement. Реальный R_eff зависит также от expiry, прочих evidence и зависимостей; следующий пример одного benchmark не гарантирует 1.00 в recursive report (benchmark modifier 0.1).
 
 ### Привязать evidence к артефакту
 
 ```bash
 forgeplan link EVID-001 ADR-002 --relation informs
 forgeplan score ADR-002
-# → R_eff = 1.00 (was 0.00)
+# Изучите фактический report: score, weakest link, expiry и dependency factors.
 ```
 
 ### Congruence Levels (CL)
@@ -412,9 +461,12 @@ R_eff = weakest link. Если есть 3 evidence и одно слабое — 
 
 | Depth | PRD rules | RFC rules | ADR rules |
 |-------|-----------|-----------|-----------|
-| Tactical | 3 base rules | 3 base | 3 base |
-| Standard | 9 rules (+ audience, density, leakage) | 5 rules (+ options, phases) | 3 rules |
-| Deep | 16 rules (+ timeline, stakeholders, risks, acceptance) | 6 rules (+ risks) | 5 rules (+ invariants, rollback) |
+| Tactical | Core PRD sections и shared checks | Summary, motivation, direction | Context, decision, consequences |
+| Standard | + audience; density/leakage SHOULD | + alternatives и phases | Core sections |
+| Deep | + timeline, stakeholders, risks, acceptance, metrics | + risks | + invariants и rollback |
+
+Это summary секций, не фиксированное число rules. Shared rules и дополнительные
+measurability/NFR/traceability checks зарегистрированы в `validation/rules.rs`.
 
 ### Validator aliases
 
@@ -430,22 +482,36 @@ Validator принимает синонимы:
 
 ### Что проверяет validation
 
-- **MUST** — блокирует activation. Обязательные секции, frontmatter поля.
-- **SHOULD** — предупреждение. Плотность текста, отсутствие tech leakage в FR.
-- **COULD** — совет. FR format `[Actor] can [capability]`.
+- **MUST** — обязательные реализованные schema checks; обычно блокируют gated activation.
+- **SHOULD** — предупреждения; severity плотности зависит от глубины (50 слов: Standard SHOULD, Deep MUST).
+- **COULD** — совет, включая `adversarial-too-clean` в опциональных adversarial checks.
+
+Рекомендации автору шире исполняемых проверок: наличие секции не доказывает
+измеримость, причинность и согласованность. Проверка наличия `id`/`status`
+сама по себе не подтверждает допустимость всех lifecycle values.
 
 ---
 
 ## Lifecycle — от Draft до Active
 
-```
-Draft ──review──→ Draft (если MUST failures)
-Draft ──activate──→ Active (если MUST пройдены)
-Active ──supersede──→ Superseded (link на замену)
-Active ──deprecate──→ Deprecated (с причиной)
+```text
+draft --activate--> active
+active --> superseded | deprecated | stale
+stale --renew--> active
+stale --reopen--> deprecated + new draft
+stale --deprecate--> deprecated
 ```
 
+`superseded` и `deprecated` — terminal. `review` status не меняет.
+Approved, Implemented и Closed — описания процесса, не значения сохраняемого
+status. Session phases и маркеры artifact phase учитываются отдельно.
+Активация включает length/evidence/stub gates сверх валидации.
+
 ### Типичный flow
+
+Иллюстративная последовательность для legacy layout, не наблюдённый transcript.
+Перед последним шагом заполните содержимое нужной глубины и реальные evidence,
+которые требует активация. Для migrated layout выбирайте интерфейс по таблице выше.
 
 ```bash
 # 1. Создал артефакт
@@ -462,11 +528,11 @@ forgeplan update PRD-001 --body @/tmp/prd-001-body.md
 
 # 5. Повторил review
 forgeplan review PRD-001
-# → Review PASSED — ready to activate
+# Изучить findings и activation checklist; не подставлять выдуманный PASS.
 
 # 6. Активировал
 forgeplan activate PRD-001
-# → draft → active
+# Успех возможен только при прохождении всех применимых activation gates.
 ```
 
 ### build-on-draft warning
@@ -531,13 +597,13 @@ npx skills add ForgePlan/forgeplan --skill forge
 6. forgeplan_activate   → draft → active
 ```
 
-73 MCP tools всего. 6 core покрывают 90% workflow.
+Selected build содержит 76 full-profile tools и 9 отдельных read-profile tools. Эти шесть — учебная подборка, не измеренное покрытие 90% workflow и не приёмка всех зарегистрированных tools.
 
 ---
 
 ## Forge Mode — permission model для AI агентов
 
-При работе с AI агентами (Claude Code, Cursor) в автономном режиме используйте **Forge Mode** — модель разрешений с 3 зонами доверия (FPF B.3 Trust Calculus):
+**Forge Mode** — локальная конвенция разрешений, не upstream trust algorithm FPF B.3. Config ниже иллюстративен; реальные permissions и загрузку hooks проверяют в host. Он не устанавливает controls и не отменяет ограничения конкретного задания.
 
 | Зона | Что | Режим | Примеры |
 |------|-----|-------|---------|
@@ -570,10 +636,10 @@ npx skills add ForgePlan/forgeplan --skill forge
 
 ### /forge-cycle — полный FPF-aligned dev cycle
 
-Команда `/forge-cycle PRD-XXX` запускает 8-фазный цикл:
+Native prompt `/forge-cycle PRD-XXX` описывает девять numbered phases (0–8):
 
 ```
-Phase 0: OBSERVE    → forgeplan health + stale + fpf (что происходит?)
+Phase 0: OBSERVE    → forgeplan health + stale + fpf dashboard (что происходит?)
 Phase 1: ROUTE      → forgeplan route (какой depth?)
 Phase 2: SPRINT     → /sprint (план волн)
 Phase 3: BUILD      → /team-up (реализация с Rust skills)
@@ -584,15 +650,18 @@ Phase 7: COMMIT     → git commit + PR + hindsight
 Phase 8: NEXT       → forgeplan health → следующая фича
 ```
 
-**FPF auto-resolve**: при конфликтах/выборах агент автоматически применяет ADI cycle (Abduction → Deduction → Induction) + WLNK + Reversibility check. Спрашивает пользователя только при необратимых решениях.
+Native AUDIT сохраняет квоту замечаний; она не доказывает наличие дефектов.
+Этот документ policy не меняет и G3 не закрывает.
+
+**Локальная auto-resolve guidance** использует ADI + weakest-link + обратимость. Native Build stop conditions включают также одинаково слабые варианты и влияние на другие PRD/сквозные вопросы, не только необратимость. Три альтернативы — локальная prompt-эвристика, не универсальный upstream-порог FPF.
 
 ---
 
 ## Подводные камни (из реального dogfood)
 
-### 1. EvidencePack без structured fields → R_eff = 0.1
+### 1. EvidencePack без structured fields → нет надёжного evidence signal
 
-Parser ищет `verdict:`, `congruence_level:`, `evidence_type:` в body как plain text. Без них — CL0 по умолчанию.
+Parser ищет `verdict:`, `congruence_level:`, `evidence_type:` в body как plain text. Без них congruence level не определён; конкретный R_eff зависит от того, оценивается ли pack как leaf, через другой артефакт или при отсутствии eligible evidence.
 
 **Решение:** Всегда добавляй `## Structured Fields` секцию.
 
@@ -600,11 +669,16 @@ Parser ищет `verdict:`, `congruence_level:`, `evidence_type:` в body как
 
 Если не запускать `forgeplan review` → `forgeplan activate`, все артефакты остаются в Draft навсегда. Health dashboard будет показывать "ALL DRAFT".
 
-**Решение:** После заполнения артефакта — сразу review + activate.
+**Решение:** Проверьте заполненный артефакт, устраните применимые gates и активируйте только готовый документ.
 
 ### 3. Validator требует секции которых нет в body
 
-Body в LanceDB хранится БЕЗ frontmatter. Validator получает frontmatter из record fields (id, status, kind), а секции ищет в body. Если при создании через `forgeplan new` вы заполнили только Summary + FR — validator скажет "Missing Problem, Goals, Non-Goals".
+Контракт body зависит от интерфейса. Текущий captured `ArtifactRecord`
+обычного чтения сохраняет весь Markdown с frontmatter; CLI `get --json`
+возвращает его в `body`. Full MCP pinned `forgeplan_constellation_get`
+возвращает прозу во вложенном `artifact.body`. Эти payload не взаимозаменяемы.
+Валидатору всё равно нужны обязательные секции: шаблон только с Summary + FR
+остаётся неполным.
 
 **Решение:** Заполняйте все MUST секции для вашего depth. Или используйте aliases (Motivation вместо Problem, Out of Scope вместо Non-Goals).
 
@@ -618,13 +692,13 @@ forgeplan update PRD-001 --body @/tmp/new-body.md
 
 ### 5. 10 типов артефактов, но реально нужны 6
 
-Из dogfood опыта: PRD, RFC, ADR, Note, Problem, Epic — реально используются. EvidencePack, Spec, SolutionPortfolio, RefreshReport — для зрелых проектов с большим количеством артефактов.
+Десять типов здесь — вводная подборка, не полная core taxonomy. Evidence нужны по применимым gates, не только зрелым проектам. Rust core поддерживает также Memory и шесть brownfield extraction kinds; CLI/MCP schemas имеют собственные subsets.
 
 ### 6. PRD-заглушки: "создал ID, забыл заполнить"
 
 **Антипаттерн:** `forgeplan new prd "Title"` → сразу пишешь код → PRD остаётся stub навсегда.
 
-Результат: `forgeplan validate` показывает 5 MUST errors, PRD нельзя activate, нет обоснования решения.
+Результат: validation может найти пропущенные секции/placeholders; точный набор findings зависит от глубины и содержимого. Stub не готов к активации.
 
 **Решение:** Shape → Validate → Code. После `forgeplan new` — СРАЗУ заполни MUST секции (Problem, Goals, Non-Goals, Target Users, Related). Запусти `forgeplan validate` и убедись что PASS. Только потом кодь.
 
@@ -653,10 +727,10 @@ forgeplan activate PRD-XXX
 
 | Документ | Описание |
 |----------|----------|
-| `docs/guides/HOW-TO-USE.md` | 10 правил методологии с примерами |
-| `docs/guides/DEPTH-CALIBRATION.md` | Подробно про 4 уровня depth + escalation |
-| `docs/guides/QUALITY-GATES.md` | Verification Gate + Adversarial Review |
-| `docs/guides/ARTIFACT-MODEL.md` | Иерархия артефактов: Epic → PRD → Spec → RFC → ADR |
-| `docs/guides/PRD-RFC-ADR-FLOW.md` | Decision tree: какой документ создать |
-| `docs/guides/GLOSSARY.md` | 31 термин |
+| [HOW-TO-USE.ru.md](HOW-TO-USE.ru.md) | Правила методологии с примерами |
+| [DEPTH-CALIBRATION.ru.md](DEPTH-CALIBRATION.ru.md) | Глубина и escalation |
+| [QUALITY-GATES.ru.md](QUALITY-GATES.ru.md) | Verification и adversarial review |
+| [ARTIFACT-MODEL.ru.md](ARTIFACT-MODEL.ru.md) | Иерархия артефактов |
+| [PRD-RFC-ADR-FLOW.ru.md](PRD-RFC-ADR-FLOW.ru.md) | Какой документ создавать |
+| [GLOSSARY.ru.md](GLOSSARY.ru.md) | Термины и различия upstream/product |
 | `CLAUDE.md` | Инструкции для AI агента + CLI quick reference |

@@ -126,12 +126,15 @@ Fix: forgeplan list",
     };
 
     common::log_change_field(
-        &store,
+        &ws,
+        Some(&store),
         source_id,
         "link",
-        "relation",
-        None,
-        Some(&format!("{}:{}", target_id, relation)),
+        (
+            "relation",
+            None,
+            Some(&format!("{}:{}", target_id, relation)),
+        ),
         "cli",
     )
     .await;
@@ -202,8 +205,8 @@ Fix: forgeplan list",
 /// Markdown remains authoritative and the derived index is reconciled after
 /// mutations. `--auto-activate-complete` is handled against the captured
 /// canonical workspace.
-/// It does not write Lance-backed change-log entries or a score cache;
-/// scores are computed from canonical links when requested.
+/// Audit events use auxiliary history; scores are computed from canonical
+/// links when requested rather than stored in a cache.
 ///
 /// Semantics preserved from the store path: slug/display-id source
 /// resolution (via the file scan), the qualified `KEY@qualifier` registry
@@ -312,6 +315,20 @@ async fn run_file_first(
         None
     };
 
+    common::log_change_field(
+        &ws,
+        None,
+        source_id,
+        "link",
+        (
+            "relation",
+            None,
+            Some(&format!("{}:{}", target_id, relation)),
+        ),
+        "cli",
+    )
+    .await;
+
     match &outcome {
         Some(forgeplan_core::projection::LinkUpsertOutcome::Replaced { old_relation }) => {
             println!(
@@ -401,7 +418,7 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
         );
     }
 
-    // PRD-073 FR-005: bidirectional render via helper.
+    // PRD-073 FR-005: update the source's outgoing canonical links.
     forgeplan_core::projection::delete_link_with_projection(
         &forgeplan_core::projection::MutationContext::new(&ws, &_lock, Some(&store)),
         source_id,
@@ -411,12 +428,15 @@ pub async fn run_unlink(source_id: &str, target_id: &str, relation: &str) -> any
     .await?;
 
     common::log_change_field(
-        &store,
+        &ws,
+        Some(&store),
         source_id,
         "unlink",
-        "relation",
-        Some(&format!("{}:{}", target_id, relation)),
-        None,
+        (
+            "relation",
+            Some(&format!("{}:{}", target_id, relation)),
+            None,
+        ),
         "cli",
     )
     .await;
@@ -469,6 +489,20 @@ async fn run_unlink_file_first(
             target_id
         );
     }
+
+    common::log_change_field(
+        &ws,
+        None,
+        source_id,
+        "unlink",
+        (
+            "relation",
+            Some(&format!("{}:{}", target_id, relation)),
+            None,
+        ),
+        "cli",
+    )
+    .await;
 
     println!("Unlinked: {} --{}--> {}", source_id, relation, target_id);
 

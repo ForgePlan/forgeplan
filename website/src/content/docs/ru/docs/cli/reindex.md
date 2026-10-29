@@ -8,6 +8,12 @@ description: "Перестроение индекса LanceDB из файлов 
 файлы `.md` являются источником истины (ADR-003), а `lance/` - это производный,
 игнорируемый Git-ом кеш, который всегда может быть пересчитан.
 
+В локальной `0.39.0+constellation.s1.1` на layout Constellation `reindex`
+выполняет тот же reconcile, что и `forgeplan index`, а не создаёт legacy
+таблицы артефактов. Настроенное embedding maintenance также может обработать
+очередь векторов. Описание legacy-таблиц ниже относится только к старому
+layout. См. [Constellation](/ru/docs/guides/constellation/).
+
 ## Использование
 
 ```text
@@ -26,20 +32,21 @@ forgeplan reindex
 1.  Сканирует каждую директорию артефактов в `.forgeplan/` (adrs, rfcs, prds, epics,
     specs, evidence, problems, solutions, notes, refresh).
 2.  Парсит YAML frontmatter + тело markdown каждого файла.
-3.  Перестраивает таблицы LanceDB (`artifacts`, `links`, `tags`, `events`).
-4.  Пересчитывает производные поля (входные данные для оценки R_eff, канонизация тегов).
+3.  В legacy layout обновляет записи артефактов и удаляет отсутствующие или повреждённые записи.
+4.  Удаляет сиротские связи. Это не полная перестройка всех вспомогательных таблиц и не гарантия пересчёта каждой оценки.
 5.  Оставляет ваши файлы markdown нетронутыми.
 
 ## Когда запускать
 
--   **После `git clone`** - `.forgeplan/lance/` игнорируется Git-ом и не существует
-    при свежем извлечении. Запустите `forgeplan init -y && forgeplan reindex`, чтобы
-    инициализировать рабочее пространство.
+- **После `git clone`** - проверьте нужный корень. `init -y` ничего не
+  меняет, если `.forgeplan/` найден, в том числе у родителя. Если config
+  отсутствует и нужны defaults, выполните `init -y --force` с резервной
+  копией, верните настройки и запустите `reindex`.
 -   **После ручного редактирования markdown** - если вы редактировали файлы PRD/RFC вне
     CLI (текстовый редактор, поиск и замена), `reindex` синхронизирует изменения в
-    LanceDB, чтобы `search`, `list` и `health` их видели.
--   **После `git pull`**, который принес новые артефакты от коллег - см. также
-    [`forgeplan git-sync`](/docs/cli/git-sync/) для инкрементального варианта.
+    производном индексе. Доступность `list` и `health` зависит от layout и обработчика.
+- **После `git pull`** - запустите перестройку после получения Markdown коллег;
+  legacy incremental-вариант описан в [`git-sync`](/ru/docs/cli/git-sync/).
 -   **Восстановление после повреждения** - если `lance/` поврежден или схема LanceDB
     мигрировала, полная переиндексация восстанавливает данные из markdown.
 -   **Миграция схемы** - новые столбцы LanceDB при обновлении Forgeplan требуют
@@ -52,7 +59,7 @@ forgeplan reindex
 git clone <repo> && cd myproject
 forgeplan init -y
 forgeplan reindex
-forgeplan list       # проверка
+forgeplan search "auth" --keyword  # проверка поиска
 
 # После редактирования PRD в текстовом редакторе
 vim .forgeplan/prds/prd-001-auth.md
@@ -62,17 +69,15 @@ forgeplan search "auth"
 
 ## Безопасность
 
-`reindex` **безопасно запускать в любое время**. Он никогда не записывает в файлы `.md`, только
-в производный индекс `lance/`. Если вы не уверены, синхронизирован ли индекс,
-просто запустите его - затраты заключаются в сканировании вашего дерева артефактов (секунды для
-типичных рабочих пространств).
+`reindex` сохраняет канонические `.md`, изменяя производное состояние.
+Не удаляйте индекс и кэш модели ради диагностики.
+Legacy и Constellation layouts не взаимозаменяемы.
 
 ## Примечание к v0.18.0 (PROB-027)
 
-До v0.18.0 `reindex` предполагал, что `.forgeplan/lance/` уже существует и
-мог завершиться ошибкой при свежих клонированиях. Начиная с v0.18.0 команда инициализирует
-директорию индекса, если она отсутствует, поэтому рабочий процесс "клонирование → переиндексация" теперь
-работает полностью без отдельного шага `init` в существующих рабочих пространствах.
+Исторически v0.18.0 исправила перестройку отсутствующего legacy `lance/`.
+Это не отменяет загрузку конфигурации workspace и не означает, что
+повторный `init -y` восстанавливает отсутствующий config.
 
 ## Очистка сиротских связей (хотфикс v0.17.1)
 
@@ -84,6 +89,8 @@ forgeplan search "auth"
 в LanceDB. Эти сиротские ссылки приводили к появлению фантомных строк `?` в
 выводе `forgeplan tree` и завышали количество ссылок в `forgeplan health`. Фаза 3
 удаляет их и выводит счетчик:
+
+Историческая иллюстрация, не transcript локальной сборки Constellation:
 
 ```
 Reindex complete: 147 artifacts, 3 removed (corrupt kind), 5 orphan relations trimmed
@@ -113,14 +120,29 @@ Reindex complete: 147 artifacts, 3 removed (corrupt kind), 5 orphan relations tr
 
 -   **`reindex`** - целенаправленное перестроение LanceDB из текущего состояния markdown.
     Используйте в обычной повседневной работе.
--   **[`scan-import`](/docs/cli/scan-import/)** - низкоуровневый сканер, который также может
-    импортировать устаревшие/внешние артефакты в новое рабочее пространство. Предпочтительнее
-    использовать `reindex`, если вы не выполняете одноразовый импорт или миграцию.
+- **[`scan-import`](/ru/docs/cli/scan-import/)** импортирует внешний Markdown, в том числе через migrated file-first путь.
+  Для перестройки индекса из существующих канонических источников используйте `index` или `reindex`.
 
 ## См. также
 
--   [Обзор CLI](/docs/cli/)
--   [`forgeplan scan-import`](/docs/cli/scan-import/) - массовый импорт + пересканирование
--   [`forgeplan git-sync`](/docs/cli/git-sync/) - инкрементальная синхронизация после pull
--   [`forgeplan watch`](/docs/cli/watch/) - непрерывный демон автосинхронизации
--   [`forgeplan health`](/docs/cli/health/) - проверка целостности индекса
+- [Обзор CLI](/ru/docs/cli/)
+- [`forgeplan scan-import`](/ru/docs/cli/scan-import/) - импорт документов
+- [Контракт Constellation](/ru/docs/reference/constellation/)
+- [`forgeplan watch`](/ru/docs/cli/watch/) - непрерывное обслуживание
+- [`forgeplan health`](/ru/docs/cli/health/) - диагностика индекса
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan reindex --help`.
+
+```text
+Rebuild LanceDB index from .md files (files-first sync)
+
+Usage: forgeplan reindex
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

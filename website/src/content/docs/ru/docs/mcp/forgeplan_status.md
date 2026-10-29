@@ -22,28 +22,21 @@ _Входные параметры отсутствуют. Вызовите эт
 
 ## Возвращает
 
+Учебный фрагмент ответа, не измерение workspace. Групповые количества передаются массивами объектов, а не словарями.
+
 ```json
 {
-  "total": 184,
-  "by_kind": {
-    "prd": 42,
-    "rfc": 18,
-    "adr": 12,
-    "epic": 5,
-    "spec": 9,
-    "evidence": 57,
-    "problem": 34,
-    "solution": 7,
-    "note": 45,
-    "refresh": 3
-  },
-  "by_status": {
-    "draft": 12,
-    "active": 98,
-    "stale": 4,
-    "superseded": 23,
-    "deprecated": 47
-  }
+  "project": "example",
+  "workspace": "/abs/path/.forgeplan",
+  "total": 2,
+  "by_kind": [
+    { "kind": "evidence", "count": 1 },
+    { "kind": "prd", "count": 1 }
+  ],
+  "by_status": [
+    { "status": "active", "count": 1 },
+    { "status": "draft", "count": 1 }
+  ]
 }
 ```
 
@@ -70,3 +63,29 @@ forgeplan status
 - [`forgeplan_health`](/ru/docs/mcp/forgeplan_health/) - полный отчёт о состоянии со слепыми пятнами и следующими действиями.
 - [`forgeplan_list`](/ru/docs/mcp/forgeplan_list/) - отфильтрованный список артефактов.
 - [Руководство по методологии](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Show project status dashboard — total artifacts, counts by kind and status.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| — | — | — | Параметров нет. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "properties": {},
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

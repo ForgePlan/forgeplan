@@ -1,0 +1,798 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trust Calculus - F/G/R in 3D and its link to ADI</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<style>
+  :root {
+    /* ForgePlan dark palette */
+    --bg:        #050505;
+    --bg-1:      #0b0b0b;
+    --bg-2:      #141414;
+    --bg-3:      #1a1a1a;
+
+    --text:      #f5f5f5;
+    --text-1:    #e5e5e5;
+    --text-2:    #a3a3a3;
+    --text-3:    #737373;
+    --text-4:    #525252;
+
+    --line:      rgba(255, 255, 255, 0.06);
+    --line-2:    rgba(255, 255, 255, 0.14);
+
+    --accent:    #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg: rgba(255, 90, 31, 0.18);
+
+    --ok:        #22c55e;
+    --err:       #ef4444;
+    --warn:      #f59e0b;
+
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    /* Axes data-viz colors */
+    --f-color:   #ff5a1f;  /* F · Formality - brand orange */
+    --g-color:   #22c55e;  /* G · Granularity - brand green */
+    --r-color:   #60a5fa;  /* R · Reliability - sky blue */
+
+    /* Hypothesis colors */
+    --h1-color:  #ef4444;
+    --h2-color:  #a3a3a3;
+    --h3-color:  #22c55e;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  /* Typography */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-family: var(--font-sans);
+    font-size: clamp(40px, 5.4vw, 64px);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    font-weight: 500;
+    color: var(--text);
+    margin: 0 0 18px;
+  }
+  h2 {
+    font-family: var(--font-sans);
+    font-size: 28px;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    font-weight: 500;
+    color: var(--text);
+    margin: 64px 0 14px;
+  }
+  h3 {
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.3;
+    font-weight: 500;
+    color: var(--text);
+    margin: 0;
+  }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; }
+  code {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--accent-soft);
+    background: var(--accent-bg);
+    padding: 1px 6px;
+    border-radius: 0;
+  }
+  b.k { color: var(--text); font-weight: 500; }
+
+  /* Artifact cards (ForgePlan pattern) */
+  .card {
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+    border-radius: 0;
+    padding: 18px 20px 16px;
+    position: relative;
+  }
+  .card .tag-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 10px;
+  }
+  .card .tag-row .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-4); display: inline-block; }
+  .card .meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+  }
+
+  /* Axes grid (F / G / R explainer) */
+  .axes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 32px; }
+  .axis-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px; }
+  .axis-card .axis-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 6px;
+  }
+  .axis-card h3 { font-size: 16px; margin-bottom: 6px; }
+  .axis-card .desc { font-size: 13px; color: var(--text-2); margin: 0 0 14px; line-height: 1.5; }
+  .axis-card .scale { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-2); line-height: 1.85; }
+  .axis-card .scale b { color: var(--text); font-weight: 500; display: inline-block; min-width: 36px; }
+
+  .axis-card.f .axis-tag,
+  .axis-card.f .axis-letter { color: var(--f-color); }
+  .axis-card.g .axis-tag,
+  .axis-card.g .axis-letter { color: var(--g-color); }
+  .axis-card.r .axis-tag,
+  .axis-card.r .axis-letter { color: var(--r-color); }
+  .axis-card .axis-letter {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 13px;
+    letter-spacing: 0;
+  }
+
+  /* Inline colored axis letters in body text */
+  .ax-f { color: var(--f-color); font-weight: 500; }
+  .ax-g { color: var(--g-color); font-weight: 500; }
+  .ax-r { color: var(--r-color); font-weight: 500; }
+
+  /* Scenario hypothesis cards */
+  .scenario { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 24px; }
+  .scenario .hypotheses { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+  .hypo {
+    background: var(--bg-2);
+    border: 1px solid var(--line-2);
+    border-radius: 0;
+    padding: 14px 16px 16px;
+  }
+  .hypo .tag-row {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 8px;
+  }
+  .hypo .tag-row .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .hypo.h1 .tag-row .dot { background: var(--h1-color); }
+  .hypo.h2 .tag-row .dot { background: var(--h2-color); }
+  .hypo.h3 .tag-row .dot { background: var(--h3-color); }
+  .hypo .title { font-size: 14px; color: var(--text); margin: 0 0 6px; font-weight: 500; line-height: 1.35; }
+  .hypo .hint { font-size: 12.5px; color: var(--text-2); line-height: 1.5; margin: 0; }
+
+  /* 3D chart wrap */
+  .chart-wrap {
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+    border-radius: 0;
+    padding: 14px 14px 6px;
+    margin: 18px 0 0;
+  }
+  #plot3d { width: 100%; height: 580px; }
+  .chart-legend {
+    display: flex; flex-wrap: wrap; gap: 18px;
+    padding: 14px 16px 18px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+  .chart-legend .item { display: flex; align-items: center; gap: 7px; }
+  .chart-legend .sw { width: 9px; height: 9px; border-radius: 50%; }
+  .chart-legend .sw-plane { display: inline-block; width: 14px; height: 14px; border: 1.5px dashed var(--err); }
+
+  /* Evidence table */
+  .table-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; overflow: hidden; margin: 18px 0 0; }
+  .evidence-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .evidence-table th, .evidence-table td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+  .evidence-table th {
+    color: var(--text-3);
+    font-weight: 500;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--line-2);
+  }
+  .evidence-table tr:last-child td { border-bottom: none; }
+  .evidence-table .num { font-family: var(--font-mono); text-align: right; color: var(--text-1); }
+  .evidence-table .num.avg { color: var(--text-3); }
+  .evidence-table .num.wlnk { color: var(--text); font-weight: 500; }
+  .evidence-table .num.wlnk.low { color: var(--err); }
+  .evidence-table .id { font-family: var(--font-mono); color: var(--text-3); }
+  .evidence-table .src { color: var(--text-1); }
+
+  .hpill { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 8px; border-radius: 0; display: inline-flex; align-items: center; gap: 6px; }
+  .hpill .dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; }
+  .hpill.h1 { background: rgba(239, 68, 68, 0.12); color: #fca5a5; }
+  .hpill.h1 .dot { background: var(--h1-color); }
+  .hpill.h2 { background: rgba(163, 163, 163, 0.12); color: var(--text-1); }
+  .hpill.h2 .dot { background: var(--h2-color); }
+  .hpill.h3 { background: rgba(34, 197, 94, 0.12); color: #86efac; }
+  .hpill.h3 .dot { background: var(--h3-color); }
+
+  .verdict { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 8px; border-radius: 0; display: inline-block; }
+  .verdict.supports { background: rgba(34, 197, 94, 0.12); color: #86efac; }
+  .verdict.refutes  { background: rgba(239, 68, 68, 0.12); color: #fca5a5; }
+  .verdict.weakens  { background: rgba(245, 158, 11, 0.12); color: #fcd34d; }
+
+  /* Bar chart wrap */
+  .bars-wrap { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 18px 22px; margin-top: 18px; }
+  #barChart { height: 360px; }
+
+  /* Winner card */
+  .winner {
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+    border-radius: 0;
+    padding: 22px 24px 22px;
+    margin: 18px 0 0;
+    position: relative;
+  }
+  .winner::before {
+    content: "";
+    position: absolute;
+    left: 24px; bottom: 22px;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .winner .head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .winner .badge { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
+  .winner h3 { font-size: 18px; }
+  .winner p { margin: 8px 0 0; font-size: 14.5px; color: var(--text-2); }
+  .winner .winner-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); position: absolute; right: 24px; bottom: 18px; }
+
+  /* Pipeline */
+  .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 20px 0 0; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; }
+  .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+  .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
+
+  /* Teaching notes */
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
+  .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
+  .teaching ol li::before {
+    counter-increment: step;
+    content: "0" counter(step);
+    position: absolute;
+    left: -8px; top: 1px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--text-3);
+  }
+  .teaching ol li b { color: var(--text); font-weight: 500; }
+
+  /* Footer */
+  .footer {
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-top: 64px;
+    border-top: 1px solid var(--line);
+    padding-top: 18px;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .axes, .scenario .hypotheses { grid-template-columns: 1fr; }
+    .pipeline { grid-template-columns: 1fr; }
+    .pipe-arrow { display: none; }
+    h1 { font-size: 32px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">ADI → Evidence → DDR · interactive walkthrough</p>
+  <h1>Trust Calculus in 3D</h1>
+  <p class="lead">
+    In this lesson's teaching model, each piece of evidence is a vector along three independent axes:
+    <span class="ax-f">F</span> (Formality), <span class="ax-g">G</span> (Granularity),
+    <span class="ax-r">R</span> (Reliability).
+    To pick a hypothesis after the ADI analysis we do not average these axes. Trust is
+    capped by the weakest link - <code>trust = min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</code>.
+    This illustrates WLNK here, not a universal FPF formula. Every number on this page is a teaching set: the 0-9 axes and the
+    F+G+R=12 threshold were invented to show the principle, not taken from a real measurement. How
+    Forgeplan actually rates evidence - at the end of the page.
+  </p>
+
+  <h2>The three axes every claim is rated along</h2>
+  <p>The 0-9 scale on each axis is this lesson's scale; the axes are independent. One piece of evidence may be strict but come from an unreliable source - the weakest link decides everything.</p>
+
+  <div class="axes">
+    <div class="axis-card f">
+      <div class="axis-tag">Axis · <span class="axis-letter">F</span></div>
+      <h3><span class="ax-f">F</span> · Formality · rigour</h3>
+      <p class="desc">How precisely it is worded. Can the claim be checked or refuted?</p>
+      <div class="scale">
+        <b>0-2</b> "it feels like it" · intuition<br>
+        <b>3-5</b> a claim with conditions<br>
+        <b>6-8</b> "with X, p99 &lt; Y ms"<br>
+        <b>9</b> a formal specification
+      </div>
+    </div>
+    <div class="axis-card g">
+      <div class="axis-tag">Axis · <span class="axis-letter">G</span></div>
+      <h3><span class="ax-g">G</span> · Granularity · concreteness</h3>
+      <p class="desc">How detailed it is: numbers, conditions, environment, repetitions.</p>
+      <div class="scale">
+        <b>0-2</b> "slow", "a lot"<br>
+        <b>3-5</b> "15% faster"<br>
+        <b>6-8</b> "p99 = 47 ms at 10k RPS"<br>
+        <b>9</b> a reproducible setup
+      </div>
+    </div>
+    <div class="axis-card r">
+      <div class="axis-tag">Axis · <span class="axis-letter">R</span></div>
+      <h3><span class="ax-r">R</span> · Reliability · the source</h3>
+      <p class="desc">Where the claim came from. Can the source be trusted in this context?</p>
+      <div class="scale">
+        <b>0-2</b> a story, a single remark<br>
+        <b>3-5</b> a vendor whitepaper, a blog<br>
+        <b>6-7</b> an internal benchmark<br>
+        <b>8-9</b> a production measurement, peer review
+      </div>
+    </div>
+  </div>
+
+  <h2>Context · the ADI analysis of "slow /search"</h2>
+  <div class="scenario">
+    <p style="margin: 0;">
+      p95 on the <code>/search</code> endpoint grew to 184 ms with 50k documents. The goal is to bring p95 back below
+      120 ms without changing the search architecture. Before touching any code, the ADI analysis pinned down three different hypotheses.
+    </p>
+    <div class="hypotheses">
+      <div class="hypo h1">
+        <div class="tag-row"><span class="dot"></span><span>H1 · hypothesis</span></div>
+        <div class="title">The bottleneck is in the index</div>
+        <p class="hint">Prediction: <code>EXPLAIN ANALYZE</code> shows &gt;50 ms on the index search.</p>
+      </div>
+      <div class="hypo h2">
+        <div class="tag-row"><span class="dot"></span><span>H2 · hypothesis</span></div>
+        <div class="title">The bottleneck is in re-ranking</div>
+        <p class="hint">Prediction: the flamegraph shows &gt;60% of the time in <code>rerankCandidates</code>.</p>
+      </div>
+      <div class="hypo h3">
+        <div class="tag-row"><span class="dot"></span><span>H3 · hypothesis</span></div>
+        <div class="title">The candidate window is too wide</div>
+        <p class="hint">Prediction: <code>candidateLimit 1000→200</code> cuts p95 by at least 25%.</p>
+      </div>
+    </div>
+  </div>
+
+  <h2>Evidence in <span class="ax-f">F</span>/<span class="ax-g">G</span>/<span class="ax-r">R</span> space</h2>
+  <p>
+    Each point is a separate piece of evidence. The colour points at the hypothesis the evidence
+    addresses. The transparent plane shows the threshold
+    <code><span class="ax-f">F</span> + <span class="ax-g">G</span> + <span class="ax-r">R</span> = 12</code> - everything "below" it counts as weak evidence.
+    That is a sum of three axes, not the weakest-link rule: three average scores add up to 12
+    while one of the axes may be very weak. The threshold of 12 is a convention of this
+    page; Forgeplan has no sum threshold.
+    You can spin the scene with the mouse; hovering shows the full card with the WLNK and the verdict.
+  </p>
+
+  <div class="chart-wrap">
+    <div id="plot3d"></div>
+    <div class="chart-legend">
+      <span class="item"><span class="sw" style="background: var(--h1-color)"></span>H1 · index</span>
+      <span class="item"><span class="sw" style="background: var(--h2-color)"></span>H2 · re-ranking</span>
+      <span class="item"><span class="sw" style="background: var(--h3-color)"></span>H3 · candidateLimit</span>
+      <span class="item" style="margin-left: 12px;"><span class="sw-plane"></span>threshold <span class="ax-f">F</span>+<span class="ax-g">G</span>+<span class="ax-r">R</span> = 12 · weak zone</span>
+    </div>
+  </div>
+
+  <h2>Seven pieces of evidence · what the Trust Calculus shows</h2>
+  <p>
+    The <b class="k">WLNK</b> column = <code>min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</code>. It is neither a sum nor an average - it is the weakest link of the vector.
+    Compare that with how the "average score" deceives when one axis collapses.
+  </p>
+
+  <div class="table-wrap">
+    <table class="evidence-table" id="ev-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Hypothesis</th>
+          <th>Source</th>
+          <th class="num"><span class="ax-f">F</span></th>
+          <th class="num"><span class="ax-g">G</span></th>
+          <th class="num"><span class="ax-r">R</span></th>
+          <th class="num">Avg</th>
+          <th class="num">WLNK</th>
+          <th>Verdict</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h2>The average deceives · WLNK versus Average</h2>
+  <p>
+    Take E5 (a vendor whitepaper): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=8, <span class="ax-r">R</span>=3. The average = 6 - it looks solid. But <span class="ax-r">R</span>=3 means it is marketing
+    material: the source is selling the product. For a production decision a weak <span class="ax-r">R</span> is not compensated by a nice
+    wording.
+    WLNK = 3 says it honestly: you cannot use it as the basis of a decision.
+  </p>
+  <div class="bars-wrap">
+    <canvas id="barChart" role="img" aria-label="Comparison of the average F+G+R and WLNK (min) for seven pieces of evidence"></canvas>
+  </div>
+
+  <h2>Who won on ADI · choosing the hypothesis</h2>
+  <p>
+    We apply the Trust Calculus to the seven pieces of evidence. The winner is the hypothesis with the strongest
+    <i>supporting</i> piece of evidence under the WLNK rule. The average is ignored - we count
+    <code>min(F, G, R)</code> only.
+  </p>
+  <div class="winner">
+    <div class="head">
+      <span class="badge">winner</span>
+      <h3>H3 · lowering candidateLimit</h3>
+    </div>
+    <p>
+      The best supporting evidence is E6 (an internal benchmark): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=9, <span class="ax-r">R</span>=7, WLNK=7.
+      H1 is refuted by our own measurement E2 (EXPLAIN ANALYZE showed 18-24 ms, which
+      <i>refutes</i> the hypothesis). H2 also has supporting evidence with WLNK=7 (E3, the flamegraph),
+      but <span class="ax-g">G</span>=8 against <span class="ax-g">G</span>=9 for E6 - by the "on a tie take the more detailed one" rule H3 wins.
+      That tie-break is a rule of this lesson, not part of the Forgeplan computation. The winner is
+      chosen by the author of the scenario: if you aggregated all the supporting minima of H3 by the
+      weakest-link rule, you would get 3, not 7.
+      The DDR is written for H3 with conditions for revisiting - the decay triggers are shown in the pipeline below.
+    </p>
+    <span class="winner-tag">H3 · activated</span>
+  </div>
+
+  <h2>The whole cycle · ADI → Evidence → Trust Calculus → DDR</h2>
+  <p>The Trust Calculus is the inspection between collecting the facts and recording the decision. Do not skip the decay triggers in the DDR - without them a decision becomes a monument.</p>
+  <div class="pipeline">
+    <div class="pipe-box">
+      <div class="step-tag">01 · ADI</div>
+      <div class="step-title">3 hypotheses</div>
+      <div class="step-desc">A checkable consequence for each version</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">02 · Evidence</div>
+      <div class="step-title">Measurements and sources</div>
+      <div class="step-desc">Every piece of evidence with <span class="ax-f">F</span> · <span class="ax-g">G</span> · <span class="ax-r">R</span></div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">03 · Trust Calculus</div>
+      <div class="step-title">WLNK = min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</div>
+      <div class="step-desc">Threshold <span class="ax-f">F</span>+<span class="ax-g">G</span>+<span class="ax-r">R</span>&lt;12 = weak evidence</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">04 · DDR</div>
+      <div class="step-title">Decision + decay</div>
+      <div class="step-desc">Conditions for revisiting, triggers, TTL</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="tag-row"><span class="dot"></span><span>What Forgeplan actually does</span></div>
+    <p style="margin: 0;">
+      Forgeplan computes an artifact's F/G/R on a 0–1 scale and their geometric mean
+      <code>(F × G × R)^(1/3)</code>. These are artifact-quality heuristics, not this
+      lesson's 0–9 evidence ratings; the product has no sum threshold.
+      An evidence pack's intrinsic score (<code>kind: evidence</code>) does not use these teaching F/G/R values.
+      In the full scorer, an unexpired pack scores
+      <code>max(0, verdict − CL penalty − type modifier)</code>.
+      Bases for <code>supports</code> / <code>weakens</code> / <code>refutes</code> are 1.0 / 0.5 / 0.0;
+      CL0 / CL1 / CL2 / CL3 penalties are 0.9 / 0.4 / 0.1 / 0; modifiers for
+      <code>measurement</code> / <code>test</code> / <code>benchmark</code> / <code>audit</code> are 0 / 0 / 0.1 / 0.2.
+      An optional <code>valid_until</code>, if expired, takes precedence: the score is 0.1,
+      including for <code>refutes</code>; with no date, this scorer applies no expiry.
+      Recursive decision <code>R_eff</code> takes the minimum of its own eligible evidence
+      score and eligible dependency contributions. Evidence packs in <code>draft</code> count;
+      <code>superseded</code> and <code>deprecated</code> packs are excluded. Dependencies also exclude
+      <code>draft</code> and the <code>note</code>/<code>memory</code> kinds.
+      A dependency contributes <code>max(0, dependency R_eff − relation penalty)</code>:
+      <code>based_on</code>/<code>informs</code> subtract 0.1 (CL2),
+      <code>refines</code>/<code>depends_on</code> subtract 0 (CL3). For example, own evidence at 1.0
+      and an eligible <code>based_on</code> dependency at 0.2 produce 0.1 overall.
+      With no eligible own evidence, an ordinary decision scores 0; a leaf evidence pack
+      is scored on its own fields.
+      The flat helper used for some displayed scores neither traverses dependencies nor applies
+      the type modifier; it is not interchangeable with the full scorer. The verdicts on this page
+      use the same keys, but the F/G/R ratings and E1…E7 set are a teaching example.
+    </p>
+  </div>
+
+  <div class="footer">
+    <span>trust-calculus · explainer · v1</span>
+    <span><span class="arrow">→</span> forgeplan · forgeplan.dev</span>
+  </div>
+
+</main>
+
+<script>
+  // ---------- Safety helpers ----------
+  function showError(host, msg) {
+    if (!host) return;
+    host.innerHTML =
+      '<div style="padding: 48px 24px; text-align: center; color: #fca5a5; font-family: var(--font-mono, monospace); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; line-height: 1.6;">' +
+      msg + '</div>';
+  }
+  function waitFor(globalName, then, timeoutMs) {
+    const start = Date.now();
+    (function poll() {
+      if (typeof window[globalName] !== 'undefined') { then(); return; }
+      if (Date.now() - start > (timeoutMs || 8000)) {
+        const msg = globalName + ' did not load · check the internet or a CDN block (cdn.plot.ly · cdn.jsdelivr.net)';
+        if (globalName === 'Plotly') showError(document.getElementById('plot3d'), msg);
+        if (globalName === 'Chart')  {
+          const c = document.getElementById('barChart');
+          if (c && c.parentNode) showError(c.parentNode, msg);
+        }
+        return;
+      }
+      setTimeout(poll, 100);
+    })();
+  }
+
+  // ---------- Evidence dataset ----------
+  const evidence = [
+    { id: 'E1', hypo: 'H1', source: 'PostgreSQL docs (vendor)',         F: 6, G: 4, R: 4, verdict: 'supports' },
+    { id: 'E2', hypo: 'H1', source: 'EXPLAIN ANALYZE on staging (own)', F: 7, G: 8, R: 8, verdict: 'refutes'  },
+    { id: 'E3', hypo: 'H2', source: 'Flamegraph staging (own)',         F: 7, G: 8, R: 7, verdict: 'supports' },
+    { id: 'E4', hypo: 'H2', source: 'Slack message from engineer',      F: 2, G: 3, R: 2, verdict: 'weakens'  },
+    { id: 'E5', hypo: 'H3', source: 'Vendor whitepaper',                F: 7, G: 8, R: 3, verdict: 'supports' },
+    { id: 'E6', hypo: 'H3', source: 'Internal benchmark (own)',         F: 7, G: 9, R: 7, verdict: 'supports' },
+    { id: 'E7', hypo: 'H3', source: 'Customer support ticket',          F: 4, G: 5, R: 5, verdict: 'supports' },
+  ];
+
+  // ForgePlan-aligned palette for hypotheses
+  const colorHypo = { H1: '#ef4444', H2: '#a3a3a3', H3: '#22c55e' };
+  const symbolVerdict = { supports: 'circle', weakens: 'diamond-open', refutes: 'cross' };
+
+  function wlnk(e) { return Math.min(e.F, e.G, e.R); }
+  function avg(e)  { return ((e.F + e.G + e.R) / 3); }
+
+  // ---------- Build evidence table ----------
+  (function renderTable() {
+    const tbody = document.querySelector('#ev-table tbody');
+    evidence.forEach(e => {
+      const w = wlnk(e);
+      const a = avg(e).toFixed(1);
+      const lowClass = w < 5 ? 'low' : '';
+      tbody.insertAdjacentHTML('beforeend',
+        '<tr>' +
+          '<td class="id">' + e.id + '</td>' +
+          '<td><span class="hpill ' + e.hypo.toLowerCase() + '"><span class="dot"></span>' + e.hypo + '</span></td>' +
+          '<td class="src">' + e.source + '</td>' +
+          '<td class="num">' + e.F + '</td>' +
+          '<td class="num">' + e.G + '</td>' +
+          '<td class="num">' + e.R + '</td>' +
+          '<td class="num avg">' + a + '</td>' +
+          '<td class="num wlnk ' + lowClass + '">' + w + '</td>' +
+          '<td><span class="verdict ' + e.verdict + '">' + e.verdict + '</span></td>' +
+        '</tr>');
+    });
+  })();
+
+  // ---------- 3D scatter (Plotly) ----------
+  function plot3d() {
+    const groups = {};
+    evidence.forEach(e => {
+      const key = e.hypo;
+      if (!groups[key]) groups[key] = { x: [], y: [], z: [], text: [], hovertext: [], symbol: [] };
+      groups[key].x.push(e.F);
+      groups[key].y.push(e.G);
+      groups[key].z.push(e.R);
+      groups[key].text.push(e.id);
+      groups[key].symbol.push(symbolVerdict[e.verdict] || 'circle');
+      const w = wlnk(e);
+      groups[key].hovertext.push(
+        '<b>' + e.id + '</b> · ' + e.hypo + ' · ' + e.verdict + '<br>' +
+        e.source + '<br>' +
+        '<span style="color:#ff5a1f">F</span>=' + e.F +
+        ' · <span style="color:#22c55e">G</span>=' + e.G +
+        ' · <span style="color:#60a5fa">R</span>=' + e.R + '<br>' +
+        'WLNK = min(<span style="color:#ff5a1f">F</span>,<span style="color:#22c55e">G</span>,<span style="color:#60a5fa">R</span>) = <b>' + w + '</b><br>' +
+        'Average = ' + avg(e).toFixed(1)
+      );
+    });
+
+    const traces = Object.keys(groups).map(h => ({
+      type: 'scatter3d',
+      mode: 'markers+text',
+      name: h,
+      x: groups[h].x, y: groups[h].y, z: groups[h].z,
+      text: groups[h].text,
+      textposition: 'top center',
+      textfont: { color: '#f5f5f5', size: 11, family: 'JetBrains Mono, monospace' },
+      hoverinfo: 'text',
+      hovertext: groups[h].hovertext,
+      marker: {
+        size: 9,
+        color: colorHypo[h],
+        symbol: groups[h].symbol,
+        line: { color: '#050505', width: 1 },
+        opacity: 0.95
+      }
+    }));
+
+    // Threshold plane F+G+R = 12
+    const plane = {
+      type: 'mesh3d',
+      x: [12, 0, 0], y: [0, 12, 0], z: [0, 0, 12],
+      i: [0], j: [1], k: [2],
+      opacity: 0.14,
+      color: '#ef4444',
+      hoverinfo: 'skip',
+      showlegend: false
+    };
+    const planeEdge = {
+      type: 'scatter3d',
+      mode: 'lines',
+      x: [12, 0, 0, 12], y: [0, 12, 0, 0], z: [0, 0, 12, 0],
+      line: { color: '#ef4444', width: 2, dash: 'dash' },
+      hoverinfo: 'skip',
+      showlegend: false
+    };
+
+    const axisCommon = {
+      range: [0, 9.6],
+      tick0: 0,
+      dtick: 1,
+      gridcolor: 'rgba(255, 255, 255, 0.08)',
+      zerolinecolor: 'rgba(255, 255, 255, 0.18)',
+      tickfont: { color: '#a3a3a3', size: 11, family: 'JetBrains Mono, monospace' },
+      backgroundcolor: 'rgba(11, 11, 11, 0.6)',
+      showbackground: true
+    };
+
+    const layout = {
+      paper_bgcolor: 'transparent',
+      plot_bgcolor: 'transparent',
+      margin: { l: 0, r: 0, t: 8, b: 0 },
+      showlegend: false,
+      scene: {
+        xaxis: { ...axisCommon, title: { text: 'F · Formality',   font: { color: '#ff5a1f', size: 14, family: 'JetBrains Mono, monospace' } } },
+        yaxis: { ...axisCommon, title: { text: 'G · Granularity', font: { color: '#22c55e', size: 14, family: 'JetBrains Mono, monospace' } } },
+        zaxis: { ...axisCommon, title: { text: 'R · Reliability', font: { color: '#60a5fa', size: 14, family: 'JetBrains Mono, monospace' } } },
+        camera: { eye: { x: 1.5, y: 1.4, z: 1.0 } },
+        aspectmode: 'cube'
+      }
+    };
+
+    const config = { displaylogo: false, responsive: true, modeBarButtonsToRemove: ['orbitRotation'] };
+    Plotly.newPlot('plot3d', [...traces, plane, planeEdge], layout, config);
+  }
+
+  // ---------- Bar chart: Average vs WLNK ----------
+  function barChart() {
+    const ctx = document.getElementById('barChart');
+    const labels = evidence.map(e => e.id + ' · ' + e.hypo);
+    const avgs = evidence.map(e => Number(avg(e).toFixed(2)));
+    const wlnks = evidence.map(e => wlnk(e));
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Average · (F + G + R) / 3',
+            data: avgs,
+            backgroundColor: 'rgba(163, 163, 163, 0.35)',
+            borderColor: '#a3a3a3',
+            borderWidth: 1
+          },
+          {
+            label: 'WLNK · min(F, G, R)',
+            data: wlnks,
+            backgroundColor: 'rgba(255, 90, 31, 0.7)',
+            borderColor: '#ff5a1f',
+            borderWidth: 1
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            max: 9,
+            ticks: { color: '#a3a3a3', stepSize: 1, font: { family: 'JetBrains Mono, monospace' } },
+            grid: { color: 'rgba(255,255,255,0.06)' },
+            title: { display: true, text: 'Score (0-9)', color: '#a3a3a3', font: { family: 'Inter, sans-serif' } }
+          },
+          x: {
+            ticks: { color: '#a3a3a3', autoSkip: false, maxRotation: 0, font: { family: 'JetBrains Mono, monospace' } },
+            grid: { display: false }
+          }
+        },
+        plugins: {
+          legend: {
+            labels: {
+              color: '#e5e5e5',
+              boxWidth: 12,
+              boxHeight: 12,
+              font: { family: 'Inter, sans-serif', size: 12 }
+            }
+          },
+          tooltip: {
+            backgroundColor: '#0b0b0b',
+            borderColor: 'rgba(255,255,255,0.14)',
+            borderWidth: 1,
+            titleColor: '#f5f5f5',
+            bodyColor: '#e5e5e5',
+            titleFont: { family: 'JetBrains Mono, monospace' },
+            bodyFont:  { family: 'JetBrains Mono, monospace' },
+            callbacks: {
+              footer: (items) => {
+                const i = items[0].dataIndex;
+                const e = evidence[i];
+                return 'F=' + e.F + ' G=' + e.G + ' R=' + e.R + ' · ' + e.source;
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // ---------- Boot ----------
+  function boot() {
+    waitFor('Plotly', plot3d);
+    waitFor('Chart',  barChart);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+</script>
+
+</body>
+</html>

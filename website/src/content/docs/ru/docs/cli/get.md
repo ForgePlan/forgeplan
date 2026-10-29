@@ -3,7 +3,7 @@ title: forgeplan get
 description: "Чтение полного содержимого артефакта по ID - получение markdown, удобное для ИИ"
 ---
 
-Прочитать полное содержимое артефакта в формате markdown по его ID. Так ИИ-агенты и люди извлекают отдельный документ-решение для контекста. Команда считывает данные из представления, проецируемого LanceDB, которое синхронизировано с исходным markdown-файлом в `.forgeplan/`.
+Читает полный артефакт по ID или разрешимому slug. На мигрированном workspace выбранная сборка использует снимок канонического Markdown и сообщает, опубликован ли он. На legacy-workspace читается производный индекс. Канонический Markdown, индекс и снапшоты федерации - разные источники.
 
 ## Когда использовать
 
@@ -13,9 +13,9 @@ description: "Чтение полного содержимого артефак�
 
 ## Когда не использовать
 
-- Вам нужен список кандидатов → используйте [`forgeplan list`](/docs/cli/list/)
-- Вы не знаете точный ID → используйте [`forgeplan search`](/docs/cli/search/)
-- Вам нужны также связанные артефакты → используйте [`forgeplan graph`](/docs/cli/graph/) или [`forgeplan tree`](/docs/cli/tree/)
+- Нужен список → [`forgeplan list`](/ru/docs/cli/list/).
+- Не знаете ID → [`forgeplan search`](/ru/docs/cli/search/).
+- Нужен граф связей → [`forgeplan graph`](/ru/docs/cli/graph/) или [`forgeplan tree`](/ru/docs/cli/tree/).
 
 ## Использование
 
@@ -51,29 +51,19 @@ forgeplan get PRD-001
 forgeplan get RFC-002 | less
 ```
 
-Вывод JSON - тело плюс весь frontmatter, готовый для `jq`:
+Получить полное поле `body`, не предполагая JSON-объект `frontmatter`:
 
 ```bash
-forgeplan get EVID-012 --json | jq '.frontmatter.verdict, .frontmatter.congruence_level'
+forgeplan get EVID-012 --json | jq -r '.body'
 ```
 
 ## Интерпретация вывода
 
-Вывод по умолчанию - это необработанный markdown-файл: YAML frontmatter, ограниченный `---`, за которым следуют разделы тела (Problem, Goals, FR и т.д.). Это тот же текст, который человек увидит, открыв файл в редакторе.
+Текстовый вывод содержит метаданные, связи, тело и подсказки: это не поток только исходного файла. В мигрированном CLI-пути JSON `body` содержит весь захваченный Markdown, включая frontmatter. У full-profile `forgeplan_constellation_get` другой контракт: разобранное тело без frontmatter.
 
-С опцией `--json` структура вывода следующая:
+В `--json` поля `title`, `depth`, `author`, `tags`, временные метки и `r_eff` находятся на верхнем уровне вместе с `body`, `links.outbound`, `links.inbound` и `_next_action`. Вложенного `frontmatter` нет. Мигрированный путь добавляет `index`, `generation_id`, `snapshot_id`, `source_set_digest` и `persisted`. Значение `persisted: false` означает, что свежий снимок ещё не является опубликованным поколением; чтение само не публикует поколение.
 
-```json
-{
-  "id": "PRD-001",
-  "kind": "prd",
-  "status": "active",
-  "frontmatter": { "title": "...", "tags": [...], "created": "...", ... },
-  "body": "## Problem\n..."
-}
-```
-
-Если ID не существует, команда завершает работу со статусом 1 и выводит `Error: artifact not found: <ID>`.
+Неразрешимый ID вызывает ошибку `Artifact '<ID>' not found` с подсказкой `forgeplan list`.
 
 ## Как это вписывается
 
@@ -83,12 +73,32 @@ forgeplan get EVID-012 --json | jq '.frontmatter.verdict, .frontmatter.congruenc
 list (найти) → get (прочитать) → validate / reason / link / score (действовать)
 ```
 
-Для ИИ-агентов, использующих MCP, `get` соответствует инструменту `read_artifact` в соотношении 1:1.
+MCP-инструмент чтения артефакта называется [`forgeplan_get`](/ru/docs/mcp/forgeplan_get/), а не `read_artifact`. Закреплённое чтение зависит от профиля и имеет отдельный интерфейс.
 
 ## См. также
 
-- [`forgeplan list`](/docs/cli/list/) - обнаружение ID
-- [`forgeplan search`](/docs/cli/search/) - поиск по запросу
-- [`forgeplan validate`](/docs/cli/validate/) - проверка качества
-- [`forgeplan score`](/docs/cli/score/) - метрики R_eff + F-G-R
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan list`](/ru/docs/cli/list/) - список ID
+- [`forgeplan search`](/ru/docs/cli/search/) - поиск
+- [`forgeplan validate`](/ru/docs/cli/validate/) - проверка качества
+- [`forgeplan score`](/ru/docs/cli/score/) - R_eff и F-G-R
+- [Методология](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan get --help`.
+
+```text
+Read a full artifact by ID
+
+Usage: forgeplan get [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID
+
+Options:
+      --json     Output as JSON for machine consumption
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

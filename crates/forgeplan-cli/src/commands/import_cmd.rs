@@ -293,7 +293,7 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         // With a `None` sink the same helper writes the canonical projection
         // and stops; the whole bundle is published by the ONE reconcile pass
         // at the end, not one per artifact.
-        projection::create_artifact_with_projection(
+        projection::import_artifact_with_projection(
             &projection::MutationContext::new(&ws, &lock, store.as_ref()),
             &new_artifact,
         )
@@ -301,9 +301,9 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         imported += 1;
     }
 
-    // PRD-073 H6 (audit follow-up): batch helper deduplicates pre-sync +
-    // post-render per unique participant. For a 100-link bundle this is
-    // ~2×U LanceDB+file ops vs the naive 6×N (audit measurement).
+    // Restore bundle edges idempotently. Complete canonical files already
+    // contain their edges; duplicate additions must not be reported as failures
+    // or trigger a legacy-cache render over the exact imported bytes.
     let link_triples: Vec<(String, String, String)> = data["relations"]
         .as_array()
         .map(|relations| {
@@ -322,7 +322,7 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         })
         .unwrap_or_default();
     let relations_attempted = link_triples.len();
-    let relations_imported = projection::add_links_batch_with_projection(
+    let relations_imported = projection::import_links_with_projection(
         &projection::MutationContext::new(&ws, &lock, store.as_ref()),
         &link_triples,
     )

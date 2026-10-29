@@ -320,9 +320,8 @@ async fn l09_a_reader_is_served_exactly_the_published_generation() {
         first_view.descriptor.generation_id, first_generation,
         "a published view carries the descriptor it was published under"
     );
-    assert_eq!(
-        first_view.descriptor.manifest_sha256 != second_view.descriptor.manifest_sha256,
-        true,
+    assert_ne!(
+        first_view.descriptor.manifest_sha256, second_view.descriptor.manifest_sha256,
         "two publications must be two sets of manifest bytes"
     );
 
@@ -394,8 +393,9 @@ async fn l09_a_pointer_to_a_missing_manifest_is_not_a_fallback() {
 
     let maintenance_error = maintain_index(&capability, CaptureLimits::default(), deadline())
         .await
-        .err()
-        .expect("maintenance must not silently rebuild an active index with a missing manifest");
+        .expect_err(
+            "maintenance must not silently rebuild an active index with a missing manifest",
+        );
     assert_eq!(
         maintenance_error.code(),
         forgeplan_core::constellation::DiagnosticCode::IndexGenerationUnavailable,
@@ -407,6 +407,67 @@ async fn l09_a_pointer_to_a_missing_manifest_is_not_a_fallback() {
             .generation_id,
         descriptor.generation_id,
         "a failed maintenance pass must not replace the broken publication"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Publication refusal — an unreadable source is never published
+// ---------------------------------------------------------------------------
+
+/// A source whose `links:` block cannot be read as an edge set must not reach
+/// the index as an artifact with no relations.
+///
+/// The pass refuses with a named error, the pointer keeps naming the
+/// generation that was published before, and the canonical bytes on disk are
+/// exactly what the author wrote.
+#[tokio::test]
+async fn a_links_block_that_is_not_a_sequence_refuses_publication() {
+    let tmp = workspace();
+    let root = tmp.path();
+    write(
+        root,
+        "prds",
+        "PRD-001-auth.md",
+        &prd("PRD-001", "Auth", "draft", "First.\n"),
+    );
+
+    let capability = capability(root);
+    let (view, _) = maintain_index(&capability, CaptureLimits::default(), deadline())
+        .await
+        .expect("the first pass publishes");
+    let published_generation = view.manifest.generation_id.clone();
+
+    // The artifact now carries a `links:` mapping instead of a sequence.
+    let path = root.join("prds").join("PRD-001-auth.md");
+    std::fs::write(
+        &path,
+        "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\nlinks:\n  target: ADR-003\n  relation: informs\n---\n\nFirst.\n",
+    )
+    .expect("write artifact");
+    let bytes_before = std::fs::read(&path).expect("artifact readable");
+
+    let error = maintain_index(&capability, CaptureLimits::default(), deadline())
+        .await
+        .expect_err("a source that cannot be read as an edge set is not published");
+    assert!(
+        matches!(
+            error,
+            forgeplan_core::constellation::ConstellationError::SourceUnavailable { .. }
+        ),
+        "the refusal names the incomplete capture, got {error:?}"
+    );
+
+    let descriptor = read_current(&root.join("lance"))
+        .expect("CURRENT is readable")
+        .expect("CURRENT still exists");
+    assert_eq!(
+        descriptor.generation_id, published_generation,
+        "a refused pass must not publish a new generation"
+    );
+    assert_eq!(
+        bytes_before,
+        std::fs::read(&path).expect("artifact readable"),
+        "the canonical bytes were not rewritten"
     );
 }
 
@@ -804,10 +865,10 @@ async fn l06_a_running_host_publishes_an_atomic_save() {
     // This must beat the 30-second control scan: one watcher batch cannot be lost.
     let published = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            if let Some(current) = read_current(&root.join("lance")).expect("read CURRENT") {
-                if current.source_set_digest == expected_digest {
-                    break current;
-                }
+            if let Some(current) = read_current(&root.join("lance")).expect("read CURRENT")
+                && current.source_set_digest == expected_digest
+            {
+                break current;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }

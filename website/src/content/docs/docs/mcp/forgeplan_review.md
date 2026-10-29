@@ -3,7 +3,7 @@ title: forgeplan_review
 description: "Review an artifact - run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated."
 ---
 
-Review a single artifact - runs validation (depth-aware MUST / SHOULD rules), checks lifecycle prerequisites (evidence, R_eff, linked relations), and returns a clear verdict on whether the artifact is ready to activate. This is the combined "can I activate?" gate used before calling `forgeplan_activate`.
+Reviews depth-aware validation findings and lifecycle prerequisites for an artifact, returning `can_activate` and warnings. This is a read-only preflight, not activation itself or a guarantee that a later write succeeds: the activation handler also evaluates its configured provenance gate and write-time conditions.
 
 **Category**: Quality
 
@@ -19,39 +19,17 @@ Review a single artifact - runs validation (depth-aware MUST / SHOULD rules), ch
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `id` | `string` | yes | Artifact ID to review. |
+| `workspace` | `string \| null` | no | Explicit absolute or tilde-expanded workspace path. |
 
 _Schema source: `crates/forgeplan-mcp/src/server.rs::ReviewParams`_
 
 ## Returns
 
-```json
-{
-  "artifact_id": "PRD-042",
-  "kind": "prd",
-  "depth": "standard",
-  "status": "draft",
-  "validation": {
-    "must_errors": [],
-    "should_warnings": ["density < 50 words in section Goals"]
-  },
-  "lifecycle": {
-    "r_eff": 0.72,
-    "has_evidence": true,
-    "ready_to_activate": true
-  },
-  "verdict": "PASS - ready to activate"
-}
-```
-
-If blocked:
-
-```json
-{
-  "verdict": "FAIL",
-  "validation": { "must_errors": ["Missing section: Problem"] },
-  "lifecycle": { "ready_to_activate": false }
-}
-```
+The JSON text payload contains `artifact_id`, boolean `can_activate`,
+`must_findings`, `should_findings`, `warnings`, and `_next_action`.
+There is no nested `validation`/`lifecycle` object, numeric `r_eff`,
+or string `verdict` field in this response. A false `can_activate` is a
+review result; a tool error is a separate failure to perform the review.
 
 ## Example invocation
 
@@ -61,10 +39,10 @@ If blocked:
 
 ## Typical sequence
 
-1. `forgeplan_review` → if `FAIL`, fix issues.
-2. `forgeplan_update` to patch the body.
-3. `forgeplan_review` again → expect `PASS`.
-4. `forgeplan_activate` - flip draft → active.
+1. Inspect `can_activate`, all findings, and warnings from `forgeplan_review`.
+2. Correct evidenced issues with `forgeplan_update`; do not invent changes to make the report clean.
+3. Review again and retain any unmet implementation/evidence obligations.
+4. Call `forgeplan_activate` only when the task's prerequisites are satisfied; inspect its separate result.
 
 ## CLI equivalent
 
@@ -78,3 +56,48 @@ forgeplan review PRD-042
 - [`forgeplan_score`](/docs/mcp/forgeplan_score/) - R_eff recomputation only.
 - [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) - the action gated by this review.
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Review an artifact — run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `id` | yes | string | Artifact ID to review |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "Artifact ID to review",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "ReviewParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

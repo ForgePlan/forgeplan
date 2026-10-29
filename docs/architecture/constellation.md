@@ -8,12 +8,12 @@ Constellation — версионированный индексный слой F
 
 - **Поколение** — неизменяемый манифест `gen-*` с точными версиями таблиц (`artifacts`, `relations`, `sections`). `CURRENT.json` — атомарный указатель на активное поколение.
 - **Читатели видят одно поколение целиком.** Чтение привязано к `effective_*_version` (pin или завершённая embedding-голова из дескриптора); fallback на latest отсутствует по контракту.
-- **`constellation_sections_v1`** — по одной строке на секцию документа (`KEY#sN`, плоский сплит по каждому заголовку + преамбула s0; документ без заголовков → одна секция на всё тело). Решает проблему «смысл после первых 2000 символов».
+- **`constellation_sections_v1`** — строки токеновых окон секций (`KEY#sN`), не обязательно одна строка на заголовок. Секции выделяются по заголовкам; длинная секция даёт несколько окон. UTF-8 диапазоны body-absolute сохраняют все байты тела, включая заголовки, преамбулу и пробелы. Без заголовков единицей разбиения служит всё тело.
 - **Записи только через reconcile.** Ручные upsert-записи в активные таблицы протоколом не предусмотрены; вектора приходят исключительно условными обновлениями колонки `embedding`.
 
 ## Команды
 
-```bash
+```text
 # Локальный индекс
 forgeplan index              # maintenance pass: capture → reconcile → publish + verify
 forgeplan embed              # явный drain очереди embeddings (bootstrap-ит свежий ws)
@@ -21,7 +21,10 @@ forgeplan embed              # явный drain очереди embeddings (boots
 # Реестр федерации (~/.forgeplan/constellations.yaml)
 forgeplan constellation create <name>
 forgeplan constellation add <path/.forgeplan> [--optional]
-forgeplan constellation sources | doctor | list | use <name>
+forgeplan constellation sources
+forgeplan constellation doctor
+forgeplan constellation list
+forgeplan constellation use <name>
 forgeplan constellation remove <path>
 
 # Федеративные чтения
@@ -37,7 +40,7 @@ forgeplan constellation snapshot            # pin всех источников 
 forgeplan constellation rebind <sel> <new>  # после перемещения checkout
 ```
 
-## Инварианты (что гарантируется)
+## Инварианты протокола
 
 - **Pinned reads, no latest fallback** — манифест именует версии; читатель либо открывает их точно, либо отвечает ошибкой.
 - **Пин манифеста держит Generation.** `ReadView::from_manifest` требует, чтобы переданный манифест был **тем же документом**, который пин проверил (полное сравнение, не только `generation_id`/`index_epoch`/`checkout_id`), и чтобы `manifest_sha256` дескриптора совпадал с запинненным. Старая копия манифеста с теми же id — из бэкапа или из другого индекса — отвергается.
@@ -53,7 +56,7 @@ forgeplan constellation rebind <sel> <new>  # после перемещения 
 
 `forgeplan_core::constellation::runtime::MaintenanceHost` — долгоживущая петля обслуживания, общая для `serve`, `watch --constellation` и полного MCP-сервера. В CLI она не живёт: `forgeplan-mcp` зависит от `forgeplan-core`, а не наоборот, и хост в CLI означал бы, что standalone-сервер не может поддерживать индекс в актуальном состоянии.
 
-- **Capability — параметр, а не внутреннее создание.** `MaintenanceHost::start(capability, sink)` никогда не минтит `MaintainCapability`: право выдаёт вызывающий, и он же объясняет, почему. Хост смотрит на workspace capability, а не на собственный cwd — поэтому явный `workspace: Y` при запуске в X обслуживает Y.
+- **Capability — параметр, а не внутреннее создание.** `MaintenanceHost::start(capability, sink)` не создаёт `MaintainCapability` сам: право выдаёт вызывающий. Хост обслуживает workspace из capability независимо от cwd. Это не означает, что параметр отдельного MCP-запроса перемещает уже запущенный хост.
 - **Recursive- watching.** `ARTIFACT_DIRS` перечисляет верхнеуровневые каталоги, а индекс читает всё под ними (`prds/PRD-074/…`). Нерекурсивный watch видел бы только создание каталога, и изменение ждало бы полного 30-секундного control scan — то есть превращал бы «не дольше одного периода» из гарантии в случайность.
 - **Порядок shutdown.** Сначала дропаются watcher и канал событий; затем `MaintenanceSupervisor::pass_finished()` дожидается прохода, владеющего storage-коммитами; затем `MaintenanceSupervisor::shutdown()` (он **синхронный**) снимает регистрацию и останавливает worker. Порядок «снять регистрацию, пока проход публикует» — это split-brain, а не оптимизация. Зависший native-вызов **detach**-ится и не публикует поздний результат.
 - **Константы не дублируются:** debounce 250 мс, control scan 30 с, очередь 64, cooldown модели 60 с, soft deadline inference 120 с.
@@ -68,7 +71,12 @@ forgeplan constellation rebind <sel> <new>  # после перемещения 
 
 Workspace, который не мигрирован и не назван явно, хоста не получает: constellation-host против него гонялся бы с `LanceStore`, который всё ещё им владеет. Причина отказа пишется в stderr, а не теряется.
 
-`--workspace` (во всех формах) задаёт **только** область maintenance. Цепочка разрешения MCP-запроса (параметр → env → default → cwd) по-прежнему решает, откуда читает каждый запрос, и явный `workspace: Y` в аргументе запроса процессным флагом не перекрывается.
+`--workspace` задаёт серверный default. При запуске full-сервера цель обслуживания выбирается по цепочке `FORGEPLAN_WORKSPACE` → серверный default → cwd; унаследованная переменная может перекрыть флаг. Отдельный запрос разрешает workspace так: явный параметр → `FORGEPLAN_WORKSPACE` → серверный default → cwd. Его явный `workspace: Y` имеет приоритет для запроса, но не перемещает хост. Один хост не обслуживает автоматически все источники реестра.
+
+Явный `workspace` действует только у инструментов, которые объявляют этот параметр.
+`forgeplan_init` использует настроенный корень сервера: неподдержанный raw-параметр
+`workspace` не меняет цель инициализации. Activity записывается в проект фактического
+действия; журнал `init` также относится к корню сервера, а не к переданному лишнему полю.
 
 ## MCP read-профиль
 
@@ -78,12 +86,30 @@ forgeplan serve --profile constellation-read
 
 9 инструментов: `constellation_open/close/sources/search/get/graph/impact/pack/snapshot`. Write-инструменты исключены на уровне dispatch (`tool not found`), не только из каталога. Вызовы принимают `scope_handle`/`snapshot_handle` от `constellation_open`/`snapshot` — произвольные пути не принимаются.
 
+`full` — обычный профиль по умолчанию с записью; в scoped-сборке зарегистрировано
+76 инструментов. CLI `validate` работает на legacy и migrated Constellation
+layout; full MCP `forgeplan_validate` также успешно проверен на migrated артефактах.
+Границы проверки см. в [оговорках пилота](../operations/CONSTELLATION-PILOT.ru.md).
+Регистрация сама по себе не доказывает проверку поведения всех full tools.
+
+| Чтение | Аргумент | Тело и свежесть |
+|---|---|---|
+| CLI `get` / обычный `forgeplan_get` на Constellation layout | `id` | Свежий captured record; CLI `body` содержит весь Markdown с frontmatter, при отставшем индексе возможен `persisted: false` |
+| Full MCP `forgeplan_constellation_get` | `key` | Опубликованная pinned строка; `artifact.body` — проза, метаданные вложены в `artifact` |
+| Read-profile `constellation_get` | `id` + scope/snapshot handle | Контракт handle-профиля; не подмена full MCP вызова |
+
+На legacy layout сохранено прежнее поведение: `body` может быть разобранным
+телом из legacy-строки, а не полным физическим Markdown. Контрольная `0.38.0`
+показывает то же различие; сравнивать эти два контракта как одинаковые нельзя.
+Фактическая семантика и границы последнего прогона описаны в runbook и EVID-201.
+
 ## Semantics
 
 - Профиль embeddings несёт модель + revision + все параметры пространства (dims, tokenizer, pooling, prefixes, body_prefix_chars, max_tokens). `profile_id` — дайджест профиля; несовместимые вектора выбывают из выдачи.
-- `search --semantic` требует запинанного профиля в дескрипторе; drain (в `index`/watch/git-sync/serve) сам ставит вектора и штампует дескриптор.
+- Принудительный `search --semantic` требует опубликованного профиля и eligible vectors; отсутствие любого из них — ошибка, не обещанный keyword fallback. Обычный `index` дренирует очередь только с `--embed-profile`; явный `forgeplan embed` выполняет отдельный drain без сохранения embedding config.
 - `semantic_state` на строке: `ready | pending | failed | unavailable` — честно показывается в выводе.
 - Модель грузится лениво и никогда под owner/workspace lock.
+- Автоматический drain требует сборку с `semantic-search`, активный `config.embedding` с `model: bge-m3`, полный совместимый snapshot в кэше и работающий maintenance host. Без config очередь пропускается. Приоритет кэша: `FORGEPLAN_MODEL_CACHE` → `~/.forgeplan/models` → platform/legacy fallback при отсутствии home; `HF_HOME` не переопределяет tract cache.
 
 ## Semantics: captured reads and vector reuse
 
@@ -91,17 +117,18 @@ forgeplan serve --profile constellation-read
 - **Идентичность и кэш — разные вещи.** `pin()` отвечает только за опубликованное поколение и на ephemeral view всегда `None`; кэш доступен через `vector_cache()`. Поэтому «свежий capture» никогда не выдаётся за опубликованный.
 - **Секции не вытесняют документы.** Бюджет ANN считается по строкам артефактов и секций, а не по числу документов: иначе строка документа и его же секция занимали бы весь лимит до группировки.
 - **Score ключуется по capture, не по строке индекса.** `display_id` строки может пережить переименование `id`; score привязывается к текущему захваченному артефакту по canonical key, иначе семантика переезжает на чужой артефакт.
-- **`search` на мигрированном workspace — та же выдача, что и на legacy.** Смарт-режим идёт через общий `smart::smart_search`: BM25, composite-фильтры, graph expansion и поля ответа сохранены. Принудительный `--semantic` сообщает `eligible_rows`, `expected_rows` и `semantic_scope`, а `--type`/`--status` нормализуются к написанию в источнике — фильтр, который вызывающий хотел расширить, не превращается в ложное «векторов нет».
+- **Поиск использует общий smart-движок, но это не обещание равенства всех runtime-ветвей.** Смарт-режим использует BM25, composite-фильтры и graph expansion. Принудительный `--semantic` сообщает `eligible_rows`, `expected_rows` и `semantic_scope`; эти поля позволяют отличить покрытие индекса от качества ранжирования.
 
 ## Semantics: whole-body coverage and qualified references
 
-- **Секции покрывают всё тело, не его префикс.** Длинная секция разбивается на контигульные окна по `body_prefix_chars` символов: каждое окно становится отдельной строкой `constellation_sections_v1`, и весь текст документа становится индексируемым, а не первые 2000 символов. Идентичность каждого окна — его собственный SHA-256; ключи `#sN` остаются позиционными и детерминированными. Префикс существует как конвенция для токенизатора, а не как лимит покрытия.
-- **`KEY@qualifier` — обычная форма межпроектной ссылки.** Квалификатор принимает `src:<hash>` (id), сегмент пути (`@shared`) или суффикс пути. В `constellation impact` и `graph` это сужает обход: matching идёт только по узлам указанного источника, остальные не подмешиваются. Bare-ключ по-прежнему same-source only: `ADR-001` в проекте A никогда не сливается с `ADR-001` в проекте B.
+- **Секции покрывают всё тело, не его префикс.** `s1-token-layout-v2` делит сырые секции на токеновые окна с бюджетом `min(model_max_length, 512)`, учитывая служебные токены и контекст. Диапазоны — байтовые, body-absolute; ключи `#sN` позиционные и детерминированные. Изменение раскладки меняет identity: после перехода нужны `forgeplan index`, затем `forgeplan embed`; старые векторы не доказывают покрытие новой раскладки.
+- **`KEY@qualifier` разбирается и для impact/graph.** Реализация поддерживает `src:<hash>`, сегмент или суффикс пути и ограничивает сопоставление источником. Bare-ключ остаётся same-source only. Это статически сверенный контракт, не результат полной runtime-приёмки graph/impact.
 
 ## Semantics: scope immutability and budget honesty
 
 - **Scope handle immutable.** `constellation_open` запоминает byte-идентичность (`source_set_digest`) каждого источника на момент открытия. Любой scope-чтение (search/get/graph/impact/pack) сначала проверяет, что источники ещё отвечают тем же байтам; если файл или публикация изменили их — возвращается `snapshot_expired`, а не тихая выдача нового текста. Snapshot-handle по-прежнему гарантирует ревизию OID.
 - **`pack` с бюджетом меньше самой маленькой строки — отказ, а не пустой «успех».** Возвращается `InsufficientBudget { budget_tokens, smallest_unit_tokens }`, так что вызывающий видит причину. В нормальном случае сериализация содержит `payload_bytes`, и можно отличить стоимость наполнения от стоимости обёртки.
+- Бюджет ContextPack — оценка `estimated_chars_div_4` для выбранных units, не строгий предел токенов модели или всего JSON.
 
 ## Semantics: zero-eligible inference
 
@@ -110,12 +137,12 @@ forgeplan serve --profile constellation-read
 ## Известные границы
 
 - `score` на мигрированном ws отвечает полным `AssuranceReport` (weakest link, factors, breakdown) из одного захваченного `WorkspaceRead` — тот же рекурсивный движок, что и на legacy, без `LanceStore`. `activate` переведён раньше (file-first); команды, ещё не переведённые на capture, остаются честным named-отказом. Вся запись идёт через файлы + `forgeplan index`.
-- `constellation impact` не принимает `KEY@src:`-квалификатор (честный absent-ответ, не тихий).
-- Локальный `search --semantic` грузит модель на каждый вызов (~7s) — issue #534 (measured-not-planned).
-- Contextee-адаптер — внешняя сторона; экспорт-контракт (jsonl+SCIP с происхождением) готов.
-- Приёмка S1 выполнена на macOS arm64 (EVID-182): Windows/NTFS durability не проверялась и не заявляется.
+- Локальный `search --semantic` загружает модель в отдельном процессе. Время зависит от сборки, модели и кэша; прежний замер в issue #534 (measured-not-planned) не является текущим SLA.
+- Экспорт jsonl/SCIP доступен; round-trip внешнего Contextee-адаптера этим не подтверждён.
+- Имеются ограниченные локальные CLI/MCP-наблюдения на macOS/arm64 для `0.39.0+constellation.s1.1`; это не полная приёмка RFC-015/S1-G и не S2–S4. Windows/NTFS durability и аварийные сценарии не заявляются проверенными.
 
 ## См. также
 
-- `eval/README.md` — F10-харнес: 30 эталонных задач × local/federated/pack с метриками.
-- `.local/planning/constellation-minimax/` — PLAN/ACCEPTANCE по исходной архитектурной доке.
+- [Пользовательский гайд](https://forgeplan.dev/ru/docs/guides/constellation/) и [справочник интерфейсов](https://forgeplan.dev/ru/docs/reference/constellation/).
+- [Переносимый пилот и откат](../operations/CONSTELLATION-PILOT.ru.md).
+- [eval/README.md](../../eval/README.md) — F10-харнес; описание набора задач не является результатом текущего прогона.

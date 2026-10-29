@@ -183,6 +183,7 @@ pub async fn render_projection(
         links,
         &[],
         false,
+        ProjectionBodyMode::Body,
     )
     .await
 }
@@ -257,7 +258,14 @@ async fn render_projection_record_inner(
     } else if filepath.exists() {
         match tokio::fs::read_to_string(&filepath).await {
             Ok(file_content) => match frontmatter::parse_frontmatter(&file_content) {
-                Ok((fm, file_body)) => (file_body.to_string(), filter_preserved(&fm)),
+                Ok((fm, mut file_body)) => {
+                    // The renderer supplies this newline; do not accumulate
+                    // another one on each metadata-only mutation.
+                    if file_body.ends_with('\n') {
+                        file_body.pop();
+                    }
+                    (file_body, filter_preserved(&fm))
+                }
                 // Unparseable markdown is not a body and not an edit: this is
                 // the "could not look" case, and it leaves the row's text alone
                 // rather than claiming the file declared an empty body.
@@ -282,6 +290,7 @@ async fn render_projection_record_inner(
         links,
         &record.tags,
         preserved_fm.as_ref(),
+        ProjectionBodyMode::Body,
     )?;
     // PRD-073 audit C1 (security): atomic tempfile+rename so a kill -9 between
     // truncate and write cannot zero-out the markdown projection. The previous
@@ -321,6 +330,7 @@ pub async fn render_projection_with_body(
         links,
         &[],
         true,
+        ProjectionBodyMode::Body,
     )
     .await
 }
@@ -340,6 +350,7 @@ async fn render_projection_inner(
     links: &[(String, String)],
     tags: &[String],
     force_body: bool,
+    body_mode: ProjectionBodyMode,
 ) -> anyhow::Result<PathBuf> {
     let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
     let dir = workspace.join(artifact_kind.dir_name());
@@ -366,7 +377,12 @@ async fn render_projection_inner(
     } else if filepath.exists() {
         match tokio::fs::read_to_string(&filepath).await {
             Ok(file_content) => match frontmatter::parse_frontmatter(&file_content) {
-                Ok((fm, file_body)) => (file_body.to_string(), filter_preserved(&fm)),
+                Ok((fm, mut file_body)) => {
+                    if file_body.ends_with('\n') {
+                        file_body.pop();
+                    }
+                    (file_body, filter_preserved(&fm))
+                }
                 Err(_) => (body.to_string(), None),
             },
             Err(_) => (body.to_string(), None),
@@ -388,6 +404,7 @@ async fn render_projection_inner(
         links,
         tags,
         preserved_fm.as_ref(),
+        body_mode,
     )?;
     // PRD-073 audit C1: atomic write protects against kill-mid-truncate window.
     atomic_markdown_write(&filepath, content.as_bytes()).await?;
@@ -1126,6 +1143,11 @@ mod sync_drift_tests {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProjectionBodyMode {
+    Body,
+    CanonicalFile,
+}
 /// Render markdown content with YAML frontmatter + body.
 ///
 /// Regenerates the known frontmatter keys from args and merges
@@ -1147,7 +1169,24 @@ fn render_markdown_with_extras(
     links: &[(String, String)],
     tags: &[String],
     preserved_fm: Option<&Frontmatter>,
+    body_mode: ProjectionBodyMode,
 ) -> anyhow::Result<String> {
+    // Captured exports carry a complete canonical file, while old bundles
+    // carry its body. Do not add another wrapper around the same artifact.
+    let embedded =
+        if body_mode == ProjectionBodyMode::CanonicalFile && body.trim_start().starts_with("---") {
+            frontmatter::parse_frontmatter_borrowed(body)
+                .ok()
+                .filter(|(fm, _)| {
+                    fm.get("id").and_then(|v| v.as_str()) == Some(id)
+                        && fm.get("kind").and_then(|v| v.as_str()) == Some(kind)
+                })
+        } else {
+            None
+        };
+    let supplied_body = body;
+    let body = embedded.as_ref().map(|(_, body)| *body).unwrap_or(body);
+
     let mut fm = BTreeMap::new();
     fm.insert("id".to_string(), serde_yaml::Value::String(id.to_string()));
     fm.insert(
@@ -1167,50 +1206,83 @@ fn render_markdown_with_extras(
         serde_yaml::Value::String(depth.to_string()),
     );
 
-    if let Some(a) = author {
+    // Missing values are explicit clears. Omitting their keys would allow an
+    // older nested projection to supply the value again on the next read.
+    for (key, value) in [
+        ("author", author),
+        ("parent_epic", parent_epic),
+        ("valid_until", valid_until),
+    ] {
         fm.insert(
-            "author".to_string(),
-            serde_yaml::Value::String(a.to_string()),
-        );
-    }
-    if let Some(pe) = parent_epic {
-        fm.insert(
-            "parent_epic".to_string(),
-            serde_yaml::Value::String(pe.to_string()),
-        );
-    }
-    if let Some(vu) = valid_until {
-        fm.insert(
-            "valid_until".to_string(),
-            serde_yaml::Value::String(vu.to_string()),
+            key.to_string(),
+            value
+                .map(|value| serde_yaml::Value::String(value.to_string()))
+                .unwrap_or(serde_yaml::Value::Null),
         );
     }
 
-    if !tags.is_empty() {
-        let tag_seq: Vec<serde_yaml::Value> = tags
-            .iter()
-            .map(|t| serde_yaml::Value::String(t.clone()))
-            .collect();
-        fm.insert("tags".to_string(), serde_yaml::Value::Sequence(tag_seq));
-    }
+    let tag_seq: Vec<serde_yaml::Value> = tags
+        .iter()
+        .map(|t| serde_yaml::Value::String(t.clone()))
+        .collect();
+    fm.insert("tags".to_string(), serde_yaml::Value::Sequence(tag_seq));
 
-    if !links.is_empty() {
-        let links_seq: Vec<serde_yaml::Value> = links
-            .iter()
-            .map(|(target, relation)| {
-                let mut m = serde_yaml::Mapping::new();
-                m.insert(
-                    serde_yaml::Value::String("target".to_string()),
-                    serde_yaml::Value::String(target.clone()),
-                );
-                m.insert(
-                    serde_yaml::Value::String("relation".to_string()),
-                    serde_yaml::Value::String(relation.clone()),
-                );
-                serde_yaml::Value::Mapping(m)
+    let links_seq: Vec<serde_yaml::Value> = links
+        .iter()
+        .map(|(target, relation)| {
+            let mut m = serde_yaml::Mapping::new();
+            m.insert(
+                serde_yaml::Value::String("target".to_string()),
+                serde_yaml::Value::String(target.clone()),
+            );
+            m.insert(
+                serde_yaml::Value::String("relation".to_string()),
+                serde_yaml::Value::String(relation.clone()),
+            );
+            serde_yaml::Value::Mapping(m)
+        })
+        .collect();
+    fm.insert("links".to_string(), serde_yaml::Value::Sequence(links_seq));
+
+    if let Some((source_fm, _)) = &embedded {
+        let same_known_fields = KNOWN_FM_KEYS.iter().all(|key| match *key {
+            // Only canonical-file import owns the embedded edge set.
+            "links" if links.is_empty() => true,
+            "tags" => same_tag_set(source_fm, tags),
+            // Captured records expose an omitted depth as the empty string.
+            "depth" => {
+                source_fm
+                    .get("depth")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    == depth
+            }
+            _ => {
+                fm.get(*key).filter(|value| !value.is_null())
+                    == source_fm.get(*key).filter(|value| !value.is_null())
+            }
+        });
+        let same_preserved_fields = preserved_fm.is_none_or(|extras| {
+            extras.iter().all(|(key, value)| {
+                KNOWN_FM_KEYS.contains(&key.as_str()) || source_fm.get(key) == Some(value)
             })
-            .collect();
-        fm.insert("links".to_string(), serde_yaml::Value::Sequence(links_seq));
+        });
+        if same_known_fields && same_preserved_fields {
+            return Ok(supplied_body.to_string());
+        }
+
+        for (key, value) in source_fm {
+            if !KNOWN_FM_KEYS.contains(&key.as_str()) {
+                fm.insert(key.clone(), value.clone());
+            }
+        }
+        // This branch exists only for canonical-file import. Normal mutations
+        // never interpret a body as a source of edges.
+        if links.is_empty()
+            && let Some(value) = source_fm.get("links")
+        {
+            fm.insert("links".to_string(), value.clone());
+        }
     }
 
     // Merge preserved (agent-owned / user-custom) fields last — guaranteed
@@ -1228,6 +1300,16 @@ fn render_markdown_with_extras(
 
     let yaml = serde_yaml::to_string(&fm)?;
     Ok(format!("---\n{}---\n\n{}\n", yaml, body))
+}
+
+fn same_tag_set(source: &Frontmatter, tags: &[String]) -> bool {
+    let mut original = frontmatter::tags_from_frontmatter(source);
+    original.sort_unstable();
+    original.dedup();
+    let mut expected: Vec<&str> = tags.iter().map(String::as_str).collect();
+    expected.sort_unstable();
+    expected.dedup();
+    original.iter().map(String::as_str).eq(expected)
 }
 
 /// Stamp `last_modified_by` / `last_modified_at` onto an already-rendered
@@ -1462,6 +1544,25 @@ pub async fn create_artifact_with_projection(
     ctx: &MutationContext<'_>,
     artifact: &crate::db::store::NewArtifact,
 ) -> MutationResult<PathBuf> {
+    create_artifact_projection(ctx, artifact, ProjectionBodyMode::Body).await
+}
+
+/// Restore a bundle artifact whose body may be a complete canonical file.
+///
+/// Old body-only payloads retain the normal creation contract. A complete
+/// source belonging to this identity is restored without another wrapper.
+pub async fn import_artifact_with_projection(
+    ctx: &MutationContext<'_>,
+    artifact: &crate::db::store::NewArtifact,
+) -> MutationResult<PathBuf> {
+    create_artifact_projection(ctx, artifact, ProjectionBodyMode::CanonicalFile).await
+}
+
+async fn create_artifact_projection(
+    ctx: &MutationContext<'_>,
+    artifact: &crate::db::store::NewArtifact,
+    body_mode: ProjectionBodyMode,
+) -> MutationResult<PathBuf> {
     let workspace = ctx.workspace;
     let store = ctx.legacy_sink;
     // Audit 2026-05-01 #1 (security CRITICAL): validate id BEFORE composing
@@ -1507,6 +1608,7 @@ pub async fn create_artifact_with_projection(
         &[],
         &artifact.tags,
         true,
+        body_mode,
     )
     .await?;
 
@@ -2023,24 +2125,18 @@ pub async fn remove_tags_with_projection(
     Ok(())
 }
 
-/// Add a typed relation between two artifacts, then re-render the projection
-/// for **both** source and target. Without re-rendering both sides, the
-/// target file's frontmatter never picks up any drift correction it needed
-/// (see PROB-048 observed-symptom #2: phantom orphan health signal because
-/// only the source side was rendered). This is FR-005 in PRD-073.
+/// Add a typed relation and render its source's outgoing `links` block.
 ///
-/// Note: outgoing-only frontmatter means the new edge appears in the source
-/// file's `links:` block; the target file gets re-rendered as a side effect
-/// so its own outgoing links stay synchronized with LanceDB.
+/// Pre-syncing both participants corrects derived-index drift from canonical
+/// files. The target's source bytes must not be rendered from its cache: an
+/// incoming edge does not change its outgoing links or authorize clearing
+/// source-only metadata that the legacy row cannot represent.
 ///
 /// PRD-073 FR-001 / FR-005 helper. Used by `link` / `reason` (auto-linking).
 ///
-/// Audit fix: only the source-side pre-sync and the relation write itself
-/// are fatal. Target-side pre-sync and BOTH post-render calls are
-/// best-effort with `tracing::warn!` because the target may legitimately
-/// be in a state that doesn't have a local file (cross-workspace
-/// reference) and a transient FS error on rendering should not strand
-/// the relation that already landed in LanceDB.
+/// Only the source-side pre-sync and relation write are fatal. Target-side
+/// pre-sync and source post-render are best-effort so a non-local target or
+/// transient rendering error does not strand an already indexed relation.
 ///
 /// # Errors
 ///
@@ -2076,9 +2172,7 @@ pub async fn add_link_with_projection(
         // path's `add_relation` does — `validate_link_target`, the
         // self-link refusal, and the exact-duplicate refusal — and stores
         // the target verbatim, so a qualified `KEY@qualifier` target
-        // survives intact. Only the source file is touched: the target
-        // side of the store path is a re-render of that artifact's own
-        // outgoing block, which a file edit cannot change.
+        // survives intact. Only the source file is touched on either layout.
         let path = crate::artifact::store::resolve_artifact_path(workspace, source)
             .await
             .ok_or_else(|| MutationError::RowNotFound {
@@ -2097,19 +2191,14 @@ pub async fn add_link_with_projection(
     if let Err(e) = render_after_mutation(workspace, store, source).await {
         tracing::warn!("add_link: post-render source {source} failed (continuing): {e}");
     }
-    if let Err(e) = render_after_mutation(workspace, store, target).await {
-        tracing::warn!("add_link: post-render target {target} failed (continuing): {e}");
-    }
     Ok(())
 }
 
-/// Remove a typed relation between two artifacts and re-render projections
-/// for both source and target so neither file's frontmatter retains a stale
-/// edge.
+/// Remove a typed relation and update only its source's outgoing links.
 ///
 /// Audit fix: same warn-and-continue policy as `add_link_with_projection`.
 /// Source pre-sync and the relation delete are fatal; target pre-sync and
-/// both renders are best-effort.
+/// source render are best-effort.
 ///
 /// PRD-073 FR-005 helper. Used by `unlink`.
 ///
@@ -2164,9 +2253,6 @@ pub async fn delete_link_with_projection(
     if let Err(e) = render_after_mutation(workspace, store, source).await {
         tracing::warn!("delete_link: post-render source {source} failed (continuing): {e}");
     }
-    if let Err(e) = render_after_mutation(workspace, store, target).await {
-        tracing::warn!("delete_link: post-render target {target} failed (continuing): {e}");
-    }
     Ok(())
 }
 
@@ -2192,12 +2278,9 @@ pub enum LinkUpsertOutcome {
 
 /// Idempotent link operation on the `(source, target)` pair.
 ///
-/// Issue #286: `add_link_with_projection` rejects parallel duplicates
-/// AND parallel-but-different-relation edges, leaving callers with no
-/// MCP-safe way to FIX a mis-typed relation. Editing the markdown
-/// `links:` frontmatter does not persist (LanceDB is source of truth
-/// for relations). `forgeplan_delete` is destructive. `forgeplan_supersede`
-/// operates on artifacts, not edges.
+/// Correct an edge's relation without changing its target's canonical file.
+/// Exact duplicates stay unchanged; different relations follow the upsert
+/// policy below rather than ordinary additive-link semantics.
 ///
 /// Semantics: find any existing edge `(source, target, *)`. If found
 /// with the requested relation → return `Unchanged`. If found with a
@@ -2220,7 +2303,7 @@ pub enum LinkUpsertOutcome {
 ///   `KEY@qualifier`).
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`]
 ///   if source pre-sync, relation read, delete, or add fails. Target
-///   pre-sync and renders are best-effort, matching `add_link_with_projection`.
+///   pre-sync and source rendering are best-effort, matching `add_link_with_projection`.
 pub async fn replace_link_with_projection(
     ctx: &MutationContext<'_>,
     source: &str,
@@ -2309,9 +2392,6 @@ pub async fn replace_link_with_projection(
 
     if let Err(e) = render_after_mutation(workspace, store, source).await {
         tracing::warn!("replace_link: post-render source {source} failed (continuing): {e}");
-    }
-    if let Err(e) = render_after_mutation(workspace, store, target).await {
-        tracing::warn!("replace_link: post-render target {target} failed (continuing): {e}");
     }
     Ok(outcome)
 }
@@ -2597,16 +2677,12 @@ pub async fn update_tags_file_first(
         return Ok(());
     }
 
-    if tags.is_empty() {
-        // Do not leave a dangling `tags: []` — an empty list carries no
-        // information and every renderer would round-trip it as noise.
-        fm.remove("tags");
-    } else {
-        fm.insert(
-            "tags".to_string(),
-            serde_yaml::Value::Sequence(tags.into_iter().map(serde_yaml::Value::String).collect()),
-        );
-    }
+    // Keep the empty override: the unchanged body can contain an older tag
+    // set, which must not become current again after removing the last tag.
+    fm.insert(
+        "tags".to_string(),
+        serde_yaml::Value::Sequence(tags.into_iter().map(serde_yaml::Value::String).collect()),
+    );
 
     let mut rendered = frontmatter::render_frontmatter(&fm, &body)?;
     if !rendered.ends_with('\n') {
@@ -2962,6 +3038,138 @@ pub async fn delete_orphan_relation(
     Ok(())
 }
 
+/// Restore bundle edges without re-rendering unchanged canonical files.
+///
+/// Complete-file bundles already declare their edges in `links`. Those edges
+/// count as restored, not as failed duplicate additions. A legacy index is
+/// updated separately; it must never render its cache over the imported bytes.
+pub async fn import_links_with_projection(
+    ctx: &MutationContext<'_>,
+    links: &[(String, String, String)],
+) -> MutationResult<usize> {
+    let mut sources: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+    for (source, target, relation) in links {
+        crate::db::store::validate_artifact_id(source)
+            .map_err(|_| MutationError::InvalidId(source.clone()))?;
+        crate::db::store::validate_link_target(target)
+            .map_err(|_| MutationError::InvalidId(target.clone()))?;
+        sources.entry(source).or_default().push((target, relation));
+    }
+
+    let mut restored = 0;
+    for (source, edges) in sources {
+        let path = crate::artifact::store::resolve_artifact_path(ctx.workspace, source)
+            .await
+            .ok_or_else(|| MutationError::RowNotFound {
+                id: source.to_string(),
+            })?;
+        let original = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(anyhow::Error::from)?;
+        let (mut fm, body) = frontmatter::parse_frontmatter_borrowed(&original)?;
+        let mut known: BTreeMap<String, std::collections::BTreeSet<&str>> = BTreeMap::new();
+        if let Some(value) = fm.get("links") {
+            let seq = value
+                .as_sequence()
+                .ok_or_else(|| anyhow::anyhow!("'links' field is not a sequence in {source}"))?;
+            for entry in seq {
+                if let (Some(target), Some(relation)) = (
+                    entry
+                        .get("target")
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty()),
+                    entry
+                        .get("relation")
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty()),
+                ) {
+                    known
+                        .entry(target.to_ascii_lowercase())
+                        .or_default()
+                        .insert(relation);
+                }
+            }
+        }
+        let mut accepted = Vec::with_capacity(edges.len());
+        let mut additions = Vec::new();
+        for (target, relation) in edges {
+            if fm
+                .get("id")
+                .and_then(|value| value.as_str())
+                .is_some_and(|id| id.eq_ignore_ascii_case(target))
+            {
+                tracing::warn!("import links: self-link {source} --{relation}--> {target} refused");
+                continue;
+            }
+            if known
+                .entry(target.to_ascii_lowercase())
+                .or_default()
+                .insert(relation)
+            {
+                additions.push((target, relation));
+            }
+            accepted.push((target, relation));
+        }
+        drop(known);
+        if !additions.is_empty() {
+            let value = fm
+                .entry("links".to_string())
+                .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
+            let seq = value
+                .as_sequence_mut()
+                .expect("links sequence validated above");
+            for (target, relation) in additions {
+                seq.push(
+                    serde_yaml::to_value(BTreeMap::from([
+                        ("target", target),
+                        ("relation", relation),
+                    ]))
+                    .map_err(anyhow::Error::from)?,
+                );
+            }
+            let rendered = frontmatter::render_frontmatter(&fm, body)?;
+            atomic_markdown_write(&path, rendered.as_bytes())
+                .await
+                .map_err(anyhow::Error::from)?;
+        }
+
+        let Some(store) = ctx.legacy_sink else {
+            restored += accepted.len();
+            continue;
+        };
+        let stored = store.get_relations(source).await?;
+        let mut indexed: BTreeMap<String, std::collections::BTreeSet<&str>> = BTreeMap::new();
+        for (target, relation) in &stored {
+            indexed
+                .entry(target.to_ascii_lowercase())
+                .or_default()
+                .insert(relation);
+        }
+        for (target, relation) in accepted {
+            let target_key = target.to_ascii_lowercase();
+            if indexed
+                .get(&target_key)
+                .is_some_and(|relations| relations.contains(relation))
+            {
+                restored += 1;
+                continue;
+            }
+            match store.add_relation(source, target, relation).await {
+                Ok(_) => {
+                    indexed.entry(target_key).or_default().insert(relation);
+                    restored += 1;
+                }
+                Err(error) => tracing::warn!(
+                    "import links: indexing {source} --{relation}--> {target} failed: {error}"
+                ),
+            }
+        }
+    }
+    Ok(restored)
+}
+
 /// Add multiple links in one batch with deduplicated rendering.
 ///
 /// Naive `add_link_with_projection` in a loop costs `4 × N` `get_record`
@@ -3143,6 +3351,387 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[tokio::test]
+    async fn clearing_nested_edges_and_tags_survives_fresh_reads_for_both_owners() {
+        use crate::constellation::capture::CaptureLimits;
+        use crate::constellation::facade::open_workspace_read;
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+        use std::time::Duration;
+
+        let stale = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Source\ndepth: tactical\nslug: note-source\nauthor: old-author\nparent_epic: EPIC-007\nvalid_until: 2099-01-01\ntags: [obsolete]\nlinks:\n  - target: NOTE-002\n    relation: informs\n---\n\nKeep the original body.\n";
+        for legacy in [true, false] {
+            let tmp = TempDir::new().unwrap();
+            let ws = init_workspace(tmp.path(), "metadata-clears").unwrap();
+            let lock = acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy {
+                Some(LanceStore::init(&ws).await.unwrap())
+            } else {
+                None
+            };
+            let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+            let mut source_path: Option<PathBuf> = None;
+            for (id, title, body, tags) in [
+                ("NOTE-001", "Source", stale, vec!["obsolete".to_string()]),
+                ("NOTE-002", "Target", "Target body.", Vec::new()),
+            ] {
+                let path = create_artifact_with_projection(
+                    &ctx,
+                    &NewArtifact {
+                        id: id.to_string(),
+                        kind: "note".to_string(),
+                        status: "draft".to_string(),
+                        title: title.to_string(),
+                        body: body.to_string(),
+                        depth: "tactical".to_string(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags,
+                    },
+                )
+                .await
+                .unwrap();
+                if id == "NOTE-001" {
+                    source_path = Some(path);
+                }
+            }
+            add_link_with_projection(&ctx, "NOTE-001", "NOTE-002", "informs")
+                .await
+                .unwrap();
+            delete_link_with_projection(&ctx, "NOTE-001", "NOTE-002", "informs")
+                .await
+                .unwrap();
+            remove_tags_with_projection(&ctx, "NOTE-001", &["obsolete".to_string()])
+                .await
+                .unwrap();
+
+            let source = tokio::fs::read_to_string(source_path.unwrap())
+                .await
+                .unwrap();
+            let (fm, body) = frontmatter::parse_frontmatter(&source).unwrap();
+            assert!(frontmatter::links_from_frontmatter(&fm).is_empty());
+            assert!(frontmatter::tags_from_frontmatter(&fm).is_empty());
+            assert!(fm["author"].is_null());
+            assert!(fm["parent_epic"].is_null());
+            assert!(fm["valid_until"].is_null());
+            assert_eq!(body.trim_end(), stale.trim_end());
+
+            let fresh = open_workspace_read(
+                &ws,
+                None,
+                CaptureLimits {
+                    budget: Duration::from_secs(120),
+                    ..CaptureLimits::default()
+                },
+            )
+            .await
+            .unwrap();
+            let record = fresh.get_record("NOTE-001").unwrap();
+            assert!(fresh.get_relations("NOTE-001").is_empty());
+            assert!(record.tags.is_empty());
+            assert_eq!(record.author, None);
+            assert_eq!(record.parent_epic, None);
+            assert_eq!(record.valid_until, None);
+            if let Some(store) = &store {
+                assert!(store.get_relations("NOTE-001").await.unwrap().is_empty());
+                assert!(
+                    store
+                        .get_record("NOTE-001")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .tags
+                        .is_empty()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn incoming_link_changes_preserve_target_bytes_and_source_only_metadata() {
+        use crate::db::store::LanceStore;
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        for legacy in [true, false] {
+            let tmp = TempDir::new().unwrap();
+            let ws = init_workspace(tmp.path(), "incoming-link-owner").unwrap();
+            let lock = acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy {
+                Some(LanceStore::init(&ws).await.unwrap())
+            } else {
+                None
+            };
+            let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+            let source = create_artifact_with_projection(&ctx, &art("NOTE-801", "note"))
+                .await
+                .unwrap();
+            let target_artifact = art("NOTE-802", "note");
+            let target = create_artifact_with_projection(&ctx, &target_artifact)
+                .await
+                .unwrap();
+            let target_bytes = format!(
+                "---\nid: NOTE-802\nkind: note\ntitle: {}\nstatus: draft\ndepth: tactical\nauthor: Source-only author\ncustom: exact\n---\n\nKeep this target untouched.\n",
+                target_artifact.title,
+            );
+            tokio::fs::write(&target, &target_bytes).await.unwrap();
+
+            add_link_with_projection(&ctx, "NOTE-801", "NOTE-802", "informs")
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::fs::read_to_string(&target).await.unwrap(),
+                target_bytes
+            );
+            let raw = tokio::fs::read_to_string(&source).await.unwrap();
+            let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+            assert_eq!(
+                frontmatter::links_from_frontmatter(&fm),
+                [("NOTE-802".to_string(), "informs".to_string())]
+            );
+
+            assert_eq!(
+                replace_link_with_projection(&ctx, "NOTE-801", "NOTE-802", "based_on")
+                    .await
+                    .unwrap(),
+                LinkUpsertOutcome::Replaced {
+                    old_relation: "informs".to_string()
+                }
+            );
+            assert_eq!(
+                tokio::fs::read_to_string(&target).await.unwrap(),
+                target_bytes
+            );
+            let raw = tokio::fs::read_to_string(&source).await.unwrap();
+            let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+            assert_eq!(
+                frontmatter::links_from_frontmatter(&fm),
+                [("NOTE-802".to_string(), "based_on".to_string())]
+            );
+
+            delete_link_with_projection(&ctx, "NOTE-801", "NOTE-802", "based_on")
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::fs::read_to_string(&target).await.unwrap(),
+                target_bytes
+            );
+            let raw = tokio::fs::read_to_string(&source).await.unwrap();
+            let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+            assert!(frontmatter::links_from_frontmatter(&fm).is_empty());
+            if let Some(store) = &store {
+                assert!(store.get_relations("NOTE-801").await.unwrap().is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bundle_import_keeps_full_source_and_creation_keeps_literal_template_body() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let source = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Snapshot\nslug: note-snapshot\ncreated: 2026-10-24\ntags: source=fixture, raw, source=fixture\nlinks:\n  - target: \" NOTE-002 \"\n    relation: \" informs \"\n---\n\n## Decision\n\nKeep the literal snapshot.\n";
+        let template = "---\nid: NOTE-003\nkind: note\nstatus: draft\ntitle: Template title\ndepth: tactical\nslug: note-template\n---\n\n## Decision\n\nKeep this complete template body.\n";
+        for legacy in [true, false] {
+            let tmp = TempDir::new().unwrap();
+            let ws = init_workspace(tmp.path(), "snapshot-import").unwrap();
+            let lock = acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy {
+                Some(LanceStore::init(&ws).await.unwrap())
+            } else {
+                None
+            };
+            let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+            let imported = import_artifact_with_projection(
+                &ctx,
+                &NewArtifact {
+                    id: "NOTE-001".to_string(),
+                    kind: "note".to_string(),
+                    status: "draft".to_string(),
+                    title: "Snapshot".to_string(),
+                    body: source.to_string(),
+                    depth: String::new(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: vec!["raw".to_string(), "source=fixture".to_string()],
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(tokio::fs::read_to_string(&imported).await.unwrap(), source);
+            let target = create_artifact_with_projection(&ctx, &art("NOTE-002", "note"))
+                .await
+                .unwrap();
+            let target_before = tokio::fs::read(&target).await.unwrap();
+
+            let created = create_artifact_with_projection(
+                &ctx,
+                &NewArtifact {
+                    id: "NOTE-003".to_string(),
+                    kind: "note".to_string(),
+                    status: "draft".to_string(),
+                    title: "Selected display title".to_string(),
+                    body: template.to_string(),
+                    depth: "tactical".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+            let created_before = tokio::fs::read(&created).await.unwrap();
+            let invalid = [
+                (
+                    "NOTE-001".to_string(),
+                    "NOTE-002".to_string(),
+                    "refines".to_string(),
+                ),
+                (
+                    "NOTE-003".to_string(),
+                    "../../escape".to_string(),
+                    "informs".to_string(),
+                ),
+            ];
+            assert!(matches!(
+                import_links_with_projection(&ctx, &invalid).await,
+                Err(MutationError::InvalidId(_))
+            ));
+            assert_eq!(tokio::fs::read_to_string(&imported).await.unwrap(), source);
+            assert_eq!(tokio::fs::read(&created).await.unwrap(), created_before);
+
+            let edges = [
+                (
+                    "NOTE-001".to_string(),
+                    "NOTE-002".to_string(),
+                    "informs".to_string(),
+                ),
+                (
+                    "NOTE-003".to_string(),
+                    "NOTE-002".to_string(),
+                    "informs".to_string(),
+                ),
+            ];
+            assert_eq!(import_links_with_projection(&ctx, &edges).await.unwrap(), 2);
+            assert_eq!(tokio::fs::read_to_string(&imported).await.unwrap(), source);
+            assert_eq!(tokio::fs::read(&target).await.unwrap(), target_before);
+            let restored_once = tokio::fs::read(&created).await.unwrap();
+            assert_eq!(import_links_with_projection(&ctx, &edges).await.unwrap(), 2);
+            assert_eq!(tokio::fs::read(&created).await.unwrap(), restored_once);
+            let restored = tokio::fs::read_to_string(&created).await.unwrap();
+            let (fm, body) = frontmatter::parse_frontmatter(&restored).unwrap();
+            assert_eq!(fm["title"].as_str(), Some("Selected display title"));
+            assert_eq!(body.trim_end(), template.trim_end());
+            assert_eq!(
+                frontmatter::links_from_frontmatter(&fm),
+                [("NOTE-002".to_string(), "informs".to_string())]
+            );
+            if let Some(store) = &store {
+                for id in ["NOTE-001", "NOTE-003"] {
+                    assert_eq!(
+                        store.get_relations(id).await.unwrap(),
+                        [("NOTE-002".to_string(), "informs".to_string())]
+                    );
+                }
+                assert_eq!(
+                    store.get_record("NOTE-001").await.unwrap().unwrap().body,
+                    source
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_complete_exported_artifact_round_trips_without_another_wrapper() {
+        let source = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Snapshot\ndepth: tactical\nslug: note-snapshot\nassigned_number: 1\ncreated: 2026-10-24\ntags: [source=fixture]\nlinks:\n  - target: NOTE-002\n    relation: informs\n---\n\n## Decision\n\nKeep the literal source.\n";
+        let restored = render_markdown_with_extras(
+            "NOTE-001",
+            "note",
+            "Snapshot",
+            "draft",
+            "tactical",
+            None,
+            None,
+            None,
+            source,
+            &[],
+            &["source=fixture".to_string()],
+            None,
+            ProjectionBodyMode::CanonicalFile,
+        )
+        .unwrap();
+
+        assert_eq!(restored, source);
+        let (fm, body) = frontmatter::parse_frontmatter(&restored).unwrap();
+        assert_eq!(fm["slug"].as_str(), Some("note-snapshot"));
+        assert_eq!(
+            frontmatter::links_from_frontmatter(&fm),
+            [("NOTE-002".to_string(), "informs".to_string())]
+        );
+        assert_eq!(body, "## Decision\n\nKeep the literal source.\n");
+    }
+
+    #[test]
+    fn complete_source_metadata_is_preserved_when_explicit_fields_change() {
+        let source = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Original\ndepth: tactical\nslug: note-original\ncreated: 2026-10-24\ncustom_field: keep-me\n---\n\n## Decision\n\nKeep this prose.\n";
+        let links = [("NOTE-002".to_string(), "informs".to_string())];
+        let changed = render_markdown_with_extras(
+            "NOTE-001",
+            "note",
+            "Renamed",
+            "active",
+            "deep",
+            None,
+            None,
+            None,
+            source,
+            &links,
+            &[],
+            None,
+            ProjectionBodyMode::CanonicalFile,
+        )
+        .unwrap();
+        let (fm, body) = frontmatter::parse_frontmatter(&changed).unwrap();
+
+        assert_eq!(fm["title"].as_str(), Some("Renamed"));
+        assert_eq!(fm["status"].as_str(), Some("active"));
+        assert_eq!(fm["depth"].as_str(), Some("deep"));
+        assert_eq!(fm["slug"].as_str(), Some("note-original"));
+        assert_eq!(fm["created"].as_str(), Some("2026-10-24"));
+        assert_eq!(fm["custom_field"].as_str(), Some("keep-me"));
+        assert_eq!(frontmatter::links_from_frontmatter(&fm), links);
+        assert_eq!(body.trim_end(), "## Decision\n\nKeep this prose.");
+    }
+
+    #[test]
+    fn quoted_foreign_artifact_is_body_text_not_the_restored_source() {
+        let foreign = "---\nid: NOTE-002\nkind: note\nslug: note-foreign\n---\n\nQuoted source.\n";
+        let rendered = render_markdown_with_extras(
+            "NOTE-001",
+            "note",
+            "Own artifact",
+            "draft",
+            "tactical",
+            None,
+            None,
+            None,
+            foreign,
+            &[],
+            &[],
+            None,
+            ProjectionBodyMode::CanonicalFile,
+        )
+        .unwrap();
+        let (fm, body) = frontmatter::parse_frontmatter(&rendered).unwrap();
+
+        assert_eq!(fm["id"].as_str(), Some("NOTE-001"));
+        assert_eq!(fm["title"].as_str(), Some("Own artifact"));
+        assert!(!fm.contains_key("slug"));
+        assert_eq!(body.trim_end(), foreign.trim_end());
+    }
+
     #[test]
     fn render_markdown_basic() {
         let content = render_markdown_with_extras(
@@ -3158,6 +3747,7 @@ mod tests {
             &[],
             &[],
             None,
+            ProjectionBodyMode::Body,
         )
         .unwrap();
         assert!(content.starts_with("---\n"));
@@ -3185,34 +3775,12 @@ mod tests {
             &links,
             &[],
             None,
+            ProjectionBodyMode::Body,
         )
         .unwrap();
         assert!(content.contains("links:"));
         assert!(content.contains("target: RFC-001"));
         assert!(content.contains("relation: informs"));
-    }
-
-    #[test]
-    fn render_markdown_optional_fields_omitted() {
-        let content = render_markdown_with_extras(
-            "NOTE-001",
-            "note",
-            "Quick Note",
-            "draft",
-            "tactical",
-            None,
-            None,
-            None,
-            "Content.",
-            &[],
-            &[],
-            None,
-        )
-        .unwrap();
-        assert!(!content.contains("author:"));
-        assert!(!content.contains("parent_epic:"));
-        assert!(!content.contains("valid_until:"));
-        assert!(!content.contains("links:"));
     }
 
     #[tokio::test]
@@ -3327,10 +3895,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
 
-        let body = "## Summary\n\nSame content.";
+        let body = "## Summary\n\nSame content.\n\n";
 
         // Create initial projection
-        render_projection(
+        let initial_path = render_projection(
             &ws,
             "PRD-001",
             "prd",
@@ -3345,6 +3913,8 @@ mod tests {
         )
         .await
         .unwrap();
+        let initial = tokio::fs::read_to_string(&initial_path).await.unwrap();
+        let (_, initial_body) = frontmatter::parse_frontmatter(&initial).unwrap();
 
         // Re-render with same body but updated status — frontmatter updates, body preserved from file
         let path = render_projection(
@@ -3364,14 +3934,24 @@ mod tests {
         .unwrap();
 
         let result = tokio::fs::read_to_string(&path).await.unwrap();
-        assert!(
-            result.contains("status: active"),
-            "status should be updated"
-        );
-        assert!(
-            result.contains("Same content"),
-            "body should be preserved from file"
-        );
+        let (fm, after_status) = frontmatter::parse_frontmatter(&result).unwrap();
+        assert_eq!(fm["status"].as_str(), Some("active"));
+        assert_eq!(after_status, initial_body);
+
+        let record = crate::db::store::ArtifactRecord {
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            title: "Test".to_string(),
+            status: "superseded".to_string(),
+            depth: "standard".to_string(),
+            body: "A stale cache must not replace the canonical body.".to_string(),
+            ..Default::default()
+        };
+        let path = render_projection_record(&ws, &record, &[]).await.unwrap();
+        let result = tokio::fs::read_to_string(path).await.unwrap();
+        let (fm, after_record) = frontmatter::parse_frontmatter(&result).unwrap();
+        assert_eq!(fm["status"].as_str(), Some("superseded"));
+        assert_eq!(after_record, initial_body);
     }
 
     #[tokio::test]
@@ -3808,6 +4388,7 @@ mod tests {
             &[],
             &[],
             Some(&extras),
+            ProjectionBodyMode::Body,
         )
         .unwrap();
         assert!(content.contains("last_modified_by: orchestrator/1.0"));
@@ -3840,6 +4421,7 @@ mod tests {
             &[],
             &[],
             Some(&bad_extras),
+            ProjectionBodyMode::Body,
         )
         .unwrap();
         assert!(content.contains("id: PRD-001"));
@@ -6374,38 +6956,6 @@ mod file_first_sink_tests {
             crate::artifact::frontmatter::tags_from_frontmatter(&fm),
             vec!["source=code".to_string()],
             "remove must drop exactly the named tag"
-        );
-    }
-
-    #[tokio::test]
-    async fn removing_every_tag_leaves_no_empty_list() {
-        let (_tmp, ws, lock) = migrated_fixture().await;
-        create_artifact_with_projection(
-            &MutationContext::new(&ws, &lock, None),
-            &art("PRD-107", "prd", "Auth"),
-        )
-        .await
-        .unwrap();
-        add_tags_with_projection(
-            &MutationContext::new(&ws, &lock, None),
-            "PRD-107",
-            &["only".to_string()],
-        )
-        .await
-        .unwrap();
-
-        remove_tags_with_projection(
-            &MutationContext::new(&ws, &lock, None),
-            "PRD-107",
-            &["only".to_string()],
-        )
-        .await
-        .unwrap();
-
-        let (fm, _) = read_doc(&ws, "PRD-107").await;
-        assert!(
-            !fm.contains_key("tags"),
-            "an emptied tag set must not render a dangling `tags: []`: {fm:?}"
         );
     }
 

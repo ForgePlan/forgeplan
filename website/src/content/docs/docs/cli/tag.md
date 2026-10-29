@@ -38,7 +38,7 @@ forgeplan tag <ID> <TAGS>...
 2. Canonicalizes each tag (lowercased, whitespace trimmed, deduped - see
    PROB-026 fix in v0.18).
 3. Merges new tags into the existing `tags:` list.
-4. Rewrites frontmatter and re-indexes the artifact in LanceDB.
+4. Rewrites canonical frontmatter and updates the owning index. On Constellation, it requests reconciliation without reopening legacy tables.
 
 ## Examples
 
@@ -69,9 +69,9 @@ As of PROB-026 fix in v0.18.0, tags are canonicalized on write:
 - Deduplicated: `forgeplan tag PRD-001 auth auth Auth` adds `auth` once.
 - Preserved `=` and `-` for key-value and hyphenated forms.
 
-Workspaces created before v0.18 may contain mixed-case tag rows. Run
-[`forgeplan reindex`](/docs/cli/reindex/) to re-canonicalize every artifact in a
-single pass.
+For old mixed-case tags, inspect canonical Markdown and use `tag`/`untag` to correct
+the labels. `index` maintains Constellation; do not assume an index rebuild rewrites
+every source tag in place.
 
 ## Discoverability: where tags show up
 
@@ -79,13 +79,12 @@ Tags power several downstream commands:
 
 | Command                                                 | How tags are used                                   |
 |---------------------------------------------------------|-----------------------------------------------------|
-| [`forgeplan discover`](/docs/cli/discover/)             | Group artifacts by tag, surface tag frequency       |
-| [`forgeplan search --tag <t>`](/docs/cli/search/)       | Filter BM25 results to a tag intersection           |
-| [`forgeplan list --tag <t>`](/docs/cli/list/)           | List artifacts matching a tag                       |
-| [`forgeplan health`](/docs/cli/health/)                 | Surfaces untagged active artifacts                  |
+| [`forgeplan list --tag <t>`](/docs/cli/list/) | Filter matching artifacts in the selected workspace |
+| [`forgeplan get`](/docs/cli/get/) | Inspect canonical tags in the artifact |
 
-A well-tagged workspace makes `discover` meaningful. An untagged workspace
-makes `discover` noise.
+The selected `search` has no `--tag` option, `discover` is a discovery-session
+workflow rather than a tag browser, and `health` does not report untagged artifacts
+as a distinct health class.
 
 ## Tagging conventions (suggested)
 
@@ -102,40 +101,35 @@ discovery.
 
 ## Source Tier and CL mapping (v0.17.0, PRD-035)
 
-Tags of the form `source_tier=T1`, `source_tier=T2`, or `source_tier=T3` have
-special meaning in Forgeplan's trust calculus. They map directly to a
-Congruence Level that feeds into R_eff scoring:
+Labels such as `source_tier=T1` are provenance tags. **The current evidence parser
+does not read the `tags:` list for scoring.** It reads standalone body fields,
+including `source_tier: t1` and `congruence_level: 3`.
 
-| Tag value          | Congruence Level | CL penalty | Meaning                          |
-|--------------------|------------------|------------|----------------------------------|
-| `source_tier=T1`   | CL3              | 0.0        | Same context - highest trust     |
-| `source_tier=T2`   | CL2              | 0.1        | Similar context - minor penalty  |
-| `source_tier=T3`   | CL1              | 0.4        | Different context - significant penalty |
+| Body field | Derived CL | Product CL penalty |
+|---|---|---|
+| `source_tier: t1` | CL3 | 0.0 |
+| `source_tier: t2` | CL2 | 0.1 |
+| `source_tier: t3` | CL1 | 0.4 |
 
 ### Security precedence (`min(tier_cl, explicit_cl)`)
 
-If an artifact has **both** a `source_tier` tag and an explicit `congruence_level`
-in its Structured Fields body, Forgeplan takes the **lower** (more conservative)
-of the two:
+When an EvidencePack body declares a legal `verdict` and both `source_tier: ...`
+and `congruence_level: ...`, scoring takes the lower CL:
 
 ```
 final_cl = min(tier_cl, explicit_cl)
 ```
 
-This prevents **CL upgrade attacks via tag manipulation**. For example:
-
-- An evidence artifact is tagged `source_tier=T1` (would imply CL3).
-- But the body contains `congruence_level: 0` (explicit CL0).
-- Final CL = **min(CL3, CL0) = CL0** - the explicit low-trust field wins.
-
-The conservative-by-default rule means a tag can never **increase** trust
-beyond what the structured fields claim. Tags can only narrow the CL downward,
-never upward.
+For example, body fields `verdict: supports`, `source_tier: t1` and
+`congruence_level: 0` produce CL0 despite the tier's CL3 mapping.
+This conservative rule applies to scoring fields, **not tag manipulation**.
+Without a recognized verdict or a CL declaration, scoring falls back to CL0.
+These mappings are ForgePlan policy, not a universal current upstream FPF formula.
 
 ### Use case: brownfield onboarding
 
-When ingesting artifacts from an external source via the discovery protocol
-(`forgeplan discover`), tier tags let you batch-classify trust levels:
+During discovery, tier tags can label provenance for later review. The commands
+below do not themselves set the standalone EvidencePack scoring fields:
 
 ```bash
 # External vendor docs - low trust
@@ -153,8 +147,8 @@ for how this interacts with R_eff scoring after upgrade.
 
 ## Notes
 
-- Tags are stored in frontmatter as a YAML list. Direct markdown edits work,
-  but re-run `forgeplan scan-import` afterward.
+- Tags are stored as a frontmatter list. Prefer `tag`/`untag` over direct edits;
+  use `index` for Constellation maintenance, not `scan-import`.
 - To remove tags, use [`forgeplan untag`](/docs/cli/untag/).
 - The `<TAGS>...` positional argument is variadic - pass as many as you like in
   a single invocation.
@@ -163,6 +157,26 @@ for how this interacts with R_eff scoring after upgrade.
 
 - [CLI overview](/docs/cli/)
 - [`forgeplan untag`](/docs/cli/untag/) - remove tags
-- [`forgeplan discover`](/docs/cli/discover/) - browse by tag
-- [`forgeplan search`](/docs/cli/search/) - filter search by tag
+- [`forgeplan discover`](/docs/cli/discover/) - protocol-driven discovery sessions
+- [`forgeplan list`](/docs/cli/list/) - tag filtering on its supported storage path
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan tag --help`.
+
+```text
+Add tags to an artifact
+
+Usage: forgeplan tag <ID> <TAGS>...
+
+Arguments:
+  <ID>       Artifact ID (e.g. PRD-001)
+  <TAGS>...  Tags to add (e.g. source=code layer=auth legacy)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -81,6 +81,9 @@ sha2 = "0.11"
 # with the crate's features off. The `file-object-store` registration in
 # `src/object_store/providers.rs:300-303` is likewise unconditional.
 lance-io = { version = "=4.0.0", default-features = false }
+# Already pinned transitively by lancedb. Managed restores need CommitBuilder
+# to skip age-based cleanup of versions our generation manifests still pin.
+lance = { version = "=4.0.0", default-features = false }
 # tgrep-core is Microsoft's trigram index library (MIT). Pinned to a tag —
 # never a floating branch — because the index format is on-disk state: a
 # drifting format would read a foreign index as ours. The vendored `ignore`

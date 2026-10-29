@@ -114,13 +114,24 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
 }
 
 async fn run_list() -> Result<()> {
-    let store = common::store().await?;
+    let (_workspace, source) = common::open_read_source().await?;
 
     let filter = ArtifactFilter {
         kind: Some("memory".to_string()),
         status: None,
     };
-    let records = store.list_records(Some(&filter)).await?;
+    let stored;
+    let records: Vec<_> = match &source {
+        common::ReadSource::Legacy(store) => {
+            stored = store.list_records(Some(&filter)).await?;
+            stored.iter().collect()
+        }
+        common::ReadSource::Captured(read) => read
+            .records()
+            .iter()
+            .filter(|record| record.kind == "memory")
+            .collect(),
+    };
 
     if records.is_empty() {
         println!("  No memories found.");

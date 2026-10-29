@@ -338,6 +338,19 @@ fn e2e_ingest_update_flag_refreshes() {
         id == "NOTE-001" || id == "NOTE-002",
         "update must reuse an existing NOTE id, got: {id}"
     );
+    let fetched = forgeplan()
+        .args(["get", id, "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("read updated artifact");
+    assert!(
+        fetched.status.success(),
+        "updated artifact must remain readable"
+    );
+    let fetched: serde_json::Value = serde_json::from_slice(&fetched.stdout).expect("get JSON");
+    let body = fetched["body"].as_str().expect("updated artifact body");
+    assert!(body.contains("UPDATED: The Auth Service now also handles SSO requests"));
+    assert!(!body.contains("The Auth Service authenticates incoming HTTP requests"));
 }
 
 // =====================================================================

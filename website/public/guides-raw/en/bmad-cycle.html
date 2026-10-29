@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One feature cycle · BMAD · 13-step PRD · Adversarial Review - ForgePlan</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --info: #60a5fa;
+
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    /* BMAD phase colors */
+    --ph-b: #60a5fa;  /* Brainstorming - exploration / blue */
+    --ph-m: #22c55e;  /* Modeling - structure / green */
+    --ph-a: #ff5a1f;  /* Architecting - decision / brand orange */
+    --ph-d: #a3a3a3;  /* Delivery - shipped / gray */
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+
+  .ph-b { color: var(--ph-b); font-weight: 500; }
+  .ph-m { color: var(--ph-m); font-weight: 500; }
+  .ph-a { color: var(--ph-a); font-weight: 500; }
+  .ph-d { color: var(--ph-d); font-weight: 500; }
+
+  /* Pipeline */
+  .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; }
+  .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+  .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
+
+  /* Concept block */
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
+  .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
+  .concept .analogy + .analogy { margin-top: 12px; }
+
+  /* Definition list */
+  .deflist { margin: 16px 0 0; padding: 0; list-style: none; counter-reset: deflist; }
+  .deflist li { position: relative; padding: 10px 0 10px 36px; border-top: 1px solid var(--line); font-size: 14.5px; color: var(--text-2); line-height: 1.55; }
+  .deflist li:last-child { border-bottom: 1px solid var(--line); }
+  .deflist li::before { counter-increment: deflist; content: "0" counter(deflist); position: absolute; left: 0; top: 13px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .deflist li b { color: var(--text); font-weight: 500; }
+  .deflist li .term { color: var(--accent); font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.02em; }
+
+  /* Key insight callout */
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
+
+  /* Example callout */
+  .example-box { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 20px; margin: 16px 0 0; }
+  .example-box .ex-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .example-box p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.6; max-width: 760px; }
+  .example-box p + p { margin-top: 10px; }
+
+  /* Code block (terminal-like, for prompts) */
+  .code-block {
+    background: var(--bg-3);
+    border: 1px solid var(--line-2);
+    border-radius: 0;
+    padding: 16px 20px;
+    margin: 16px 0 0;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text-1);
+    white-space: pre-wrap;
+    overflow-x: auto;
+  }
+  .code-block .cb-tag {
+    display: block;
+    font-size: 10.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 8px;
+    font-weight: 500;
+  }
+  .code-block .cb-comment { color: var(--text-3); }
+  .code-block .cb-emph { color: var(--accent-soft); }
+
+  /* BMAD funnel - 4 phases */
+  .bmad-funnel { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 22px 0 0; }
+  .bm-phase { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 14px 18px; position: relative; }
+  .bm-phase.b { border-top: 2px solid var(--ph-b); }
+  .bm-phase.m { border-top: 2px solid var(--ph-m); }
+  .bm-phase.a { border-top: 2px solid var(--ph-a); }
+  .bm-phase.d { border-top: 2px solid var(--ph-d); }
+  .bm-phase .ph-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 4px; }
+  .bm-phase.b .ph-tag { color: var(--ph-b); }
+  .bm-phase.m .ph-tag { color: var(--ph-m); }
+  .bm-phase.a .ph-tag { color: var(--ph-a); }
+  .bm-phase.d .ph-tag { color: var(--ph-d); }
+  .bm-phase .ph-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; margin-bottom: 8px; }
+  .bm-phase .ph-q { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.02em; margin-bottom: 10px; line-height: 1.4; }
+  .bm-phase .ph-out { font-size: 12.5px; color: var(--text-2); line-height: 1.55; padding-top: 10px; border-top: 1px solid var(--line); }
+  .bm-phase .ph-out b { color: var(--text); font-weight: 500; }
+
+  /* PRD card mockup with 13 sections */
+  .prd-mockup { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 0; margin: 22px 0 0; overflow: hidden; }
+  .prd-mockup .prd-head { background: var(--bg-3); padding: 14px 20px; border-bottom: 1px solid var(--line-2); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .prd-mockup .prd-id { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; color: var(--text); }
+  .prd-mockup .prd-status { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ok); padding: 2px 8px; background: rgba(34, 197, 94, 0.12); border-radius: 0; }
+  .prd-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0; }
+  .prd-sec { padding: 12px 18px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
+  .prd-grid .prd-sec:nth-child(2n) { border-right: none; }
+  .prd-grid .prd-sec:nth-last-child(-n+2) { border-bottom: none; }
+  .prd-sec .sec-num { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; color: var(--text-3); }
+  .prd-sec .sec-name { font-size: 13.5px; color: var(--text-1); margin-top: 2px; font-weight: 500; }
+  .prd-sec.crit { background: rgba(255, 90, 31, 0.06); position: relative; }
+  .prd-sec.crit::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); }
+  .prd-sec.crit .sec-num { color: var(--accent); }
+  .prd-sec.crit .sec-tag { display: inline-block; margin-left: 6px; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
+
+  /* Adversarial review two-path */
+  .ar-paths { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
+  .ar-col { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 18px 20px; }
+  .ar-col.same { border-top: 2px solid var(--err); }
+  .ar-col.new  { border-top: 2px solid var(--ok); }
+  .ar-col .ar-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 4px; }
+  .ar-col.same .ar-tag { color: var(--err); }
+  .ar-col.new  .ar-tag { color: var(--ok); }
+  .ar-col .ar-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 14px; line-height: 1.35; }
+  .ar-step { background: var(--bg-1); border: 1px solid var(--line); border-radius: 0; padding: 10px 12px; font-size: 13px; color: var(--text-1); margin-top: 6px; line-height: 1.4; }
+  .ar-step.first { margin-top: 0; }
+  .ar-step .ar-step-tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); display: block; margin-bottom: 2px; }
+  .ar-step .ar-comment { color: var(--text-2); font-size: 12px; margin-top: 4px; }
+  .ar-arrow { text-align: center; color: var(--text-3); font-family: var(--font-mono); font-size: 14px; line-height: 1; margin: 4px 0 0; }
+  .ar-col .ar-summary { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .ar-col.same .ar-summary { color: var(--err); }
+  .ar-col.new  .ar-summary { color: var(--ok); }
+
+  /* Worked example */
+  .worked { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px 24px; margin: 22px 0 0; }
+  .worked-step { display: grid; grid-template-columns: 80px 1fr; gap: 18px; padding: 16px 0; border-top: 1px solid var(--line); }
+  .worked-step:first-of-type { border-top: none; padding-top: 4px; }
+  .worked-step .step-num { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); padding-top: 2px; }
+  .worked-step.crit .step-num { color: var(--accent); }
+  .worked-step .step-content h4 { margin: 0 0 6px; font-size: 15px; color: var(--text); font-weight: 500; line-height: 1.35; }
+  .worked-step .step-content p { margin: 0; font-size: 13.5px; color: var(--text-2); line-height: 1.55; }
+
+  /* Inline deep-link card (Brainstorming references ADI) */
+  .deep-link { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; text-decoration: none; transition: border-color .2s, background .2s; }
+  .deep-link:hover { border-color: var(--accent); background: rgba(255, 90, 31, 0.04); }
+  .deep-link .dl-text { display: flex; flex-direction: column; gap: 2px; }
+  .deep-link .dl-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
+  .deep-link .dl-title { font-family: var(--font-sans); font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.35; }
+  .deep-link .dl-arrow { font-family: var(--font-mono); font-size: 18px; color: var(--accent); letter-spacing: -0.05em; }
+
+  /* Next step / cross-link card */
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 22px 0 0; position: relative; }
+  .next-step::before { content: ""; position: absolute; left: 26px; bottom: 18px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 9px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
+  .next-step h3 { font-size: 18px; }
+  .next-step p { margin: 6px 0 12px; font-size: 14.5px; color: var(--text-2); max-width: 760px; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 1px solid var(--accent); border-radius: 0; transition: background .2s; }
+  .next-step a.ns-link:hover { background: var(--accent-bg); }
+
+  /* Teaching / reader walkthrough */
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
+  .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
+  .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .teaching ol li b { color: var(--text); font-weight: 500; }
+
+  .highlight-aphorism {
+    margin: 28px 0 36px;
+    padding: 22px 28px 24px;
+    background: rgba(255, 90, 31, 0.06);
+    border-left: 3px solid var(--accent);
+    border-radius: 0;
+    max-width: 820px;
+  }
+  .highlight-aphorism .aphorism-text {
+    font-family: var(--font-sans);
+    font-size: 18px;
+    line-height: 1.45;
+    font-weight: 500;
+    color: var(--text);
+    margin: 0 0 10px;
+    font-style: italic;
+  }
+  .highlight-aphorism .aphorism-cite {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.08em;
+    color: var(--text-3);
+    margin: 0;
+  }
+  .highlight-aphorism .aphorism-cite a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid var(--accent-bg);
+  }
+
+  /* Footer */
+  .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .pipeline { grid-template-columns: 1fr; }
+    .pipe-arrow { display: none; }
+    .bmad-funnel { grid-template-columns: 1fr 1fr; }
+    .prd-grid { grid-template-columns: 1fr; }
+    .prd-grid .prd-sec { border-right: none; }
+    .ar-paths { grid-template-columns: 1fr; }
+    h1 { font-size: 32px; }
+    .concept { padding: 22px 20px 24px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <!-- ============ HERO ============ -->
+  <p class="eyebrow">ONE FEATURE CYCLE · THEORY</p>
+  <h1>BMAD · 13-step PRD · Adversarial Review</h1>
+  <p class="lead">
+    How one line in Slack turns into a feature ready to ship, without a
+    scope monster and without missed edge cases. The four phases of
+    <b class="k">BMAD</b> widen the space of decisions and then pick one.
+    Thirteen <b class="k">PRD</b> sections fix the contract.
+    <b class="k">Adversarial Review</b> checks with fresh eyes that the
+    PRD has no contradictions and no wishful thinking.
+  </p>
+
+  <blockquote class="highlight-aphorism">
+    <p class="aphorism-text">"PRD = WHAT, not HOW. If you write the stack in a PRD, you're not writing a PRD - you're writing a ticket."</p>
+    <p class="aphorism-cite">- one of three theses from <a href="/blog/process-over-model">the manifesto on process and model</a></p>
+  </blockquote>
+
+  <!-- ============ MINI-PIPELINE PREVIEW ============ -->
+  <div class="pipeline">
+    <div class="pipe-box">
+      <div class="step-tag">01 · BMAD</div>
+      <div class="step-title">4 selection phases</div>
+      <div class="step-desc"><span class="ph-b">B</span> → <span class="ph-m">M</span> → <span class="ph-a">A</span> → <span class="ph-d">D</span></div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">02 · 13-step PRD</div>
+      <div class="step-title">The feature contract</div>
+      <div class="step-desc">13 sections, 3 critical</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">03 · Adversarial Review</div>
+      <div class="step-title">Fresh eyes</div>
+      <div class="step-desc">New session, at least 3 findings</div>
+    </div>
+  </div>
+
+  <!-- ============ CONCEPT 01 · BMAD ============ -->
+  <h2>01 · BMAD - four phases from idea to handover</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 01 · the architect's analogy</div>
+    <h3 class="concept-h">An architect does not start with blueprints</h3>
+    <p class="analogy">
+      Picture an architect designing a residential building. They do not
+      start with blueprints. First - a brief with the client: who will
+      live there, what budget, what neighbours. Then the concept: how
+      many floors, where the kitchen, which load-bearing structure. Then
+      the choice of materials and systems - reinforced concrete or glued
+      timber, central heating or a heat pump. And only then the drawings
+      for the workers.
+    </p>
+    <p class="analogy">
+      Skip any phase and you get a house without a foundation or a kitchen
+      without a window. <b class="k">BMAD</b> is exactly such a sequence,
+      only for product features.
+    </p>
+    <p class="analogy">
+      The phase names below are our own working layout for this breakdown,
+      not the names used in BMAD itself. In BMAD (v6.2.0) the phases are
+      its own: Analysis (optional) → Planning → Solutioning →
+      Implementation.
+    </p>
+
+    <ul class="deflist">
+      <li>
+        <span class="term"><span class="ph-b">B</span>rainstorming</span> · widening the space of decisions.
+        One line from Slack turns into 3-5 ways this could be done.
+        ADI fits here: three hypotheses, each testable.
+        The goal is not to choose, but to <b>see</b>.
+      </li>
+      <li>
+        <span class="term"><span class="ph-m">M</span>odeling</span> · structuring.
+        The chosen direction breaks down into user stories (who → wants what → why),
+        a data model (which entities appear), a state machine. Edge cases
+        surface here.
+      </li>
+      <li>
+        <span class="term"><span class="ph-a">A</span>rchitecting</span> · choosing a solution.
+        From the options that survived modeling, you honestly take one.
+        Trade-offs, risks, decisions.
+      </li>
+      <li>
+        <span class="term"><span class="ph-d">D</span>elivery</span> · artifacts.
+        The final PRD, test plan, migration plan, rollout checklist. What you
+        can hand to the team and go get coffee.
+      </li>
+    </ul>
+
+    <!-- Inline cross-link to ADI / decision-cycle -->
+    <a class="deep-link" href="decision-cycle.html">
+      <div class="dl-text">
+        <span class="dl-tag">Inside Brainstorming · ADI · DDR · Trust Calculus</span>
+        <span class="dl-title">Phase «B» widens the space of hypotheses - the theory behind ADI / DDR / Trust Calculus is opened in a separate breakdown</span>
+      </div>
+      <span class="dl-arrow">→</span>
+    </a>
+
+    <div class="example-box">
+      <div class="ex-tag">Live example · Vault · «Tags + Saved Searches»</div>
+      <p>
+        The feature «Tags + Saved Searches» currently looks like one task.
+        At the <span class="ph-b">Brainstorming</span> phase it splits into
+        three options: (1) tags as free-form strings in a JSON field on the
+        note, (2) tags as a separate table with a many-to-many relation,
+        (3) tags as a hierarchy with parents.
+      </p>
+      <p>
+        At <span class="ph-m">Modeling</span> the edge cases appear: «what
+        if the tag already exists?», «can a note have 100 tags?», «how do
+        you delete a tag nobody uses any more?». At
+        <span class="ph-a">Architecting</span> you explicitly pick option 2
+        (a separate table) and record the justification. At
+        <span class="ph-d">Delivery</span> - a PRD with 13 sections, the
+        migration, the tests.
+      </p>
+    </div>
+
+    <!-- BMAD 4-phase funnel -->
+    <div class="bmad-funnel">
+      <div class="bm-phase b">
+        <div class="ph-tag">B · Brainstorming</div>
+        <div class="ph-title">Widening</div>
+        <div class="ph-q">What could be built at all?</div>
+        <div class="ph-out"><b>Output</b><br>3-5 options with testable consequences</div>
+      </div>
+      <div class="bm-phase m">
+        <div class="ph-tag">M · Modeling</div>
+        <div class="ph-title">Structuring</div>
+        <div class="ph-q">How does this break down?</div>
+        <div class="ph-out"><b>Output</b><br>User stories, data model, edge cases</div>
+      </div>
+      <div class="bm-phase a">
+        <div class="ph-tag">A · Architecting</div>
+        <div class="ph-title">Choosing</div>
+        <div class="ph-q">How is it implemented?</div>
+        <div class="ph-out"><b>Output</b><br>One option with trade-offs and risks</div>
+      </div>
+      <div class="bm-phase d">
+        <div class="ph-tag">D · Delivery</div>
+        <div class="ph-title">Artifacts</div>
+        <div class="ph-q">How is it handed over?</div>
+        <div class="ph-out"><b>Output</b><br>13-step PRD, migration, test plan</div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">BMAD is not about bureaucracy</div>
+      <p>
+        The four questions - what? how do we break it down? how do we
+        implement it? how do we hand it over? - get asked in any case. In
+        a bad process they are asked in the code and answered by an
+        incident in production. In a good one they are asked in a document
+        a day before the work starts.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ CONCEPT 02 · 13-step PRD ============ -->
+  <h2>02 · 13-step PRD - a format that will not let edge cases slip</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 02 · the pre-flight checklist analogy</div>
+    <h3 class="concept-h">Thirteen mandatory sections, without which the project «forgets» an edge case</h3>
+    <p class="analogy">
+      So BMAD gave four phases. At the end of the <span class="ph-d">Delivery</span> phase there is a
+      <b class="k">PRD (Product Requirements Document)</b>. But a PRD is not free text. It is a rigidly
+      structured document of <b class="k">13 mandatory sections</b>.
+    </p>
+    <p class="analogy">
+      One caveat: this list of 13 sections is our own working template for
+      this series of lessons, not a requirement of BMAD itself. Upstream,
+      the composition of a PRD is defined separately and is not obliged to
+      consist of 13 items. The three highlighted sections below are our
+      choice for this breakdown too, not a BMAD gate.
+    </p>
+    <p class="analogy">
+      The analogy is a pilot's pre-flight checklist. Forty items, none of
+      them optional, because a forgotten one means a crash. The list is
+      not about bureaucracy, but about the fact that a pilot physically
+      cannot hold 40 things in their head, and reading a checklist is
+      cheaper than a crash. A PRD works the same way: 13 items, without
+      which the project «forgets» an edge case and fails in production.
+    </p>
+
+    <!-- PRD card mockup -->
+    <div class="prd-mockup">
+      <div class="prd-head">
+        <span class="prd-id">PRD-074 · Tags + Saved Searches</span>
+        <span class="prd-status">draft</span>
+      </div>
+      <div class="prd-grid">
+        <div class="prd-sec"><div class="sec-num">01</div><div class="sec-name">Context</div></div>
+        <div class="prd-sec"><div class="sec-num">02</div><div class="sec-name">Problem</div></div>
+        <div class="prd-sec"><div class="sec-num">03</div><div class="sec-name">Goals</div></div>
+        <div class="prd-sec crit"><div class="sec-num">04 <span class="sec-tag">critical</span></div><div class="sec-name">Non-Goals</div></div>
+        <div class="prd-sec"><div class="sec-num">05</div><div class="sec-name">Success Metrics</div></div>
+        <div class="prd-sec"><div class="sec-num">06</div><div class="sec-name">Target Users</div></div>
+        <div class="prd-sec"><div class="sec-num">07</div><div class="sec-name">User Stories</div></div>
+        <div class="prd-sec"><div class="sec-num">08</div><div class="sec-name">Acceptance Criteria</div></div>
+        <div class="prd-sec"><div class="sec-num">09</div><div class="sec-name">Technical Requirements</div></div>
+        <div class="prd-sec crit"><div class="sec-num">10 <span class="sec-tag">critical</span></div><div class="sec-name">Risks</div></div>
+        <div class="prd-sec"><div class="sec-num">11</div><div class="sec-name">Dependencies</div></div>
+        <div class="prd-sec crit"><div class="sec-num">12 <span class="sec-tag">critical</span></div><div class="sec-name">Open Questions</div></div>
+        <div class="prd-sec"><div class="sec-num">13</div><div class="sec-name">Timeline</div></div>
+        <div class="prd-sec" style="background: var(--bg-3);"><div class="sec-num" style="color: var(--text-4);">-</div><div class="sec-name" style="color: var(--text-3); font-weight: 400; font-size: 12.5px;">3 sections are highlighted: they get skipped on reflex</div></div>
+      </div>
+    </div>
+
+    <p style="margin-top: 22px;">
+      We single out three of these thirteen as critical (this is this
+      breakdown's choice, not a BMAD gate) - because engineers skip them
+      on reflex:
+    </p>
+
+    <ul class="deflist">
+      <li>
+        <span class="term">04 · Non-Goals</span> · an explicit list of what we will <b>not</b> do.
+        For Tags that is «no tag hierarchy in the MVP», «no colours»,
+        «no sync between devices». Without it the scope creeps.
+      </li>
+      <li>
+        <span class="term">12 · Open Questions</span> · what is not clear right now.
+        If you do not write it down, the brain makes assumptions silently,
+        and a week later a hypothesis, not a decision, ends up in the code.
+      </li>
+      <li>
+        <span class="term">10 · Risks</span> · what could break.
+        Without explicit risks the first incident in production catches
+        everyone by surprise.
+      </li>
+    </ul>
+
+    <div class="code-block">
+      <span class="cb-tag">Non-Goals for the Tags feature · example</span>
+<span class="cb-comment">## Non-Goals</span>
+- We do <b>NOT</b> support a tag hierarchy (parent / child) in the MVP
+- We do <b>NOT</b> add colours or icons for tags
+- We do <b>NOT</b> sync tags between devices
+- We do <b>NOT</b> integrate with external tagging systems (Notion, Obsidian)
+    </div>
+
+    <p style="margin-top: 14px; font-size: 14px; color: var(--text-3);">
+      Four lines, and they are exactly what saves you from a scope monster.
+    </p>
+
+    <div class="insight">
+      <div class="insight-tag">The agent writes the PRD · you do the manual steps</div>
+      <p>
+        The BMAD PM agent (John) generates the first version. But the three
+        quality checkpoints -
+        <b class="k">Information Density</b> (step 3), <b class="k">Measurability</b> (step 5),
+        <b class="k">Implementation Leakage</b> (step 7) - are a manual pass. Without it the PRD
+        stays a bag of words. Compare: «the system should be convenient» (empty) against
+        <code>POST /notes/:id/tags returns 200 in &lt; 50ms on a base of 1000 notes</code> (measurable).
+        A team of five can work with the second. With the first - no.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ CONCEPT 03 · ADVERSARIAL REVIEW ============ -->
+  <h2>03 · Adversarial Review - how to check a PRD with someone else's eyes</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 03 · the red team analogy</div>
+    <h3 class="concept-h">Authors do not see their own typos - that is how perception works, not laziness</h3>
+    <p class="analogy">
+      You wrote a 13-step PRD and passed the three manual gates. How do
+      you know it has no hidden contradictions, no missed edge cases and
+      no wishful thinking? The answer is <b class="k">there is none, if
+      you check it yourself</b>. Authors do not see their own typos - that
+      is a physiological property of perception, not a weakness of will.
+    </p>
+    <p class="analogy">
+      The solution is <b class="k">Adversarial Review</b>. You open a <b class="k">new</b> empty agent
+      session. You give it the role of a critic of this PRD with an
+      explicit instruction: find at least 3 problems, do not praise,
+      look for contradictions and gaps.
+    </p>
+
+    <div class="code-block">
+      <span class="cb-tag">Prompt for Adversarial Review</span>
+<span class="cb-comment"># Run an Adversarial Review of this PRD.</span>
+
+<b>Rules:</b>
+1. You <span class="cb-emph">MUST</span> find at least 3 problems. 0 problems = a bad review.
+2. For each problem state: section and line, severity
+   (Critical / Warning / Pass), description, proposed fix.
+3. Do <span class="cb-emph">NOT</span> praise the document. Look for: implementation leakage, untestable
+   requirements, filler, error scenarios, internal contradictions.
+4. Write the report to docs/specs/REVIEW.md.
+    </div>
+
+    <p class="analogy" style="margin-top: 18px;">
+      The «at least 3» threshold is this lesson's setting. BMAD's own
+      adversarial-review prompt asks for no fewer than ten findings, so
+      three is a more modest requirement, not a rule of the method.
+    </p>
+
+    <p class="analogy" style="margin-top: 18px;">
+      The analogy is a red team in security. You never test your own
+      defence from the inside - you bring in people whose job is to break
+      it. They find holes the builders of the defence never saw, because
+      they thought in terms of «how is this supposed to work» rather than
+      «how can this be broken».
+    </p>
+
+    <!-- Two-path: same session vs new session -->
+    <div class="ar-paths">
+      <div class="ar-col same">
+        <div class="ar-tag">Same session · defending its own work</div>
+        <div class="ar-title">The agent that wrote the PRD, in the same context</div>
+        <div class="ar-step first">
+          <span class="ar-step-tag">Step 1</span>
+          The agent has just written the PRD
+        </div>
+        <div class="ar-arrow">↓</div>
+        <div class="ar-step">
+          <span class="ar-step-tag">Step 2</span>
+          You ask that same agent to review it
+          <div class="ar-comment">Fresh text is «more convincing» than an abstract rule «look for problems»</div>
+        </div>
+        <div class="ar-arrow">↓</div>
+        <div class="ar-step">
+          <span class="ar-step-tag">Result</span>
+          0 problems found, or 1 cosmetic one
+          <div class="ar-comment">The model defends its previous answer</div>
+        </div>
+        <div class="ar-summary">Hidden edge cases stay hidden</div>
+      </div>
+
+      <div class="ar-col new">
+        <div class="ar-tag">New session · an outside view</div>
+        <div class="ar-title">A clean agent reads the PRD as somebody else's document</div>
+        <div class="ar-step first">
+          <span class="ar-step-tag">Step 1</span>
+          You open a new empty session
+        </div>
+        <div class="ar-arrow">↓</div>
+        <div class="ar-step">
+          <span class="ar-step-tag">Step 2</span>
+          A prompt with the explicit instruction «find at least 3»
+          <div class="ar-comment">No previous context - no bias towards defending</div>
+        </div>
+        <div class="ar-arrow">↓</div>
+        <div class="ar-step">
+          <span class="ar-step-tag">Result</span>
+          5-7 findings · you filter them
+          <div class="ar-comment">REAL / FALSE POSITIVE / NITPICK</div>
+        </div>
+        <div class="ar-summary">In the example - 2 real problems out of 5-7</div>
+      </div>
+    </div>
+
+    <p style="margin-top: 18px;">
+      The expected result in this scheme is 5-7 findings; that is an
+      illustrative scenario, not a measured rate of findings. Your task is
+      not to accept everything, but to classify:
+      <b class="k">REAL</b> problem / <b class="k">FALSE POSITIVE</b> (the agent missed that an AC covers
+      it) / <b class="k">NITPICK</b> (style, does not block). The model will find problems even where
+      there are none - the filtering is manual.
+    </p>
+
+    <div class="insight">
+      <div class="insight-tag">New session · hard rule</div>
+      <p>
+        If you run the review in the same context in which the PRD was
+        written, the model defends its previous answer. This is not bad
+        intent - it is how attention works: fresh text is «more
+        convincing» than an abstract rule «look for problems». A clean
+        session reads the PRD as a third-party document and reads it
+        without bias.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ WORKED EXAMPLE ============ -->
+  <h2>The cycle on one feature · Tags + Saved Searches</h2>
+  <p>How all three concepts fold into one pass - from a line in Slack to a PRD that has passed outside review.</p>
+  <div class="worked">
+    <div class="worked-step">
+      <div class="step-num">01 · <span class="ph-b">Brainstorming</span></div>
+      <div class="step-content">
+        <h4>Widening the space of decisions</h4>
+        <p>«We need tags on notes» from Slack splits into three options: (1) free-form strings in JSON, (2) a separate table with many-to-many, (3) a hierarchy with parents. Each hypothesis has a testable consequence (see ADI in a separate breakdown).</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">02 · <span class="ph-m">Modeling</span></div>
+      <div class="step-content">
+        <h4>Edge cases surface</h4>
+        <p>User stories («as a user, I want to search notes by a combination of tags»), data model (the <code>tags</code>, <code>note_tags</code> tables), state machine («a tag with 0 notes - is it deleted automatically or does it linger?»). These are deferred to Open Questions.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">03 · <span class="ph-a">Architecting</span></div>
+      <div class="step-content">
+        <h4>One option with trade-offs</h4>
+        <p>Option 2 is chosen (a separate table). Trade-off: data migration and +1 JOIN on every search, in exchange for many-to-many and normalisation. The hierarchy is deferred into Non-Goals.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">04 · <span class="ph-d">Delivery</span></div>
+      <div class="step-content">
+        <h4>A 13-step PRD from the PM agent</h4>
+        <p>The BMAD PM agent (John) generates PRD-074 with all 13 sections. You do a manual pass over the quality checkpoints - Information Density / Measurability / Implementation Leakage. Non-Goals and Open Questions are filled in.</p>
+      </div>
+    </div>
+    <div class="worked-step crit">
+      <div class="step-num">05 · Adversarial Review</div>
+      <div class="step-content">
+        <h4>A new session finds 6 problems</h4>
+        <p>The «find at least 3» prompt returns 6 findings. After filtering: 2 REAL (the edge case «deleting a tag while a search is running» was missed, the performance AC is vague), 3 FALSE POSITIVE (covered in Section 8), 1 NITPICK. The two real fixes go into the PRD. PRD-074 moves to the <code>active</code> status.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ READER WALKTHROUGH ============ -->
+  <h2>How to read this breakdown</h2>
+  <div class="teaching">
+    <ol>
+      <li><b>Top to bottom, without skipping sections.</b> BMAD gives the phases, the PRD fixes the contract, Adversarial Review checks the honesty. Each concept builds on the previous one.</li>
+      <li><b>Notice the colours on the BMAD diagram.</b> <span class="ph-b">B</span>rainstorming - blue (widening), <span class="ph-m">M</span>odeling - green (structure), <span class="ph-a">A</span>rchitecting - orange (this is the point of choice, the most important moment), <span class="ph-d">D</span>elivery - grey (artifacts go to the team).</li>
+      <li><b>Three sections on the PRD card are highlighted in orange.</b> Non-Goals, Risks, Open Questions - exactly the ones engineers skip on reflex. If they are empty in your PRD, that is a signal.</li>
+      <li><b>Compare the two Adversarial Review columns.</b> The left one (same session) - 0 findings, hidden problems stay hidden. The right one (new session) - 5-7 findings, of which 2 are real in the example. The difference is not the model, it is the context.</li>
+      <li><b>The «Tags + Saved Searches» example is a template.</b> Put your own feature in its place and walk the same five steps. If you get stuck on one of them, that is where your process is weak.</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <span>bmad-cycle · explainer · v1</span>
+    <span><span class="arrow">→</span> forgeplan · forgeplan.dev</span>
+  </div>
+
+</main>
+
+<script>
+  // This theory page does not use heavy viz libraries -
+  // the BMAD funnel, the PRD mockup and the AR comparison are built in HTML/CSS.
+</script>
+</body>
+</html>

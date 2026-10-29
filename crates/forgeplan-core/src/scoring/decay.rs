@@ -62,8 +62,10 @@ pub async fn decay_report(store: &LanceStore) -> anyhow::Result<Vec<DecayEntry>>
 /// empty decay report.
 pub async fn decay_report_captured(read: &WorkspaceRead) -> anyhow::Result<Vec<DecayEntry>> {
     let all_records = read.records();
-    let evidence_records: Vec<&ArtifactRecord> =
-        all_records.iter().filter(|r| r.kind == "evidence").collect();
+    let evidence_records: Vec<&ArtifactRecord> = all_records
+        .iter()
+        .filter(|r| r.kind == "evidence")
+        .collect();
 
     if evidence_records.is_empty() {
         return Ok(Vec::new());
@@ -220,17 +222,26 @@ mod tests {
          ## Verdict\n\nThe decay run measured the same linked population on both \
          workspace layouts, and this is the pack it measured.\n";
 
-    fn write_artifact(
-        ws: &Path,
-        dir: &str,
-        id: &str,
-        kind: &str,
-        title: &str,
-        created_at: &str,
-        valid_until: Option<&str>,
-        links: &[(&str, &str)],
-        body: &str,
-    ) -> PathBuf {
+    struct ArtifactFixture<'a> {
+        id: &'a str,
+        kind: &'a str,
+        title: &'a str,
+        created_at: &'a str,
+        valid_until: Option<&'a str>,
+        links: &'a [(&'a str, &'a str)],
+        body: &'a str,
+    }
+
+    fn write_artifact(ws: &Path, dir: &str, fixture: ArtifactFixture<'_>) -> PathBuf {
+        let ArtifactFixture {
+            id,
+            kind,
+            title,
+            created_at,
+            valid_until,
+            links,
+            body,
+        } = fixture;
         let mut fm = format!(
             "---\nid: {id}\ntitle: {title}\nkind: {kind}\nstatus: active\n\
              depth: standard\ncreated_at: {created_at}\n"
@@ -262,13 +273,15 @@ mod tests {
         write_artifact(
             ws,
             "evidence",
-            id,
-            "evidence",
-            &format!("Pack {id}"),
-            "2026-01-01T00:00:00Z",
-            valid_until,
-            links,
-            EVIDENCE_BODY,
+            ArtifactFixture {
+                id,
+                kind: "evidence",
+                title: &format!("Pack {id}"),
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until,
+                links,
+                body: EVIDENCE_BODY,
+            },
         )
     }
 
@@ -289,49 +302,65 @@ mod tests {
         // The incoming edge lives in the PACK's links block: PRD-001 declares
         // no links of its own, so without this the artifact has no evidence
         // at all and the second decay entry would have no cause.
-        write_evidence(&ws, "EVID-002", Some("2020-06-15"), &[("PRD-001", "informs")]);
+        write_evidence(
+            &ws,
+            "EVID-002",
+            Some("2020-06-15"),
+            &[("PRD-001", "informs")],
+        );
         write_evidence(&ws, "EVID-003", None, &[("RFC-001", "informs")]);
         write_artifact(
             &ws,
             "adrs",
-            "ADR-001",
-            "adr",
-            "Outgoing attachment",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[("EVID-001", "informs")],
-            "## Context\n\nThe pack hangs off this decision's own links block.\n",
+            ArtifactFixture {
+                id: "ADR-001",
+                kind: "adr",
+                title: "Outgoing attachment",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("EVID-001", "informs")],
+                body: "## Context\n\nThe pack hangs off this decision's own links block.\n",
+            },
         );
         write_artifact(
             &ws,
             "prds",
-            "PRD-001",
-            "prd",
-            "Incoming attachment",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[],
-            "## Context\n\nThe pack attaches itself to this decision instead.\n",
+            ArtifactFixture {
+                id: "PRD-001",
+                kind: "prd",
+                title: "Incoming attachment",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[],
+                body: "## Context\n\nThe pack attaches itself to this decision instead.\n",
+            },
         );
         write_artifact(
             &ws,
             "rfcs",
-            "RFC-001",
-            "rfc",
-            "Fresh attachment",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[("EVID-003", "informs")],
-            "## Context\n\nThis decision's evidence is still inside its validity.\n",
+            ArtifactFixture {
+                id: "RFC-001",
+                kind: "rfc",
+                title: "Fresh attachment",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("EVID-003", "informs")],
+                body: "## Context\n\nThis decision's evidence is still inside its validity.\n",
+            },
         );
         (tmp, ws)
     }
 
     async fn open_read(ws: &Path) -> WorkspaceRead {
+        // Cold tokenizer metadata exceeded the 5s capture budget in this scoring
+        // fixture; allow bounded setup time without changing the attempt limit.
         crate::constellation::facade::open_workspace_read(
             ws,
             None,
-            crate::constellation::capture::CaptureLimits::default(),
+            crate::constellation::capture::CaptureLimits {
+                budget: std::time::Duration::from_secs(60),
+                ..crate::constellation::capture::CaptureLimits::default()
+            },
         )
         .await
         .expect("the fixture workspace captures completely")
@@ -360,7 +389,10 @@ mod tests {
             store.replace_record(record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
-            store.add_relation(&source, &target, &relation).await.unwrap();
+            store
+                .add_relation(&source, &target, &relation)
+                .await
+                .unwrap();
         }
         store
     }
@@ -428,7 +460,10 @@ mod tests {
 
         assert_eq!(legacy.len(), captured.len());
         for (l, c) in legacy.iter().zip(&captured) {
-            assert_eq!((&l.artifact_id, &l.artifact_title), (&c.artifact_id, &c.artifact_title));
+            assert_eq!(
+                (&l.artifact_id, &l.artifact_title),
+                (&c.artifact_id, &c.artifact_title)
+            );
             assert!(
                 (l.current_r_eff - c.current_r_eff).abs() < 1e-12
                     && (l.fresh_r_eff - c.fresh_r_eff).abs() < 1e-12,
@@ -460,13 +495,15 @@ mod tests {
         write_artifact(
             &ws,
             "adrs",
-            "ADR-001",
-            "adr",
-            "Unevidenced decision",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[],
-            "## Context\n\nNo pack points at this decision in either direction.\n",
+            ArtifactFixture {
+                id: "ADR-001",
+                kind: "adr",
+                title: "Unevidenced decision",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[],
+                body: "## Context\n\nNo pack points at this decision in either direction.\n",
+            },
         );
         let read = open_read(&ws).await;
 

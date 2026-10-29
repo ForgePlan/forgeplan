@@ -239,18 +239,13 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
     let id = allocated.id;
     let filepath = allocated.filepath;
 
-    // Log creation in change_log — store-backed audit only exists when the
-    // legacy index does. On a migrated workspace the one-line note explains
-    // who owns the derived index, and reconcile publishes the new artifact.
-    match &store {
-        Some(store) => common::log_change(store, &id, "create", "cli").await,
-        None => {
-            common::note_constellation_owns_index();
-            // Lock must drop before reconcile — see
-            // `common::reconcile_after_file_mutation`.
-            drop(_lock);
-            common::reconcile_after_file_mutation(&workspace).await;
-        }
+    common::log_change(&workspace, store.as_ref(), &id, "create", "cli").await;
+    if store.is_none() {
+        common::note_constellation_owns_index();
+        // Lock must drop before reconcile — see
+        // `common::reconcile_after_file_mutation`.
+        drop(_lock);
+        common::reconcile_after_file_mutation(&workspace).await;
     }
 
     println!("  Created: {}", filepath.display());

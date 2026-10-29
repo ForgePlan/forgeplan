@@ -4,6 +4,15 @@
 
 A guide to decision quality checks in Forgeplan. Combines the Verification Gate (Quint-code), Adversarial Review (BMAD), 13-Step PRD Validation (BMAD), and R_eff Quality Scoring (Quint-code/FPF).
 
+These are review protocols, not a claim that the CLI automatically enforces
+every semantic criterion below. `validate` reports implemented schema findings;
+activation separately checks length, evidence and stubs. Zero MUST findings is
+not sufficient proof of activation readiness.
+
+These are local adaptations, not verbatim upstream standards. Current FPF B.3
+does not prescribe universal numeric penalties; its G is ClaimScope, whereas
+Forgeplan's FGR uses Granularity. See [GLOSSARY.md](GLOSSARY.md).
+
 ## 1. Verification Gate (5 Points)
 
 Before closing any decision (DecisionRecord, ADR, RFC), check all 5 points. This is a safeguard against self-deception and confirmation bias.
@@ -29,9 +38,9 @@ Formulate the strongest argument AGAINST the chosen option. A strawman (delibera
 
 ### 1.3. Self-Evidence Check
 
-> Is all evidence from this session only? -> CL1 penalty.
+> Is all evidence from this session only? Review independence and congruence.
 
-If all evidence was obtained within a single session (one conversation, one PoC), this is CL1 — limited congruence. External confirmations are needed: documentation, benchmarks from other projects, production experience.
+Treat single-session evidence cautiously and seek independent confirmation. A CL1 assignment here is a local review recommendation, not an automatic parser rule or an upstream equation.
 
 **Penalty**: CL1 = 0.4 penalty to R_eff score.
 
@@ -41,9 +50,9 @@ If all evidence was obtained within a single session (one conversation, one PoC)
 
 List 2-3 "what if everything goes wrong" scenarios. Assess: can we survive them? Is there a rollback plan?
 
-**Example**:
-- LanceDB development is abandoned (probability ~5%) -> data is in the open Lance format, migration is possible
-- Embedding model BGE-M3 is removed from HuggingFace (~2%) -> model is embedded in the binary, works offline
+**Hypothetical examples** (probabilities are illustrative, not measurements):
+- LanceDB development is abandoned (~5%) → retain canonical Markdown and plan an index migration
+- BGE-M3 is removed from HuggingFace (~2%) → offline operation remains possible only with a complete compatible cached snapshot; weights are **not** embedded in the binary
 
 ### 1.5. WLNK Challenge — Weakest Link Verification
 
@@ -55,13 +64,13 @@ R_eff = min(evidence_scores). Make sure you have identified the REAL weakest lin
 
 ## 2. Adversarial Review Protocol
 
-A review protocol from BMAD-METHOD. Applied at Deep and Critical levels.
+A locally adapted protocol inspired by BMAD-METHOD, used at Deep and Critical levels. BMAD revision `d1163f85e1e45840061496531f4bc25bc7639d8c` asks for at least ten issues in its adversarial prompt. Native `/forge-cycle` retains its separate issue quota; neither prescription proves defects exist. This guide does not amend native agent policy.
 
 ### Core Rules
 
-1. **The reviewer MUST find problems.** This is not optional — if the reviewer found zero problems, the review was superficial.
+1. **The reviewer MUST actively search for defects** and support each finding with a concrete basis.
 
-2. **0 problems found = repeat the review.** Zero issues indicates approval bias. The reviewer must re-conduct the review with heightened attention.
+2. **Zero confirmed defects is acceptable.** Record the review scope and unexamined risks; never invent findings to satisfy a quota. Optional adversarial validation may emit `adversarial-too-clean` at **COULD** severity, not a blocking MUST.
 
 3. **Severity classification:**
 
@@ -80,7 +89,7 @@ A review protocol from BMAD-METHOD. Applied at Deep and Critical levels.
 2. Reviewer receives the artifact
 3. Reviewer SEARCHES for problems (not confirmations)
 4. Reviewer compiles a list of findings with severity
-5. If findings = 0 -> repeat review
+5. If findings = 0 -> record scope and remaining unexamined risks
 6. Author addresses each finding:
    - Critical -> fixes it
    - Warning -> fixes or documents justification
@@ -97,7 +106,7 @@ At the Critical level, a minimum of 2 rounds of Adversarial Review are conducted
 
 ## 3. BMAD 13-Step PRD Validation
 
-Full PRD validation across 13 steps from BMAD-METHOD. Applied at Deep and Critical levels.
+The table is a local summary of the numbered BMAD validation workflow, applied at Deep and Critical levels. Thirteen validation steps are not thirteen required PRD sections or thirteen automatically enforced Rust rules.
 
 | Step | Name | What It Checks |
 |------|------|----------------|
@@ -134,13 +143,20 @@ R_eff = min(evidence_scores)
 
 **NEVER the average.** A single weak piece of evidence brings down the entire score.
 
-**Which evidence participates**: the min ranges over the artifact's *current* evidence only. Packs with a terminal lifecycle status (`superseded`/`deprecated`) are excluded — a displaced pack stays in the graph as history but no longer speaks for present reliability (ADR-020, mirrors the dependency skip of ADR-002). Draft evidence still counts (it is the normal pre-activation state of a fresh measurement). An **active** `refutes` pack still zeroes the score; recovery is honest displacement: link the re-verification pack, then `supersede <old> --by <new>`.
+**Which evidence participates**: terminal packs (`superseded`/`deprecated`) are excluded from the minimum (ADR-020); draft evidence counts. An **unexpired** `refutes` contributes zero. Honest displacement preserves history: link re-verification evidence, then supersede the old pack.
 
 ### Evidence Score Calculation
 
 ```
-evidence_score = max(0, verdict_score - CL_penalty)
+flat_evidence_score = max(0, verdict_score - CL_penalty)
+recursive_evidence_score = max(0, verdict_score - CL_penalty - evidence_type_modifier)
 ```
+
+The explicit recursive score report uses the second formula plus eligible
+dependency contributions (`based_on`/`informs`: 0.1 penalty; `refines`: 0).
+Type modifiers: test/measurement 0, benchmark 0.1, audit 0.2. Flat captured
+`r_eff_score` and the evidence breakdown omit type modifiers and recursion, so
+they can differ from the report. Neither formula is `min(F,G,R)`.
 
 ### Verdict Scores
 
@@ -161,10 +177,11 @@ evidence_score = max(0, verdict_score - CL_penalty)
 
 ### Evidence Decay
 
-Each evidence item has a `valid_until` field (TTL). After expiration:
+`valid_until` is optional. When present and expired:
 - Evidence is NOT deleted
 - Score becomes **0.1** (stale, not absent)
 - This differs from 0.0 — stale evidence is better than no evidence at all
+- Expiry returns 0.1 **before** verdict arithmetic, including for refuting evidence; no gradual time-decay curve is implemented here.
 
 ### Trust Thresholds
 
@@ -174,11 +191,14 @@ Each evidence item has a `valid_until` field (TTL). After expiration:
 | < 0.5 | Needs Review | Additional evidence or reconsideration required |
 | < 0.3 | AT RISK | Decision is unreliable, reassessment needed |
 
+These are interpretation labels, not sufficient activation conditions or
+calibrated probabilities.
+
 ### Calculation Example
 
 Decision: "Use LanceDB for artifact storage"
 
-Evidence pack:
+Illustrative **flat-score** evidence pack (not observed measurements or the recursive report):
 1. Benchmark on 10K records: supports (1.0), CL2 -> score = 1.0 - 0.1 = **0.9**
 2. LanceDB Rust SDK documentation: supports (1.0), CL1 -> score = 1.0 - 0.4 = **0.6**
 3. Production usage reviews: weakens (0.5), CL1 -> score = 0.5 - 0.4 = **0.1**

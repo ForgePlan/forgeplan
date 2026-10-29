@@ -1,5 +1,7 @@
 # Agent API and MCP v2
 
+> Предложение Agent API v2, не текущий каталог MCP. Для выбранной сборки `0.39.0+constellation.s1.1` (`c852f40c`) доступны `full` и отдельный `constellation-read`, а не перечисленные ниже role profiles. Полный профиль сохраняет мутации. См. [статус пакета](../README.md).
+
 ## Цели
 
 - уменьшить tool-selection burden;
@@ -21,6 +23,8 @@ forgeplan_verify
 forgeplan_status
 forgeplan_search
 ```
+
+Имена выше проектируемые. Совпадение с существующими `forgeplan_claim`, `forgeplan_status`, `forgeplan_search` не вводит новую семантику: текущий claim — advisory-лиза артефакта, не evidence claim и не authority grant. Migration/parity должны сохранять действующих callers; этот список не разрешает заменить их интерфейсы.
 
 ## Profiles
 

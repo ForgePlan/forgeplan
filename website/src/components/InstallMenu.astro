@@ -5,6 +5,7 @@
 //
 // Used by both Header.astro (landing/blog/guides) and DocsHeader.astro (/docs).
 // All event wiring lives in the inline <script> at the bottom.
+const isRu = Astro.url.pathname.startsWith('/ru/');
 ---
 
 <div class="install-menu-wrap">
@@ -15,20 +16,20 @@
     aria-expanded="false"
     aria-controls="install-popup"
     data-install-trigger>
-    Install
+    {isRu ? 'Установка' : 'Install'}
     <svg class="install-menu-chevron" width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
       <path d="M3 4.5L6 7.5L9 4.5"/>
     </svg>
   </button>
 
-  <div id="install-popup" class="install-popup" role="dialog" aria-label="Install commands" hidden>
-    <p class="install-popup-eyebrow">Install</p>
+  <div id="install-popup" class="install-popup" role="dialog" aria-label={isRu ? 'Команды установки' : 'Install commands'} hidden>
+    <p class="install-popup-eyebrow">{isRu ? 'Установка' : 'Install'}</p>
 
-    <div class="install-popup-row" data-cmd="cargo install forgeplan-cli">
+    <div class="install-popup-row" data-cmd="cargo install forgeplan --features semantic-search">
       <p class="install-popup-label">Cargo</p>
       <div class="install-popup-cmd">
-        <code>cargo install forgeplan-cli</code>
-        <button type="button" class="install-popup-copy" data-copy-target aria-label="Copy command" title="Copy">
+        <code>cargo install forgeplan --features semantic-search</code>
+        <button type="button" class="install-popup-copy" data-copy-target aria-label={isRu ? 'Скопировать команду' : 'Copy command'} title={isRu ? 'Скопировать' : 'Copy'}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -41,7 +42,7 @@
       <p class="install-popup-label">Homebrew <span style="opacity:.6;font-size:10px">(6.0+: brew trust ForgePlan/tap)</span></p>
       <div class="install-popup-cmd">
         <code>brew install ForgePlan/tap/forgeplan</code>
-        <button type="button" class="install-popup-copy" data-copy-target aria-label="Copy command" title="Copy">
+        <button type="button" class="install-popup-copy" data-copy-target aria-label={isRu ? 'Скопировать команду' : 'Copy command'} title={isRu ? 'Скопировать' : 'Copy'}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -51,10 +52,10 @@
     </div>
 
     <div class="install-popup-row" data-cmd="curl -fsSL https://forgeplan.dev/install.sh | sh">
-      <p class="install-popup-label">Shell</p>
+      <p class="install-popup-label">{isRu ? 'Скрипт shell' : 'Shell'}</p>
       <div class="install-popup-cmd">
         <code>curl -fsSL https://forgeplan.dev/install.sh | sh</code>
-        <button type="button" class="install-popup-copy" data-copy-target aria-label="Copy command" title="Copy">
+        <button type="button" class="install-popup-copy" data-copy-target aria-label={isRu ? 'Скопировать команду' : 'Copy command'} title={isRu ? 'Скопировать' : 'Copy'}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -64,14 +65,14 @@
     </div>
 
     <div class="install-popup-row" data-cmd="forgeplan setup-skill">
-      <p class="install-popup-label">AI Skill <span class="install-popup-tag">Claude Code · Cursor · Windsurf</span></p>
+      <p class="install-popup-label">{isRu ? 'Навык AI-агента' : 'AI Skill'} <span class="install-popup-tag">Claude Code</span></p>
       <div class="install-popup-cmd">
         <code>forgeplan setup-skill</code>
-        <a href="/docs/marketplace/forgeplan-workflow/" class="install-popup-docs" title="Documentation">docs ↗</a>
+        <a href={isRu ? '/ru/docs/marketplace/forgeplan-workflow/' : '/docs/marketplace/forgeplan-workflow/'} class="install-popup-docs" title={isRu ? 'Документация' : 'Documentation'}>{isRu ? 'Документация ↗' : 'docs ↗'}</a>
       </div>
     </div>
 
-    <a href="/#install" class="install-popup-more">All install options →</a>
+    <a href="/#install" class="install-popup-more">{isRu ? 'Варианты установки (EN) →' : 'Installation options →'}</a>
   </div>
 </div>
 
@@ -121,8 +122,8 @@
           row?.classList.add('install-popup-copied');
           setTimeout(() => row?.classList.remove('install-popup-copied'), 1200);
         } catch {
-          // Silent fail — fallback would be selectText + execCommand, but
-          // modern browsers all support clipboard API.
+          // Clipboard writes can fail (for example, if permission is denied).
+          // This popup currently leaves the copy state unchanged on failure.
         }
       });
     });

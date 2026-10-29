@@ -108,6 +108,7 @@ pub fn plan_reconcile(
     previous: Option<&GenerationManifest>,
 ) -> ReconcilePlan {
     let previous_entries = previous.map(|m| m.source_entries.as_slice()).unwrap_or(&[]);
+    let same_interpretation = previous.is_some_and(|m| m.config_digest == captured.config_digest);
 
     let mut deltas: Vec<ArtifactDelta> = Vec::new();
     let mut tombstones: Vec<Tombstone> = Vec::new();
@@ -148,7 +149,8 @@ pub fn plan_reconcile(
         let action = match previous_entry {
             None => DeltaAction::Create,
             Some(prev)
-                if prev.source_digest == entry.source_digest
+                if same_interpretation
+                    && prev.source_digest == entry.source_digest
                     && prev.input_digest == entry.input_digest
                     && prev.canonical_key == entry.canonical_key =>
             {
@@ -417,6 +419,22 @@ mod tests {
         let plan = plan_reconcile(&changed, Some(&previous));
         assert_eq!(plan.count(DeltaAction::Update), 1);
         assert_eq!(plan.count(DeltaAction::Unchanged), 0);
+    }
+
+    #[test]
+    fn changed_interpretation_refreshes_rows_without_changing_source_or_embedding_input() {
+        let previous = manifest(vec![entry("NOTE-001", "notes/NOTE-001-a.md", "same-bytes")]);
+        let mut captured = complete(previous.source_entries.clone());
+        captured.config_digest = "new-metadata-parser".to_string();
+
+        let plan = plan_reconcile(&captured, Some(&previous));
+        let delta = plan.for_path("notes/NOTE-001-a.md").unwrap();
+        assert_eq!(delta.action, DeltaAction::Update);
+        assert_eq!(delta.source_digest, Some("same-bytes".to_string()));
+        assert_eq!(delta.input_digest, previous.source_entries[0].input_digest);
+        assert_eq!(delta.profile_id, previous.source_entries[0].profile_id);
+        assert!(plan.tombstones.is_empty());
+        assert!(plan.publishable);
     }
 
     #[test]

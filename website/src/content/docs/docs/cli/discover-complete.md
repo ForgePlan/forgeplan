@@ -1,28 +1,28 @@
 ---
 title: forgeplan discover complete
-description: "Finalize a discovery session and emit recommended artifacts (PROBs, PRDs, Notes) to create"
+description: "Mark a discovery session completed and print a health-check hint."
 ---
 
-`forgeplan discover complete <SESSION_ID>` closes a brownfield discovery session. It marks the session row as completed, runs the recommendation pass over all accumulated findings, and prints a list of **proposed artifacts** - typically Problem cards, PRDs, Notes, and sometimes ADRs - for the user to create with `forgeplan new`.
+`forgeplan discover complete <SESSION_ID>` marks the saved discovery session completed. The CLI prints its finding count and completion time, then suggests `forgeplan health`. It does not group findings, deduplicate them, assign artifact depth or emit `forgeplan new` proposals.
 
-This is where the brownfield pipeline turns raw findings into real methodology state.
+Review findings and choose any follow-on artifacts separately.
 
 ## When to use
 
-- **After the agent has finished walking the source tiers** and `discover show` reports adequate coverage.
+- **After the agent has finished the agreed source review** — inspect `discover show`; finding counts alone do not certify adequate coverage.
 - **At the end of an onboarding sprint** - crystalize everything learned into artifacts.
-- **When you want to stop a session and capture whatever was found so far** - partial sessions still produce recommendations.
+- **When stopping after a partial survey** — completion records the session's state; it does not certify adequate coverage.
 
 ## When NOT to use
 
 - While the agent is still actively submitting findings - wait for it to settle.
-- To abort without saving - there's no rollback; once completed, proposals are emitted.
+- To roll back findings — completion does not delete findings or undo artifacts created during discovery.
 - On an already-completed session - idempotent but pointless.
 
 ## Usage
 
 ```text
-forgeplan discover complete <SESSION_ID> [OPTIONS]
+forgeplan discover complete <SESSION_ID>
 ```
 
 ## Arguments
@@ -41,41 +41,42 @@ forgeplan discover complete <SESSION_ID> [OPTIONS]
 ## Examples
 
 ```bash
-forgeplan discover complete disc-001
+# Replace SESSION_ID with the ID returned by start/list
+forgeplan discover complete SESSION_ID
 
 # Full onboarding loop
 forgeplan init -y
-forgeplan discover start
-# ... agent runs ...
-forgeplan discover show disc-001
-forgeplan discover complete disc-001
-# → proposals printed; create the ones you accept
-forgeplan new prob "Auth drift between docs and code"
+forgeplan discover start "Example project"
+# Agent reads sources and reports findings through MCP
+forgeplan discover show SESSION_ID
+forgeplan discover complete SESSION_ID
+# Separate operator decisions, not automatically emitted proposals:
+forgeplan new problem "Auth drift between docs and code"
 forgeplan new prd  "Unified config loader"
 ```
 
-## What the recommendation pass does
+## Reviewing findings after completion
 
-At completion, the engine:
+The following is a suggested human/agent analysis, not behavior of this CLI command:
 
-1. **Groups findings** by category (decisions, invariants, drift, debt, risks, ownership).
-2. **Deduplicates** - merges findings that reference the same module/concept.
-3. **Maps categories to artifact kinds** - drift → Problem, major decisions → ADR, gaps → PRD, observations → Note.
-4. **Suggests depth** - Tactical / Standard / Deep based on blast radius and reversibility heuristics.
-5. **Emits proposals** as a list of `forgeplan new` commands the user can accept, edit, or skip.
+1. Group findings by category and source.
+2. Check whether reports about the same module duplicate or contradict each other.
+3. Decide which findings justify Problems, ADRs, PRDs or Notes.
+4. Choose depth using the applicable routing policy.
+5. Create the accepted artifacts explicitly.
 
-The user stays in control: proposals are printed, not auto-created.
+CLI completion does not perform these steps or create follow-on artifacts.
 
 ## How it fits
 
 `discover complete` is the **hand-off point** from discovery to the normal Forgeplan lifecycle:
 
 ```
-discover start → (findings) → discover complete → proposals
+discover start → agent findings → discover complete → manual review
                                                     ↓
-                          forgeplan new prob/prd/adr/note ...
+                          forgeplan new problem/prd/adr/note ...
                                                     ↓
-                          validate → reason → activate
+                          validate → reason → code/evidence → activate
 ```
 
 From here, the project flows through the standard Shape → Validate → ADI → Code → Evidence → Activate cycle like any greenfield work.
@@ -88,3 +89,22 @@ From here, the project flows through the standard Shape → Validate → ADI →
 - [`forgeplan new`](/docs/cli/new/) - create the proposed artifacts
 - [`forgeplan validate`](/docs/cli/validate/) - next step after new
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan discover complete --help`.
+
+```text
+Mark a discovery session as completed
+
+Usage: forgeplan discover complete <SESSION_ID>
+
+Arguments:
+  <SESSION_ID>  Session ID to complete
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -1,5 +1,16 @@
 # RFC-009 Phase 4 update — workaround note (Phase 2.3 audit)
 
+> **Historical change proposal — 2026-05-08, not a current recovery runbook.**
+> The original proposed RFC text and checklist below are preserved, not applied
+> by this review. Their `scan-import` recovery advice is incorrect for the current
+> interface: it imports external documents, not a canonical-index rebuild.
+> Use `index` for Constellation or `reindex` for legacy layout; on migrated layout
+> `reindex` delegates to Constellation. Ordinary CLI/full-MCP `get` now returns
+> the full captured Markdown, so do not reuse the old “body excludes frontmatter”
+> assumption. The synthetic legacy suite does not establish the varying
+> 73/298/305 real-corpus counts as an exhaustive test.
+> See the [current reference](https://forgeplan.dev/docs/reference/constellation/).
+
 **Status**: workaround pending lead-applied MCP `forgeplan_update`
 **Reason**: RED-LINE #11 forbids direct `Edit`/`Write` on
 `.forgeplan/rfcs/RFC-009-*.md`. This note captures the exact text changes for the

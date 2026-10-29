@@ -12,6 +12,8 @@ translations:
   ru: git-for-decisions
 ---
 
+> **Historical report; clarification added 2026-10-23.** Artifact/test/tool counts, stars, cohort sizes, course offers and timelines are the author's dated account, not independently remeasured results or current availability promises. The Velocity Scale is a teaching framework, not a validated population survey; the quoted 10%/90% line is a slogan, not a measured decomposition. The cover is a schematic decision history. Current command and scoring corrections are noted below without changing the publication date.
+
 ### The moment I noticed the graveyard
 
 It was a Tuesday code review. Senior engineer points at a line and asks, "why are we using this library here? I remember we debated three options."
@@ -32,14 +34,14 @@ ForgePlan is a local-first CLI that treats engineering decisions like first-clas
 
 - **PRD** - what we're building and why
 - **RFC** - how we propose to build it (with phases)
-- **ADR** - irreversible architectural decisions
+- **ADR** - significant architectural decisions and their rationale, including when to reconsider them
 - **Spec** - API contracts and data models
 - **Evidence** - tests, benchmarks, audits, with a decay clock
 - **Problem / Solution / Note / Refresh** - the long tail of "we noticed something"
 
-Every artifact is a markdown file in `.forgeplan/` inside your repo. That's not a metaphor. It's literally `git add .forgeplan/prds/PRD-001-auth-system.md` and `git push`. Markdown is the source of truth; the LanceDB index that powers semantic search is derived and rebuildable from the markdown by a single `forgeplan scan-import` command.
+Artifacts are Markdown files in `.forgeplan/` inside the repo. Markdown is authoritative and the search index is derived. **Current correction:** `scan-import` imports discovered foreign documents; it is not index recovery. Use `forgeplan index` for Constellation maintenance and the matching `reindex` workflow for legacy workspaces, without deleting storage as a prerequisite.
 
-The CLI is `forgeplan` (alias: `fpl`), 76 commands, plus a 63-tool MCP server so Claude Code, Cursor, or Aider can drive the methodology natively without me hand-holding the agent through next steps.
+The historical CLI/tool counts varied even within this post (63 versus 73 MCP tools); no matching catalog is supplied to resolve that snapshot. In the selected `0.39.0+constellation.s1.1` build, the captured MCP inventories are 76 tools in the full profile and 9 in the read profile. These counts do not prove that each operation works.
 
 ### The methodology, distilled to three rules
 
@@ -51,23 +53,23 @@ Every artifact is scored as `R_eff = min(evidence_scores)`. Never average. If yo
 
 **Rule 2: Evidence decays honestly.**
 
-Every EvidencePack carries `verdict` (supports / weakens / refutes), `congruence_level` (CL3 same-context = best, CL0 opposed = a -0.9 penalty), and `valid_until` (TTL). Past the TTL, evidence score drops to 0.1 - not because we don't trust the engineer who wrote it, but because the world six months ago is not the world today. Re-validate or accept the decay.
+Evidence scoring reads `verdict` (supports / weakens / refutes) and `congruence_level`; an optional `valid_until` supplies expiry. With no date the scorer does not expire the pack. After expiry it returns 0.1. This is a product heuristic, not a probability that the underlying observation remains true; renewing a date is not remeasurement.
 
 **Rule 3: The artifact graph is typed.**
 
-`PRD informs RFC`, `RFC realizes ADR`, `EVID informs PRD`, `PROB blocks PRD`. Edges aren't free-form. The graph is a DAG with topologically sorted dependencies, and `forgeplan blocked` will tell you exactly which decisions can't move forward because their parent isn't `active` yet.
+Current writable relation types are `informs`, `based_on`, `supersedes`, `contradicts` and `refines`; `realizes` and `blocks` are not accepted `link` values. Dependency ordering concerns structural edges, not every citation. A draft dependency is a reason to inspect `blocked`, not a universal ban on work before a parent is active.
 
 ### A war story: PROB-034 (the day the tool lied to me)
 
 Six weeks in, I was preparing a release. `forgeplan score PRD-XXX` returned `R_eff = 1.00`. Beautiful. Ship it.
 
-Out of paranoia I cloned the same workspace into a fresh directory and ran the same command. `R_eff = 0.10`.
+The recorded PROB-034 comparison used the same workspace with **two different binaries**, v0.17.1 and fixed v0.17.2, returning 1.00 and 0.10 respectively. It does not establish that a fresh clone alone changed the score.
 
 Same workspace. Same files. Different number.
 
-Twelve hours of A/B reverse-engineering later: HTML comments inside the EvidencePack template (`<!-- TODO: fill verdict -->`) were being parsed as actual data. The structured-fields parser didn't care that the lines were HTML-commented; it just regexed `verdict:` and got back garbage. Some files had the comments stripped, some didn't, depending on which template version had been used. A trust-calculus tool was lying about its own honesty score.
+PROB-034 records a specific cause: a line inside a multiline template comment shadowed the real `congruence_level`. Parsing the comment's nonnumeric value failed and fell back to CL3. Skipping complete comment blocks fixed that defect; the incident record, not this retelling's twelve-hour estimate, is the technical authority.
 
-Hotfix v0.17.2. PROB-034 in the repo. The lesson I shared with the cohort the next week: a methodology is only honest when the tool that enforces it can catch itself lying. That's the entire reason there's a `tests/adr_003_invariant.rs` regression guard now - to keep the tool from drifting back into self-deception as it grows.
+Hotfix v0.17.2 added parser regression tests for multiline comments. The separate `crates/forgeplan-cli/tests/adr_003_invariant.rs` guard concerns Markdown-first writes under ADR-003; it is not the parser regression or evidence that this incident caused that guard.
 
 ### The teaching loop
 
@@ -75,9 +77,9 @@ Parallel to the tool, I run **DEV VELOCITY** - a 6-week live cohort (18 sessions
 
 The framing I use is the **Velocity Scale**: -1 (pre-AI / resistant) to 1.0 (production AI-native), with discrete stages every 0.2.
 
-The interesting empirical fact: most working engineers sit between 0.2 (Cursor inline completion) and 0.4 (chat-driven coding). The painful transition is **0.2 → 0.4**, not 0.4 → 0.6. That's where students plateau. They've internalised "AI saves keystrokes" but haven't crossed into "AI is a methodology compiler."
+On the author's teaching scale, 0.2 denotes inline completion and 0.4 chat-driven coding. The claimed concentration and difficult transition are cohort observations without a published sample or method; they cannot establish where most engineers sit.
 
-The course teaches four methodologies, not one: **FPF** (trust calculus), **BMAD** (13-step PRD), **OpenSpec** (DAG of delta-specs), and **ForgePlan** (the synthesis). The reason you teach four is so students learn to *route* - pick the right depth of methodology for the problem in front of them, instead of bureaucratising every commit.
+The course combines FPF, BMAD, OpenSpec and ForgePlan as a local teaching synthesis. "13-step PRD" describes the local adaptation, not a universal upstream BMAD requirement: pinned BMAD distinguishes Analysis, Planning, Solutioning and Implementation, and its thirteen-step validation workflow is not thirteen required PRD sections.
 
 ForgePlan is the tool that makes the synthesis tractable in a real repo, but it's not the punchline. The punchline is the routing skill.
 
@@ -87,13 +89,13 @@ The phrase is overused. Here's what it concretely means in our cohort:
 
 - You write a CLAUDE.md with your project's methodology and red lines.
 - You spawn parallel sub-agents with explicit file-ownership grids (you don't say "go forth and refactor" - you say "Worker 1 owns these 4 files; Worker 2 owns those 3; here are the forbidden files for each").
-- You run adversarial 2-agent audits *after* significant changes, expecting each agent to find ≥3 issues. Zero findings means re-spawn.
+- The cohort used two-agent adversarial review and a three-findings prompt. That was a local review exercise, not a quality metric: do not invent findings or restart solely to fill a quota.
 - You write evidence packs as you go, not after the fact.
-- You let the agent read the methodology - that's why MCP matters. 73 tools mean the agent can call `forgeplan_route`, `forgeplan_validate`, `forgeplan_score` deterministically, instead of hallucinating its way through "next steps".
+- MCP exposes named operations such as `forgeplan_route`, `forgeplan_validate` and `forgeplan_score`; exposing a tool neither makes LLM reasoning deterministic nor prevents hallucinated next steps.
 
 > "Промпт = 10%. Контекст = 90%."
 
-The line is in Russian because that's how I say it to my Russian-speaking cohort, but it's universal. Most "prompt engineering" advice is wasted because the bottleneck isn't the prompt's wording - it's whether the agent has access to the right context-shaped knowledge at the right moment.
+The quotation preserves how the author phrases the idea to the Russian-speaking cohort. Its percentages are rhetorical: access to relevant context matters, but this post does not measure the relative contribution of context and prompt wording.
 
 ### Honest "what's missing"
 

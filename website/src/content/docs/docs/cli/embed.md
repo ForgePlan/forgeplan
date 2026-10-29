@@ -23,28 +23,40 @@ forgeplan embed
 
 ## Feature flag
 
-`embed` is gated behind the `semantic-search` Cargo feature flag. The default
-Forgeplan binary ships **without** semantic search to keep the download small
-and avoid bundling an ML model. To enable it, build from source:
+The command requires the `semantic-search` Cargo feature. Source installation
+must opt in explicitly:
 
 ```bash
 cargo install --path crates/forgeplan-cli --features semantic-search
 ```
 
-Without the flag the command is a no-op stub that prints a hint pointing to
-BM25 keyword search (which is already production-grade as of v0.18.0).
+A build without the feature refuses with an installation hint. Generating vectors requires the compatible model snapshot; semantic retrieval then also requires compatible vectors published in the workspace index. Existing vectors are not a prerequisite for creating them.
 
 ## What it does
 
-1. Loads the BGE-M3 embedding model via [fastembed-rs](https://github.com/Anush008/fastembed-rs).
-2. Walks every artifact in LanceDB and concatenates title + body + tags.
-3. Computes a 1024-dim vector per artifact.
-4. Writes vectors to the `embedding` column of the `artifacts` table.
-5. Caches the model weights in `.forgeplan/.fastembed_cache/` (gitignored).
+The local `0.39.0+constellation.s1.1` build uses the pure-Rust `tract` engine,
+not the earlier fastembed runtime. Only `bge-m3` is supported (1024 dimensions).
+On a migrated workspace, `embed` drains embedding jobs for the published
+Constellation generation, including prefix and section units; it is not
+limited to one vector per artifact.
 
-First run downloads ~500MB of model weights - subsequent runs reuse the cache.
-Embedding a typical 100-artifact workspace takes 10-60 seconds depending on
-your hardware (CPU fallback by default, CUDA/Metal if available).
+If no generation is published, this command bootstraps index maintenance first; that can migrate a legacy workspace. Prepare the complete cache before invoking it. The interface below describes the selected `0.39.0+constellation.s1.1` binary, not the unchanged installed `0.38.0` release.
+
+The model is roughly 2.1 GB and is cached outside the project. The cache
+priority is `FORGEPLAN_MODEL_CACHE` → `~/.forgeplan/models` → platform cache
+or legacy relative fallback only when no home is available. `HF_HOME` does
+not override the tract cache path. Pass the cache root, not a snapshot path.
+
+Queries and background maintenance do not download missing weights.
+`forgeplan setup` is the explicit preparation step. Never delete the model
+cache as a diagnostic shortcut.
+
+## Automatic embeddings
+
+A manual `embed` does not persist `embedding:` configuration. For automatic
+queue draining, configure `model: bge-m3` explicitly, prepare the complete
+snapshot, and run maintenance. `serve --auto-index` alone is not enough.
+See [Constellation setup](/docs/guides/constellation/).
 
 ## When you need it
 
@@ -52,18 +64,15 @@ your hardware (CPU fallback by default, CUDA/Metal if available).
   surface R_eff / evidence work even if those exact words don't appear.
 - You're building **AI agent workflows** where an MCP tool retrieves related
   context by similarity rather than keyword.
-- You use **FPF KB vector search** (PRD-042) against the methodology corpus.
+- You need artifact embeddings; FPF KB ingestion is a separate operation.
 
 ## When you don't need it
 
-- Your corpus is small (<50 artifacts) - keyword search (BM25 + Russian
-  morphology, v0.18.0) finds everything.
-- You prefer a minimal install without an ML dependency.
-- You want reproducible builds without a ~500MB model download on first run.
+- Keyword search is sufficient for your task.
+- You prefer a build without the semantic-search feature.
+- You cannot provision the model download or its disk space.
 
-Default `forgeplan search "query"` now uses production BM25 (v0.18.0) which
-handles Russian stemming, English, and template noise stripping - it's a
-strong keyword baseline and may be enough on its own.
+Default `forgeplan search` is smart search, with keyword and available semantic signals. Use `--keyword` when you explicitly need keyword-only retrieval; it does not require model weights. Do not infer semantic readiness from a successful keyword result.
 
 ## Example
 
@@ -71,10 +80,13 @@ strong keyword baseline and may be enough on its own.
 # Build with semantic search enabled
 cargo install --path crates/forgeplan-cli --features semantic-search
 
+# Explicitly prepare the complete model snapshot
+forgeplan setup --skip-alias --skip-hooks
+
 # Generate embeddings for the whole workspace
 forgeplan embed
 
-# Now semantic search works
+# Query after embeddings have been published
 forgeplan search "trust calculus" --semantic
 ```
 
@@ -82,5 +94,21 @@ forgeplan search "trust calculus" --semantic
 
 - [CLI overview](/docs/cli/)
 - [`forgeplan search`](/docs/cli/search/) - keyword + semantic retrieval
-- [`forgeplan reindex`](/docs/cli/reindex/) - rebuild metadata (doesn't touch embeddings)
+- [Constellation reference](/docs/reference/constellation/) - embedding coverage and identity
 - [`forgeplan fpf search`](/docs/cli/fpf-search/) - search FPF knowledge base
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan embed --help`.
+
+```text
+Generate embeddings for all artifacts (semantic search)
+
+Usage: forgeplan embed
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

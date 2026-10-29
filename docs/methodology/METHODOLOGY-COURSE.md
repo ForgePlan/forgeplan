@@ -4,6 +4,14 @@
 
 > A course for developers. In plain language. From "what is it" to "how to use it every day".
 
+> Examples below are authored teaching scenarios, not verified runtime transcripts
+> or measurements. Replace example IDs with actual creation results and complete
+> real bodies/evidence before activation. CLI `validate` works on legacy and
+> migrated Constellation layouts; full MCP validation was also exercised.
+> See the [pilot compatibility notes (RU)](../operations/CONSTELLATION-PILOT.ru.md).
+> Native agent policies remain unchanged. The selected build is
+> `0.39.0+constellation.s1.1`, not public `0.38.0`.
+
 ---
 
 ## Chapter 1: Why Forgeplan
@@ -38,7 +46,7 @@ Don't turn Forgeplan into Jira. Forgeplan is about knowledge and decisions, not 
 
 ## Chapter 2: 10 Artifacts -- What Is What
 
-An artifact is a structured document in the database. Each has its own type and purpose.
+An artifact is canonical Markdown with metadata and links; the database is a derived index. The ten types here are introductory, not the full core taxonomy (Memory and six brownfield kinds also exist).
 
 ### Core 5 (used constantly)
 
@@ -129,6 +137,7 @@ Draft -> Active -> Superseded or Deprecated
 | **Active** | Accepted and in effect | After `forgeplan activate` (passes validation gate) |
 | **Superseded** | Replaced by a new one | `forgeplan supersede PRD-001 --by PRD-002` |
 | **Deprecated** | Outdated | `forgeplan deprecate PRD-001 --reason "..."` |
+| **Stale** | Persisted review-due marker | Separate from date-expiry detection; expiry alone does not rewrite status |
 
 ### DerivedStatus (computed)
 
@@ -137,10 +146,10 @@ Forgeplan automatically determines "how well-developed" an artifact is:
 | DerivedStatus | What it means |
 |--------------|---------------|
 | **STUB** | Created but empty -- nothing filled in |
-| **FRAMED** | Core sections filled (Problem, Goals) |
-| **VALIDATED** | Passed `forgeplan validate` with no errors |
-| **EVIDENCED** | Has linked evidence (Evidence) |
-| **ACTIVATED** | Full cycle: filled + validated + confirmed + activated |
+| **SHAPED** | Heuristic required headings present; not proof of semantic completeness |
+| **VALIDATED** | Validation input reports zero MUST findings |
+| **EVIDENCED** | Has evidence and positive R_eff |
+| **ACTIVATED** | Input status is active, superseded or deprecated; does not prove earlier checks ran |
 
 ### Rule: Supersede, Don't Delete
 
@@ -187,6 +196,10 @@ The router responds:
 
 ### Full Cycle Example
 
+This abridged sequence is not a runnable acceptance test: fill all depth-specific
+sections, write observed evidence fields with `update --body @file`, and inspect
+all applicable activation gates. The 95% value is illustrative.
+
 ```bash
 # 1. Route
 forgeplan route "Add caching to API"
@@ -221,18 +234,18 @@ forgeplan activate PRD-001
 
 ### Evidence = Fact, Not Opinion
 
-Evidence is a **measurable confirmation** that a decision works:
+Evidence records observations within an explicit scope; the example counts below do not prove universal correctness:
 
 | Type | Example | What it proves |
 |------|---------|---------------|
-| **test** | "427 tests pass" | Code works |
-| **benchmark** | "P99 latency < 50ms" | Performance is OK |
-| **measurement** | "Coverage 85%" | Coverage is sufficient |
-| **audit** | "4 agents: 0 critical issues" | Code quality is good |
+| **test** | "427 tests pass" | Those exercised assertions passed |
+| **benchmark** | "P99 latency < 50ms" | That measured workload/environment met the stated threshold |
+| **measurement** | "Coverage 85%" | Reported coverage, not adequacy by itself |
+| **audit** | "4 agents: 0 critical issues" | No confirmed critical issue in the stated review scope |
 
 ### Structured Fields (required)
 
-Every Evidence contains 3 fields in the body:
+Author all three fields below. The parser requires declared verdict plus CL/source tier to avoid CL0 fallback; missing evidence_type separately defaults to measurement.
 
 ```markdown
 ## Structured Fields
@@ -254,12 +267,19 @@ evidence_type: test        # test / benchmark / measurement / audit
 
 Not the average, but the **minimum**. Like a chain -- strength is determined by the weakest link.
 
+For unexpired test/measurement evidence, the flat and recursive item calculation
+is `max(0, verdict_base - CL_penalty)`. Recursive scoring also subtracts 0.1 for
+benchmark or 0.2 for audit and includes eligible dependency contributions. Flat
+captured scores and breakdowns omit those additions; surfaces can differ.
+Terminal packs are excluded; draft packs count. Expiry returns 0.1 before
+verdict arithmetic. These are product heuristics, not universal FPF probabilities.
+
 ```
 Evidence 1: supports, CL3 -> score = 1.0
 Evidence 2: supports, CL2 -> score = 0.9
-Evidence 3: weakens, CL1  -> score = 0.2
+Evidence 3: weakens, CL1  -> score = 0.1
 
-R_eff = min(1.0, 0.9, 0.2) = 0.2 (AT RISK!)
+R_eff = min(1.0, 0.9, 0.1) = 0.1 (AT RISK!)
 ```
 
 One weak piece of evidence ruins the entire score.
@@ -268,8 +288,8 @@ One weak piece of evidence ruins the entire score.
 
 ```bash
 forgeplan score PRD-001
-# -> R_eff: 0.85 -- Adequate
-# -> Weakest link: EVID-003 (CL1 penalty)
+# Inspect the actual report, including its weakest link and scoring factors.
+# Do not reuse the earlier illustrative calculation as observed CLI output.
 ```
 
 ### What Affects R_eff
@@ -278,7 +298,7 @@ forgeplan score PRD-001
 |--------|--------|---------|
 | **CL penalty** | CL3=0, CL2=0.1, CL1=0.4, CL0=0.9 | CL0 subtracts 0.9 from score |
 | **verdict: weakens** | Lowers score | "Tests partially pass" |
-| **verdict: refutes** | Score -> ~0 | "Benchmark showed degradation" |
+| **verdict: refutes** | Unexpired item contributes 0 | Expired-item branch returns 0.1 first |
 | **expired valid_until** | Score -> 0.1 (stale) | Evidence is outdated |
 | **No evidence** | R_eff = 0.0 | Decision without proof |
 
@@ -292,7 +312,7 @@ forgeplan score PRD-001
 
 ### Three Dimensions
 
-F-G-R is a **3D assessment** of artifact quality (not the code, but the document itself):
+Forgeplan's FGR is a product heuristic, not upstream FPF's scales: current upstream G is ClaimScope, not Granularity (see [GLOSSARY.md](GLOSSARY.md)).
 
 | Letter | Full Name | Plain Language | Scale |
 |--------|-----------|---------------|-------|
@@ -302,60 +322,57 @@ F-G-R is a **3D assessment** of artifact quality (not the code, but the document
 
 ### Formality -- "Is everything filled in?"
 
-Checks: are the required sections present (Problem, Goals, Non-Goals, FR)?
+Formality is the fraction of registered validation rules that pass, not just section count.
 
-```
-PRD without Problem section -> F = 0.2 (poor)
-PRD with all sections       -> F = 0.8 (good)
+```text
+F = passed_rules / total_rules
 ```
 
 **How to raise F**: fill all MUST sections.
 
 ### Granularity -- "Is there enough detail?"
 
-Counts: how many FR (functional requirements), how many checkboxes, text density.
+Granularity averages five binary content-completeness checks:
 
-```
-PRD with 2 FR             -> G = 0.3 (low detail)
-PRD with 10 FR and checkboxes -> G = 0.8 (detailed)
-```
+1. Problem/Motivation alias with at least 20 words.
+2. Goals/Outcomes alias with at least 10 words.
+3. A checkbox line.
+4. Related/Dependencies alias with at least 5 words.
+5. More than 100 total words.
 
-**How to raise G**: add specific FR in the format `[Actor] can [capability]`.
+Two FR versus ten FR does not by itself determine G.
+
+**How to raise G**: provide substantive problem/goals/relations and checkable requirements, not filler or extra checkboxes for their count.
 
 ### Reliability -- "Is there evidence?"
 
-Depends on R_eff (evidence scores) + number of links + presence of review.
-
-```
-PRD without evidence         -> R = 0.0 (unreliable)
-PRD with 3 evidence, R_eff=0.85 -> R = 0.8 (reliable)
-```
+With default weights: `R = clamp(0.5 * R_eff + link_bonus + freshness_bonus, 0, 1)`.
+Link bonus is 0 / 0.099 / 0.201 / 0.3 for 0 / 1 / 2–3 / 4+ links.
+Freshness bonus is 0.2 when not stale. Thus R can be positive without evidence;
+that bonus is not evidence or permission to activate.
 
 **How to raise R**: create Evidence, link it, get R_eff > 0.
 
 ### Checking F-G-R
 
 ```bash
-forgeplan score PRD-001
-# -> Quality (F-G-R):
-#     Formality:    0.80 (B)
-#     Granularity:  0.60 (C)
-#     Reliability:  0.85 (B)
-#     Overall:      0.75 (B)
+forgeplan fgr PRD-001
 ```
+
+Overall FGR is `cbrt(F * G * R)`, not an arithmetic mean or `min(F,G,R)`.
 
 ### Grades
 
 | Score | Grade | Meaning |
 |-------|-------|---------|
-| 0.9+ | A | Excellent quality |
-| 0.7-0.89 | B | Good |
-| 0.5-0.69 | C | Average -- needs work |
-| 0.3-0.49 | D | Weak -- serious gaps |
-| <0.3 | F | Poor -- artifact is a stub |
+| >0.8 | A | Overall heuristic |
+| >0.6 to 0.8 | B | Overall heuristic |
+| >0.4 to 0.6 | C | Overall heuristic |
+| >0.2 to 0.4 | D | Overall heuristic |
+| <=0.2 | F | Overall heuristic, not necessarily an empty artifact |
 
 ### Anti-pattern
-Don't chase an A on all three. For a tactical task, a D on Granularity is fine. F-G-R shows the picture, it doesn't give a grade.
+Don't optimize prose for a letter grade. FGR displays an overall grade but does not prove truth, safety or activation readiness.
 
 ---
 
@@ -373,7 +390,7 @@ forgeplan route "my task"     # What depth? What to create?
 ```bash
 forgeplan new prd "Title"     # Create artifact
 forgeplan validate PRD-001    # Check quality (MUST/SHOULD)
-forgeplan score PRD-001       # R_eff + F-G-R scoring
+forgeplan score PRD-001       # Recursive R_eff report; use fgr for F-G-R
 ```
 
 ### Evidence and Lifecycle
@@ -484,7 +501,7 @@ Skipped dependencies and evidence are visible in `forgeplan score`: `"Skipped EP
 
 ### Enforcement Hooks (for AI agents)
 
-5 hooks in `.claude/hooks/` automatically enforce rules:
+The repository contains these five hook examples among others. Enforcement depends on host wiring; existence is not proof they ran:
 
 | Hook | When | What it checks |
 |------|------|---------------|
@@ -519,7 +536,7 @@ Key terms to remember:
 
 ### Why
 
-Instead of 8 manual steps -- one command. The agent automatically goes through the entire path from observation to PR.
+The local `/forge-cycle` prompt guides an agent through phases; it is not a Rust end-to-end executor or a guarantee of completion.
 
 ### Launching
 
@@ -529,10 +546,10 @@ Instead of 8 manual steps -- one command. The agent automatically goes through t
 /forge-cycle                             # picks up P0 from TODO.md
 ```
 
-### 8 Phases
+### Nine Numbered Phases (0–8)
 
 ```
-Phase 0: OBSERVE    <- forgeplan health + stale + fpf
+Phase 0: OBSERVE    <- forgeplan health + stale + fpf dashboard
 Phase 1: ROUTE      <- forgeplan route -> depth + pipeline
 Phase 2: SPRINT     <- /sprint -> wave-based plan
 Phase 3: BUILD      <- /team-up -> code with Rust skills
@@ -555,7 +572,7 @@ When a choice arises in Phase 3 (Build) (which API? which pattern?):
 5. DOCUMENT   -- // FPF: chose X over Y because [reason]
 ```
 
-**The agent asks the user ONLY if** the decision is irreversible (DB schema, public API, cross-PRD impact).
+Native Build stop conditions include irreversible decisions, equally weak options and cross-cutting/other-PRD impact. The ADI/reversibility selection rubric is locally adopted; three hypotheses are not a universal FPF requirement.
 
 ---
 
@@ -727,7 +744,7 @@ forgeplan route "task description"
 
 **What it is**: Thinking "I have 3 evidence items, 2 strong and 1 weak -- on average it's fine".
 
-**Why it's bad**: FPF says: **R_eff = min(scores)**, not average. A chain is as reliable as its weakest link. If one evidence says "refutes" -- the entire decision is in question.
+**Why it's bad**: Forgeplan's R_eff uses a weakest-link minimum, not an average. Current upstream FPF does not prescribe a universal numeric aggregate. An unexpired refuting item contributes zero; see the expiry and surface distinctions above.
 
 **How to do it right**: Fix the weak evidence. Or displace it honestly: link a re-verification pack and `supersede <old> --by <new>` -- a terminal-status pack leaves the min (ADR-020) while staying in the graph as history.
 
@@ -754,11 +771,11 @@ forgeplan route "task description"
 
 **What it is**: `/audit` -> "everything is great, 0 problems found".
 
-**Why it's bad**: 0 findings = review wasn't done. In any code with more than 100 LOC **there is** something to improve. A rubber-stamp review creates a false sense of security.
+**Why it's bad**: A conclusion without review scope, examined assertions or evidence cannot be evaluated. Zero findings alone does not establish that review was omitted, even above 100 LOC.
 
-**How to do it right**: The reviewer **must** find at least 1 problem. If none found -- re-review with a different focus (security? performance? error handling?).
+**Native policy boundary**: `/forge-cycle` still prescribes an issue quota and re-review. This course does not change that policy. The quota cannot justify inventing a defect; report the actual review scope, confirmed findings and remaining uncertainty.
 
-**In plain terms**: "everything is perfect" = "I didn't check". A good review always finds something.
+**In plain terms**: findings need evidence; a clean result needs a stated scope, not fabricated issues.
 
 ---
 
@@ -785,9 +802,9 @@ evidence_type: test
 
 **What it is**: `git commit` on main without PR and review.
 
-**Why it's bad**: No review, no audit trail, can't revert without force push.
+**Why it's bad**: It bypasses the required PR review. Git history still exists and an ordinary revert can undo a commit without force push.
 
-**How to do it right**: Feature branch -> PR -> squash merge.
+**How to do it right**: Feature branch -> PR -> the project's merge-commit convention.
 
 ```bash
 git checkout dev && git pull
@@ -812,6 +829,6 @@ gh pr create --base dev
 | 5 | No route | No routing | Code without depth | `forgeplan route` first |
 | 6 | Average trust | Inflated score | R_eff seems OK | Fix min (weakest link) |
 | 7 | Over-document | Bureaucracy | 10 docs for a fix | Route -> create by depth |
-| 8 | Rubber stamp | Formal review | 0 audit findings | Re-review with focus |
+| 8 | Rubber stamp | Unsupported review conclusion | No review scope/evidence | State scope and substantiate findings; preserve native-policy boundary |
 | 9 | No structured fields | Missing magic words | R_eff=0.1 with evidence | Add verdict+CL+type |
 | 10 | Direct commit | No PR | No PR | Feature branch + PR |

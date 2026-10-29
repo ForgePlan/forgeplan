@@ -18,6 +18,24 @@
 //! fallback or missing-binary skip. These are not NTFS/readonly-mount or real
 //! semantic-positive tests, and restart here means startup reconciliation, not
 //! a claim that pending inference completed without a model.
+//!
+//! # One layout on both sides
+//!
+//! The fixture publishes and re-reads the workspace in this process; the host
+//! under observation is a separate process with an isolated, empty model cache.
+//! Both must resolve the same layout, or the fixture publishes section rows
+//! the child's capture cannot describe and the child's own publication is
+//! refused for rows it never wrote. Every test therefore pins this process's
+//! layout resolution to the child's cache directory with
+//! `forgeplan_core::embed::tokenizer::set_test_layout_cache` — a test-only
+//! seam that reads no environment variable and needs no production change.
+//!
+//! That override is process-global, so all four tests carry
+//! `#[serial_test::serial(model_cache_layout)]`. The serial group is not
+//! narrowed to the tests that install it: every test here publishes through
+//! `maintain_index` and re-reads through `capture_source`, and both resolve a
+//! layout, so a swap landing inside another test's capture would change its
+//! layout identity mid-capture.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -128,6 +146,37 @@ fn isolated_home(root: &Path) -> PathBuf {
         std::fs::create_dir_all(home.join(relative)).expect("create isolated child home/cache");
     }
     home.canonicalize().expect("canonical isolated child home")
+}
+
+/// Pin this process's layout resolution to the cache directory the child
+/// process is configured with.
+///
+/// The fixture publishes and re-reads the workspace *in this process*, while
+/// the host under observation is a separate process with its own isolated,
+/// empty model cache. Both sides must resolve the same layout. A fixture
+/// published under whatever this machine happens to have downloaded carries
+/// section rows that the child's capture cannot describe, and the child's own
+/// publication is then refused for rows it never wrote.
+///
+/// The override is process-global, so every test that installs it is
+/// serialised. The directory is empty and the child runs offline, so both
+/// sides resolve the same "semantic unavailable" layout - and its identity
+/// names that directory, so both sides must name the same one.
+struct LayoutOverride {
+    previous: Option<PathBuf>,
+}
+
+impl LayoutOverride {
+    fn install(cache_dir: PathBuf) -> Self {
+        let previous = forgeplan_core::embed::tokenizer::set_test_layout_cache(Some(cache_dir));
+        Self { previous }
+    }
+}
+
+impl Drop for LayoutOverride {
+    fn drop(&mut self) {
+        forgeplan_core::embed::tokenizer::set_test_layout_cache(self.previous.take());
+    }
 }
 
 fn canonical_prose(path: &Path) -> String {
@@ -290,20 +339,19 @@ impl McpProcess {
             inner: Some(transport),
             exited: Some(exited_tx),
         };
-        let client = timeout(RPC_TIMEOUT, ().serve(transport))
-            .await
-            .unwrap_or_else(|error| {
-                panic!(
-                    "initialize deadline: {error}; stderr={}",
-                    stderr_text(&stderr)
-                )
-            })
-            .unwrap_or_else(|error| {
-                panic!(
-                    "MCP initialize failed: {error}; stderr={}",
-                    stderr_text(&stderr)
-                )
-            });
+        let initialized = match timeout(RPC_TIMEOUT, ().serve(transport)).await {
+            Ok(initialized) => initialized,
+            Err(error) => panic!(
+                "initialize deadline: {error}; stderr={}",
+                stderr_text(&stderr)
+            ),
+        };
+        let client = initialized.unwrap_or_else(|error| {
+            panic!(
+                "MCP initialize failed: {error}; stderr={}",
+                stderr_text(&stderr)
+            )
+        });
         Self {
             client,
             exited,
@@ -543,10 +591,12 @@ async fn wait_for_publication(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(model_cache_layout)]
 async fn migrated_update_get_crosses_real_stdio_and_survives_orderly_process_restart() {
     let tmp = TempDir::new().expect("isolated process fixture");
-    let fixture = migrated_workspace(&tmp.path().join("project"), "Original process body.\n").await;
     let home = isolated_home(tmp.path());
+    let _layout = LayoutOverride::install(home.join("models"));
+    let fixture = migrated_workspace(&tmp.path().join("project"), "Original process body.\n").await;
     let before = current(&fixture.workspace);
     let process = McpProcess::start(&fixture.root, None, None, &home, "update-first").await;
     process
@@ -600,15 +650,17 @@ async fn migrated_update_get_crosses_real_stdio_and_survives_orderly_process_res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(model_cache_layout)]
 async fn standalone_workspace_flag_routes_from_other_cwd_and_request_workspace_still_overrides() {
     let tmp = TempDir::new().expect("isolated routing fixture");
+    let home = isolated_home(tmp.path());
+    let _layout = LayoutOverride::install(home.join("models"));
     let x = migrated_workspace(&tmp.path().join("launch X"), "Only launch workspace X.\n").await;
     let y = migrated_workspace(
         &tmp.path().join("selected Y"),
         "Only selected workspace Y.\n",
     )
     .await;
-    let home = isolated_home(tmp.path());
     let x_before = std::fs::read(&x.artifact).expect("X canonical before startup");
     let x_generation = current(&x.workspace);
     let y_generation = current(&y.workspace);
@@ -677,11 +729,13 @@ async fn standalone_workspace_flag_routes_from_other_cwd_and_request_workspace_s
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(model_cache_layout)]
 async fn migrated_host_outlives_startup_publishes_editor_saves_and_reconciles_after_restart() {
     let tmp = TempDir::new().expect("isolated retained-host fixture");
+    let home = isolated_home(tmp.path());
+    let _layout = LayoutOverride::install(home.join("models"));
     let fixture =
         migrated_workspace(&tmp.path().join("project"), "Published before launch.\n").await;
-    let home = isolated_home(tmp.path());
     let original = current(&fixture.workspace);
     let notes = fixture.workspace.join("notes");
     std::fs::remove_file(notes.join(".gitkeep")).expect("remove fixture directory placeholder");
@@ -796,8 +850,11 @@ async fn migrated_host_outlives_startup_publishes_editor_saves_and_reconciles_af
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(model_cache_layout)]
 async fn environment_workspace_routes_requests_and_maintenance_to_the_same_source() {
     let tmp = TempDir::new().expect("isolated environment-routing fixture");
+    let home = isolated_home(tmp.path());
+    let _layout = LayoutOverride::install(home.join("models"));
     let x_root = tmp.path().join("launch X");
     std::fs::create_dir_all(&x_root).unwrap();
     let x_root = x_root.canonicalize().unwrap();
@@ -822,7 +879,6 @@ async fn environment_workspace_routes_requests_and_maintenance_to_the_same_sourc
         "Environment workspace Y.\n",
     )
     .await;
-    let home = isolated_home(tmp.path());
     let x_bytes = std::fs::read(&x.artifact).expect("X canonical bytes");
     assert!(!workspace_is_migrated(&x.workspace));
     let process =

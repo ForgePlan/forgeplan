@@ -12,6 +12,8 @@ translations:
   ru: where-team-decisions-live
 ---
 
+> **Historical report; clarification added 2026-10-23.** The publication metadata says 2026-04-05, while the body labels its numbers “May 8, 2026.” Both are preserved; the chronology is unresolved. Counts, stars, binary size, roadmap, ecosystem descriptions and timings are dated author claims, not a current acceptance report. No run receipt or audience analytics accompanies the sample or performance claims. The shared historical cover contains Russian labels; it is an illustration, not an English UI screenshot. Current behavior corrections below do not backdate a new release.
+
 ### Lead
 
 "Why did we pick Postgres over Mongo six months ago?" - a new senior asks at code review. Silence. Someone tries to remember a Slack thread. Someone else opens Notion. The Notion page says "ADR - TBD". Created in November. Decision made, rationale gone. Three weeks later the team will relitigate the same question and reach the same conclusion - nobody will think to dig through six-month-old git history.
@@ -34,7 +36,7 @@ The artefacts a team produces while **making** a decision and the artefacts it p
 
 Standard approaches fail for different reasons. **Notion/Confluence** - a universe separate from the code. A commit link to a Notion page can lead nowhere a year later (page moved, deleted, project archived). Code review doesn't touch the page content - nobody verifies that what was promised matches what was built. **Slack threads** - not a source of truth at all, they're oral history captured by accident. **ADRs in the repo as a plain markdown folder** - a step in the right direction, but without structure it becomes a dumping ground: some ADRs have three paragraphs, others have twenty, the fifth one has no status, the seventh has no rationale, the tenth links to code that was rewritten long ago.
 
-With AI agents in the team, this pain multiplies by an order of magnitude. An agent clones the repo into a fresh sandbox each session. It has no access to your Notion, your Slack, your memory of yesterday's meeting. If knowledge lives in your head, it doesn't exist for the agent. If knowledge lives in Slack, it doesn't exist for the agent. Only what's present as a file in the repository is real.
+Agents need access to the relevant decision context. Depending on configuration they may read repository files, authorized external tools or supplied documents; they do not all clone a new sandbox each session. Files in a repo make knowledge available, not automatically read, and no tenfold effect is measured here.
 
 Then comes an interesting effect. The discipline a team needs to work well with agents is **also useful** for the team without agents. Without agents, the penalty for poor discipline is weak - teams live with the cost without noticing it. With agents, the penalty becomes visible immediately - the agent gets confused, asks redundant questions, produces the wrong thing. And it turns out the conditions that make an agent useful are the same conditions that make humans faster: clear structure, explicit commitments, trackable state, build-time checks.
 
@@ -55,7 +57,7 @@ In more detail. Any team decision-making process breaks down into a few typical 
 - **What groups a set of related tasks?** - that's an Epic (grouping PRDs/RFCs/ADRs).
 - **What proves this works?** - that's Evidence (tests, measurements, reviews).
 
-Those are the six primary types. There are four supporting ones - Note (a micro-decision that expires in 90 days), Refresh (re-evaluation of a stale decision), Problem (a captured problem), Solution (options for solving it). All of them are plain markdown files in `.forgeplan/`, readable by both humans and agents without any special tooling.
+The post's six primary and four supporting categories are a teaching selection. Note, Refresh, Problem and Solution are Markdown artifacts too. An expiry requires an actual `valid_until`; a universal 90-day timer for every Note should not be inferred from this description.
 
 Every artefact has a **lifecycle**:
 
@@ -63,13 +65,13 @@ Every artefact has a **lifecycle**:
 draft → active → {superseded | deprecated | stale}
 ```
 
-An artefact starts as a draft. To become active, it must pass checks: `forgeplan validate` inspects whether mandatory sections are filled in; `forgeplan score` computes the reliability score; `forgeplan activate` blocks if either of those failed. An active artefact can then be **replaced** by another (`supersede` - "a new version has been accepted"), **retired** (`deprecate` - "we no longer use this"), or **expire** (`stale` - "the evidence has a TTL and it's run out, re-evaluation required"). Artefacts cannot be deleted - they're always visible in history.
+Activation attempts a gated draft→active transition, including structural, substance and evidence-link checks; it is not simply “validate plus score passed.” Supersede/deprecate explicitly replace or retire records. Date-based stale detection can list an expired record without changing its stored active status. Deletion is supported; preserving committed history depends on the team's git practice, not an undeletability guarantee.
 
 The reliability score is **R_eff** (reliability effective). The idea is simple: the overall reliability of an artefact equals the **weakest piece of evidence** it relies on. Not the average, not the median. If three EvidencePacks exist - two with solid measurements, one with an expired test - the overall score is pulled toward the weakest. This isn't a mathematical quirk; it's protection against averaging: one rotten link discredits the entire chain, and the tool says so honestly. No advanced math required - it's enough to understand that averaging metrics hides problems, while the minimum does not.
 
-Storage is **local**, in git. The `.forgeplan/` directory is committed alongside the code. No clouds, no subscription services, no API keys. Semantic search across artefacts runs on the embedded BGE-M3 model (via `fastembed`, no network needed). Indexing uses a local LanceDB instance, but it can be painlessly rebuilt at any time with `forgeplan scan-import` from the markdown - because markdown is the source of truth here, and the index is a derived cache. This is a shift from "we have recorded decisions" to "the repository is the single source of truth about the project". The difference is not cosmetic: in the first framing, knowledge depends on infrastructure; in the second, infrastructure depends on knowledge.
+Markdown remains authoritative and the index derived. **Current correction:** use `forgeplan index` for Constellation maintenance and the appropriate `reindex` workflow for legacy workspaces; `scan-import` imports foreign documents. Local BGE-M3 search requires a compatible build and complete model cache; fastembed is historical stack information, not the current engine. LLM-backed reasoning separately needs a configured provider and its authentication. Local storage does not mean every feature needs no setup or network.
 
-Links between artefacts are **typed**. Not "here's a link to another document", but explicit relations: `informs` (one informs another), `refines` (adds detail), `contains` (is part of), `supersedes` (replaces). The `forgeplan graph` command renders a mermaid diagram of all relations. `forgeplan blindspots` finds active decisions with **no** supporting evidence. `forgeplan stale` shows artefacts past their expiry. `forgeplan health` combines all of this into a single view.
+Current writable links are `informs`, `based_on`, `supersedes`, `contradicts`, `refines`; `contains` is not an accepted `link --relation` value. Graph, blind-spot, stale and health views help inspect recorded state, not prove every requirement or runtime behavior.
 
 Under the hood - three Rust crates: the core library (~12.8k lines), the CLI (76 commands), and an MCP server (73 tools, for AI agents via the Model Context Protocol). One binary, around 41 MB after compression, installable via `brew`, an install script, or by building from source.
 
@@ -77,7 +79,7 @@ Under the hood - three Rust crates: the core library (~12.8k lines), the CLI (76
 
 ### The 60-second demo
 
-Let's see what this looks like in practice. Say your team needs to add OAuth2 authentication.
+The following is an **illustrative historical transcript**, not captured output or a copy-paste acceptance procedure. IDs, confidence values, test counts, latency, PASS and 1.00 are constructed example values. In real use, fill and review the templates, record actual evidence fields/results, and configure an LLM provider before `reason`; creating an empty template cannot establish passing validation or maximum trust.
 
 ```
 $ forgeplan init -y
@@ -114,11 +116,11 @@ $ forgeplan activate prd-oauth2-authentication
 Done.
 ```
 
-Here's what happened. `route` determined the appropriate depth (Standard - 1-3 days, PRD and RFC required). `new` created an artefact with a short label (slug). `validate` checked the mandatory sections. `reason` ran the **ADI** reasoning process (Abduction - Deduction - Induction): generate three hypotheses, evaluate each, pick the strongest - this guards against anchoring on the first idea that comes to mind. `score` computed reliability from the weakest piece of evidence. `activate` moved the draft to active state.
+The example sketches routing, artifact creation, validation, ADI reasoning, scoring and activation. Depth is not a measured completion-time promise; a route result and generated hypotheses do not prove the design. For current use, follow the actual command's result and applicable evidence/activation gates, not these example outputs.
 
-Each command prints a **hint to the next step** via a `Next:` or `Done.` marker. This isn't decoration - it's a contract: workflow documentation is generated by the code at runtime, so it can never drift from how the program actually works. An agent needs these hints to avoid guessing; a human needs them to avoid memorising all 76 commands.
+Next-action hints reduce memorization, but the protocol is an intended contract, not a guarantee that every response includes a correct hint or that code-generated text cannot drift. Inspect failures and command signatures rather than executing a hint blindly.
 
-The entire cycle takes about a minute of clock time, plus filling in the artefact body (requirements, motivation, goals, constraints - that's what actually makes the artefact useful).
+The one-minute claim is an illustrative interaction time, excluding the real requirements, implementation, measurements and review needed to support a decision; it is not end-to-end measured throughput.
 
 ---
 
@@ -135,7 +137,7 @@ Server running at http://localhost:5173
 
 A browser opens and you see your entire `.forgeplan/` as an interactive graph. Artefacts are nodes, relations are edges, colours are types (PRD, RFC, ADR...), brightness maps to reliability score, size maps to the number of incoming links. Five layout modes: automatic physics-based layout (force-directed), type-based lanes, dependency matrix, radial, tree. You can filter by status, search by text, click nodes and read their content in a side panel. Everything is local - the app reads files from the `.forgeplan/` directory alongside it, nothing is sent anywhere.
 
-**`forgeplan-hud` - a status line for Claude Code.** A thin two-line utility that shows at the bottom of the terminal while an agent runs: which artefact is currently active, its reliability score, how many orphans are in the repo (artefacts with no links), how many have gone stale. Update time - around 60 milliseconds. Implemented in bash + jq on top of `forgeplan health --json` output, because for this simple task a Rust binary is overkill and script cold-start time turned out to be better. A small tool that eliminates 80% of context switches: no need to open a separate tab and run `forgeplan health` every few minutes.
+**`forgeplan-hud` — a Claude Code status line.** The historical description uses bash + jq over `forgeplan health --json` to display artifact and risk summaries. The claimed ~60 ms update and 80% fewer context switches have no linked benchmark or study; neither is a verified performance or productivity guarantee.
 
 **`forgeplan-marketplace` - a plugin catalogue for Claude Code.** A separate open repository with 12 plugins, over 60 agents, and 16 skills. Plugins install directly into Claude Code through its built-in manager. The largest one is `fpl-skills` - a set of 15 skills for working with the methodology: task routing by depth, evidence structuring, lifecycle state management, invariant restoration. The marketplace is also MIT, no subscriptions.
 
@@ -150,7 +152,7 @@ A Tauri desktop app is on the roadmap without a date. It will be a desktop wrapp
 **It's a fit if:**
 
 - Your team **spends time relitigating the same questions**. If "why did we pick X?" keeps coming up every two months, you have a decision graveyard. ForgePlan helps.
-- You **use AI coding agents** (Claude Code, Cursor, Aider, Continue). For agents, it's critical that knowledge lives in the repository - anything not in the repo **does not exist** for them. ForgePlan turns decisions into files that agents see automatically.
+- You **use AI coding agents** and can give them the relevant repository context. Markdown can be accessible to configured agents; automatic loading and access to outside sources depend on the host and its permissions.
 - You write in **Rust, Python, TypeScript, Go, Java, C#, Swift** - any language, really. ForgePlan has no stack dependency; it works with markdown in `.forgeplan/`. The tool itself is written in Rust, but that's an implementation detail.
 - You **store decisions in git** or want to start. If you're willing to commit markdown, that's enough.
 - You make **medium-to-large technical decisions** at least once a week. If decisions are rare, the tool will sit idle.
@@ -180,11 +182,11 @@ As of writing (May 8, 2026):
 
 And the last number, the one people usually hide - **one star on GitHub**.
 
-I'm not pretending it's not there. The reason is straightforward and engineering-flavoured: the repo description said **"Backend and ForgePlan developer tools"** for a year and a half. That's a promise that doesn't match reality. People searching for "backend developer tools" arrive, see artefact lifecycles, reliability scoring, decision graphs - and leave, because that's not what they were looking for. People searching for decision discipline or a way to work with AI agents in a team never arrive, because those words aren't in the description.
+The author attributed the low star count to the old description **"Backend and ForgePlan developer tools"**. This is a positioning hypothesis, not an established causal finding: no search, arrival, abandonment or conversion analytics is supplied.
 
 This isn't "marketing let engineering down". It's **positioning as part of the architecture**. If the repo description says one thing and the code does another, stars scatter in both directions away from true product-market fit: the people who need it don't come, and the people who do come leave. I wrote the description before the tool had a clear audience. Now - I'm rewriting it.
 
-This post is part of that rewrite. If you've read this far and it resonates, it means the description is starting to work. Before, very few people got this far - they were lost at the first sentence.
+This post is part of the author's positioning rewrite. Reading it to the end may signal interest, but without audience measurements it does not establish that the new description caused engagement.
 
 ---
 
@@ -196,7 +198,7 @@ Installation - one command:
 brew install ForgePlan/tap/forgeplan
 ```
 
-(macOS and Linux. For Windows - building from source via `cargo install --path crates/forgeplan-cli` for now. A pre-built Windows binary is on the roadmap.)
+The Windows source-build limitation was the author's historical availability statement, not a current platform-support matrix. Use release-specific installation documentation; the Homebrew command above does not prove behavior of this selected unreleased build on any platform.
 
 Verify the install:
 
@@ -212,9 +214,9 @@ forgeplan init -y
 forgeplan health
 ```
 
-`init -y` creates the `.forgeplan/` directory with all subdirectories and templates. `health` confirms everything is working - it prints `Healthy` status and shows no orphans or stale artefacts.
+`init -y` initializes a workspace; `health` reports recorded gaps and risks. A fresh empty workspace or `Healthy` report does not exercise semantic search, a provider, every API or the full workflow.
 
-Then try the same 60-second cycle shown above: `route -> new prd -> validate -> reason -> score -> activate`. Each command tells you what to do next - no need to memorise all 76 commands.
+Use the example to understand the stages, then consult the current [documentation](/docs/getting-started/installation/) for setup. Fill templates and supply real evidence before expecting successful validation, scoring or activation.
 
 If you want visualisation:
 

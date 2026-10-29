@@ -91,22 +91,31 @@ const COMPLETE_EVIDENCE_BODY: &str = "## Structured Fields\n\nverdict: supports\
      ## Verdict\n\nThe lifecycle transitions were exercised on a migrated workspace and each \
      transition wrote its canonical bytes.\n";
 
+struct ArtifactFixture<'a> {
+    id: &'a str,
+    kind: &'a str,
+    title: &'a str,
+    status: &'a str,
+    depth: &'a str,
+    body: &'a str,
+    links: &'a [(&'a str, &'a str)],
+}
+
 /// Write one artifact file into `ws`, rendering the same projection
 /// frontmatter block `projection::render_markdown_with_extras` produces.
 ///
 /// Hand-written rather than rendered through `create_artifact_with_projection`
 /// so the fixture cannot depend on the code under test.
-fn write_artifact(
-    ws: &Path,
-    dir: &str,
-    id: &str,
-    kind: &str,
-    title: &str,
-    status: &str,
-    depth: &str,
-    body: &str,
-    links: &[(&str, &str)],
-) -> PathBuf {
+fn write_artifact(ws: &Path, dir: &str, fixture: ArtifactFixture<'_>) -> PathBuf {
+    let ArtifactFixture {
+        id,
+        kind,
+        title,
+        status,
+        depth,
+        body,
+        links,
+    } = fixture;
     let mut fm =
         format!("---\nid: {id}\ntitle: {title}\nkind: {kind}\nstatus: {status}\ndepth: {depth}\n");
     if !links.is_empty() {
@@ -196,13 +205,15 @@ async fn activate_writes_the_status_into_canonical_frontmatter() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "First note",
-        "draft",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "First note",
+            status: "draft",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -231,13 +242,15 @@ async fn activate_refuses_a_prd_with_no_linked_evidence() {
     write_artifact(
         ws,
         "prds",
-        "PRD-001",
-        "prd",
-        "Gated product",
-        "draft",
-        "standard",
-        &gated_prd_body(),
-        &[],
+        ArtifactFixture {
+            id: "PRD-001",
+            kind: "prd",
+            title: "Gated product",
+            status: "draft",
+            depth: "standard",
+            body: &gated_prd_body(),
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -278,24 +291,28 @@ async fn activate_accepts_a_prd_whose_evidence_edge_is_canonical() {
     write_artifact(
         ws,
         "prds",
-        "PRD-001",
-        "prd",
-        "Gated product",
-        "draft",
-        "standard",
-        &gated_prd_body(),
-        &[("EVID-001", "informs")],
+        ArtifactFixture {
+            id: "PRD-001",
+            kind: "prd",
+            title: "Gated product",
+            status: "draft",
+            depth: "standard",
+            body: &gated_prd_body(),
+            links: &[("EVID-001", "informs")],
+        },
     );
     write_artifact(
         ws,
         "evidence",
-        "EVID-001",
-        "evidence",
-        "Verification verdict",
-        "active",
-        "tactical",
-        COMPLETE_EVIDENCE_BODY,
-        &[("PRD-001", "informs")],
+        ArtifactFixture {
+            id: "EVID-001",
+            kind: "evidence",
+            title: "Verification verdict",
+            status: "active",
+            depth: "tactical",
+            body: COMPLETE_EVIDENCE_BODY,
+            links: &[("PRD-001", "informs")],
+        },
     );
 
     let read = published_read(ws).await;
@@ -330,13 +347,15 @@ async fn activate_force_overrides_the_evidence_gate() {
     write_artifact(
         ws,
         "prds",
-        "PRD-001",
-        "prd",
-        "Gated product",
-        "draft",
-        "standard",
-        &gated_prd_body(),
-        &[],
+        ArtifactFixture {
+            id: "PRD-001",
+            kind: "prd",
+            title: "Gated product",
+            status: "draft",
+            depth: "standard",
+            body: &gated_prd_body(),
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -364,13 +383,15 @@ async fn activate_redirects_a_hypothesis_instead_of_desynchronising_its_state() 
     write_artifact(
         ws,
         "hypotheses",
-        "HYP-001",
-        "hypothesis",
-        "A hypothesis",
-        "draft",
-        "standard",
-        "Some hypothesis body.",
-        &[],
+        ArtifactFixture {
+            id: "HYP-001",
+            kind: "hypothesis",
+            title: "A hypothesis",
+            status: "draft",
+            depth: "standard",
+            body: "Some hypothesis body.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -402,13 +423,15 @@ async fn activate_refuses_to_revive_a_terminal_artifact() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "Retired note",
-        "deprecated",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "Retired note",
+            status: "deprecated",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -438,13 +461,15 @@ async fn review_reads_the_evidence_gate_from_captured_edges() {
     write_artifact(
         ws,
         "prds",
-        "PRD-001",
-        "prd",
-        "Gated product",
-        "draft",
-        "standard",
-        &gated_prd_body(),
-        &[],
+        ArtifactFixture {
+            id: "PRD-001",
+            kind: "prd",
+            title: "Gated product",
+            status: "draft",
+            depth: "standard",
+            body: &gated_prd_body(),
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -466,24 +491,28 @@ async fn review_reads_the_evidence_gate_from_captured_edges() {
     write_artifact(
         ws,
         "prds",
-        "PRD-001",
-        "prd",
-        "Gated product",
-        "draft",
-        "standard",
-        &gated_prd_body(),
-        &[("EVID-001", "informs")],
+        ArtifactFixture {
+            id: "PRD-001",
+            kind: "prd",
+            title: "Gated product",
+            status: "draft",
+            depth: "standard",
+            body: &gated_prd_body(),
+            links: &[("EVID-001", "informs")],
+        },
     );
     write_artifact(
         ws,
         "evidence",
-        "EVID-001",
-        "evidence",
-        "Verification verdict",
-        "active",
-        "tactical",
-        COMPLETE_EVIDENCE_BODY,
-        &[("PRD-001", "informs")],
+        ArtifactFixture {
+            id: "EVID-001",
+            kind: "evidence",
+            title: "Verification verdict",
+            status: "active",
+            depth: "tactical",
+            body: COMPLETE_EVIDENCE_BODY,
+            links: &[("PRD-001", "informs")],
+        },
     );
     let read = published_read(ws).await;
     let passed = forgeplan_core::lifecycle::canonical::review_captured(&read, "PRD-001").unwrap();
@@ -507,24 +536,28 @@ async fn review_flags_build_on_draft_from_the_same_capture() {
     write_artifact(
         ws,
         "prds",
-        "PRD-001",
-        "prd",
-        "Depending product",
-        "draft",
-        "standard",
-        &gated_prd_body(),
-        &[("RFC-001", "based_on")],
+        ArtifactFixture {
+            id: "PRD-001",
+            kind: "prd",
+            title: "Depending product",
+            status: "draft",
+            depth: "standard",
+            body: &gated_prd_body(),
+            links: &[("RFC-001", "based_on")],
+        },
     );
     write_artifact(
         ws,
         "rfcs",
-        "RFC-001",
-        "rfc",
-        "Draft dependency",
-        "draft",
-        "standard",
-        "An RFC that is still a draft.",
-        &[],
+        ArtifactFixture {
+            id: "RFC-001",
+            kind: "rfc",
+            title: "Draft dependency",
+            status: "draft",
+            depth: "standard",
+            body: "An RFC that is still a draft.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -551,35 +584,41 @@ async fn supersede_writes_edge_and_status_and_reports_dependents() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "Old note",
-        "active",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "Old note",
+            status: "active",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
     write_artifact(
         ws,
         "notes",
-        "NOTE-002",
-        "note",
-        "New note",
-        "active",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-002",
+            kind: "note",
+            title: "New note",
+            status: "active",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
     write_artifact(
         ws,
         "prds",
-        "PRD-001",
-        "prd",
-        "Depending product",
-        "draft",
-        "standard",
-        &gated_prd_body(),
-        &[("NOTE-001", "based_on")],
+        ArtifactFixture {
+            id: "PRD-001",
+            kind: "prd",
+            title: "Depending product",
+            status: "draft",
+            depth: "standard",
+            body: &gated_prd_body(),
+            links: &[("NOTE-001", "based_on")],
+        },
     );
 
     let read = published_read(ws).await;
@@ -622,24 +661,28 @@ async fn supersede_refuses_a_retired_replacement() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "Middle note",
-        "active",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "Middle note",
+            status: "active",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
     write_artifact(
         ws,
         "notes",
-        "NOTE-002",
-        "note",
-        "Retired note",
-        "deprecated",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-002",
+            kind: "note",
+            title: "Retired note",
+            status: "deprecated",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -672,24 +715,28 @@ async fn supersede_warns_but_proceeds_for_a_draft_replacement() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "Old note",
-        "active",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "Old note",
+            status: "active",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
     write_artifact(
         ws,
         "notes",
-        "NOTE-002",
-        "note",
-        "Draft successor",
-        "draft",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-002",
+            kind: "note",
+            title: "Draft successor",
+            status: "draft",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -721,13 +768,15 @@ async fn deprecate_writes_status_and_reason_into_the_canonical_body() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "Retirable note",
-        "active",
-        "tactical",
-        "Original body text.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "Retirable note",
+            status: "active",
+            depth: "tactical",
+            body: "Original body text.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -777,13 +826,15 @@ async fn deprecate_refuses_an_already_terminal_artifact() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "Finished note",
-        "deprecated",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "Finished note",
+            status: "deprecated",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -811,18 +862,20 @@ async fn renew_writes_section_status_and_valid_until() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "Renewable note",
-        // ADR-005: renew is `stale → active`. An `active` artifact has no
-        // transition to make, and both layouts refuse it — see
-        // `lifecycle::tests::renew_active_fails`. The fixture was `active`,
-        // which made this test exercise a refusal while claiming to exercise
-        // the three writes renew is required to make.
-        "stale",
-        "tactical",
-        "Original body text.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "Renewable note",
+            // ADR-005: renew is `stale → active`. An `active` artifact has no
+            // transition to make, and both layouts refuse it — see
+            // `lifecycle::tests::renew_active_fails`. The fixture was `active`,
+            // which made this test exercise a refusal while claiming to exercise
+            // the three writes renew is required to make.
+            status: "stale",
+            depth: "tactical",
+            body: "Original body text.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -885,13 +938,15 @@ async fn renew_refuses_a_malformed_date_without_writing() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "Renewable note",
-        "active",
-        "tactical",
-        "Original body text.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "Renewable note",
+            status: "active",
+            depth: "tactical",
+            body: "Original body text.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -934,13 +989,15 @@ async fn reopen_creates_the_successor_then_links_then_deprecates() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "Reopenable note",
-        "active",
-        "tactical",
-        "Original body text.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "Reopenable note",
+            status: "active",
+            depth: "tactical",
+            body: "Original body text.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -1016,13 +1073,15 @@ async fn reopen_refuses_a_terminal_artifact_and_creates_nothing() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "Finished note",
-        "deprecated",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "Finished note",
+            status: "deprecated",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;
@@ -1058,24 +1117,28 @@ async fn reopen_refuses_a_taken_new_id_without_writing() {
     write_artifact(
         ws,
         "notes",
-        "NOTE-001",
-        "note",
-        "Reopenable note",
-        "active",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-001",
+            kind: "note",
+            title: "Reopenable note",
+            status: "active",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
     write_artifact(
         ws,
         "notes",
-        "NOTE-002",
-        "note",
-        "Already here",
-        "active",
-        "tactical",
-        "Body.",
-        &[],
+        ArtifactFixture {
+            id: "NOTE-002",
+            kind: "note",
+            title: "Already here",
+            status: "active",
+            depth: "tactical",
+            body: "Body.",
+            links: &[],
+        },
     );
 
     let read = published_read(ws).await;

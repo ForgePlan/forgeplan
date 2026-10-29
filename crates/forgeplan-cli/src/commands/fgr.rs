@@ -1,4 +1,7 @@
+use std::borrow::Cow;
+
 use forgeplan_core::artifact::frontmatter;
+use forgeplan_core::db::store::ArtifactRecord;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::scoring::fgr;
 
@@ -30,22 +33,32 @@ fn is_valid_until_expired(s: &str) -> Option<bool> {
 }
 
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
+    let (_, source) = common::open_read_source().await?;
     let fpf_weights = common::config().ok().and_then(|c| c.fpf.map(|f| f.weights));
 
-    let records = if let Some(id) = id {
-        // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-        let canonical = store
-            .resolve_id(id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
-        let record = store
-            .get_record(&canonical)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Artifact not found: {canonical}"))?;
-        vec![record]
-    } else {
-        store.list_records(None).await?
+    let records: Cow<'_, [ArtifactRecord]> = match (&source, id) {
+        (common::ReadSource::Legacy(store), Some(id)) => {
+            let canonical = store
+                .resolve_id(id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+            let record = store
+                .get_record(&canonical)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Artifact not found: {canonical}"))?;
+            Cow::Owned(vec![record])
+        }
+        (common::ReadSource::Legacy(store), None) => Cow::Owned(store.list_records(None).await?),
+        (common::ReadSource::Captured(read), Some(id)) => {
+            let canonical = read
+                .resolve_id(id)
+                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+            let record = read
+                .get_record(&canonical)
+                .ok_or_else(|| anyhow::anyhow!("Artifact not found: {canonical}"))?;
+            Cow::Borrowed(std::slice::from_ref(record))
+        }
+        (common::ReadSource::Captured(read), None) => Cow::Borrowed(read.records()),
     };
 
     if records.is_empty() {
@@ -73,7 +86,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         // (slug pre-merge / display id post-merge) so the agent's next
         // command stays canonical for commit `Refs:`.
         let mut lowest: Option<(String, String, f64)> = None;
-        for record in &records {
+        for record in records.iter() {
             let kind = record
                 .kind
                 .parse()
@@ -85,7 +98,10 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             let fm = frontmatter::parse_frontmatter(&record.body)
                 .map(|(fm, _)| fm)
                 .unwrap_or_default();
-            let relations = store.get_relations(&record.id).await.unwrap_or_default();
+            let relations = match &source {
+                common::ReadSource::Legacy(store) => store.get_relations(&record.id).await?,
+                common::ReadSource::Captured(read) => read.get_relations(&record.id),
+            };
             // PROB-060 MED-10 — use the shared helper so JSON and text
             // branches treat date-only `valid_until` identically.
             let is_stale = record
@@ -141,7 +157,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     // PROB-060 (W1.B, CD-5) — track ref_form of lowest-grade record so the
     // emitted hint stays canonical (slug pre-merge / display id post-merge).
     let mut lowest: Option<(String, String, f64)> = None;
-    for record in &records {
+    for record in records.iter() {
         let kind = record
             .kind
             .parse()
@@ -154,7 +170,10 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             .map(|(fm, _)| fm)
             .unwrap_or_default();
 
-        let relations = store.get_relations(&record.id).await.unwrap_or_default();
+        let relations = match &source {
+            common::ReadSource::Legacy(store) => store.get_relations(&record.id).await?,
+            common::ReadSource::Captured(read) => read.get_relations(&record.id),
+        };
         // PROB-060 MED-10 — shared helper (text branch parity with JSON).
         let is_stale = record
             .valid_until

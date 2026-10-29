@@ -22,37 +22,19 @@ _Входные параметры отсутствуют. Вызовите эт
 
 ## Возвращает
 
-Структурированный отчёт о состоянии с:
+JSON-текст payload включает:
 
-- `total_artifacts` - количество по типу (PRD/RFC/ADR/Epic/Spec/Evidence/...).
-- `by_status` - разбивка по статусам: черновик / активный / просроченный / замещённый / отменённый.
-- `blind_spots` - активные решения (PRD/RFC/ADR/Epic) без связанных доказательств.
-- `orphans` - артефакты с нулевым количеством входящих + исходящих связей.
-- `stale` - артефакты с истёкшими датами `valid_until`.
-- `risks` - решения с R_eff ниже порогового значения уверенности.
-- `next_actions` - упорядоченный список предлагаемых исправлений (создать доказательство, связать сироту, обновить просроченный).
-- `verdict` - `"healthy"` (здоровый) или `"debt"` (долг) (наличие слепых пятен / сирот / просроченных артефактов переводит в состояние долга).
+- `total`, `by_kind`, `by_status`, `by_derived_status`: количество и разбивки.
+- `blind_spots`, `at_risk`, `orphans`, `stale_count`: находки по доверию, связям и срокам; `orphans` — массив ID.
+- `possible_duplicates`, `active_stubs`, `stale_drafts`, `gitignore_drift`: дополнительные находки.
+- `phase_mismatches`, `advisory_phase_mismatches`, `phase_read_errors`: диагностику рекомендательных фаз.
+- `active_claims`, `active_claim_count`, `skipped_claim_files`: сведения MCP о захватах.
+- `next_actions`, `_next_action`, `verdict_summary`: рекомендации и пояснение.
+- `verdict`: только `"healthy"`, `"needs_attention"` или `"unhealthy"`; **не** `"debt"`.
 
-```json
-{
-  "verdict": "debt",
-  "total_artifacts": 184,
-  "blind_spots": [
-    { "id": "PRD-042", "kind": "prd", "reason": "active, no evidence" }
-  ],
-  "orphans": [
-    { "id": "NOTE-017", "kind": "note" }
-  ],
-  "stale": [
-    { "id": "ADR-003", "days_expired": 12 }
-  ],
-  "next_actions": [
-    "Create EvidencePack for PRD-042 and link",
-    "Link NOTE-017 to parent decision or deprecate",
-    "Refresh ADR-003 (expired 2026-03-30)"
-  ]
-}
-```
+Не используйте прежние примерные поля `total_artifacts`, `risks`, `stale`
+для ветвления. Дашборд объединяет реализованные проверки, а не доказывает
+обзор всех требований проекта, обработчиков или утверждений документации.
 
 ## Пример вызова
 
@@ -64,7 +46,7 @@ _Входные параметры отсутствуют. Вызовите эт
 
 1. `memory_recall("Forgeplan")` - восстановить контекст из предыдущих сессий.
 2. `forgeplan_health` - получить текущее состояние.
-3. Если `verdict == "debt"` → исправить слепые пятна / сирот **в первую очередь**, перед новой работой.
+3. Если `verdict != "healthy"`, изучите находки и определите приоритет с владельцем задачи; агрегированный вердикт не разрешает несвязанные мутации.
 4. `forgeplan_route` - выполнить роутинг следующей задачи, как только состояние станет чистым.
 
 ## Эквивалент CLI
@@ -79,3 +61,29 @@ forgeplan health
 - [`forgeplan_blindspots`](/ru/docs/mcp/forgeplan_blindspots/) - сфокусированный список слепых пятен.
 - [`forgeplan_stale`](/ru/docs/mcp/forgeplan_stale/) - список с истёкшими `valid_until`.
 - [Руководство по методологии](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. Returns aggregate `verdict` field ("healthy" | "needs_attention" | "unhealthy") + `verdict_summary` for one-line human rendering. Branch on `verdict` for CI gates and agent decision logic. No LLM needed.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| — | — | — | Параметров нет. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "properties": {},
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

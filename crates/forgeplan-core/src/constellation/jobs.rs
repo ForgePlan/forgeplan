@@ -1274,6 +1274,14 @@ impl EligibilityReport {
         self.keys_matching(|e| matches!(e, Eligibility::Eligible))
     }
 
+    /// Whether a row needs a vector, without allocating the work list.
+    #[cfg(any(feature = "semantic-search", test))]
+    pub(super) fn has_eligible(&self) -> bool {
+        self.rows
+            .values()
+            .any(|eligibility| matches!(eligibility, Eligibility::Eligible))
+    }
+
     /// Keys whose eligibility could not be judged, with the reason.
     ///
     /// Reported separately and never folded into either list above: an
@@ -2133,20 +2141,25 @@ mod profile_tests {
     #[test]
     fn the_report_separates_current_eligible_and_unjudgeable_keys() {
         let mut report = EligibilityReport::default();
+        assert!(!report.has_eligible());
         report.record("PRD-001", Eligibility::Current);
-        report.record("PRD-002", Eligibility::Eligible);
         report.record(
             "PRD-003",
             Eligibility::CannotJudge {
                 reason: "unreadable".to_string(),
             },
         );
+        assert!(!report.has_eligible());
+        report.record("PRD-002", Eligibility::Eligible);
+        assert!(report.has_eligible());
 
         assert_eq!(report.current_keys(), vec!["PRD-001"]);
         assert_eq!(report.eligible_keys(), vec!["PRD-002"]);
         assert_eq!(report.cannot_judge(), vec![("PRD-003", "unreadable")]);
         assert!(!report.is_complete());
         assert_eq!(report.len(), 3);
+        report.record("PRD-002", Eligibility::Current);
+        assert!(!report.has_eligible());
     }
 
     #[test]

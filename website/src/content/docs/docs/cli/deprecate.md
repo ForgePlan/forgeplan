@@ -68,7 +68,7 @@ Use `forgeplan stale` to find expired artifacts, then deprecate the ones that sh
 
 ## How it fits the workflow
 
-Deprecation is a clean, terminal ending: the artifact leaves the active set and stops influencing `forgeplan health`. It is the right tool when a decision's relevance has genuinely ended and no successor exists. Because the state is terminal, the reason you pass becomes the permanent explanation - write it for a reader six months from now, not for yourself today.
+Deprecation retires the decision without a successor and preserves the reason. It removes the decision from blind-spot eligibility, but the artifact can still appear in other health findings, such as isolated artifacts or expired validity. Ordinary transitions cannot leave a terminal state; receipt-based `restore` is a separate recovery mechanism.
 
 ## Common errors
 
@@ -76,8 +76,8 @@ Deprecation is a clean, terminal ending: the artifact leaves the active set and 
 |---|---|---|
 | `--reason is required` | Flag omitted | Pass `--reason "..."` with a human-readable explanation |
 | `Cannot deprecate from draft` | Artifact was never activated | Delete or rewrite the draft instead |
-| `Already in terminal state` | Already `deprecated` or `superseded` | Terminal states are final - nothing to do |
-| `Blind spots increased after deprecation` | Active artifacts depended on this one | Update or supersede dependents before deprecating |
+| Already terminal | Already `deprecated` or `superseded` | Inspect the existing retirement; receipt-based recovery is separate from ordinary transitions |
+| Dependents still cite the artifact | Retirement does not rewrite their decisions | Review and deliberately update dependent decisions |
 
 ## See also
 
@@ -88,3 +88,23 @@ Deprecation is a clean, terminal ending: the artifact leaves the active set and 
 - [`forgeplan health`](/docs/cli/health/) - verify the project state after deprecation
 - [Lifecycle v2 guide](/docs/guides/lifecycle-v2/)
 - [Methodology: Artifact Lifecycle](/docs/methodology/lifecycle/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan deprecate --help`.
+
+```text
+Deprecate an artifact (active/stale → deprecated) with reason
+
+Usage: forgeplan deprecate --reason <REASON> <ID>
+
+Arguments:
+  <ID>  Artifact ID
+
+Options:
+      --reason <REASON>  Reason for deprecation
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

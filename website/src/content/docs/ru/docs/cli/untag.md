@@ -34,7 +34,7 @@ forgeplan untag <ID> <TAGS>...
 2. Канонизирует каждый входящий тег так же, как это делает `tag` (приводит к нижнему регистру,
    обрезает пробелы), чтобы `Legacy`, `legacy` и `  legacy  ` соответствовали сохранённому значению.
 3. Удаляет каждое совпадение из списка `tags:`.
-4. Перезаписывает фронтматтер и переиндексирует артефакт в LanceDB.
+4. Перезаписывает канонический frontmatter и обновляет обслуживающий индекс; на Constellation запрашивает reconciliation, не открывая legacy storage.
 
 Неизвестные теги игнорируются без уведомления - `untag` идемпотентен и безопасен для использования в скриптах.
 
@@ -62,17 +62,15 @@ forgeplan tag PRD-001 security   # правильно
 
 ## Массовая очистка
 
-Чтобы удалить тег из каждого артефакта (например, при выводе таксономии из употребления), используйте в сочетании с
-`list --tag`:
+Сначала просмотрите ID:
 
 ```bash
-forgeplan list --tag wip --format ids | \
-  xargs -I {} forgeplan untag {} wip
+forgeplan list --tag wip --json | jq -r '.[].id'
+# После проверки списка удалите тег у каждого выбранного артефакта:
+forgeplan untag PRD-001 wip
 ```
 
-Для канонизации тегов по всему рабочему пространству (исправление PROB-026) предпочтительнее использовать
-[`forgeplan reindex`](/docs/cli/reindex/) - он нормализует каждый тег на месте,
-не требуя явных пар untag/tag.
+`index` обслуживает производное состояние, но не гарантирует перезапись тегов в исходниках.
 
 ## Примечания
 
@@ -80,12 +78,32 @@ forgeplan list --tag wip --format ids | \
   удалит `legacy`.
 - Если вы хотите переместить артефакт из одного тега в другой, выполните `untag`, а затем
   `tag` - вспомогательной команды `retag` нет.
-- Удаление тега не влияет на связи или оценку - теги являются чистыми метаданными.
+- Удаление тега происхождения не удаляет отдельное поле тела `source_tier`, используемое скорингом доказательств. Теги и объявленные поля скоринга — разные данные.
 
 ## См. также
 
 - [Обзор CLI](/docs/cli/)
 - [`forgeplan tag`](/docs/cli/tag/) - добавить теги
-- [`forgeplan reindex`](/docs/cli/reindex/) - канонизировать теги по всему рабочему пространству
+- [`forgeplan index`](/ru/docs/cli/index-command/) - обслуживание производного индекса Constellation
 - [`forgeplan list`](/docs/cli/list/) - фильтровать артефакты по тегу
 - [Руководство по методологии](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan untag --help`.
+
+```text
+Remove tags from an artifact
+
+Usage: forgeplan untag <ID> <TAGS>...
+
+Arguments:
+  <ID>       Artifact ID
+  <TAGS>...  Tags to remove
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

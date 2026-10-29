@@ -675,11 +675,20 @@ pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::Llm
     Ok(llm)
 }
 
-/// Log a change to the change_log table (best-effort, never fails the command).
-/// May reference deleted artifacts by design (audit trail).
-pub async fn log_change(store: &LanceStore, artifact_id: &str, action: &str, source: &str) {
+/// Log one change (best-effort, never fails the primary command).
+///
+/// The caller holds the workspace lock and supplies its resolved `.forgeplan`
+/// directory. A legacy handle selects that sink exclusively; otherwise only
+/// auxiliary history is opened. Deleted artifact IDs remain valid audit IDs.
+pub async fn log_change(
+    workspace: &Path,
+    store: Option<&LanceStore>,
+    artifact_id: &str,
+    action: &str,
+    source: &str,
+) {
     let entry = forgeplan_core::changelog::ChangeLogEntry::new(artifact_id, action, source);
-    if let Err(e) = store.log_change(&entry).await {
+    if let Err(e) = append_change_log(workspace, store, &entry).await {
         eprintln!(
             "  Warning: changelog write failed for {}: {}",
             artifact_id, e
@@ -687,24 +696,41 @@ pub async fn log_change(store: &LanceStore, artifact_id: &str, action: &str, sou
     }
 }
 
-/// Log a change with field + values (best-effort).
+/// Log one field change under the caller's workspace lock (best-effort).
+///
+/// The borrowed transition tuple contains `(field, old_value, new_value)`.
 pub async fn log_change_field(
-    store: &LanceStore,
+    workspace: &Path,
+    store: Option<&LanceStore>,
     artifact_id: &str,
     action: &str,
-    field: &str,
-    old_value: Option<&str>,
-    new_value: Option<&str>,
+    (field, old_value, new_value): (&str, Option<&str>, Option<&str>),
     source: &str,
 ) {
     let entry = forgeplan_core::changelog::ChangeLogEntry::new(artifact_id, action, source)
         .with_field(field)
         .with_values(old_value, new_value);
-    if let Err(e) = store.log_change(&entry).await {
+    if let Err(e) = append_change_log(workspace, store, &entry).await {
         eprintln!(
             "  Warning: changelog write failed for {}: {}",
             artifact_id, e
         );
+    }
+}
+
+async fn append_change_log(
+    workspace: &Path,
+    store: Option<&LanceStore>,
+    entry: &forgeplan_core::changelog::ChangeLogEntry,
+) -> anyhow::Result<()> {
+    match store {
+        Some(store) => store.log_change(entry).await,
+        None => {
+            let history =
+                forgeplan_core::db::auxiliary::AuxiliaryStore::open_history_or_create(workspace)
+                    .await?;
+            history.log_change(entry).await
+        }
     }
 }
 
@@ -738,6 +764,164 @@ pub async fn sync_score_target_or_warn(store: &LanceStore, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn log_change_appends_once_to_the_selected_history_sink() {
+        use forgeplan_core::db::auxiliary::AuxiliaryStore;
+
+        for legacy_layout in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ws = temp.path().join(".forgeplan");
+            let lock = workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy_layout {
+                Some(LanceStore::init(&ws).await.unwrap())
+            } else {
+                None
+            };
+
+            log_change(&ws, store.as_ref(), "DELETED-001", "delete", "reindex").await;
+            let history = AuxiliaryStore::open_history_existing(&ws).await.unwrap();
+            let entries = history
+                .get_change_log(Some("DELETED-001"), Some("reindex"), 10)
+                .await
+                .unwrap();
+            assert_eq!(entries.len(), 1, "one established event must append once");
+            let entry = &entries[0];
+            assert_eq!(entry.artifact_id, "DELETED-001");
+            assert_eq!(entry.action, "delete");
+            assert_eq!(entry.source, "reindex");
+            assert!(entry.field.is_none());
+            assert!(entry.old_value.is_none());
+            assert!(entry.new_value.is_none());
+            assert!(entry.commit_hash.is_none());
+            chrono::DateTime::parse_from_rfc3339(&entry.timestamp).unwrap();
+            if !legacy_layout {
+                for name in ["artifacts", "evidence", "relations", "fpf_spec"] {
+                    assert!(!ws.join("lance").join(format!("{name}.lance")).exists());
+                }
+            }
+            drop(history);
+            drop(store);
+            drop(lock);
+        }
+    }
+
+    #[tokio::test]
+    async fn log_change_field_preserves_nullable_values_in_both_sinks() {
+        use forgeplan_core::db::auxiliary::AuxiliaryStore;
+
+        for legacy_layout in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ws = temp.path().join(".forgeplan");
+            let lock = workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy_layout {
+                Some(LanceStore::init(&ws).await.unwrap())
+            } else {
+                None
+            };
+
+            log_change_field(
+                &ws,
+                store.as_ref(),
+                "PRD-001",
+                "update",
+                ("title", None, Some("")),
+                "cli",
+            )
+            .await;
+            let history = AuxiliaryStore::open_history_existing(&ws).await.unwrap();
+            let entries = history.get_change_log(None, None, 10).await.unwrap();
+            assert_eq!(entries.len(), 1);
+            let entry = &entries[0];
+            assert_eq!(entry.artifact_id, "PRD-001");
+            assert_eq!(entry.action, "update");
+            assert_eq!(entry.source, "cli");
+            assert_eq!(entry.field.as_deref(), Some("title"));
+            assert_eq!(entry.old_value, None);
+            assert_eq!(entry.new_value.as_deref(), Some(""));
+            assert_eq!(entry.commit_hash, None);
+            drop(history);
+            drop(store);
+            drop(lock);
+        }
+    }
+
+    #[test]
+    fn changelog_open_and_append_failures_warn_without_failing_primary_write() {
+        const CHILD_WORKSPACE: &str = "FORGEPLAN_COMMON_HISTORY_FAILURE_CHILD";
+        const CHILD_MODE: &str = "FORGEPLAN_COMMON_HISTORY_FAILURE_MODE";
+        if let Some(ws) = std::env::var_os(CHILD_WORKSPACE) {
+            let ws = PathBuf::from(ws);
+            let mode = std::env::var(CHILD_MODE).unwrap();
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let lock = workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+                let store = if mode == "append" {
+                    let store = LanceStore::init(&ws).await.unwrap();
+                    let dataset = ws.join("lance/change_log.lance");
+                    std::fs::remove_dir_all(&dataset).unwrap();
+                    std::fs::write(dataset, b"unwritable dataset path").unwrap();
+                    Some(store)
+                } else {
+                    std::fs::write(ws.join("lance"), b"unwritable database path").unwrap();
+                    None
+                };
+                let primary = ws.join("PRD-001.md");
+                let result: anyhow::Result<()> = async {
+                    tokio::fs::write(&primary, b"canonical mutation succeeded\n").await?;
+                    log_change(&ws, store.as_ref(), "PRD-001", "create", "cli").await;
+                    log_change_field(
+                        &ws,
+                        store.as_ref(),
+                        "PRD-001",
+                        "update",
+                        ("status", Some("draft"), Some("active")),
+                        "cli",
+                    )
+                    .await;
+                    Ok(())
+                }
+                .await;
+                result.unwrap();
+                assert_eq!(
+                    std::fs::read(primary).unwrap(),
+                    b"canonical mutation succeeded\n"
+                );
+                drop(store);
+                drop(lock);
+            });
+            return;
+        }
+
+        for mode in ["open", "append"] {
+            let temp = tempfile::tempdir().unwrap();
+            let ws = temp.path().join(".forgeplan");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("changelog_open_and_append_failures_warn_without_failing_primary_write")
+                .args(["--nocapture", "--test-threads=1"])
+                .env(CHILD_WORKSPACE, &ws)
+                .env(CHILD_MODE, mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: stdout={}, stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                stderr
+                    .matches("  Warning: changelog write failed for PRD-001: ")
+                    .count(),
+                2,
+                "{mode}: each failed event retains the existing warning"
+            );
+            assert_eq!(
+                std::fs::read(ws.join("PRD-001.md")).unwrap(),
+                b"canonical mutation succeeded\n"
+            );
+        }
+    }
 
     #[test]
     fn extract_frontmatter_field_basic() {

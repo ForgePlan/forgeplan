@@ -133,57 +133,47 @@ pub async fn dashboard(
 ) -> anyhow::Result<FpfDashboard> {
     let records = store.list_records(None).await?;
     let all_relations = store.get_all_relations().await?;
+    Ok(dashboard_from_records(&records, &all_relations, fpf_config))
+}
 
-    // Build edges for context detection
+/// Build the FPF dashboard from one captured workspace without opening legacy tables.
+///
+/// Uses the same context detection, F-G-R scoring and rules as [`dashboard`].
+pub async fn dashboard_captured(
+    read: &WorkspaceRead,
+    fpf_config: Option<&FpfConfig>,
+) -> anyhow::Result<FpfDashboard> {
+    let all_relations = read.get_all_relations();
+    Ok(dashboard_from_records(
+        read.records(),
+        &all_relations,
+        fpf_config,
+    ))
+}
+
+fn dashboard_from_records(
+    records: &[crate::db::store::ArtifactRecord],
+    all_relations: &[(String, String, String)],
+    fpf_config: Option<&FpfConfig>,
+) -> FpfDashboard {
     let edges: Vec<(String, String)> = all_relations
         .iter()
         .map(|(src, tgt, _)| (src.clone(), tgt.clone()))
         .collect();
+    let contexts = contexts::detect(records, &edges);
+    let fgr_scores: Vec<fgr::FgrScore> = records
+        .iter()
+        .map(|record| compute_fgr_for_record(record, all_relations, fpf_config))
+        .collect();
 
-    // Bounded Contexts
-    let contexts = contexts::detect(&records, &edges);
-
-    // F-G-R Scores
-    let mut fgr_scores = Vec::new();
-    for record in &records {
-        let kind = record.kind.parse().unwrap_or(ArtifactKind::Note);
-        let depth = record.depth.parse().unwrap_or(Mode::Standard);
-        let fm = record.frontmatter_map();
-        let link_count = all_relations
-            .iter()
-            .filter(|(src, tgt, _)| src == &record.id || tgt == &record.id)
-            .count();
-        let is_stale = record
-            .valid_until
-            .as_ref()
-            .and_then(|v| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S").ok())
-            .is_some_and(|dt| chrono::Utc::now().naive_utc() > dt);
-
-        let score = fgr::compute(
-            &record.id,
-            &record.body,
-            &fm,
-            &kind,
-            &depth,
-            record.r_eff_score,
-            link_count,
-            is_stale,
-            fpf_config.map(|c| &c.weights),
-        );
-        fgr_scores.push(score);
-    }
-
-    // Explore-Exploit Actions — use rule engine if rules configured, else legacy
     let cfg = fpf_config.cloned().unwrap_or_default();
     let active_rules = if cfg.rules.is_empty() {
         rules::default_rules()
     } else {
         cfg.rules.clone()
     };
+    let actions = build_rule_actions(records, &fgr_scores, all_relations, &active_rules, &cfg);
 
-    let actions = build_rule_actions(&records, &fgr_scores, &all_relations, &active_rules, &cfg);
-
-    // Pipeline Status — compute aggregate across all PRDs
     let active_count = records.iter().filter(|r| r.status == "active").count();
     let draft_count = records.iter().filter(|r| r.status == "draft").count();
     let pipeline_status = format!(
@@ -193,13 +183,13 @@ pub async fn dashboard(
         draft_count,
     );
 
-    Ok(FpfDashboard {
+    FpfDashboard {
         contexts,
         actions,
         fgr_scores,
         pipeline_status,
         artifact_count: records.len(),
-    })
+    }
 }
 
 /// Build explore-exploit actions using the rule engine.
@@ -418,9 +408,7 @@ fn check_against_rules_from_records(
     all_relations: &[(String, String, String)],
     fpf_config: Option<&FpfConfig>,
 ) -> Option<RuleCheckResult> {
-    let Some(record) = record else {
-        return None;
-    };
+    let record = record?;
 
     // Build shared lookup maps once (same as build_rule_actions).
     let (kind_map, linked_kinds_map, link_count_map) = build_lookup_maps(records, all_relations);
@@ -912,9 +900,10 @@ mod prd041_tests {
                     fm.push_str(&format!("  - target: {target}\n    relation: {relation}\n"));
                 }
             }
-            let path = ws
-                .join(dir)
-                .join(format!("{id}-{}.md", crate::artifact::types::slugify(&format!("Fixture {id}"))));
+            let path = ws.join(dir).join(format!(
+                "{id}-{}.md",
+                crate::artifact::types::slugify(&format!("Fixture {id}"))
+            ));
             std::fs::write(&path, format!("{fm}---\n\n## Problem\n\nFixture body.\n")).unwrap();
         }
         (tmp, ws)
@@ -953,9 +942,76 @@ mod prd041_tests {
             store.replace_record(record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
-            store.add_relation(&source, &target, &relation).await.unwrap();
+            store
+                .add_relation(&source, &target, &relation)
+                .await
+                .unwrap();
         }
         store
+    }
+
+    #[tokio::test]
+    async fn captured_dashboard_matches_legacy_records_relations_and_config() {
+        let (_tmp, ws) = canonical_workspace();
+        let read = open_read(&ws).await;
+        assert!(!ws.join("lance").exists());
+
+        let cfg = FpfConfig {
+            rules: vec![custom_rule("needs-draft", 3)],
+            ..Default::default()
+        };
+        let captured = dashboard_captured(&read, Some(&cfg)).await.unwrap();
+        assert_eq!(captured.artifact_count, 2);
+        assert_eq!(
+            captured.pipeline_status,
+            "2 artifacts total: 1 active, 1 draft"
+        );
+        assert_eq!(captured.contexts.len(), 1);
+        let context = &captured.contexts[0];
+        assert_eq!(context.name, "Context-1 (PRD)");
+        assert_eq!(context.members, ["PRD-001", "PRD-002"]);
+        assert_eq!((context.internal_links, context.external_links), (1, 0));
+        assert_eq!(context.cohesion, 1.0);
+        assert_eq!(captured.fgr_scores.len(), 2);
+        assert_eq!(captured.actions.len(), 1);
+        let action = &captured.actions[0];
+        assert_eq!(action.artifact_id, "PRD-001");
+        assert_eq!(action.action_type, "EXPLORE");
+        assert_eq!(action.priority, 3);
+        assert_eq!(action.reason, "custom rule needs-draft");
+        assert!(
+            !ws.join("lance").exists(),
+            "a dashboard must not create an index"
+        );
+
+        let store = legacy_store_for(&read).await;
+        let legacy = dashboard(&store, Some(&cfg)).await.unwrap();
+        assert_eq!(captured.to_string(), legacy.to_string());
+        for (captured, legacy) in captured.fgr_scores.iter().zip(&legacy.fgr_scores) {
+            assert_eq!(captured.artifact_id, legacy.artifact_id);
+            assert_eq!(captured.formality, legacy.formality);
+            assert_eq!(captured.granularity, legacy.granularity);
+            assert_eq!(captured.reliability, legacy.reliability);
+        }
+    }
+
+    #[tokio::test]
+    async fn captured_dashboard_of_an_empty_workspace_is_an_empty_report() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        std::fs::create_dir_all(&ws).unwrap();
+        let read = open_read(&ws).await;
+        let dashboard = dashboard_captured(&read, None).await.unwrap();
+
+        assert_eq!(dashboard.artifact_count, 0);
+        assert_eq!(
+            dashboard.pipeline_status,
+            "0 artifacts total: 0 active, 0 draft"
+        );
+        assert!(dashboard.contexts.is_empty());
+        assert!(dashboard.fgr_scores.is_empty());
+        assert!(dashboard.actions.is_empty());
+        assert!(!ws.join("lance").exists());
     }
 
     #[tokio::test]
@@ -1060,8 +1116,18 @@ mod prd041_tests {
             assert_eq!(legacy.unmatched, captured.unmatched, "id={id}");
             for (l, c) in legacy.matched.iter().zip(&captured.matched) {
                 assert_eq!(
-                    (l.name.as_str(), l.priority, l.action.as_str(), l.message.as_str()),
-                    (c.name.as_str(), c.priority, c.action.as_str(), c.message.as_str()),
+                    (
+                        l.name.as_str(),
+                        l.priority,
+                        l.action.as_str(),
+                        l.message.as_str()
+                    ),
+                    (
+                        c.name.as_str(),
+                        c.priority,
+                        c.action.as_str(),
+                        c.message.as_str()
+                    ),
                     "id={id}"
                 );
             }

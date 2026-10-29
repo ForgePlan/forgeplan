@@ -99,11 +99,8 @@ const BOUNDARY_RESERVE_TOKENS: usize = 8;
 /// because nothing here reads it — `tokenizer_config.json` and `config.json`
 /// carry the two values the loader needs (`model_max_length`, `pad_token`,
 /// `pad_token_id`).
-pub const REQUIRED_METADATA_FILES: [&str; 3] = [
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "config.json",
-];
+pub const REQUIRED_METADATA_FILES: [&str; 3] =
+    ["tokenizer.json", "tokenizer_config.json", "config.json"];
 
 /// SHA-256 of one metadata file's bytes, lowercase hex.
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -539,12 +536,7 @@ impl MetadataTokenizer {
     }
 
     /// The token-budgeted `title + heading` context, without the separator.
-    fn build_header(
-        &self,
-        title: &str,
-        heading: Option<&str>,
-        budgets: &TokenBudgets,
-    ) -> String {
+    fn build_header(&self, title: &str, heading: Option<&str>, budgets: &TokenBudgets) -> String {
         let full = match heading {
             Some(heading) if !heading.is_empty() => format!("{title} {heading}"),
             _ => title.to_string(),
@@ -657,8 +649,8 @@ pub fn has_all_metadata(dir: &Path) -> bool {
 }
 
 fn read_json(path: &Path) -> Result<serde_json::Value> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("cannot parse {}", path.display()))
 }
 
@@ -831,12 +823,12 @@ pub fn clear_test_layout_cache() {
 pub mod testing {
     use super::{MetadataTokenizer, SectionLayout, TokenBudgets};
     use std::path::Path;
+    use tokenizers::SplitDelimiterBehavior;
     use tokenizers::models::wordlevel::WordLevel;
     use tokenizers::pre_tokenizers::split::{Split, SplitPattern};
     use tokenizers::pre_tokenizers::whitespace::WhitespaceSplit;
     use tokenizers::processors::template::TemplateProcessing;
     use tokenizers::tokenizer::{AddedToken, Tokenizer};
-    use tokenizers::SplitDelimiterBehavior;
 
     /// Id the post-processor's `[CLS]` is emitted as.
     const CLS_ID: u32 = 1;
@@ -888,7 +880,8 @@ pub mod testing {
 
         // CJK: no whitespace to split on, so a character window is the only
         // thing that can produce more than one window at all.
-        for c in "一二三四五六七八九十百千万漢字日本語世界時間分秒点".chars() {
+        for c in "一二三四五六七八九十百千万漢字日本語世界時間分秒点".chars()
+        {
             push(c, &mut tokens);
         }
 
@@ -926,7 +919,10 @@ pub mod testing {
         // file by the time `build()` returns, so the directory is dropped here.
         let vocab_dir = tempfile::TempDir::new()?;
         let vocab_path = vocab_dir.path().join("vocab.json");
-        std::fs::write(&vocab_path, serde_json::to_vec(&serde_json::Value::Object(vocab))?)?;
+        std::fs::write(
+            &vocab_path,
+            serde_json::to_vec(&serde_json::Value::Object(vocab))?,
+        )?;
 
         // `tokenizers` returns `Box<dyn Error + Send + Sync>`, which does not
         // convert into `anyhow::Error` through `?`. Mapped explicitly at each
@@ -967,11 +963,12 @@ pub mod testing {
         tokenizer
             .with_pre_tokenizer(Some(pre_tokenizer))
             .with_post_processor(Some(post_processor));
-        tokenizer.add_special_tokens([
-            AddedToken::from("[CLS]", true),
-            AddedToken::from("[SEP]", true),
-        ])
-        .map_err(|e| anyhow::anyhow!("cannot register the fixture special tokens: {e}"))?;
+        tokenizer
+            .add_special_tokens([
+                AddedToken::from("[CLS]", true),
+                AddedToken::from("[SEP]", true),
+            ])
+            .map_err(|e| anyhow::anyhow!("cannot register the fixture special tokens: {e}"))?;
         Ok(tokenizer)
     }
 
@@ -1207,7 +1204,8 @@ mod tests {
 
     #[test]
     fn the_model_limit_never_exceeds_the_ceiling_and_a_smaller_one_wins() {
-        let generous = SectionLayout::from_metadata("a".into(), "b".into(), "c".into(), Some(8192), 2);
+        let generous =
+            SectionLayout::from_metadata("a".into(), "b".into(), "c".into(), Some(8192), 2);
         assert_eq!(generous.max_tokens, MAX_TOKENS_CEILING);
 
         let modest = SectionLayout::from_metadata("a".into(), "b".into(), "c".into(), Some(256), 2);
@@ -1234,10 +1232,7 @@ mod tests {
     fn a_profile_that_cannot_hold_one_body_token_is_refused_not_looped() {
         let impossible = layout(2, 2);
         let error = TokenBudgets::resolve(&impossible).unwrap_err().to_string();
-        assert!(
-            error.contains("single body token"),
-            "got: {error}"
-        );
+        assert!(error.contains("single body token"), "got: {error}");
     }
 
     #[test]
@@ -1259,7 +1254,10 @@ mod tests {
         // they are what turns a window into body bytes.
         assert!(ByteRange { start: 0, end: 0 }.is_empty());
         assert_eq!(ByteRange { start: 0, end: 0 }.len(), 0);
-        assert_eq!(ByteRange { start: 3, end: 9 }.slice("abcdefghij"), Some("defghi"));
+        assert_eq!(
+            ByteRange { start: 3, end: 9 }.slice("abcdefghij"),
+            Some("defghi")
+        );
         assert_eq!(ByteRange { start: 0, end: 99 }.slice("abc"), None);
     }
 
@@ -1390,8 +1388,10 @@ mod tests {
 
     #[test]
     fn an_absent_cache_resolves_to_the_fingerprinted_unavailable_state() {
-        let resolution =
-            resolve_layout_in(Path::new("/nonexistent-forgeplan-model-cache"), "BAAI/bge-m3");
+        let resolution = resolve_layout_in(
+            Path::new("/nonexistent-forgeplan-model-cache"),
+            "BAAI/bge-m3",
+        );
         assert!(resolution.tokenizer().is_none());
         let layout = resolution.layout();
         assert!(!layout.is_available());
@@ -1429,7 +1429,10 @@ mod tests {
         // The special tokens really are added when asked for, and not when not
         // asked for: that difference is what makes `measure` and
         // `count_with_special_tokens` two different measurements on purpose.
-        assert_eq!(tokenizer.count_with_special_tokens("").unwrap(), budgets.special_tokens);
+        assert_eq!(
+            tokenizer.count_with_special_tokens("").unwrap(),
+            budgets.special_tokens
+        );
         assert_eq!(tokenizer.measure("").unwrap().ids.len(), 0);
     }
 
@@ -1446,7 +1449,10 @@ mod tests {
             ("russian", "тело раздела для проверки покрытия"),
             ("cjk", "这是一段没有任何空格的中文正文内容"),
             ("emoji", "a section 🎉 with 🔥 emoji 🚀 inside"),
-            ("no space", "averylongunbrokenruntokenwithnobreakswhatsoever"),
+            (
+                "no space",
+                "averylongunbrokenruntokenwithnobreakswhatsoever",
+            ),
         ] {
             let count = tokenizer.measure(text).unwrap().ids.len();
             assert!(

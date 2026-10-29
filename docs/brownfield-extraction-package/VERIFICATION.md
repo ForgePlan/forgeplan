@@ -2,6 +2,8 @@
 
 > How to know the extension is done and working.
 
+> Prospective acceptance plan for the original design, **not a test-results report**. Commands, fixture locations and thresholds below specify intended future checks; they are not all implemented or exercised. See [current status](README.md#implementation-status-2026-10-23). These package criteria do not replace or waive native G1/G2/G3.
+
 ## Top-level success
 
 The extension is complete when, on a fresh brownfield project:
@@ -15,7 +17,7 @@ The extension is complete when, on a fresh brownfield project:
 
 ## Per-wave verification
 
-### Wave 1 ✔
+### Wave 1
 
 | Check | How to verify |
 |---|---|
@@ -29,7 +31,7 @@ The extension is complete when, on a fresh brownfield project:
 | C1 skill produces output | Run on 5-service fixture → glossary artifacts created |
 | C4 skill produces output | Run on a file with `if/throw` → invariants detected |
 
-### Wave 2 ✔
+### Wave 2
 
 | Check | How to verify |
 |---|---|
@@ -38,7 +40,7 @@ The extension is complete when, on a fresh brownfield project:
 | C5 detects causality | Graph contains `causes`, `emits`, `listens_to` edges |
 | C5 detects cycles | Running on a loop-containing codebase finds and flags loops |
 
-### Wave 3 ✔
+### Wave 3
 
 | Check | How to verify |
 |---|---|
@@ -48,7 +50,7 @@ The extension is complete when, on a fresh brownfield project:
 | C6 state transitions | `drafted → inferred` happens; `inferred → verified/refuted/parked` happens |
 | Confidence distribution healthy | Not > 30% verified without DO input; not > 50% speculation |
 
-### Wave 4 ✔
+### Wave 4
 
 | Check | How to verify |
 |---|---|
@@ -60,7 +62,7 @@ The extension is complete when, on a fresh brownfield project:
 | C9 contradiction detection | Fixture with known contradictions → all flagged |
 | C9 graph navigable | Tier-0 overview → click into tier-1 domains → tier-2 entities |
 
-### Wave 5 ✔
+### Wave 5
 
 | Check | How to verify |
 |---|---|
@@ -111,14 +113,14 @@ Procedure:
 
 ## Regression tests
 
-Each skill has a fixture:
+The proposed regression suite assigns a fixture to each wave:
 - Wave 1: `fixtures/wave1/` — 5-service fixture with known glossary/invariants.
 - Wave 2: `fixtures/wave2/` — entry-point + cycle fixture.
 - Wave 3: `fixtures/wave3/` — ambiguous code patterns for hypothesis generation.
 - Wave 4: `fixtures/wave4/` — contradiction fixture.
 - Wave 5: `fixtures/wave5/` — full small brownfield.
 
-CI runs all fixtures on every PR.
+Intended CI requirement: run all these fixtures on every PR once they exist. This package does not provide evidence that such a CI job runs today.
 
 ## Monitoring (post-deployment)
 
@@ -150,7 +152,7 @@ If any of the following happen, escalate to the user/maintainer:
 ## Rollback plan
 
 If the extension causes regressions in forgeplan:
-1. Feature-flag all new kinds (`forgeplan --enable-brownfield-extension`).
+1. Design an explicit feature flag for the extension if rollback requires one. The original proposed spelling, `forgeplan --enable-brownfield-extension`, is **not a supported flag in the reviewed CLI**.
 2. Ensure existing workspaces are unaffected when flag is off.
 3. Document how to disable and revert.
 

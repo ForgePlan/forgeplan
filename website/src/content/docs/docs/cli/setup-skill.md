@@ -3,14 +3,14 @@ title: forgeplan setup-skill
 description: "Install the /forge skill into Claude Code so AI agents can drive the Forgeplan workflow"
 ---
 
-`forgeplan setup-skill` installs the `/forge` Claude Code skill **user-globally** by writing a single markdown file to `~/.claude/skills/forge/SKILL.md`. Once installed, Claude Code can invoke the full Forgeplan workflow (route → shape → validate → ADI → code → evidence → activate) through a single `/forge` slash command in **any** project, with all methodology rules loaded as context via the bundled skill definition.
+`forgeplan setup-skill` writes the embedded `/forge` instructions to `~/.claude/skills/forge/SKILL.md` for the current OS user. A compatible Claude Code client can load those instructions across projects; writing the file alone does not register an MCP server, initialize a workspace, or prove that an agent follows every rule.
 
 The skill file is embedded directly into the `forgeplan` binary at compile time - the command performs **no network access**, does **not** fetch anything from the marketplace, and does **not** modify the current project's `.forgeplan/` or `.claude/` directories.
 
 ## When to use
 
-- First time you connect Claude Code (or another Claude Agent SDK client) to Forgeplan.
-- Once per machine - the skill is user-global and works across **all** projects afterwards.
+- Install instructions for a local Claude Code user; other clients must explicitly support this skill location.
+- The file is user-global, not shared with every machine, account or remote runtime.
 - After upgrading the Forgeplan binary if the bundled skill definition changed (re-run to pick up updates).
 - When onboarding a teammate who already has Claude Code but has never run Forgeplan locally.
 
@@ -43,7 +43,7 @@ forgeplan init -y
 forgeplan setup-skill
 ```
 
-Typical bootstrap sequence: create the workspace, then install the Claude Code skill so `/forge` is immediately available in the next chat session.
+Creates a workspace, then writes the skill file. Confirm discovery in the actual client; availability in its next chat is a client behavior, not an installer handshake.
 
 ### Example 2: Refresh the skill after upgrading
 
@@ -52,7 +52,7 @@ cargo install forgeplan  # or brew upgrade forgeplan
 forgeplan setup-skill
 ```
 
-Re-runs the installer so the skill markdown matches the new binary version. Safe to run repeatedly - it overwrites `~/.claude/skills/forge/SKILL.md`.
+Reinstalls the definition embedded in the invoked binary. It overwrites the existing file; back up any personal edits before repeating the command.
 
 ### Example 3: Verify installation
 
@@ -70,11 +70,11 @@ This is a one-shot setup command, not part of the artifact lifecycle. It belongs
 
 1. `forgeplan init -y` - create workspace
 2. `forgeplan setup-skill` - install Claude Code integration
-3. Configure `.forgeplan/config.yaml` - LLM provider + API key
+3. For LLM-powered commands, configure a provider: HTTP uses an API-key environment variable; explicitly opted-in personal local CLI profiles use their existing login.
 4. `forgeplan health` - sanity check
 5. Open Claude Code and call `/forge` - methodology-aware workflow kicks in
 
-Inside Claude Code, `/forge` gives AI agents the same routing, validation, and evidence discipline described in [the methodology guide](/docs/methodology/overview/).
+The skill supplies workflow instructions from [the methodology guide](/docs/methodology/overview/). Instructions in context are not runtime proof of enforcement or completed gates.
 
 ## Safety notes
 
@@ -86,7 +86,23 @@ Inside Claude Code, `/forge` gives AI agents the same routing, validation, and e
 
 - [`forgeplan init`](/docs/cli/init/) - create the workspace before installing the skill
 - [`forgeplan health`](/docs/cli/health/) - verify session readiness
-- [Methodology overview](/docs/methodology/overview/) - what the `/forge` skill actually enforces
+- [Methodology overview](/docs/methodology/overview/) - workflow instructions and gates
 - [Configuration](/docs/getting-started/configuration/) - LLM provider setup required for `/forge` to reason
 - [Marketplace Overview](/docs/marketplace/overview/) - full plugin catalog for additional skills
 - [Forgeplan Workflow Plugin](/docs/marketplace/forgeplan-workflow/) - details on what `/forge` provides
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan setup-skill --help`.
+
+```text
+Install /forge skill for Claude Code
+
+Usage: forgeplan setup-skill
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

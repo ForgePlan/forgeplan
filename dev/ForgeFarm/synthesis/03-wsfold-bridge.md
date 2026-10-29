@@ -7,6 +7,15 @@
 > Этот документ фиксирует, как те выводы стыкуются с корпусом ForgeFarm —
 > где подтверждаются, где расширяются, и какие конкретные дизайн-входы дают.
 > Полная память сессии: `~/.claude/projects/-Users-explosovebit-Work-ForgePlan/memory/project_wsfold_evaluation.md`.
+>
+> **Граница чтения (2026-10-23).** Это выводы той сессии и предложения
+> отдельного ForgeFarm. `graph|health|order --span`, ghost stores и
+> «навсегда» ниже — исторический дизайн, не текущая CLI-инструкция или
+> бессрочная гарантия roadmap. У выбранной версии 0.39.0+constellation.s1.1
+> эти три команды не имеют `--span`; сверять Constellation с её собственной
+> группой команд. Dispatch/claim дают advisory-план и маркеры намерения,
+> не файловую блокировку. Rebuild runtime-проекции требует также сохранённых
+> audit/run events; git и tracker не содержат всех approvals/leases.
 
 ---
 
@@ -98,11 +107,11 @@ Committed-intent vs machine-local-resolution split WSFold — то, что ко�
 |---|---|
 | verdict (supports/weakens/refutes) | «модель X адекватна task-class Y» |
 | congruence_level (CL3…CL0) | совпадение harness/task-type (CL3 = тот же harness + тот же класс задач; CL1–0 = перенесённый контекст) |
-| valid_until / decay | устаревание eval'ов при выходе новой версии модели — ровно та TTL-семантика, которую R_eff уже enforce'ит |
+| valid_until / decay | явная дата перепроверки; обнаружение новой версии модели и запуск re-eval проектирует ForgeFarm, scorer ForgePlan сам релизы не отслеживает |
 
 Два несовпадения: (a) R_eff = min() weakest-link неправилен для агрегации ПОПУЛЯЦИИ eval-ранов (один плохой ран занулил бы модель — агрегация нуждается в распределительной статистике ДО авторинга claim'а); (b) git-tracked markdown не может впитывать high-volume per-run записи, не нарушая дух ADR-003.
 
-**Дизайн-следствие — двухслойное eval-хранилище, совпадающее с 4-truths split корпуса:** сырые eval-раны = строки run-store ForgeFarm (Postgres: execution_runs, gate_decisions, cost/token metrics — операционная истина, большой объём); дистиллированные routing-claims = ForgePlan EvidencePacks (один EVID на claim model×task-class, со Structured Fields verdict/congruence_level/evidence_type=benchmark и valid_until, linked `informs` к routing-policy артефакту — decision-истина, малый объём, git-reviewed). Runtime Broker гейтит изменения routing-таблицы на активные, непросроченные EVID'ы. Тогда R_eff делает ПРАВИЛЬНУЮ weakest-link работу: routing-решение, опирающееся на просроченное/опровергнутое eval-evidence, видимо падает до 0.1 и всплывает в blindspots/health.
+**Дизайн-следствие — двухслойное eval-хранилище:** сырые раны = строки Postgres ForgeFarm; дистиллированные routing-claims = ForgePlan EvidencePacks на (model × harness × task-class), с версиями и Structured Fields verdict/congruence_level/evidence_type=benchmark/valid_until, linked `informs` к routing-policy артефакту. Runtime Broker по проекту гейтит изменения на активные непросроченные EVID. Просроченный вклад scorer = 0.1, непросроченный `refutes` = 0; итог зависит от eligible evidence и зависимостей. Рекурсивный score report и flat record-проекция могут различаться; ни один не является вероятностью успешного рана.
 
 ## 7. Сквозное: T0–T3 и stdio-супервизор
 

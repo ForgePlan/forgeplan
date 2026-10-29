@@ -3,9 +3,11 @@ title: forgeplan phase
 description: "Read the advisory phase state for an artifact - current phase, workflow type, full transition history. Phase tracking is advisory and never blocks other tools."
 ---
 
-`forgeplan phase` показывает, на какой стадии методологии находится артефакт - Shape, Validate, Adi, Code, Test, Audit, Evidence или Done - и печатает полную историю того, как он туда попал (timestamp-ы, причины). Данные хранятся в `.forgeplan/state/<id>.yaml` и только дописываются: каждый переход сохраняется навсегда.
+`forgeplan phase` читает рекомендательную фазу из `.forgeplan/state/<id>.yaml`. Текст показывает последние три перехода, JSON - сохранённую историю, ограниченную 1024 записями. Файл не immutable.
 
 Фаза **рекомендательная** - это подсказка для людей и агентов, а не блокировка. Никакая другая команда Forgeplan не откажет в работе из-за «неправильной» фазы. Если у артефакта ещё нет файла состояния (создан до появления отслеживания фаз или с `phase.enabled: false` в конфиге), команда напечатает `current_phase: unknown` с пустой историей - это норма, не ошибка.
+
+Повреждённый YAML фазы при чтении может быть перемещён в карантин.
 
 Это CLI-вариант [`forgeplan_phase`](/ru/docs/mcp/forgeplan_phase/) на MCP-стороне.
 
@@ -51,7 +53,7 @@ forgeplan phase PRD-057
 ```
 
 Печатает текущую фазу, тип workflow и последние три перехода в text-режиме (полная
-история - в `--json`). Типичный вывод:
+сохранённая история - в `--json`). Иллюстрация, не записанный вывод:
 
 ```text
 PRD-057 - current_phase: code (greenfield)
@@ -68,7 +70,7 @@ PRD-057 - current_phase: code (greenfield)
 forgeplan phase PRD-057 --json | jq '.history'
 ```
 
-Возвращает каждый переход, который артефакт когда-либо записал. Полезно для аудитов или для построения timeline-представления в смежном инструменте.
+Возвращает сохранённые переходы, не безграничный журнал за всё время.
 
 ### Пример 3: Артефакт без файла состояния
 
@@ -87,5 +89,25 @@ forgeplan phase PRD-001
 - [`forgeplan_phase`](/ru/docs/mcp/forgeplan_phase/) - MCP-эквивалент
 - [`forgeplan phase-advance`](/ru/docs/cli/phase-advance/) - записать следующий переход
 - [`forgeplan validate`](/ru/docs/cli/validate/) - гейт вокруг фазы `validate`
-- [`forgeplan activate`](/ru/docs/cli/activate/) - терминальное `done` методологии
+- [`forgeplan activate`](/ru/docs/cli/activate/) - lifecycle-активация, не рекомендательная фаза `done`
 - [Руководство по методологии](/ru/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan phase --help`.
+
+```text
+Read advisory phase state for an artifact. Returns current_phase, workflow_type, timestamps, and the full append-only transition history from `.forgeplan/state/<id>.yaml`. If no state file exists yet (pre-PRD-056 artifact or phase tracking was disabled), returns `current_phase: unknown` -- never an error. Phase tracking is advisory and never blocks other tools
+
+Usage: forgeplan phase [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID whose phase state to read
+
+Options:
+      --json     Output as JSON for machine consumption
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

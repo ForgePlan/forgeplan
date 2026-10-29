@@ -2,6 +2,8 @@
 
 > How the new skills wire into the existing `/autoresearch:*` command family without duplication.
 
+> Original integration proposal, not a supported CLI reference. The local upstream checkout cited below has no pinned revision in this package, so its baseline capabilities are not independently reproduced here. All new modes, connectors and slash commands described below require separate implementation; see [current Forgeplan status](README.md#implementation-status-2026-10-23).
+
 ## Current autoresearch capabilities (baseline)
 
 From `/Users/explosovebit/Work/TripSales - Ex Multiroad/sources/autoresearch/`:
@@ -174,6 +176,8 @@ extract_score =
 ```
 
 Each term ∈ [0, 1]. Target: `extract_score ≥ 0.85` for a brownfield to be considered "fully extracted".
+
+This is the package's **proposed eight-term metric**, not the current `forgeplan_coverage_business` calculation. The current inspector uses five weights (glossary 0.15, use-cases 0.25, invariants 0.25, scenario coverage 0.20, hypothesis confidence 0.15); canonical readiness remains false/zero. Neither score by itself proves reproducibility or end-to-end extraction.
 
 ## Handoff points
 

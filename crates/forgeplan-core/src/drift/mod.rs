@@ -133,10 +133,14 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
+    // Keep commit time between the ADR and RFC dates, independent of the
+    // machine clock or Git's approximate parsing of far-future dates.
     fn git(repo: &Path, args: &[&str]) {
         let output = Command::new("git")
             .args(args)
             .current_dir(repo)
+            .env("GIT_AUTHOR_DATE", "2021-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2021-01-01T00:00:00Z")
             .output()
             .expect("git runs");
         assert!(
@@ -203,7 +207,7 @@ mod tests {
             "RFC-001",
             "rfc",
             "active",
-            "2999-01-01T00:00:00Z",
+            "2022-01-01T00:00:00Z",
             Some("src/engine.rs"),
         );
         write_artifact(
@@ -266,7 +270,10 @@ mod tests {
             store.replace_record(record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
-            store.add_relation(&source, &target, &relation).await.unwrap();
+            store
+                .add_relation(&source, &target, &relation)
+                .await
+                .unwrap();
         }
         store
     }
@@ -286,7 +293,10 @@ mod tests {
         assert!(ids.contains(&"RFC-001"));
 
         let adr = reports.iter().find(|r| r.artifact_id == "ADR-001").unwrap();
-        assert!(adr.is_stale, "a file committed after the ADR must read as stale");
+        assert!(
+            adr.is_stale,
+            "a file committed after the ADR must read as stale"
+        );
         assert_eq!(adr.affected_files, vec!["src/engine.rs".to_string()]);
         assert_eq!(adr.changed_files.len(), 1);
         assert_eq!(adr.changed_files[0].path, "src/engine.rs");
@@ -345,8 +355,10 @@ mod tests {
 
         assert_eq!(legacy.len(), captured.len());
         for (l, c) in legacy.iter().zip(&captured) {
-            assert_eq!((&l.artifact_id, &l.artifact_title, &l.created_at),
-                (&c.artifact_id, &c.artifact_title, &c.created_at));
+            assert_eq!(
+                (&l.artifact_id, &l.artifact_title, &l.created_at),
+                (&c.artifact_id, &c.artifact_title, &c.created_at)
+            );
             assert_eq!(l.affected_files, c.affected_files);
             assert_eq!(l.is_stale, c.is_stale);
             let l_files: Vec<(&str, &str)> = l

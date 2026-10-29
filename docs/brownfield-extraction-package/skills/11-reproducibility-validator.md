@@ -2,6 +2,8 @@
 
 > Verifies that canonical documentation is actually sufficient to reproduce the described system. The "code deletion test" in automated form.
 
+> Proposed validator design, not an implemented core reproducibility tool. Example PASS values and percentages are illustrative, not execution evidence. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Why this skill exists
 
 Documentation is only useful if someone can build the system from it. C10 produces standalone docs, but without validation we don't know if they're complete. C11 runs synthetic rebuild checks: given only the docs, can we reconstruct a working schema, a runnable pseudo-code, a valid GraphQL SDL?
@@ -22,7 +24,7 @@ Without C11, "standalone documentation" is an aspiration, not a guarantee.
 ## Modes
 
 ### Mode 1: `ddl-compile`
-Take `canonical/{domain}/ddl.sql`, run `psql --check-syntax` (or equivalent). If it fails, the DDL is not standalone.
+Take `canonical/{domain}/ddl.sql` and execute it in an **explicitly selected disposable PostgreSQL database**, with prerequisite domains loaded in dependency order: `psql -X --dbname "$DISPOSABLE_DATABASE_URL" --set ON_ERROR_STOP=1 --single-transaction --file canonical/orders/ddl.sql` for the orders example. This executes DDL; it is not a syntax-only check. `psql` has neither `--check-syntax` nor `--check`. Never point the validator at a real project database. Failure may indicate missing dependencies, environment setup, or invalid DDL; report which occurred rather than assuming the cause.
 
 ### Mode 2: `sdl-parse`
 Take `canonical/{domain}/api.graphql`, parse with `graphql-js` / `graphql-ruby`. If it fails, the SDL is not standalone.
@@ -50,7 +52,8 @@ Similar to deletion-simulation but target a different stack (e.g., "rewrite from
 ```
 for each domain:
   ddl = read(canonical/{domain}/ddl.sql)
-  result = run('psql --file=- --set ON_ERROR_STOP=1', input=ddl)
+  result = run(['psql', '-X', '--dbname', disposable_database_url,
+                '--file=-', '--set=ON_ERROR_STOP=1', '--single-transaction'], input=ddl)
   if result.exit_code != 0:
     report_failure(domain, 'ddl-compile', result.stderr)
 ```
@@ -107,7 +110,7 @@ Diff the output with the real codebase structure to quantify gaps.
 ## Dependencies
 
 - C10 (canonical docs).
-- `psql` (or `sqlite3`, `mysql --syntax-check`) for DDL.
+- A disposable PostgreSQL instance and `psql` for PostgreSQL DDL. Other dialects need their own documented validation adapter; do not assume a generic `mysql --syntax-check` exists.
 - `graphql-js` for SDL.
 - `@cucumber/gherkin` for Gherkin.
 - LLM for simulation modes.
@@ -128,7 +131,7 @@ See `references/deletion-simulation-prompt.md`, `references/rewrite-simulation-p
 
 | Failure | Detection | Mitigation |
 |---|---|---|
-| DDL uses non-portable syntax | `psql --check` fails on another engine | Restrict to ANSI SQL in C10 |
+| DDL uses non-portable syntax | Execution on the declared target dialect fails | Declare the dialect and validate against it; cross-engine portability is a separate check |
 | Pseudo-code references undocumented helper | Coherence check flags it | C10 must inline the helper or document it |
 | Simulation agent "cheats" by reading code | Sandbox the simulation environment | Run in a temp directory with only docs |
 | Diff too noisy to interpret | Structural diff, not line diff | Use semantic entity/action match |

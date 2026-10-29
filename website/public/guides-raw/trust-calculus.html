@@ -334,16 +334,18 @@
   <p class="eyebrow">ADI → Evidence → DDR · интерактивный разбор</p>
   <h1>Trust Calculus в 3D</h1>
   <p class="lead">
-    Каждое доказательство, на котором держится решение, - это вектор в трёх независимых осях:
+    В учебной модели этого урока каждое доказательство - вектор в трёх независимых осях:
     <span class="ax-f">F</span> (Formality), <span class="ax-g">G</span> (Granularity),
     <span class="ax-r">R</span> (Reliability).
     Чтобы выбрать гипотезу после ADI-разбора, мы не считаем среднее по этим осям. Доверие
     ограничено самым слабым звеном - <code>trust = min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</code>.
-    Это правило WLNK.
+    Так здесь иллюстрируется правило WLNK, а не универсальная формула FPF. Все значения на этой странице - учебный набор: оси 0-9 и порог
+    F+G+R=12 придуманы для показа принципа, а не сняты с реального замера. Как
+    доказательства оценивает Forgeplan на самом деле - в конце страницы.
   </p>
 
   <h2>Три оси, по которым оценивается каждое утверждение</h2>
-  <p>Шкала 0-9 для каждой оси, оси независимы. Одно доказательство может быть строгим, но из ненадёжного источника - слабое звено решит за всё.</p>
+  <p>Шкала 0-9 для каждой оси - это шкала этого урока, оси независимы. Одно доказательство может быть строгим, но из ненадёжного источника - слабое звено решит за всё.</p>
 
   <div class="axes">
     <div class="axis-card f">
@@ -410,6 +412,9 @@
   <p>
     Каждая точка - отдельное доказательство. Цвет указывает гипотезу, которую evidence адресует.
     Прозрачная плоскость показывает порог <code><span class="ax-f">F</span> + <span class="ax-g">G</span> + <span class="ax-r">R</span> = 12</code> - всё, что лежит «под» ней, считается слабым evidence.
+    Это сумма трёх осей, а не правило слабого звена: три средние оценки дают сумму 12
+    и при этом могут лежать с очень слабой одной осью. Порог 12 - соглашение этой
+    страницы; в Forgeplan порога по сумме нет.
     Сцена крутится мышью; при наведении видна полная карточка с WLNK и вердиктом.
   </p>
 
@@ -439,7 +444,7 @@
           <th class="num"><span class="ax-f">F</span></th>
           <th class="num"><span class="ax-g">G</span></th>
           <th class="num"><span class="ax-r">R</span></th>
-          <th class="num">Avg</th>
+          <th class="num">Среднее</th>
           <th class="num">WLNK</th>
           <th>Вердикт</th>
         </tr>
@@ -448,7 +453,7 @@
     </table>
   </div>
 
-  <h2>Среднее обманывает · WLNK против Average</h2>
+  <h2>Среднее обманывает · WLNK против среднего</h2>
   <p>
     Возьмите E5 (whitepaper вендора): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=8, <span class="ax-r">R</span>=3. Среднее = 6 - выглядит твёрдо. Но <span class="ax-r">R</span>=3 - это маркетинговая бумага,
     источник продаёт продукт. Для production-решения слабое <span class="ax-r">R</span> не компенсируется красивой формулировкой.
@@ -471,7 +476,11 @@
     <p>
       Лучшее supporting evidence - E6 (внутренний бенчмарк): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=9, <span class="ax-r">R</span>=7, WLNK=7.
       H1 опровергнута собственным замером E2 (EXPLAIN ANALYZE показал 18-24 ms, это
-      <i>weakens</i> гипотезу). H2 имеет WLNK=7 от flamegraph, но <span class="ax-g">G</span>=8 против <span class="ax-g">G</span>=9 у H3.
+      <i>refutes</i> гипотезу). У H2 тоже есть supporting evidence с WLNK=7 (E3, flamegraph),
+      но <span class="ax-g">G</span>=8 против <span class="ax-g">G</span>=9 у E6 - по правилу «при равенстве
+      берём более детальное» побеждает H3. Это правило разрешения ничьих в этом уроке, а не
+      часть расчёта Forgeplan. Победитель выбран автором сценария: если сложить все
+      supporting-минимумы H3 по правилу слабого звена, получилось бы 3, а не 7.
       DDR пишется по H3 с условиями пересмотра - decay-триггеры показаны в конвейере ниже.
     </p>
     <span class="winner-tag">H3 · activated</span>
@@ -503,6 +512,36 @@
       <div class="step-title">Решение + decay</div>
       <div class="step-desc">Условия пересмотра, триггеры, TTL</div>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="tag-row"><span class="dot"></span><span>Что делает Forgeplan на самом деле</span></div>
+    <p style="margin: 0;">
+      Forgeplan вычисляет F/G/R артефакта по шкале 0–1 и их геометрическое среднее
+      <code>(F × G × R)^(1/3)</code>. Это эвристики качества артефакта, а не оценки
+      доказательств 0–9 из этого урока; порога по сумме в продукте нет.
+      Внутренний балл пакета (<code>kind: evidence</code>) не использует эти учебные F/G/R.
+      В полном расчёте непросроченного пакета он равен
+      <code>max(0, verdict − штраф_CL − поправка_типа)</code>.
+      Базы <code>supports</code> / <code>weakens</code> / <code>refutes</code> — 1.0 / 0.5 / 0.0;
+      штрафы CL0 / CL1 / CL2 / CL3 — 0.9 / 0.4 / 0.1 / 0; поправки
+      <code>measurement</code> / <code>test</code> / <code>benchmark</code> / <code>audit</code> — 0 / 0 / 0.1 / 0.2.
+      Необязательная <code>valid_until</code>, если истекла, имеет приоритет: балл равен 0.1,
+      в том числе при <code>refutes</code>; без даты этот расчёт не применяет истечение срока.
+      Рекурсивный <code>R_eff</code> решения берёт минимум из балла собственных допустимых
+      доказательств и допустимых вкладов зависимостей. Пакеты в <code>draft</code> учитываются;
+      <code>superseded</code> и <code>deprecated</code> исключаются. Для зависимостей исключаются
+      также <code>draft</code> и типы <code>note</code>/<code>memory</code>.
+      Вклад зависимости — <code>max(0, R_eff зависимости − штраф связи)</code>:
+      <code>based_on</code>/<code>informs</code> вычитают 0.1 (CL2),
+      <code>refines</code>/<code>depends_on</code> — 0 (CL3). Например, собственный балл 1.0
+      и допустимая зависимость <code>based_on</code> с баллом 0.2 дают итог 0.1.
+      Без собственных допустимых доказательств обычное решение получает 0; листовой пакет
+      доказательства оценивается по собственным полям.
+      Плоский помощник для части отображаемых баллов не обходит зависимости и не применяет
+      поправку типа; его нельзя подменять полным расчётом. Вердикты на этой странице
+      используют те же ключи, но F/G/R и набор E1…E7 — учебный пример.
+    </p>
   </div>
 
   <div class="footer">
@@ -539,13 +578,13 @@
 
   // ---------- Evidence dataset ----------
   const evidence = [
-    { id: 'E1', hypo: 'H1', source: 'PostgreSQL docs (vendor)',         F: 6, G: 4, R: 4, verdict: 'supports' },
-    { id: 'E2', hypo: 'H1', source: 'EXPLAIN ANALYZE on staging (own)', F: 7, G: 8, R: 8, verdict: 'refutes'  },
-    { id: 'E3', hypo: 'H2', source: 'Flamegraph staging (own)',         F: 7, G: 8, R: 7, verdict: 'supports' },
-    { id: 'E4', hypo: 'H2', source: 'Slack message from engineer',      F: 2, G: 3, R: 2, verdict: 'weakens'  },
-    { id: 'E5', hypo: 'H3', source: 'Vendor whitepaper',                F: 7, G: 8, R: 3, verdict: 'supports' },
-    { id: 'E6', hypo: 'H3', source: 'Internal benchmark (own)',         F: 7, G: 9, R: 7, verdict: 'supports' },
-    { id: 'E7', hypo: 'H3', source: 'Customer support ticket',          F: 4, G: 5, R: 5, verdict: 'supports' },
+    { id: 'E1', hypo: 'H1', source: 'Документация PostgreSQL (поставщик)', F: 6, G: 4, R: 4, verdict: 'supports' },
+    { id: 'E2', hypo: 'H1', source: 'EXPLAIN ANALYZE на тестовом стенде (свой замер)', F: 7, G: 8, R: 8, verdict: 'refutes'  },
+    { id: 'E3', hypo: 'H2', source: 'Профиль flamegraph на тестовом стенде (свой замер)', F: 7, G: 8, R: 7, verdict: 'supports' },
+    { id: 'E4', hypo: 'H2', source: 'Сообщение инженера в Slack', F: 2, G: 3, R: 2, verdict: 'weakens'  },
+    { id: 'E5', hypo: 'H3', source: 'Технический обзор поставщика', F: 7, G: 8, R: 3, verdict: 'supports' },
+    { id: 'E6', hypo: 'H3', source: 'Внутренний бенчмарк (свой замер)', F: 7, G: 9, R: 7, verdict: 'supports' },
+    { id: 'E7', hypo: 'H3', source: 'Обращение клиента в поддержку', F: 4, G: 5, R: 5, verdict: 'supports' },
   ];
 
   // ForgePlan-aligned palette for hypotheses
@@ -596,7 +635,7 @@
         ' · <span style="color:#22c55e">G</span>=' + e.G +
         ' · <span style="color:#60a5fa">R</span>=' + e.R + '<br>' +
         'WLNK = min(<span style="color:#ff5a1f">F</span>,<span style="color:#22c55e">G</span>,<span style="color:#60a5fa">R</span>) = <b>' + w + '</b><br>' +
-        'Average = ' + avg(e).toFixed(1)
+        'Среднее = ' + avg(e).toFixed(1)
       );
     });
 
@@ -655,9 +694,9 @@
       margin: { l: 0, r: 0, t: 8, b: 0 },
       showlegend: false,
       scene: {
-        xaxis: { ...axisCommon, title: { text: 'F · Formality',   font: { color: '#ff5a1f', size: 14, family: 'JetBrains Mono, monospace' } } },
-        yaxis: { ...axisCommon, title: { text: 'G · Granularity', font: { color: '#22c55e', size: 14, family: 'JetBrains Mono, monospace' } } },
-        zaxis: { ...axisCommon, title: { text: 'R · Reliability', font: { color: '#60a5fa', size: 14, family: 'JetBrains Mono, monospace' } } },
+        xaxis: { ...axisCommon, title: { text: 'F · Строгость',   font: { color: '#ff5a1f', size: 14, family: 'JetBrains Mono, monospace' } } },
+        yaxis: { ...axisCommon, title: { text: 'G · Конкретика', font: { color: '#22c55e', size: 14, family: 'JetBrains Mono, monospace' } } },
+        zaxis: { ...axisCommon, title: { text: 'R · Надёжность', font: { color: '#60a5fa', size: 14, family: 'JetBrains Mono, monospace' } } },
         camera: { eye: { x: 1.5, y: 1.4, z: 1.0 } },
         aspectmode: 'cube'
       }
@@ -679,7 +718,7 @@
         labels,
         datasets: [
           {
-            label: 'Average · (F + G + R) / 3',
+            label: 'Среднее · (F + G + R) / 3',
             data: avgs,
             backgroundColor: 'rgba(163, 163, 163, 0.35)',
             borderColor: '#a3a3a3',

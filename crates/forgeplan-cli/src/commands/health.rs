@@ -82,9 +82,7 @@ pub async fn run(
     // capture failure is an ERROR here — it never degrades to an empty
     // "everything is fine" report.
     let (report, phase_mismatches) = match &source {
-        common::ReadSource::Legacy(store) => {
-            health::health_report_with_phase(store, &ws).await?
-        }
+        common::ReadSource::Legacy(store) => health::health_report_with_phase(store, &ws).await?,
         common::ReadSource::Captured(read) => {
             health::health_report_with_phase_captured(read, &ws).await?
         }

@@ -3,7 +3,7 @@ title: forgeplan supersede
 description: "Replace an active artifact with a newer one - terminal transition that preserves lineage via a --by link."
 ---
 
-`forgeplan supersede` retires an active artifact and records that a specific replacement takes over its responsibility. The old artifact transitions to `superseded` - a terminal state it can never leave - and a typed link is written from the old ID to the new one. This is the canonical way to evolve decisions in Forgeplan: the history is preserved, back-references keep working, and anyone reading the old artifact is immediately pointed at the current answer.
+`forgeplan supersede` retires an active artifact and records a replacement. It writes a `supersedes` relation from the old ID to the replacement and changes the old status to `superseded`. Ordinary lifecycle transitions cannot leave that state; valid receipt-based recovery is a separate mechanism. The historical artifact remains readable.
 
 ## When to use
 
@@ -11,7 +11,7 @@ description: "Replace an active artifact with a newer one - terminal transition 
 - A v2 RFC subsumes a v1 RFC: same problem, better architecture, the old plan no longer applies.
 - A PRD was split into two more focused PRDs, and one of them carries the continuation of the original scope.
 - A Spec was refactored and the old contract is no longer valid but must stay readable for history.
-- An **EvidencePack** was invalidated by later re-verification (e.g. an old `refutes` pack after the defect was fixed): link the new pack, then supersede the old one — the displaced pack leaves the parent artifact's R_eff min and the cached score is refreshed immediately.
+- An **EvidencePack** no longer applies after re-verification: link the justified successor and retire the displaced pack. Terminal packs leave eligible R_eff populations. Recompute and inspect affected scores; immediate ancestor-cache refresh is not guaranteed on every storage path.
 
 ## When NOT to use
 
@@ -63,10 +63,10 @@ forgeplan supersede RFC-002 --by RFC-014
 
 ```bash
 forgeplan supersede PRD-007 --by PRD-021
-forgeplan links PRD-007
+forgeplan graph
 ```
 
-After superseding, inspect the relationship graph to confirm the `superseded_by` edge was written.
+Inspect the graph or `forgeplan get PRD-007 --json` for the `supersedes` edge from the old artifact to its replacement. There is no `forgeplan links` command.
 
 ## How it fits the workflow
 
@@ -77,15 +77,35 @@ Supersede is the clean exit of the `Shape → Validate → Code → Evidence →
 | Error | Cause | Fix |
 |---|---|---|
 | `--by artifact not found` | Replacement ID doesn't exist | Create and activate the successor first |
-| `--by artifact is in draft` | Successor not activated yet | Run `forgeplan activate <new-id>` before superseding |
+| Replacement is draft (warning) | Successor not activated yet | The command warns rather than refusing solely for draft status; activate a justified successor first as workflow policy |
 | `Cannot supersede from draft` | Original is still in draft | Drafts don't need superseding - edit or delete |
-| `Already in terminal state` | Artifact is already superseded or deprecated | Terminal states are final - nothing to do |
+| Already terminal | Artifact is superseded or deprecated | Ordinary transition is refused; inspect receipt-based recovery separately |
 
 ## See also
 
 - [`forgeplan deprecate`](/docs/cli/deprecate/) - retire without a replacement
 - [`forgeplan reopen`](/docs/cli/reopen/) - deprecate and start a new draft for re-evaluation
 - [`forgeplan activate`](/docs/cli/activate/) - activate the successor before superseding
-- [`forgeplan links`](/docs/cli/link/) - inspect the `superseded_by` relationship
+- [`forgeplan graph`](/docs/cli/graph/) - inspect the recorded `supersedes` relationship
 - [Lifecycle v2 guide](/docs/guides/lifecycle-v2/)
 - [Methodology: Artifact Lifecycle](/docs/methodology/lifecycle/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan supersede --help`.
+
+```text
+Supersede an artifact (active → superseded) with replacement link
+
+Usage: forgeplan supersede --by <BY> <ID>
+
+Arguments:
+  <ID>  Artifact ID to supersede
+
+Options:
+      --by <BY>  Replacement artifact ID
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

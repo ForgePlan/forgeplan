@@ -570,11 +570,9 @@ impl PinnedGeneration {
 
     /// The same verified manifest, shared.
     ///
-    /// A read view holds the manifest *and* the pin, and they must be the same
-    /// manifest — a view that could name one generation and pin another would
-    /// be reporting a generation nobody verified. Handing out the same `Arc`
-    /// keeps that true by construction and keeps a read from copying a manifest
-    /// per question.
+    /// Consumers can validate or share the verified manifest without copying
+    /// it. A read view keeps this pin and borrows its metadata, so it cannot
+    /// report a different manifest from the generation it holds alive.
     pub fn manifest_arc(&self) -> std::sync::Arc<GenerationManifest> {
         std::sync::Arc::clone(&self.manifest)
     }

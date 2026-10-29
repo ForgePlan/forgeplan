@@ -175,30 +175,29 @@ Fix: forgeplan list",
     // Log changes
     if let Some(s) = status {
         common::log_change_field(
-            &store,
+            &ws,
+            Some(&store),
             id,
             "update",
-            "status",
-            Some(&original.status),
-            Some(s),
+            ("status", Some(&original.status), Some(s)),
             "cli",
         )
         .await;
     }
     if let Some(t) = title {
         common::log_change_field(
-            &store,
+            &ws,
+            Some(&store),
             id,
             "update",
-            "title",
-            Some(&original.title),
-            Some(t),
+            ("title", Some(&original.title), Some(t)),
             "cli",
         )
         .await;
     }
     if body.is_some() {
-        common::log_change_field(&store, id, "update", "body", None, None, "cli").await;
+        common::log_change_field(&ws, Some(&store), id, "update", ("body", None, None), "cli")
+            .await;
     }
 
     println!("  Updated: {}", id);
@@ -240,9 +239,8 @@ Fix: forgeplan list",
 /// File-first `update` for constellation-migrated workspaces: no
 /// `LanceStore` exists, so the mutation edits the markdown directly
 /// (`update_metadata_file_first` / `update_body_file_first`) and one
-/// reconcile pass publishes it. Store-backed extras (changelog row,
-/// old-projection cleanup bookkeeping beyond the rename itself) are
-/// skipped — the note names the owner instead of faking them.
+/// reconcile pass publishes it. Audit events use auxiliary history; old
+/// projection cleanup bookkeeping beyond the rename itself is skipped.
 ///
 /// Same gates, ordering and output shape as the store path: resolve →
 /// nothing-to-update → status guards → metadata+rename → body → prints.
@@ -354,6 +352,32 @@ async fn run_file_first(
         }
 
         projection::update_body_file_first(&final_path, &body_content).await?;
+    }
+
+    if let Some(s) = status {
+        common::log_change_field(
+            &ws,
+            None,
+            id,
+            "update",
+            ("status", fm.get("status").and_then(|v| v.as_str()), Some(s)),
+            "cli",
+        )
+        .await;
+    }
+    if let Some(t) = title {
+        common::log_change_field(
+            &ws,
+            None,
+            id,
+            "update",
+            ("title", fm.get("title").and_then(|v| v.as_str()), Some(t)),
+            "cli",
+        )
+        .await;
+    }
+    if body.is_some() {
+        common::log_change_field(&ws, None, id, "update", ("body", None, None), "cli").await;
     }
 
     println!("  Updated: {}", id);

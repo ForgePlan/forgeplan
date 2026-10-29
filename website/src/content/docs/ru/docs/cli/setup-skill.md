@@ -3,14 +3,14 @@ title: forgeplan setup-skill
 description: "Устанавливает навык /forge в Claude Code, чтобы агенты ИИ могли управлять рабочим процессом Forgeplan"
 ---
 
-`forgeplan setup-skill` устанавливает навык `/forge` Claude Code **глобально для пользователя**, записывая один markdown-файл в `~/.claude/skills/forge/SKILL.md`. После установки Claude Code может вызывать полный рабочий процесс Forgeplan (роутинг → Shape → Validate → ADI → Code → Evidence → Activate) с помощью одной слэш-команды `/forge` в **любом** проекте, при этом все правила методологии загружаются в качестве контекста через встроенное определение навыка.
+`forgeplan setup-skill` записывает встроенные инструкции `/forge` в `~/.claude/skills/forge/SKILL.md` текущего пользователя ОС. Совместимый Claude Code может загружать их в разных проектах; одна запись файла не регистрирует MCP-сервер, не создаёт workspace и не доказывает соблюдение всех правил агентом.
 
 Файл навыка встроен непосредственно в бинарный файл `forgeplan` во время компиляции - команда **не выполняет сетевого доступа**, **не** загружает ничего с маркетплейса и **не** изменяет каталоги `.forgeplan/` или `.claude/` текущего проекта.
 
 ## Когда использовать
 
-- При первом подключении Claude Code (или другого клиента Claude Agent SDK) к Forgeplan.
-- Один раз на машину - навык является глобальным для пользователя и после этого работает во **всех** проектах.
+- Установка инструкций локальному пользователю Claude Code; другой клиент должен явно поддерживать этот путь.
+- Файл общий для проектов пользователя, но не для всех машин, аккаунтов и удалённых runtime.
 - После обновления бинарного файла Forgeplan, если встроенное определение навыка изменилось (повторно запустите, чтобы получить обновления).
 - При адаптации члена команды, у которого уже есть Claude Code, но который никогда не запускал Forgeplan локально.
 
@@ -19,7 +19,7 @@ description: "Устанавливает навык /forge в Claude Code, чт�
 - Если вы не используете Claude Code - навык специфичен для Claude Code и не влияет на использование CLI.
 - Если вы вручную настроили `~/.claude/skills/forge/SKILL.md` и не хотите его перезаписывать (команда переустановит встроенную версию).
 - В качестве замены для `forgeplan init` - это только устанавливает файл навыка, он не создает рабочее пространство.
-- Если вам нужны плагины маркетплейса (`/audit`, `/sprint`, `/fpf` и т. д.) - они устанавливаются отдельно через `/plugin install <name>@ForgePlan-marketplace` (после `/plugin marketplace add ForgePlan/marketplace`). См. [Обзор маркетплейса](/docs/marketplace/overview/).
+- Marketplace-плагины устанавливаются отдельно. См. [обзор](/ru/docs/marketplace/overview/); `setup-skill` не вызывает marketplace.
 
 ## Использование
 
@@ -43,7 +43,7 @@ forgeplan init -y
 forgeplan setup-skill
 ```
 
-Типичная последовательность начальной загрузки: создайте рабочее пространство, затем установите навык Claude Code, чтобы `/forge` был немедленно доступен в следующей сессии чата.
+Создаёт workspace и записывает файл навыка. Проверьте обнаружение в настоящем клиенте; доступность в следующем чате - поведение клиента, не handshake установщика.
 
 ### Пример 2: Обновление навыка после апгрейда
 
@@ -52,7 +52,7 @@ cargo install forgeplan  # или brew upgrade forgeplan
 forgeplan setup-skill
 ```
 
-Повторно запускает установщик, чтобы markdown навыка соответствовал новой бинарной версии. Безопасно запускать многократно - он перезаписывает `~/.claude/skills/forge/SKILL.md`.
+Переустанавливает определение из вызванного бинарника, перезаписывая файл. Перед повторением сохраните личные изменения отдельно.
 
 ### Пример 3: Проверка установки
 
@@ -70,11 +70,11 @@ ls ~/.claude/skills/forge/
 
 1. `forgeplan init -y` - создать рабочее пространство
 2. `forgeplan setup-skill` - установить интеграцию Claude Code
-3. Настроить `.forgeplan/config.yaml` - провайдер LLM + ключ API
+3. Для LLM-команд настройте провайдера: HTTP использует переменную API-ключа, явно выбранные личные локальные CLI-профили - свой существующий login.
 4. `forgeplan health` - проверка работоспособности
 5. Откройте Claude Code и вызовите `/forge` - запускается рабочий процесс, учитывающий методологию
 
-Внутри Claude Code `/forge` предоставляет агентам ИИ ту же дисциплину роутинга, валидации и доказательств, описанную в [руководстве по методологии](/docs/methodology/overview/).
+Навык передаёт инструкции из [методологии](/ru/docs/methodology/overview/). Контекстные инструкции не доказывают runtime-enforcement или прохождение гейтов.
 
 ## Заметки по безопасности
 
@@ -84,9 +84,25 @@ ls ~/.claude/skills/forge/
 
 ## См. также
 
-- [`forgeplan init`](/docs/cli/init/) - создание рабочего пространства перед установкой навыка
-- [`forgeplan health`](/docs/cli/health/) - проверка готовности сессии
-- [Обзор методологии](/docs/methodology/overview/) - что на самом деле обеспечивает навык `/forge`
-- [Конфигурация](/docs/getting-started/configuration/) - настройка провайдера LLM, необходимая для работы `/forge`
-- [Обзор маркетплейса](/docs/marketplace/overview/) - полный каталог плагинов для дополнительных навыков
-- [Плагин рабочего процесса Forgeplan](/docs/marketplace/forgeplan-workflow/) - подробности о том, что предоставляет `/forge`
+- [`forgeplan init`](/ru/docs/cli/init/) - workspace
+- [`forgeplan health`](/ru/docs/cli/health/) - состояние
+- [Методология](/ru/docs/methodology/overview/) - инструкции и гейты
+- [Конфигурация](/ru/docs/getting-started/configuration/) - LLM-провайдер
+- [Marketplace](/ru/docs/marketplace/overview/)
+- [Workflow-плагин](/ru/docs/marketplace/forgeplan-workflow/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan setup-skill --help`.
+
+```text
+Install /forge skill for Claude Code
+
+Usage: forgeplan setup-skill
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

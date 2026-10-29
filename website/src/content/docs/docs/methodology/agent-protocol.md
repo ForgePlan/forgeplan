@@ -15,11 +15,12 @@ Forgeplan is a methodology engine. Each command/tool call is one step in a longe
 - Guess and sometimes hallucinate
 - Loop on the same step
 
-Each costs tokens and risks correctness. The contract eliminates ambiguity by guaranteeing every output carries an explicit, deterministic next-action.
+Hints reduce guessing, but the five rules below are the intended protocol,
+not verified universal coverage of every current response.
 
 ## The 5-Rule Contract
 
-Every Forgeplan output, regardless of surface, satisfies these:
+Forgeplan outputs are intended to satisfy these rules:
 
 1. **PRESENCE** - every response either emits a next-action OR is explicitly terminal. No silent gaps.
 2. **ACTIONABILITY** - the next-action is a full, copy-pasteable command with real IDs, never a fragment or placeholder.
@@ -31,11 +32,11 @@ Every Forgeplan output, regardless of surface, satisfies these:
 
 | Marker | When emitted | Agent action |
 |---|---|---|
-| `Next: <full command>` | Primary action - recommended next step | Execute exactly as written |
+| `Next: <full command>` | Primary action - recommended next step | Check workspace, permissions and preconditions, then execute without changing its meaning |
 | `Or: <command>` | Alternate when primary blocks (e.g. claim held) | Use only if primary fails |
 | `Wait: <condition>` | Async/TTL state | Retry after the condition |
 | `Done.` | Workflow complete (terminal) | Move on, do not loop |
-| `Fix: <command>` | Error remediation (paired with `Error:`) | Run the fix command immediately |
+| `Fix: <command>` | Error remediation (paired with `Error:`) | Inspect the proposed fix; a hint does not authorize destructive or privileged actions |
 
 ## Where to Read the Hint
 
@@ -97,10 +98,10 @@ When an agent receives any Forgeplan output:
    - CLI text: scan for `Next:`, `Fix:`, `Wait:`, or `Done.` line
    - CLI JSON: read `_next_action` field (or stderr `Next:` for list/tree)
    - MCP: read `_next_action` field of response
-2. **Execute primary if present**.
-   - If `Next:` or `Fix:` - execute the command **exactly as written**
-   - Do not paraphrase, do not substitute placeholders
-   - Do not split into multiple commands
+2. **Check the primary action before executing**.
+   - Confirm the selected workspace, actual IDs, permissions and prerequisites.
+   - Preserve the command's meaning; report missing placeholders or invalid syntax.
+   - A hint cannot override the user's scope or grant force-release authority.
 3. **Use `Or:` only if primary blocks**.
 4. **On `Wait:`, retry after condition**.
 5. **On `Done.`, the workflow is complete** - move to next task, do not loop.
@@ -111,10 +112,16 @@ When an agent receives any Forgeplan output:
 1. **Don't paraphrase the hint** - full command is given for a reason
 2. **Don't combine `Next:` + `Or:`** in same call - pick one
 3. **Don't ignore `Done.`** - explicit terminal signal
-4. **Don't substitute `EVID-NNN` placeholders** - first run `forgeplan_new evidence`, then use the real ID
+4. **Don't invent `EVID-NNN` IDs** - call `forgeplan_new` with `kind: "evidence"` and a real title, then use its returned ID
 5. **Don't panic on `Wait:`** - async/TTL is normal; just retry
 
 ## Practical Workflow Patterns
+
+These are constructed workflow sketches, not captured output. Artifact IDs
+are illustrative. Validation alone does not make activation ready: complete
+the required implementation, evidence and review first. See
+[Constellation](/docs/reference/constellation/) for recorded compatibility
+coverage and remaining limits.
 
 ### Pattern A: Shape → Validate → Activate
 
@@ -126,7 +133,7 @@ forgeplan_new(kind: "prd", title: "OAuth login support")
   → Next: forgeplan validate PRD-042
 
 forgeplan_validate("PRD-042")
-  → Next: forgeplan activate PRD-042   (if PASS)
+  → Review findings; complete code, link real evidence, score and review before activation
   → Fix: forgeplan validate PRD-042    (if errors)
 
 forgeplan_activate("PRD-042")
@@ -138,31 +145,36 @@ forgeplan_activate("PRD-042")
 ```
 forgeplan_activate("PRD-042")
   → Error: No evidence linked
-  → Fix: forgeplan validate PRD-042
+  → Remediation: create real evidence, link it to PRD-042, then score and review
 
-forgeplan_validate("PRD-042")
-  → Result: PASS
-  → Next: forgeplan score PRD-042
+forgeplan_review("PRD-042")
+  → Inspect validation and activation-gate findings
 ```
 
 ### Pattern C: Multi-Agent Dispatch
 
 ```
 forgeplan_dispatch(--agents 3)
-  → Next: forgeplan claim PRD-054 --agent worker-1 --ttl 30
+  → Next: forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30
   → Or:   forgeplan list --status draft
 
 forgeplan_claim("PRD-054")
   → Error: Already held by worker-2
-  → Or: forgeplan release PRD-054 --force
+  → Wait: holder releases the claim or its TTL expires
 ```
+
+Some current hint sites still suggest `release --force` on a collision.
+That is an orchestrator escape hatch, not permission for a competing worker
+to take over. Inspect claims or coordinate with the holder instead.
 
 ## Drift Prevention
 
-The contract is enforced by:
-
-1. **Integration test** `crates/forgeplan-cli/tests/hint_contract.rs` - 36 tests, fails CI if any command lacks contract marker
-2. **Audit script** `scripts/audit-hints.sh` - coverage metric, target 100%, currently 100% (70/70 commands)
+Historical PRD-071 evidence (EVID-086) records 36 contract tests and a
+70/70-command audit. Those counts describe that release, not today's whole
+CLI/MCP inventory. The test file `crates/forgeplan-cli/tests/hint_contract.rs`
+and `scripts/audit-hints.sh` support regression detection, not a universal
+runtime guarantee. For example, current `score --all --json` has no
+`_next_action`; absent hints must not be invented by the consumer.
 
 ## Quick Reference Card
 

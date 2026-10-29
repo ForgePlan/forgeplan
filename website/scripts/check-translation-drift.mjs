@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Check which EN docs pages have been modified since their RU translation.
-// Reports stale RU translations that need re-translating.
+// EN/RU presence plus a filesystem-mtime heuristic, not semantic equivalence.
+// The generated changelog is intentionally EN-only.
 // Part of PRD-047 — FR-009.
 //
 // Usage: node scripts/check-translation-drift.mjs [--verbose]
@@ -33,6 +33,7 @@ function main() {
 
   for (const enFile of enFiles) {
     const rel = relative(EN_ROOT, enFile);
+    if (rel === 'changelog.md') continue;
     const ruFile = join(RU_ROOT, rel);
 
     if (!existsSync(ruFile)) {
@@ -53,10 +54,10 @@ function main() {
     }
   }
 
-  console.log(`[drift] EN files: ${enFiles.length} | RU up-to-date: ${upToDate} | stale: ${stale} | missing: ${missing}`);
+  console.log(`[drift] EN files (including changelog): ${enFiles.length} | RU mtime not older: ${upToDate} | mtime candidates: ${stale} | unexpected missing: ${missing}`);
 
   if (staleList.length > 0) {
-    console.log(`\nStale translations (EN modified after RU):`);
+    console.log(`\nReview candidates (EN mtime is newer; this does not prove semantic drift):`);
     for (const s of staleList) {
       console.log(`  ${s.rel} (${s.daysStale}d behind)`);
     }
@@ -71,11 +72,11 @@ function main() {
   }
 
   if (stale > 0 || missing > 0) {
-    console.log(`\nFix: GEMINI_API_KEY=... node scripts/translate-batch.mjs`);
+    console.log(`\nReview the listed pairs. Do not touch timestamps or batch-retranslate merely to make this heuristic green.`);
     process.exit(1);
   }
 
-  console.log(`\n[drift] All translations up-to-date.`);
+  console.log(`\n[drift] Expected RU files exist; no mtime candidates. Changelog is intentionally excluded. Semantic equivalence was not checked.`);
 }
 
 main();

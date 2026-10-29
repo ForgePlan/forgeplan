@@ -27,13 +27,13 @@ const links = isRu
     ];
 const authorLabel = isRu ? 'Автор' : 'Author';
 const tagline = isRu
-  ? 'Инженерная методология для решений, которые не протухают.'
-  : 'Engineering methodology for decisions that last.';
+  ? 'Инструменты для записи решений и их пересмотра.'
+  : 'Tools for recording and revisiting engineering decisions.';
 ---
 <footer class="blog-footer" role="contentinfo">
   <div class="blog-footer-inner">
     <div class="blog-footer-brand">
-      <a href={isRu ? '/ru' : '/'} class="blog-footer-mark">
+      <a href={isRu ? '/ru/blog' : '/'} class="blog-footer-mark">
         F<span class="blog-footer-mark-dot">●</span>RGEPLAN
       </a>
       <p class="blog-footer-tagline">{tagline}</p>

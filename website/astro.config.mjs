@@ -116,6 +116,7 @@ export default defineConfig({
       // brand+nav+toggle row → Starlight's outer <header> remains the single
       // header element on the page.
       Header: './src/components/StarlightHeaderWrapper.astro',
+      MobileMenuToggle: './src/components/DocsMobileMenuToggle.astro',
     },
     sidebar: [
       {

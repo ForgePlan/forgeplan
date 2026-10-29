@@ -21,7 +21,7 @@ Six months after release, someone on a retro asks: "Why did we pick JWT over ses
 
 You remember the discussion happened. You remember there was a long Slack thread. You remember the call was made on a Friday evening before a demo. But **why exactly JWT** - you don't remember.
 
-You open Confluence - empty. The ADR template lived in the repo, but nobody filled it in. You try to find the Slack thread - it's past the search horizon because the free plan only keeps 90 days. You watch the meeting recording - at this exact moment the lead says "let's discuss this offline," and the conversation moved into a private DM between two people, one of whom has since left the company.
+You open Confluence - empty. The ADR template lived in the repo, but nobody filled it in. You try to find the Slack thread - it's past the search horizon because the free plan exposes only the most recent 90 days of history, rather than deleting it at day 90 ([Slack's policy](https://slack.com/help/articles/27204752526611-Feature-limitations-on-the-free-version-of-Slack) distinguishes that limit from deletion after one year). You watch the meeting recording - at this exact moment the lead says "let's discuss this offline," and the conversation moved into a private DM between two people, one of whom has since left the company.
 
 So you start a fresh lap. The team sits down, spends another two hours, lands on the same decision - because the reasons back then were probably the right ones. But **there's no proof of that**. And six months from now this whole loop repeats, because **the re-made decision also wasn't documented**.
 
@@ -44,19 +44,19 @@ Free-form text tempts the author to write "after discussion we settled on JWT" -
 
 Ask yourself: how many times in the last year did your team re-open the same architectural conversation?
 
-I keep a rough calculation for teams I've worked with:
+Here is an illustrative calculation, not a survey of typical teams:
 
-- One "why did we do it this way" incident - two or three engineers × a week of review and back-and-forth = six to nine person-weeks.
-- These incidents happen two to four times a year in a typical 8-15 person team.
-- That's anywhere from twelve to thirty-six person-weeks a year **re-discussing something that was already decided**.
+- One "why did we do it this way" incident - two or three engineers × one week = two to three person-weeks.
+- Assume two to four such incidents a year in an 8–15 person team.
+- That is four to twelve person-weeks a year **re-discussing something that was already decided**.
 
-If you convert this into money for a team with a median engineer salary around $8,000/month - it's **between $25,000 and $75,000 a year**. And that's only the visible part. Invisible: a new hire spends the first two weeks asking "why is it this way," and seniors can't answer confidently. And the team a few times a year **flips a decision for no real reason** - they forgot the original rationale - and then a couple of months later reverts.
+At an assumed salary of $8,000/month, using 52 weeks per year, that is roughly **$7,400–$22,200 in salary time per year**, excluding overhead. The localized Russian example uses its own salary assumption, not a currency conversion. Invisible costs can include onboarding questions and decisions reversed because the original rationale was forgotten.
 
 This cost doesn't show up in any report. But it's real, it repeats, and it grows as the team gets larger and stays in business longer.
 
 ## A concrete example
 
-Let me tell one case, details changed.
+Let me tell one case, details changed. The provider names, region restrictions, timings, and private motivations below are illustrative substitutions, not verified claims about those vendors or a current tax-service comparison. Stripe's actual [Tax documentation](https://docs.stripe.com/tax) describes calculation, registration, and filing options; responsibilities depend on the chosen service and jurisdiction.
 
 A B2B fintech team picked Stripe as their payment provider two years ago. The decision was made fast - they had to launch a paid plan by quarter start. Discussed it in chat, picked, started integrating. The decision was written into an ADR file in the repo, but the "alternatives considered" section was left empty: "we'll fill it in later."
 
@@ -74,7 +74,7 @@ I thought about it for a long time - what's the minimum structure that prevents 
 
 **Context**. One or two paragraphs: the situation at decision time, the constraints, the requirements. Without this, a year later it's impossible to tell whether the decision still applies to the new situation.
 
-**Alternatives considered**. At least three. Not "JWT vs sessions" but "JWT with refresh-token rotation, classic sessions backed by Redis, delegating to an external OAuth provider." Three is the empirical threshold below which a choice almost always turns out to be false: you either picked from two obvious paths and didn't consider a third, or you didn't really choose - you just walked into the first version.
+**Alternatives considered**. Aim for at least three meaningful options. Not "JWT vs sessions" but "JWT with refresh-token rotation, classic sessions backed by Redis, delegating to an external OAuth provider." Three is a review heuristic, not an empirically established threshold: two genuine alternatives can suffice, and a third token option does not improve a decision.
 
 **Evidence**. What you relied on to make the call. Not "discussed and decided" but specific references: "our own benchmark on our data showed these numbers," "vendor documentation says this," "a colleague's experience on a similar project." Each piece of evidence - annotated with how strong it is (your own measurement on your project is stronger than a third-party blog post).
 
@@ -104,7 +104,7 @@ One separate question: can we get an AI agent to write the DDR for us?
 
 Partially - yes. An agent (Claude Code, Cursor, any coding assistant) is good at the first draft: it pulls context from a Slack thread or a pull-request conversation, lists alternatives, suggests reopen conditions. In a minute it does what would take a human 15-20.
 
-But the final judgement - especially the "rejected alternatives with reason" section - is worth keeping for yourself. The agent doesn't know that you rejected Lemon Squeezy not for functionality reasons, but because that vendor's CEO recently had a public falling-out with one of your investors. That reason will never appear in public documentation, never surface in a Slack thread - but it is the actual motivation. Only a human can record that.
+But the final judgement - especially the "rejected alternatives with reason" section - is worth keeping with someone who knows the context. For example, an undisclosed conflict of interest might affect a vendor choice. An agent cannot infer a private motivation from public documentation; a person with that knowledge must supply it. This is not an allegation about any named vendor.
 
 Baseline rule: the agent is the draft, the human is the substance. If AI writes 100% of your DDR - you don't have a DDR, you have a polished evasion. If 0% - you're burning that one week per year on formalities you could have automated.
 

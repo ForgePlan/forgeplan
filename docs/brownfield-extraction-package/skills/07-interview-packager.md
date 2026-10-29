@@ -2,6 +2,8 @@
 
 > Clusters parked hypotheses and open questions into structured Domain Owner interview packets.
 
+> Proposed skill design, not behavior of core interview tools. Current `forgeplan_interview_packet_draft` and `forgeplan_interview_packet_ingest` return `not_implemented`; they do not generate packets, parse answers or promote hypotheses. The plugin hint is not evidence that a working plugin is installed. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Why this skill exists
 
 Some hypotheses can only be verified by a human Domain Owner. Without a structured interview process, questions accumulate and never get answered. This skill turns the "parking lot" into actionable conversations.
@@ -177,7 +179,7 @@ See `references/draft-packet-prompt.md`.
 
 ## Example
 
-See a sample packet in `examples/interview-packet-orders-sample.md` (to be produced by the implementation).
+See the existing [illustrative interview packet](../examples/interview-packet-orders-sample.md), not an output produced by the current core stub.
 
 ## Testing
 

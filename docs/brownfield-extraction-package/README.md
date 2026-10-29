@@ -1,6 +1,20 @@
 # Brownfield Business Logic Extraction Package
 
-> **Purpose**: Complete design package for extending **forgeplan** with a reverse-engineering workflow that produces **standalone business documentation** from any brownfield codebase. Output is RAG-ready, rewrite-ready, and interview-ready.
+> **Purpose**: Design package for a reverse-engineering workflow intended to produce **standalone business documentation**. RAG-ready, rewrite-ready and interview-ready output are design goals, not verified results of this package.
+
+## Implementation status (2026-10-23)
+
+This directory preserves the original extraction design, example data, templates and prospective task/verification lists. It is **not the current CLI/MCP reference**. Checked headings, sample `PASS` fields, dates, percentages and fixture descriptions are not evidence that those checks ran.
+
+The reviewed target is `c852f40c` (`0.39.0+constellation.s1.1`). It registers all six brownfield kinds, native source/verification-plan validation, hypothesis promotion, and limited coverage/contradiction/orphan reports. Its schemas differ from the richer frontmatter, semantic relations and state machines proposed here. Native templates/validators remain authoritative; package templates are authoring proposals, not drop-in runtime defaults.
+
+Registration and creation interfaces differ: the captured `forgeplan_new`/`forgeplan_generate` MCP enums and `new` help still list ten older kinds. Do not infer acceptance of all six brownfield kinds on every surface from the core kind registry.
+
+`forgeplan discover start` creates a discovery session and prints a seven-phase protocol; an **agent** must inspect code and report findings. It does not automatically run this twelve-skill design. The core interview draft/ingest tools are explicitly experimental stubs returning `status: not_implemented`; they do not generate packets, ingest answers, promote hypotheses or launch discovery. Their plugin hint is not proof of plugin availability or installation. Canonical rendering, RAG export and reproducibility-check tools proposed here are absent from the captured full catalog.
+
+See [the current/proposed surface comparison](04-FORGEPLAN-EXTENSIONS.md#current-implementation-versus-this-proposal). Authorities are the exact target CLI help/full MCP catalog and `crates/forgeplan-core/src/{artifact/types.rs,validation/rules.rs,hypothesis.rs,brownfield.rs}` plus `crates/forgeplan-mcp/src/server.rs`.
+
+TripSales excerpts and dated run/coverage claims are historical or illustrative; their original source revision and execution receipts are not shipped here. Missing IDs denote examples from that external graph, not artifacts in this repository. The autoresearch baseline is likewise unversioned here. Nothing in this package changes or waives native G1/G2/G3 gates.
 
 ## Target audience
 
@@ -60,7 +74,7 @@ brownfield-extraction-package/
 │   ├── hypothesis.md
 │   └── domain-model.md
 │
-├── templates/                     ← ready-to-use templates for each new kind
+├── templates/                     ← proposed authoring templates, not runtime defaults
 │   ├── glossary.template.md
 │   ├── use-case.template.md
 │   ├── invariant.template.md
@@ -80,7 +94,9 @@ brownfield-extraction-package/
 └── examples/
     ├── tripsales-glossary-sample.md
     ├── tripsales-use-case-sample.md
-    └── tripsales-scenario-sample.md
+    ├── tripsales-scenario-sample.md
+    ├── tripsales-canonical-orders-sample.md
+    └── interview-packet-orders-sample.md
 ```
 
 ## Reading order (for the forgeplan agent)
@@ -97,7 +113,7 @@ brownfield-extraction-package/
 1. **Factum ≠ Intent** (see `02-METHODOLOGY.md`). Documents MUST separate what code does from why it exists.
 2. **Every assertion has a confidence score** (`verified | inferred | speculation`).
 3. **Hypotheses are first-class artifacts** with their own lifecycle.
-4. **Domain Owner is a resource, not a blocker** — unresolved hypotheses auto-generate interview packets.
+4. **Domain Owner is a resource, not a blocker** — the proposed workflow packages unresolved hypotheses for interviews; core interview stubs do not do this automatically.
 5. **Output is self-contained** — no dangling file:line refs in final docs.
 6. **Outputs are RAG-ready** — stable ids, markdown chunks, embeddings-compatible metadata.
 

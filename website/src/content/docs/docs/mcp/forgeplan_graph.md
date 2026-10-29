@@ -3,7 +3,7 @@ title: forgeplan_graph
 description: "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges."
 ---
 
-Generate a Mermaid `graph TD` of all linked artifacts in the workspace. Includes explicit typed links (`based_on`, `refines`, `supersedes`, `contradicts`, `informs`) plus implicit `belongs_to` edges from the `parent_epic` frontmatter field.
+Generate a Mermaid `graph LR` of linked artifacts in the workspace. Includes explicit typed links plus implicit `belongs_to` edges from each child to its `parent_epic`.
 
 **Category**: Dashboards & Graph
 
@@ -14,26 +14,26 @@ Generate a Mermaid `graph TD` of all linked artifacts in the workspace. Includes
 - **Documentation generation** - embed the diagram in a README or website page.
 - **Review prep** - eyeball cycles or missing edges before a release.
 
-The output is raw Mermaid markdown - render it in any Markdown viewer that supports Mermaid (GitHub, Starlight, VS Code preview, etc.).
+The JSON response's `mermaid` field contains Mermaid source. Render that string with a Mermaid-capable viewer; the response itself is not raw Markdown.
 
 ## Input parameters
 
-_No input parameters. Call this tool with an empty object `{}`._
+Call with `{}` for the default graph, or supply optional nullable `brownfield_only` and `workspace` as described in the registered schema below.
 
 ## Returns
 
+Illustrative response excerpt for an empty graph. The handler does not return `node_count` or `edge_count`.
+
 ```json
 {
-  "mermaid": "graph TD\n  EPIC-003[EPIC-003] --> PRD-035[PRD-035]\n  EPIC-003 --> PRD-039[PRD-039]\n  PRD-039 --> RFC-006[RFC-006]\n  RFC-006 --> ADR-004[ADR-004]\n  EVID-052[EVID-052] -.informs.-> PRD-039\n",
-  "node_count": 184,
-  "edge_count": 312
+  "mermaid": "graph LR\n    %% No links found between artifacts\n"
 }
 ```
 
-Edge styles:
-- Solid (`-->`) - structural (`based_on`, `refines`, `parent_epic`).
-- Dashed (`-.->`) - informational (`informs`, `weakens`, `supports`).
-- Red (`==>`) - `contradicts`.
+Edge styles in the renderer:
+- `references` uses a dashed arrow.
+- `belongs_to` uses an unlabelled solid arrow; other named relations, including `informs` and `contradicts`, use labelled solid arrows.
+- `covers` has a blue stroke; `triangulates` takes the hypothesis-state colour. `contradicts` does not automatically use a red `==>` arrow.
 
 ## Example invocation
 
@@ -60,3 +60,50 @@ forgeplan graph
 - [`forgeplan_blocked`](/docs/mcp/forgeplan_blocked/) - artifacts blocked by dependencies.
 - [`forgeplan_link`](/docs/mcp/forgeplan_link/) - add a new edge.
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges. Issue #287 Phase F: pass `brownfield_only: true` to filter to UC/GLOS/INV/SCEN/HYP/DM edges only.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `brownfield_only` | no | boolean \| null | Filter edges to brownfield kinds (UC / GLOS / INV / SCEN / HYP /<br>DM) only. Defaults to false (show all edges including pipeline). |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Issue #287 Phase F (W4): optional filter for the `forgeplan_graph`\nMCP tool. When `brownfield_only` is `true`, the rendered mermaid\ngraph drops edges whose endpoints aren't both brownfield kinds\n(UC/GLOS/INV/SCEN/HYP/DM). Pipeline-only callers (no params, or\n`brownfield_only: false`) get the legacy full-graph rendering.\n\nDefault value is `false`; zero-arg callers (existing JSON-RPC\nclients that pass `{}`) stay valid via `#[serde(default)]`.",
+  "properties": {
+    "brownfield_only": {
+      "default": null,
+      "description": "Filter edges to brownfield kinds (UC / GLOS / INV / SCEN / HYP /\nDM) only. Defaults to false (show all edges including pipeline).",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "GraphParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

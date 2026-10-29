@@ -1,5 +1,21 @@
 # Forgeplan — Brownfield × Orchestrator Pivot — Handoff Guide (2026-04-21)
 
+> Историческая передача состояния апреля 2026 года, не текущий CLI reference.
+> Команды и ограничения с тех пор изменились; например, прямой
+> `update --status active` больше не является способом обхода activation gates.
+> Для действующего интерфейса смотрите [сайт](https://forgeplan.dev/docs/cli/) и
+> [текущий contributor guide](../methodology/FORGEPLAN-GUIDE.md).
+>
+> Уточнение терминов (2026-10-23): глоссарий ниже сохраняет тогдашние трактовки,
+> не задаёт актуальный стандарт. Расшифровка BMAD «Backfill-Mate-Add-Deliver»
+> ошибочна и не подтверждена upstream. В проверенном BMAD revision
+> `d1163f85e1e45840061496531f4bc25bc7639d8c` фазы — optional Analysis,
+> Planning, Solutioning, Implementation; 13 validation steps — не 13 обязательных
+> секций PRD. ADI — Abduction–Deduction–Induction. DDR здесь — локальная
+> convention, не отдельный artifact kind. Исторические pins, outcomes,
+> предложенные политики и оценки экономии ниже сохранены; они не являются
+> обновлённым измерением, реализованной гарантией или допуском к source.
+
 > **Цель этого документа** — дать следующему агенту (или тебе самому в новом чате)
 > полный контекст длинной сессии 2026-04-19…04-21, в которой мы:
 > (1) закрыли scan-import brownfield bugs, (2) провели adversarial audit shape-артефактов,

@@ -8,7 +8,6 @@
 use console::style;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::phase;
-use forgeplan_core::workspace;
 
 use crate::commands::common;
 
@@ -19,20 +18,18 @@ use crate::commands::common;
 /// `current_phase: unknown` -- never an error. Phase tracking is advisory
 /// and never blocks other tools.
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let (ws, source) = common::open_read_source().await?;
 
     // Phase 2.5 (PROB-060) — accept slug or display id form. If the artifact
     // exists, resolve to canonical id so state file lookup works for slug
     // input (closes silent "unknown" false-positive). If the artifact does
     // NOT exist, fall back to raw id: PRD-056 advisory contract requires
     // `phase` to work on raw IDs and never error on missing artifacts.
-    let store = common::store().await?;
-    let canonical = store
-        .resolve_id(id)
-        .await?
-        .unwrap_or_else(|| id.to_string());
+    let canonical = match &source {
+        common::ReadSource::Legacy(store) => store.resolve_id(id).await?,
+        common::ReadSource::Captured(read) => read.resolve_id(id),
+    }
+    .unwrap_or_else(|| id.to_string());
 
     match phase::store::read_phase(&ws, &canonical).await? {
         Some(state) => print_state(&state, json),

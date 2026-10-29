@@ -1,9 +1,9 @@
 ---
 title: forgeplan_delete
-description: "Удаляет артефакт из LanceDB и удаляет его файл проекции markdown."
+description: "Мягко удаляет артефакт с записью восстановления и переносит Markdown-проекцию в trash."
 ---
 
-Навсегда удаляет артефакт из рабочего пространства - как запись в LanceDB, так и файл markdown на диске. Это деструктивная и невосстановимая операция (без резервной копии экспорта), поэтому агентам следует настоятельно предпочитать переходы жизненного цикла (`supersede`, `deprecate`) удалению. Вызывайте `forgeplan_delete` только тогда, когда пользователь явно просит удалить опечатку, тестовый артефакт или дубликат.
+Мягко удаляет артефакт из рабочего пространства. Сервер сохраняет запись восстановления и переносит канонический Markdown в `.forgeplan/trash/`; производную строку удаляет только при legacy-владельце индекса. Восстановление через `forgeplan_undo_last` или `forgeplan_restore` зависит от доступности записи, срока действия и проверок коллизий. Для вывода решений из эксплуатации предпочитайте `supersede` или `deprecate`. Вызывайте `forgeplan_delete` только по явной просьбе пользователя удалить опечатку, тестовый артефакт или дубликат.
 
 **Категория**: Редактирование артефактов
 
@@ -25,15 +25,16 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::DeleteParams`
 
 ## Возвращает
 
-Объект подтверждения с удалённым ID и путём файла markdown, который был отвязан. Если артефакт имел входящие ссылки от других артефактов, сервер MCP может отклонить удаление и вернуть ошибку со списком зависимых элементов, чтобы агент мог сначала их разрешить.
+Ответ содержит ID артефакта и записи восстановления. Обработчик сохраняет связи для восстановления, но не реализует ранее описанный отказ из-за входящих зависимостей. В migrated workspace проверяйте поля согласования индекса, например `index_pending`, отдельно от канонического удаления.
 
-Пример структуры ответа:
+Учебный фрагмент ответа:
 
 ```json
 {
-  "ok": true,
-  "deleted": "NOTE-099",
-  "removed_path": ".forgeplan/notes/note-099-test.md"
+  "id": "NOTE-099",
+  "title": "Тестовая заметка",
+  "message": "Soft-deleted — recoverable via forgeplan_undo_last",
+  "receipt_id": "illustrative-receipt-id"
 }
 ```
 
@@ -65,3 +66,48 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::DeleteParams`
 - [`forgeplan_deprecate`](/ru/docs/mcp/forgeplan_deprecate/) - обратимый вывод из эксплуатации
 - [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) - замена с сохранением истории
 - [`forgeplan_export`](/ru/docs/mcp/forgeplan_export/) - резервное копирование перед деструктивными операциями
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Delete an artifact: writes a soft-delete receipt, moves its markdown projection into `.forgeplan/trash/`, and drops the legacy projection row on workspaces whose index the legacy store still owns.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `id` | да | string | Artifact ID to delete |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "Artifact ID to delete",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "DeleteParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

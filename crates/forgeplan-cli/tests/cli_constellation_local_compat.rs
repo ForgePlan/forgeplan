@@ -51,11 +51,7 @@ fn ws_of(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".forgeplan")
 }
 
-fn artifact(
-    root: &std::path::Path,
-    rel: &str,
-    body: &str,
-) -> std::path::PathBuf {
+fn artifact(root: &std::path::Path, rel: &str, body: &str) -> std::path::PathBuf {
     let path = ws_of(root).join(rel);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, body).unwrap();
@@ -79,8 +75,12 @@ fn run_ok(root: &std::path::Path, args: &[&str]) -> String {
 
 fn run_json(root: &std::path::Path, args: &[&str]) -> serde_json::Value {
     let stdout = run_ok(root, args);
-    serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("`forgeplan {}` did not emit JSON ({e}): {stdout}", args.join(" ")))
+    serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "`forgeplan {}` did not emit JSON ({e}): {stdout}",
+            args.join(" ")
+        )
+    })
 }
 
 /// The tables under `.forgeplan/lance` as they stand right now.
@@ -355,7 +355,7 @@ fn journal_lists_the_linked_decision_after_index() {
     seed_decision_artifacts(migrated.path());
     let baseline = lance_tables(migrated.path());
 
-    let stdout = run_ok(&migrated.path(), &["journal"]);
+    let stdout = run_ok(migrated.path(), &["journal"]);
     assert!(
         stdout.contains("ADR-030"),
         "a linked ADR must appear in the journal, got: {stdout}"
@@ -364,7 +364,7 @@ fn journal_lists_the_linked_decision_after_index() {
         !stdout.contains("RFC-002"),
         "an RFC is not a journal decision kind, got: {stdout}"
     );
-    assert_no_retired_tables_added(&migrated.path(), &baseline);
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 }
 
 #[test]
@@ -373,12 +373,18 @@ fn journal_kind_filter_matches_the_same_records_after_index() {
     seed_decision_artifacts(migrated.path());
 
     // The flag is `--type`; an ADR filter returns the ADR and not the note.
-    let adr = run_ok(&migrated.path(), &["journal", "--type", "adr"]);
+    let adr = run_ok(migrated.path(), &["journal", "--type", "adr"]);
     assert!(adr.contains("ADR-030"), "got: {adr}");
-    assert!(!adr.contains("NOTE-031"), "--type adr returned a note: {adr}");
-    let note = run_ok(&migrated.path(), &["journal", "--type", "note"]);
+    assert!(
+        !adr.contains("NOTE-031"),
+        "--type adr returned a note: {adr}"
+    );
+    let note = run_ok(migrated.path(), &["journal", "--type", "note"]);
     assert!(note.contains("NOTE-031"), "got: {note}");
-    assert!(!note.contains("ADR-030"), "--type note returned an ADR: {note}");
+    assert!(
+        !note.contains("ADR-030"),
+        "--type note returned an ADR: {note}"
+    );
 }
 
 #[test]
@@ -387,12 +393,12 @@ fn blindspots_sees_the_orphan_after_index() {
     seed_artifacts(migrated.path());
     let baseline = lance_tables(migrated.path());
 
-    let stdout = run_ok(&migrated.path(), &["blindspots"]);
+    let stdout = run_ok(migrated.path(), &["blindspots"]);
     assert!(
         stdout.contains("RFC-002"),
         "the unlinked RFC must be reported as an orphan, got: {stdout}"
     );
-    assert_no_retired_tables_added(&migrated.path(), &baseline);
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 }
 
 #[test]
@@ -422,12 +428,9 @@ fn drift_runs_after_index_and_reports_the_decision_it_checked() {
     );
 
     let baseline = lance_tables(migrated.path());
-    let payload = run_json(&migrated.path(), &["drift", "--json"]);
+    let payload = run_json(migrated.path(), &["drift", "--json"]);
     let reports = payload["reports"].as_array().expect("reports array");
-    let ids: Vec<&str> = reports
-        .iter()
-        .filter_map(|r| r["id"].as_str())
-        .collect();
+    let ids: Vec<&str> = reports.iter().filter_map(|r| r["id"].as_str()).collect();
     assert!(
         ids.contains(&"ADR-010"),
         "an active ADR with an Affected Files section must be drift-checked, got {payload}"
@@ -441,7 +444,7 @@ fn drift_runs_after_index_and_reports_the_decision_it_checked() {
             .is_some(),
         "the report must state staleness explicitly, got {payload}"
     );
-    assert_no_retired_tables_added(&migrated.path(), &baseline);
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 }
 
 #[test]
@@ -449,7 +452,7 @@ fn anomalies_run_after_index_and_detect_the_same_thing_as_before_index() {
     // The comparison is against the LEGACY workspace, not a hard-coded count:
     // what matters is that the migrated layout computes the same detection.
     let legacy = init_legacy();
-let migrated = init_migrated();
+    let migrated = init_migrated();
     for root in [legacy.path(), migrated.path()] {
         seed_artifacts_with_dangling_link(root);
     }
@@ -469,7 +472,14 @@ let migrated = init_migrated();
     if !ws_of(legacy.path()).join("lance/CURRENT.json").exists() {
         run_ok(
             legacy.path(),
-            &["link", "RFC-002", "PRD-404", "--relation", "refines", "--replace"],
+            &[
+                "link",
+                "RFC-002",
+                "PRD-404",
+                "--relation",
+                "refines",
+                "--replace",
+            ],
         );
     }
 
@@ -502,7 +512,7 @@ let migrated = init_migrated();
         kinds(&after).iter().any(|k| k == "orphan_link"),
         "a relation to PRD-404, which does not exist, must be detected, got {after}"
     );
-    assert_no_retired_tables_added(&migrated.path(), &baseline);
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 }
 
 #[test]
@@ -514,8 +524,8 @@ fn status_counts_the_same_artifacts_after_index() {
     }
 
     let baseline = lance_tables(migrated.path());
-    let before = run_ok(&legacy.path(), &["status"]);
-    let after = run_ok(&migrated.path(), &["status"]);
+    let before = run_ok(legacy.path(), &["status"]);
+    let after = run_ok(migrated.path(), &["status"]);
 
     let count = |s: &str| -> String {
         s.lines()
@@ -526,7 +536,7 @@ fn status_counts_the_same_artifacts_after_index() {
     };
     assert_eq!(count(&after), count(&before));
     assert!(after.contains("prd"), "by-kind breakdown missing: {after}");
-    assert_no_retired_tables_added(&migrated.path(), &baseline);
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 }
 
 #[test]
@@ -616,7 +626,10 @@ fn index_prints_the_real_sections_version_and_never_a_placeholder() {
     );
 
     // The verification line, when present, carries a version too.
-    if let Some(verified) = stdout.lines().find(|l| l.trim_start().starts_with("verified:")) {
+    if let Some(verified) = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("verified:"))
+    {
         assert!(
             !verified.contains("sections v-"),
             "the verification line must not report an absent sections version: {verified}"
@@ -632,8 +645,11 @@ fn a_corrupt_current_pointer_is_an_error_not_an_empty_report() {
     seed_artifacts(migrated.path());
 
     // Corrupt the published pointer, not the workspace.
-    std::fs::write(ws_of(migrated.path()).join("lance/CURRENT.json"), "{ not json")
-        .unwrap();
+    std::fs::write(
+        ws_of(migrated.path()).join("lance/CURRENT.json"),
+        "{ not json",
+    )
+    .unwrap();
 
     for cmd in [
         vec!["health", "--json"],
@@ -760,7 +776,7 @@ fn scan_import_dry_run_changes_nothing_on_a_migrated_workspace() {
         original,
         "dry-run rewrote its input"
     );
-    assert_no_retired_tables_added(&migrated.path(), &baseline);
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 }
 
 #[test]
@@ -802,7 +818,7 @@ fn scan_import_apply_then_repeat_is_idempotent_and_preserves_the_document() {
     assert!(content.contains("Use the capture."), "body lost: {content}");
 
     // The imported artifact is visible to the ordinary readers.
-    let health = run_json(&migrated.path(), &["health", "--json"]);
+    let health = run_json(migrated.path(), &["health", "--json"]);
     assert_eq!(
         health["total"].as_u64(),
         Some(4),
@@ -810,7 +826,7 @@ fn scan_import_apply_then_repeat_is_idempotent_and_preserves_the_document() {
     );
 
     // Repeat: nothing changes on either side.
-    let second = run_ok(&migrated.path(), &["scan-import"]);
+    let second = run_ok(migrated.path(), &["scan-import"]);
     assert!(
         second.contains("0 imported") && second.contains("1 skipped"),
         "a repeat run must skip, got: {second}"
@@ -825,7 +841,7 @@ fn scan_import_apply_then_repeat_is_idempotent_and_preserves_the_document() {
         original,
         "the repeat run touched the external source"
     );
-    assert_no_retired_tables_added(&migrated.path(), &baseline);
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 }
 
 #[test]
@@ -860,5 +876,5 @@ fn init_scan_imports_on_a_migrated_workspace_without_retired_tables() {
             .any(|n| n.starts_with("PROB-070-")),
         "init --scan must actually import the document, got {problems:?}"
     );
-    assert_no_retired_tables_added(&migrated.path(), &baseline);
+    assert_no_retired_tables_added(migrated.path(), &baseline);
 }

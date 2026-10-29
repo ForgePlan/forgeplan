@@ -1,82 +1,69 @@
 ---
 title: forgeplan watch
-description: "Watch .forgeplan/ files and sync changes to LanceDB in real time"
+description: "Watch canonical files and maintain the owning derived index."
 ---
 
-Start a file-watcher daemon that observes `.forgeplan/**/*.md` and re-indexes
-any artifact that changes on disk. Ideal for interactive sessions where you
-flip between a markdown editor and the CLI - edits become searchable
-immediately without manual `reindex` calls.
+Watch canonical Markdown and update the derived index after change batches.
+For the local `0.39.0+constellation.s1.1` build, a migrated workspace requires
+`forgeplan watch --constellation`; plain `watch` refuses there.
 
 ## Usage
 
 ```text
-forgeplan watch
+forgeplan watch [OPTIONS]
 ```
 
 ## Options
 
 ```text
+      --constellation  Run Constellation maintenance after change batches
   -h, --help     Print help
   -V, --version  Print version
 ```
 
 ## How it works
 
-1. Opens a recursive filesystem watcher rooted at `.forgeplan/`.
-2. On every `CREATE`/`MODIFY`/`DELETE` event for a `.md` file under
-   tracked artifact directories, schedules a debounced re-parse.
-3. Re-parses the changed file, updates LanceDB in place, re-computes
-   derived fields (tags, links, scoring).
-4. Logs each sync event to stdout so you can see what was picked up.
-5. Runs until you send `Ctrl-C` (SIGINT) - then exits cleanly.
+The watcher batches filesystem changes before reconciling derived state.
+In Constellation mode it publishes index maintenance results rather than
+using the legacy sync path for a migrated workspace. Reads can observe fresh
+canonical files even before a new generation is persisted.
 
-Debouncing coalesces rapid-fire events (e.g. an editor writing a temp file
-then renaming over the target), so one save = one index update.
+The captured help's “alongside the legacy sync” description is not the migrated path: there the legacy store is absent and skipped. No retired artifact tables are recreated.
+
+Watching does not by itself configure embeddings. Automatic queue draining
+requires explicit `embedding:` configuration, a semantic-search build,
+`bge-m3`, and its complete cached snapshot. A manual `embed` does not save
+that configuration. See [Constellation setup](/docs/guides/constellation/).
 
 ## When to use it
 
-- **Interactive writing sessions** - you're drafting a PRD in VS Code and
-  want `forgeplan list` / `forgeplan search` to reflect each save.
-- **Pair work with AI agents** - agent edits markdown, watcher pushes into
-  LanceDB, next `search` call sees the update without a round-trip reindex.
-- **Bulk reorganization** - moving/renaming artifacts in a file manager and
-  wanting the index to track along.
+- **Interactive writing** - maintain the owning index after save batches; migrated reads can see canonical changes before publication.
+- **AI-assisted editing** - let maintenance reconcile canonical changes rather than assuming every save immediately persists a new generation.
+- **Reorganization** - Constellation reconciliation tracks the canonical view. The legacy deleted-file path only warns; it does not automatically remove deleted artifact rows.
 
 ## When NOT to use it
 
-- **Batch imports** - prefer `reindex` or `scan-import` for one-shot ingestion.
-- **CI / scripted workflows** - one-shot `reindex` is simpler and deterministic.
-- **Post-`git pull`** - use [`git-sync`](/docs/cli/git-sync/), which knows
-  exactly what changed from the git diff.
+- **One-shot rebuilds** - prefer [`index`](/docs/cli/index-command/) for Constellation; use legacy [`reindex`](/docs/cli/reindex/) where applicable. `scan-import` imports documents, not routine index recovery.
+- **CI / scripted workflows** - a one-shot rebuild avoids a long-running watcher.
 
 ## Example
 
+Illustrative commands, not a captured runtime transcript:
+
 ```bash
-# Start the watcher in one terminal
-$ forgeplan watch
-[watch] observing .forgeplan/ (Ctrl-C to stop)
-[watch] synced prds/prd-001-auth.md (1 artifact)
-[watch] synced evidence/evid-042-benchmark.md (1 artifact)
+# Terminal 1, migrated workspace
+forgeplan watch --constellation
 
-# In another terminal, edit and save - the daemon picks it up
-$ vim .forgeplan/prds/prd-001-auth.md
-$ forgeplan search "auth"   # sees the new content immediately
+# Terminal 2, after saving an artifact
+forgeplan search "auth" --keyword
 ```
 
-Stop with `Ctrl-C`:
-
-```text
-^C
-[watch] shutting down, flushing pending syncs
-```
+Stop the watcher with `Ctrl-C`.
 
 ## Alternatives
 
-- **Manual** - run [`forgeplan reindex`](/docs/cli/reindex/) after a batch of
-  edits. Simpler if you only save occasionally.
-- **Post-pull** - [`forgeplan git-sync`](/docs/cli/git-sync/) diffs against
-  `ORIG_HEAD` and only re-indexes files the merge/pull actually touched.
+- **Manual** - use [`index`](/docs/cli/index-command/) for Constellation after edit batches.
+- **Full MCP host** - [`serve --auto-index`](/docs/cli/serve/) can maintain its configured workspace with the appropriate build, embedding configuration and cached model; a read-only profile is not a maintenance host.
 
 ## Limitations
 
@@ -92,3 +79,20 @@ Stop with `Ctrl-C`:
 - [`forgeplan reindex`](/docs/cli/reindex/) - one-shot manual rebuild
 - [`forgeplan git-sync`](/docs/cli/git-sync/) - incremental sync after git pull
 - [`forgeplan serve`](/docs/cli/serve/) - MCP server for AI agents
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan watch --help`.
+
+```text
+Watch .forgeplan/ files and sync changes to LanceDB in real time
+
+Usage: forgeplan watch [OPTIONS]
+
+Options:
+      --constellation  Also run a Constellation maintenance pass after each change batch: the corrected 0A/0B index stays fresh alongside the legacy sync
+  -h, --help           Print help
+  -V, --version        Print version
+```
+<!-- forgeplan-runtime:end -->

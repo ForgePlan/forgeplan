@@ -8,7 +8,6 @@
 use console::style;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::phase::{self, Phase};
-use forgeplan_core::workspace;
 
 use crate::commands::common;
 
@@ -59,19 +58,20 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
         anyhow::bail!("reason too long: {} bytes (max: 4096)", r.len());
     }
 
-    let cwd = std::env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    // Serialize the phase store's read-modify-write without opening an
+    // artifact index merely to find the workspace.
+    let (ws, _lock) = common::open_workspace_locked().await?;
+    let (_, source) = common::open_read_source().await?;
 
-    // Phase 2.5 (PROB-060) — accept slug или display id form. Phase state
+    // Phase 2.5 (PROB-060) — accept slug or display id form. Phase state
     // file named by canonical id; without resolver slug input creates
     // a NEW state file at .forgeplan/state/<slug>.yaml instead of updating
     // existing canonical one — silent state divergence.
-    let store = common::store().await?;
-    let canonical = store
-        .resolve_id(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found"))?;
+    let canonical = match &source {
+        common::ReadSource::Legacy(store) => store.resolve_id(id).await?,
+        common::ReadSource::Captured(read) => read.resolve_id(id),
+    }
+    .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found"))?;
 
     let target: Phase = to.into();
     let state =

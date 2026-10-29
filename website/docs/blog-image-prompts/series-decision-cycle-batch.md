@@ -6,13 +6,21 @@
 
 После генерации ассеты кладём в `website/public/blog-covers/<slug>.webp` и обновляем frontmatter post-а: `cover: '/blog-covers/<slug>.webp'`.
 
+**Статус брифа**: исторические предложения от 2026-05-23, не журнал
+выполненной генерации или CLI-сеанса. Числа задержек, проценты, статусы,
+ID проектов и даты внутри макетов — иллюстрации, если рядом не указан
+проверяемый первичный замер. На самой картинке с такими данными нужна подпись
+«Illustrative example» / «Учебный пример». Вывод терминала не копировать как
+дословный вывод текущего бинарника. Варианты с текстом выпускать отдельно
+для EN и RU; русские подписи ниже не подходят для общей EN/RU-обложки.
+
 ---
 
 ## Пост 2 · «Перед тем как чинить — выпишите три версии» (ADI)
 
 **Slug**: `before-fixing-write-three-versions` (примерный, согласовать)
 **Guide reference**: `/guides/decision-cycle`
-**Концепция**: следователь не фиксируется на первой версии. ADI = три гипотезы → проверяемые следствия → проверка.
+**Концепция**: ADI = Abduction–Deduction–Induction. Три гипотезы — локальный учебный приём против фиксации на первой версии, не универсальное upstream-требование и не измеренная гарантия.
 
 ### Cover (Шаблон B — concept illustration)
 
@@ -79,7 +87,7 @@ No watermarks. Photorealistic terminal, no shadows on text.
 
 **Slug**: `averages-lie-trust-calculus`
 **Guide reference**: `/guides/trust-calculus` (3D scene) + `/guides/spec-cycle`
-**Концепция**: WLNK > average. Whitepaper F7G8R2 vs slack-замер F4G8R7 — среднее одинаковое, но weakest-link разный.
+**Концепция**: локальная учебная шкала WLNK, не формула текущего FPF или ForgePlan FGR/R_eff. Для F7G8R2 среднее 17/3 ≈ 5.7, минимум 2; для F4G8R7 среднее 19/3 ≈ 6.3, минимум 4. Средние не одинаковы; минимум показывает другой аспект вымышленных оценок. Числа на порядковой шкале не являются вероятностью или измеренным доверием.
 
 ### Cover (Шаблон D — split-screen / comparison card)
 
@@ -107,7 +115,7 @@ Below: "AVG = 6.3" gray. Then green line: "WLNK = 4 → still risky,
 no proper rigour, but actionable."
 
 Bottom of frame, in 11px mono uppercase orange tracking 0.18em:
-"AVERAGES DON'T DIFFERENTIATE · MINIMUMS DO"
+"ILLUSTRATIVE RUBRIC · AVERAGE ≠ WEAKEST LINK"
 
 Style: editorial poster, flat 1px line drawing, no 3D. Aspect 16:9.
 
@@ -119,8 +127,8 @@ eyebrows and the bottom line text.
 ### Inline (Шаблон G — готовый ассет из guide)
 
 ```
-Use existing screenshot: /public/guides-raw/trust-calculus.html
-3D-scene (capture the F/G/R cube with 7 hypothesis points). Frame
+Use the local source file: website/public/guides-raw/en/trust-calculus.html
+3D-scene (capture the F/G/R cube with its illustrative hypothesis points). Frame
 in clean white border 4px, add caption underneath in 11px mono
 gray: "Crank it with your mouse → /guides/trust-calculus"
 
@@ -134,7 +142,7 @@ No additional editing needed beyond crop + caption. Aspect 16:9
 
 **Slug**: `decision-record-with-expiry`
 **Guide reference**: `/guides/decision-cycle` (DDR-секция)
-**Концепция**: 6 секций DDR. Самая важная — «условия пересмотра».
+**Концепция**: 6 секций DDR — локальная конвенция письма. «Условия пересмотра» — авторский акцент; запись условия не устанавливает мониторинг и не запускает reopen. Таймлайн ниже концептуальный: истечение valid_until само не переписывает сохранённый status.
 
 ### Cover (Шаблон C — карточка артефакта)
 
@@ -210,7 +218,7 @@ Aspect 16:9. Flat 1px lines, no 3D, no shadows.
 
 **Slug**: `architect-doesnt-start-with-blueprints`
 **Guide reference**: `/guides/bmad-cycle`
-**Концепция**: 4 фазы — Brief → Mission → Architecture → Detailed plan. Аналогия архитектора дома.
+**Концепция**: upstream BMAD использует Analysis (optional) → Planning → Solutioning → Implementation. Аналогия архитектора дома — авторская иллюстрация, не расшифровка букв BMAD. Макет PRD с 13 строками ниже — локальный пример, не upstream-требование к числу разделов.
 
 ### Cover (Шаблон C — 4 horizontal cards)
 
@@ -222,30 +230,30 @@ by 24px gaps. Each card has increasing visual density (Phase 1 nearly
 empty, Phase 4 fully detailed) to show progressive elaboration.
 
 Card 1 (light blue border #60a5fa):
-   Title: "B · Brief"
-   Content: One short paragraph stub (3 lines of "lorem"-style placeholder)
-   Footer mono: "expand the question space"
+   Title: "Analysis · optional"
+   Content: One short problem statement (3 placeholder lines)
+   Footer mono: "understand the need"
 
 Card 2 (green border #22c55e):
-   Title: "M · Mission"
-   Content: Five small dotted bullets, three of them filled in,
+   Title: "Planning"
+   Content: Five small requirement bullets, three filled in,
             two left as open circles
-   Footer: "decompose · edge cases"
+   Footer: "requirements · product scope"
 
 Card 3 (orange border #FF5A1F, slightly THICKER 2px):
-   Title: "A · Architecture"
+   Title: "Solutioning"
    Content: A small tree diagram with one chosen branch highlighted
             in orange, two greyed-out alternatives
    Footer: "pick one · with tradeoffs"
 
 Card 4 (white border #f5f5f5):
-   Title: "D · Detailed plan"
-   Content: A miniature PRD document mockup with 13 numbered sections
+   Title: "Implementation"
+   Content: A miniature implementation plan and task checklist
             visible (very small, like a thumbnail)
-   Footer: "contract + implementation map"
+   Footer: "build · verify"
 
 Above the row, mono eyebrow tracking 0.18em orange:
-"FOUR PHASES · ARCHITECT'S DISCIPLINE"
+"BMAD PHASES · ANALYSIS IS OPTIONAL"
 
 Aspect 16:9. Cards sit on dark #050505 with subtle dot grid.
 
@@ -261,7 +269,7 @@ Subject: A miniature PRD document card centered on dark background.
 Card 480×600 px, thin gray border, dark inner.
 
 Card header (mono 11px orange tracking 0.18em):
-    PRD-074 · DRAFT · 13 SECTIONS
+    PRD-074 · DRAFT · LOCAL MOCKUP · 13 EXAMPLE SECTIONS
 
 Card title (sans 18px white): "Tags for notes (MVP)"
 
@@ -400,19 +408,19 @@ Left half (Без Forgeplan):
 Right half (С Forgeplan):
    A single dark terminal window full-screen. The only thing visible:
 
-       $ forgeplan validate PRD-018
-       ✓ Format · BMAD compliance
-       ✓ Coherence · OpenSpec graph
-       ✓ Alternatives · FPF rigour (3+ found)
-       PASS · ready to activate
+       ILLUSTRATIVE WORKFLOW · NOT CLI OUTPUT
+       Format review      · template checked
+       Coherence review   · links inspected
+       Alternatives      · compared explicitly
+       Activation        · requires separate evidence and gates
 
-   The word "PASS" is in green #22c55e. Identifier PRD-018 in
-   orange #FF5A1F. Other lines in light gray on dark.
+   The word "ILLUSTRATIVE" is in orange #FF5A1F.
+   Other lines are light gray on dark.
 
 Thin vertical line in middle, 1px gray.
 
 Aspect 16:9 (1600×900). Photorealistic left, terminal-mockup right.
-Brand orange visible ONLY on right side (terminal identifier).
+Brand orange visible ONLY on right side (the illustrative-workflow header).
 
 Strict: no 3D, no neon, no robots, no AI hands. Left side empty
 of people. Right side clean modern macOS terminal aesthetic.
@@ -438,7 +446,7 @@ Each box contains:
    Footer mono 9px: count in active project, e.g. "x47"
 
 Above the funnel, eyebrow orange tracking 0.18em:
-"TEN ARTIFACTS · SIX IN ACTIVE USE"
+"TEN SELECTED ARTIFACT TYPES · ILLUSTRATIVE GROUPING"
 
 Aspect 16:9.
 ```
@@ -446,11 +454,12 @@ Aspect 16:9.
 ### Inline #2 (готовый ассет — 3D-граф)
 
 ```
-Use existing screenshot from /public/guides-raw/dag-explorer.html
-Capture the Plotly 3D scatter of Knowledge Vault MVP artifacts
-(22 nodes, 30 edges). Frame with thin border + caption:
+Use the source website/public/guides-raw/en/dag-explorer.html.
+Capture the Plotly scene of the illustrative Knowledge Vault dataset:
+24 artifact objects and 23 distinct logical connections (22 related links
+plus one trigger; rendered line segments are not the logical-edge count).
 
-   "22 artifacts · 30 connections · /guides/dag-explorer"
+   "Illustrative graph · 24 artifacts · 23 connections · /guides/dag-explorer"
 
 Letterbox to 1280×720 if scene is wider.
 ```
@@ -460,8 +469,8 @@ Letterbox to 1280×720 if scene is wider.
 ## Пост 8 · «Полный цикл на одной фиче · capstone»
 
 **Slug**: `full-cycle-on-one-feature`
-**Guide reference**: `/guides/lifecycle-cycle` + капстон ссылки на все 11 предыдущих guides
-**Концепция**: 7 шагов на одной реальной задаче (Vault streaming endpoint). От строки в Slack до активного решения.
+**Guide reference**: `/guides/lifecycle-cycle` + выбранные связанные guides; это не полный каталог.
+**Концепция**: 7 учебных шагов на вымышленной задаче (Vault streaming endpoint). От строки в Slack до решения с evidence; это не подтверждённый журнал реального проекта.
 
 ### Cover (Шаблон C — 7-step horizontal progression)
 
@@ -481,7 +490,7 @@ Card 6 (orange #FF5A1F): "6 · activate"  → icon: ⚡ · GREEN CHECK MARK
 Card 7 (gray dashed border): "7 · 6mo later · renew/supersede"  → icon: ⏳
 
 Below the row, in mono eyebrow tracking 0.18em orange:
-"FROM SLACK MESSAGE TO ACTIVE DECISION · 18 MONTHS"
+"ILLUSTRATIVE DECISION CYCLE · REVISIT AFTER SIX MONTHS"
 
 Above row, large mono in white: "7 STEPS"
 
@@ -493,16 +502,16 @@ Aspect 16:9. Flat, editorial, 1px lines and 2px borders, no 3D.
 ```
 [brand wrapper]
 
-Subject: A realistic macOS-style terminal showing forgeplan health
-final state. Content (verbatim, mono):
+Subject: A terminal-style illustration, not actual forgeplan health output.
+Include the visible header "ILLUSTRATIVE PROJECT SNAPSHOT". Mono content:
 
-    $ forgeplan health
+    ILLUSTRATIVE PROJECT SNAPSHOT
     Verdict ✓ HEALTHY
     Active artifacts        12  (was: 8)
     Stale artifacts          0
     Orphan artifacts         0
-    Coverage                 100%
-    R_eff (lowest)           0.84 · DECIDED
+    Example scope completed  100%  (not code coverage)
+    Example score            0.84  (not a measured runtime score)
     Next reopen window       2026-02-15 (ADR-018 valid_until)
 
 The word "HEALTHY" in green #22c55e. "Next" line in orange.
@@ -518,7 +527,7 @@ behind. Photorealistic terminal.
 ### Inline #2 (готовый ассет — dag-explorer subset)
 
 ```
-Use existing 3D scene /public/guides-raw/dag-explorer.html, filter
+Use the source website/public/guides-raw/en/dag-explorer.html, filter
 to ~6 artifacts of THE specific feature being discussed
 (PRD-018, RFC-001, ADR-001, SPEC-003, EVID-001, EVID-006).
 

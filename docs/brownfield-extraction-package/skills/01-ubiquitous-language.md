@@ -2,6 +2,8 @@
 
 > Extracts business terms, definitions, aliases, and synonyms from a codebase to build a domain glossary.
 
+> Proposed skill design, not an installed core capability. The local output sketch below uses the package's design vocabulary; native glossary artifacts remain kind-derived `factum`, not intent artifacts. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Why this skill exists
 
 Without a shared vocabulary, business documentation is impossible. Every downstream skill depends on knowing what terms mean. This is the foundation.
@@ -77,7 +79,7 @@ For each candidate, generate a draft definition using LLM + code context.
 
 ```
 input: candidate term, code context (surrounding usage)
-output: glossary artifact with tier=inferred, confidence=inferred
+output: proposed glossary definition with tier=intent, confidence=inferred
 ```
 
 ### Mode 3: `consolidate`
@@ -108,7 +110,7 @@ Re-scan codebase; for each existing term, update `code_refs`, `frequency`. New t
    - Remove obvious noise (numeric, single-letter).
 
 3. **Group**:
-   - By similarity (Levenshtein distance < 0.3 → likely same term variant).
+   - By similarity (normalized Levenshtein distance = edit distance / max string length; < 0.3 → candidate term variant, not proof of synonymy).
    - By co-occurrence (terms appearing in same function likely related).
 
 ### Define phase

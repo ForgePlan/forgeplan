@@ -13,7 +13,9 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     // same project root on both layouts; only the record source differs.
     let reports = match &source {
         common::ReadSource::Legacy(store) => drift::check_drift(store, workspace_root).await?,
-        common::ReadSource::Captured(read) => drift::check_drift_captured(read, workspace_root).await?,
+        common::ReadSource::Captured(read) => {
+            drift::check_drift_captured(read, workspace_root).await?
+        }
     };
 
     let stale_count = reports.iter().filter(|r| r.is_stale).count();

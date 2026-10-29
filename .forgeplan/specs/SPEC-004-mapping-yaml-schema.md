@@ -1,4 +1,5 @@
 ---
+created: 2026-04-28
 depth: standard
 id: SPEC-004
 kind: spec
@@ -13,6 +14,7 @@ status: draft
 title: Mapping YAML schema
 ---
 
+
 ---
 created: 2026-04-28
 depth: standard
@@ -26,7 +28,7 @@ status: draft
 
 ## Summary
 
-Декларативная YAML-схема для Forgeplan mapping files — translation rules от output внешнего плагина (C4 docs, autoresearch summaries, git logs, DDD models, SPARC specs) к forge artifacts (PRD/ADR/Epic/Note/Spec). Schema versioned semver; per-mapping `compat_spec_version` для upstream plugin output stability. **Hallucination-proof invariant**: каждый ingested artifact имеет mandatory `## Sources` section с file:line refs (ADR-009 invariant). Published at `docs/schemas/mapping.schema.yaml` (PRD-066 FR-1, FR-2). Used by PRD-066 ingest engine; referenced from SPEC-003 playbook step.
+Декларативная YAML-схема для Forgeplan mapping files — translation rules от output внешнего плагина (C4 docs, autoresearch summaries, git logs, DDD models, SPARC specs) к forge artifacts (PRD/ADR/Epic/Note/Spec). Schema versioned semver; per-mapping `compat_spec_version` для upstream plugin output stability. **Hallucination-proof invariant**: каждый ingested artifact имеет mandatory `## Sources` section с file:line refs (ADR-009 invariant). Нормативный путь публикации схемы — `docs/schemas/mapping.schema.yaml` (PRD-066 FR-1, FR-2). В проверенном P0 файл отсутствует; требование публикации не закрыто. Used by PRD-066 ingest engine; referenced from SPEC-003 playbook step.
 
 ## Contract
 
@@ -80,26 +82,53 @@ sources:
 ```yaml
 when:
   file_glob: "C4-Documentation/components/*.md"
-  front_matter:                # все keys must match
+  front_matter:
     kind: component
-  contains_section: "## Purpose"   # optional content check
+  contains_section: "Purpose"
+  heading_path: ["Purpose"]
 ```
 
-Multiple selectors AND-combined. Selector failure → rule skipped, не error.
+Multiple selectors are AND-combined. Нормативно несовпадение selector
+пропускает правило без ошибки.
+
+`contains_section` проверяет наличие заголовка по его тексту без Markdown-префикса
+и не выбирает раздел для шаблона. `heading_path` выбирает раздел; завершающий
+`"*"` выбирает непосредственные дочерние разделы совпавшего родителя.
+
+**Implementation gap:** при ненайденном `heading_path` текущий движок возвращается
+к контексту всего исходного документа. Это не исполнение нормативного
+skip-поведения. Не используйте `heading_path` как единственный фильтр допуска
+к импорту.
 
 ### `fields` (templated mappings)
 
-Template — Tera-style placeholders, **только path lookups + whitelist filters** (no embedded code):
+Нормативно разрешены только path lookups и whitelist filters, без embedded code.
+Пример для `target.kind: note` после выбора `Purpose`:
 
 ```yaml
 fields:
-  title: "{{front_matter.name | trim}}"
-  problem: "{{section.purpose}}"
-  goals: "{{section.responsibilities | bullet_list}}"
-  target_users: "{{section.consumers | comma_list}}"
+  title: "{{ front_matter.name | trim }}"
+  summary: "{{ section.body | trim }}"
 ```
 
-**Whitelist filters**: `trim`, `lower`, `upper`, `bullet_list`, `comma_list`, `slugify`, `truncate(n)`, `default(value)`, `replace(from,to)`. **Arbitrary Tera filters → load error** (security invariant).
+Общий контекст: `front_matter`, `path`, `line_count`.
+Выбранный раздел добавляет `heading_text` и
+`section.{body,heading_text,heading_level,line_start,line_end,sub_sections}`.
+
+`section.purpose`, `section.responsibilities` и `section.consumers` не являются
+полями этого контекста. Соответствующие Markdown-разделы требуют явного выбора;
+движок не извлекает из них семантические свойства автоматически.
+
+Whitelist: `trim`, `lower`, `upper`, `bullet_list`, `comma_list`, `slugify`,
+`truncate(n=80)` (также `length=80`), `default(value="...")`,
+`replace(from="a", to="b")`, `table`.
+Добавление `table` фиксирует ранее записанную поправку EVID-088.
+Фильтры вне whitelist должны отклоняться при загрузке.
+
+**Implementation gap:** текущий Tera AST walker проверяет синтаксис и имена
+фильтров, но не отвергает все конструкции, выходящие за пределы path lookups.
+Whitelist не доказывает исполнения полного no-embedded-code контракта
+и не разрешает использовать такие конструкции в mapping.
 
 ### `sources_section` (hallucination-proof — INVARIANT)
 

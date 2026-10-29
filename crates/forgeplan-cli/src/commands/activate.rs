@@ -100,12 +100,11 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     }
 
     common::log_change_field(
-        &store,
+        &ws,
+        Some(&store),
         id,
         "update",
-        "status",
-        Some(&old_status),
-        Some("active"),
+        ("status", Some(&old_status), Some("active")),
         "cli",
     )
     .await;
@@ -171,8 +170,8 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
 /// Same transition, same gates, same `--force` escape as the store path —
 /// `lifecycle::canonical::activate_captured` runs the shared rule set over the
 /// captured graph and commits the status flip through the canonical Markdown.
-/// The store-backed extras (cached-R_eff recompute, change_log row) have no
-/// counterpart here and are named rather than faked.
+/// Audit events use auxiliary history; cached-R_eff recomputation remains
+/// store-backed.
 async fn run_file_first(
     ws: std::path::PathBuf,
     lock: forgeplan_core::workspace::lock::WorkspaceLock,
@@ -218,6 +217,16 @@ async fn run_file_first(
             .await
             .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
     };
+
+    common::log_change_field(
+        &ws,
+        None,
+        &canonical,
+        "update",
+        ("status", Some(&old_status), Some("active")),
+        "cli",
+    )
+    .await;
 
     let ref_form = forgeplan_core::lifecycle::canonical::refs_form(&read, &canonical);
     let has_evidence = read

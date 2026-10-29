@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::LlmConfig;
+use crate::db::auxiliary::AuxiliaryStore;
 use crate::llm::LlmClient;
 
 const ADI_SYSTEM_PROMPT: &str = r#"You are a structured reasoning engine using the FPF ADI cycle (Abduction → Deduction → Induction).
@@ -149,8 +150,35 @@ pub async fn build_fpf_context(
         return Ok(None);
     }
 
-    // Search by significant title keywords (skip short/common words, try each)
-    let keywords: Vec<&str> = artifact_title
+    build_fpf_context_from_search(artifact_title, |keyword| store.search_fpf(keyword, 3)).await
+}
+
+/// Build the ADI knowledge-base context without opening an artifact index.
+///
+/// Returns `None` for an absent KB or no matching title keywords. Search errors
+/// propagate rather than presenting an unreadable KB as an empty one.
+pub async fn build_fpf_context_auxiliary(
+    store: &AuxiliaryStore,
+    artifact_title: &str,
+    _artifact_body: &str,
+) -> anyhow::Result<Option<String>> {
+    if !store.has_fpf() {
+        return Ok(None);
+    }
+    build_fpf_context_from_search(artifact_title, |keyword| store.search_fpf(keyword, 3)).await
+}
+
+async fn build_fpf_context_from_search<'a, Search, SearchFuture>(
+    artifact_title: &'a str,
+    mut search: Search,
+) -> anyhow::Result<Option<String>>
+where
+    Search: FnMut(&'a str) -> SearchFuture,
+    SearchFuture: Future<Output = anyhow::Result<Vec<crate::db::store::FpfChunk>>>,
+{
+    // Keep the title-only selection and three-section prompt budget identical
+    // for both store handles.
+    let keywords = artifact_title
         .split_whitespace()
         .filter(|w| w.len() > 3 && w.chars().all(|c| c.is_alphanumeric()))
         .filter(|w| {
@@ -159,18 +187,14 @@ pub async fn build_fpf_context(
                 "the" | "and" | "for" | "with" | "from" | "that" | "this"
             )
         })
-        .take(5)
-        .collect();
+        .take(5);
 
-    // Try each keyword, collect unique results
     let mut results = Vec::new();
     let mut seen_ids = std::collections::HashSet::new();
-    for keyword in &keywords {
-        if let Ok(hits) = store.search_fpf(keyword, 3).await {
-            for hit in hits {
-                if seen_ids.insert(hit.section_id.clone()) {
-                    results.push(hit);
-                }
+    for keyword in keywords {
+        for hit in search(keyword).await? {
+            if seen_ids.insert(hit.section_id.clone()) {
+                results.push(hit);
             }
         }
         if results.len() >= 3 {
@@ -296,6 +320,112 @@ pub async fn reason(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn auxiliary_fpf_context_matches_legacy_keyword_selection_and_prompt_budget() {
+        use crate::db::store::{FpfChunk, LanceStore};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let auxiliary = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let long_body = "é".repeat(320);
+        let chunks: Vec<FpfChunk> = [
+            ("trust", "A.1", "Trust anchor", long_body.as_str()),
+            ("repeat", "A.1", "Context repeat", "Duplicate section."),
+            ("context", "B.1", "Context boundary", "Second body."),
+            ("ledger", "C.1", "Ledger budget", "Third body."),
+            ("signals", "D.1", "Signals ignored", "Fourth body."),
+            ("purpose", "E.1", "Purpose ignored", "Fifth body."),
+            ("excluded", "F.1", "Excluded ignored", "Sixth body."),
+        ]
+        .into_iter()
+        .map(|(id, section_id, title, body)| FpfChunk {
+            id: id.to_string(),
+            section_id: section_id.to_string(),
+            parent_section: None,
+            title: title.to_string(),
+            body: body.to_string(),
+            line_count: 1,
+            file_path: format!("{id}.md"),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        })
+        .collect();
+        auxiliary.insert_fpf_chunks(&chunks, None).await.unwrap();
+        let title = "The Trust with Context Ledger Signals Purpose Excluded";
+        let expected = format!(
+            "\n\n## Relevant FPF Patterns (from knowledge base)\n\n\
+             ### A.1 — Trust anchor\n{}\n\n\
+             ### B.1 — Context boundary\nSecond body.\n\n\
+             ### C.1 — Ledger budget\nThird body.\n\n",
+            "é".repeat(300),
+        );
+        assert_eq!(
+            build_fpf_context_auxiliary(&auxiliary, title, "Unused body.")
+                .await
+                .unwrap(),
+            Some(expected.clone()),
+        );
+        for table in ["artifacts.lance", "evidence.lance", "relations.lance"] {
+            assert!(!ws.join("lance").join(table).exists());
+        }
+
+        let legacy = LanceStore::init(&tmp.path().join("legacy/.forgeplan"))
+            .await
+            .unwrap();
+        legacy.insert_fpf_chunks(&chunks, None).await.unwrap();
+        assert_eq!(
+            build_fpf_context(&legacy, title, "Unused body.")
+                .await
+                .unwrap(),
+            Some(expected),
+        );
+        for title in [
+            "the with from that this",
+            "Trust,",
+            "Alpha Beta Gamma Delta Epsilon Trust",
+        ] {
+            assert_eq!(
+                build_fpf_context_auxiliary(&auxiliary, title, "Trust Context Ledger")
+                    .await
+                    .unwrap(),
+                None,
+                "only the first five significant, alphanumeric title words are searched",
+            );
+            assert_eq!(
+                build_fpf_context(&legacy, title, "Trust Context Ledger")
+                    .await
+                    .unwrap(),
+                None,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn auxiliary_fpf_context_distinguishes_absent_and_empty_knowledge_bases() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let absent = AuxiliaryStore::open_existing(&ws).await.unwrap();
+        assert!(!absent.has_fpf());
+        assert_eq!(
+            build_fpf_context_auxiliary(&absent, "Trust context", "Trust")
+                .await
+                .unwrap(),
+            None,
+        );
+        assert!(!ws.join("lance").exists());
+
+        let empty = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        assert!(empty.has_fpf());
+        assert_eq!(
+            build_fpf_context_auxiliary(&empty, "Trust context", "Trust")
+                .await
+                .unwrap(),
+            None,
+        );
+        for table in ["artifacts.lance", "evidence.lance", "relations.lance"] {
+            assert!(!ws.join("lance").join(table).exists());
+        }
+    }
 
     #[test]
     fn build_metadata_section_includes_all_fields() {

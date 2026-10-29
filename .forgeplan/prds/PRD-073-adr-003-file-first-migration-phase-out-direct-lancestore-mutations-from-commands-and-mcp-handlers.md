@@ -11,6 +11,7 @@ status: active
 title: ADR-003 file-first migration — phase out direct LanceStore mutations from commands and MCP handlers
 ---
 
+
 # PRD-073: ADR-003 file-first migration
 
 ## Problem
@@ -47,7 +48,18 @@ PROB-048 documents 32+ direct `LanceStore` mutating call sites in `crates/forgep
 - **FR-002**: Migrate CLI commands (27 call sites). Lower `CLI_BASELINE` in regression test to `0`.
 - **FR-003**: Migrate MCP handlers (5 call sites). Lower `MCP_BASELINE` to `0`.
 - **FR-004**: Visibility change — `LanceStore::create_artifact / update_* / delete_* / add_relation / delete_relation` → `pub(crate)`. External crates cannot call.
-- **FR-005**: Bidirectional link rendering — `forgeplan link` re-renders projections for source AND target so both files reflect the edge.
+- **FR-005**: Directed link ownership. Каноническое исходящее ребро хранится
+  в `links` source-артефакта. Add/replace/delete связи изменяет source;
+  target, участвующий только как получатель входящего ребра, сохраняет
+  точные байты, включая unknown frontmatter и source-only metadata.
+  В legacy-проекции сохраняется синхронизация участников из canonical files
+  с прежними границами ошибок; relation index обеспечивает incoming/outgoing
+  graph и health semantics без обратной записи в target.
+  Явная обратная связь является отдельной мутацией.
+  **Поправка 2026-10-25:** заменяет прежнее требование «source AND target rendering».
+  Цель согласованных связей сохраняется; механизм не должен перезаписывать
+  неизменившийся canonical target из неполной проекции. Основание: ADR-003
+  и exact outgoing set в SPEC-008. Исторические отметки Phase 2 ниже сохранены.
 - **FR-006**: EVID-XXX measurement — clean `git clone` of a repo with active artifacts, run `forgeplan reindex`, compare workspace state byte-for-byte to source.
 
 ## Success Criteria
@@ -66,9 +78,9 @@ PROB-048 documents 32+ direct `LanceStore` mutating call sites in `crates/forgep
 - Migrate 1-2 representative commands as canary (e.g., `tag.rs`)
 - Lower `CLI_BASELINE` accordingly
 
-### Phase 2 — MCP handlers + bidirectional links (1 PR, ~2h)
+### Phase 2 — MCP handlers + source-owned links (план уточнён 2026-10-25)
 - Migrate 5 MCP production sites
-- Implement bidirectional link rendering in helper
+- Mutate source-owned links and preserve exact target bytes; derive incoming edges in the relation index
 - Lower `MCP_BASELINE` to 0
 
 ### Phase 3 — Bulk CLI migration (1 PR, ~3-4h)

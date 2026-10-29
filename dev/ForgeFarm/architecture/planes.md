@@ -41,7 +41,12 @@
 | **Control plane** | переходы состояния, очереди, leases, gates, dependencies, health, telemetry, audit | писать код/артефакты сам; продуктовые решения в Policy Engine; запускать агентов из Projection Builder |
 | **Runtime plane** | исполнение T0–T3 в worktrees, agent sessions, sandbox | канонические состояния; переходы state machine; записи вне scope lease |
 | **UI** | рендер проекций + audit, human approvals (HAQ) | собственное состояние; прямые мутации (всё через API control plane) |
-| **Storage** | операционная материализация | быть авторитетным (всегда rebuildable из git + tracker + ForgePlan) |
+| **Storage** | операционная материализация; durable audit/run events сохраняют историю исполнения | проекция не заменяет источники; её восстановление требует git + tracker + ForgePlan **и сохранённого журнала исполнения** |
+
+`Rebuildable` — цель дизайна, не свойство одной лишь БД или hash-chain.
+Без полного сохранённого журнала и проверенного replay нельзя восстановить
+из git/трекера все approvals, leases и исходы ранов. Сам журнал — не
+восстанавливаемый из проекции кэш; ему нужны backup/restore (§2 reliability).
 
 ## Компоненты control plane (по R3, канонический список)
 

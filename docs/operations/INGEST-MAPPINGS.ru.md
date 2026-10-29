@@ -43,8 +43,8 @@ arbitrary code execution.
 | `marketplace/mappings/*.yaml` (этот репозиторий) | Канонические mapping'и Forgeplan |
 | `.forgeplan/mappings/*.yaml` | Workspace-локальные (не публикуются) |
 
-`forgeplan ingest --mapping <name|path>` принимает либо имя из
-registry, либо путь к файлу.
+`forgeplan ingest --mapping <path>` принимает путь к существующему YAML-файлу,
+не короткое registry-имя.
 
 ## Структура YAML — top-level поля
 
@@ -79,9 +79,10 @@ output-форматов **upstream-плагина**, которые этот map
 compat_spec_version: "c4-architecture: ^1.0"
 ```
 
-При **breaking change** в upstream плагине ingest engine выдаёт hint
-«mapping `c4-to-forge` несовместим с c4-architecture v2 — нужен
-`c4-to-forge-2.0.yaml`», а не молча корраптит ваш форге-граф.
+Поле фиксирует заявленную совместимость. В core есть semver-проверка, но текущие
+CLI/core-dispatcher не устанавливают версию upstream автоматически и не дают
+гарантии такого отказа. Автор должен сверить фактический формат источника;
+наличие поля само по себе не доказывает совместимость.
 
 ## Источники — `sources`
 
@@ -102,7 +103,7 @@ sources:
 |---|---|
 | `front_matter_plus_sections` | YAML frontmatter + Markdown `## sections` |
 | `markdown_only` | Markdown без frontmatter |
-| `log_with_blame` | `git log` + `git blame` для inferred ADR |
+| `log_with_blame` | Разбирает переданный текст git log; сам не запускает git log или git blame |
 | `json` | JSON-документ |
 | `yaml` | YAML-документ |
 
@@ -112,33 +113,47 @@ sources:
 
 ## Селектор `when`
 
-Все указанные подселекторы AND-комбинируются. Несовпадение — rule
-**пропускается** (не error).
+`file_glob`, `front_matter` и `contains_section` проверяются вместе.
+Несовпадение пропускает правило без ошибки. В `contains_section` указывается
+текст заголовка без Markdown-префикса `##`.
 
 ```yaml
 when:
   file_glob: "C4-Documentation/components/*.md"
   front_matter:
     kind: component             # все ключи должны совпасть
-  contains_section: "## Purpose"
-  heading_path: ["Code Elements", "Public Functions", "*"]
+  contains_section: "Purpose"
+  heading_path: ["Purpose"]
 ```
 
-`heading_path` — путь по уровням `#`/`##`/`###` заголовков. `"*"`
-в конце означает «любой заголовок этого уровня — fan out» (создаст
-N артефактов из N подзаголовков).
+`heading_path` выбирает раздел для шаблона. Например,
+`["Code Elements", "Public Functions", "*"]` выбирает непосредственные
+подзаголовки `Public Functions` и формирует отдельный draft для каждого.
+Промежуточные именованные заголовки должны быть вложены друг в друга.
+Если путь не найден, текущий движок возвращается к контексту всего файла;
+не используйте `heading_path` как единственный фильтр допуска к импорту.
+Проверяйте выбор правила через `ingest --dry-run`. Его JSON содержит
+заголовок, тип, источник, hash, правило и связи, но не текст тела.
+Верность переноса текста проверяйте через `get` после импорта в песочнице.
+
+Без выбранного раздела доступны `front_matter`, `path` и `line_count`.
+Выбор раздела добавляет `heading_text` и `section` с полями `body`,
+`heading_text`, `heading_level`, `line_start`, `line_end`, `sub_sections`.
+`contains_section` только проверяет наличие раздела, но не выбирает его
+для шаблона. Семантических полей `section.purpose` и
+`section.responsibilities` нет: для примера выше текст Purpose находится
+в `section.body`.
 
 ## Шаблоны `fields` — Tera + whitelist
 
-Forge-поля задаются **строковыми шаблонами** в стиле Tera. Доступно
-**только** path lookup + whitelist filters — никаких циклов, условий,
-include'ов и custom functions:
+Forge-поля — строковые Tera-шаблоны с проверкой имён фильтров по whitelist.
+Текущая проверка обходит Tera AST, но не устанавливает описывавшийся ранее
+полный запрет циклов/условий. Не считайте whitelist полноценным sandbox.
 
 ```yaml
 fields:
-  title: "{{ heading_text | trim }}"
-  summary: "{{ section.purpose | default(value='Auto-imported') | trim }}"
-  details: "{{ section.responsibilities | bullet_list }}"
+  title: "{{ front_matter.name | default(value='Unnamed component') | trim }}"
+  summary: "{{ section.body | default(value='Auto-imported') | trim }}"
   tags: "c4,component,auto-imported"
 ```
 
@@ -151,9 +166,9 @@ fields:
 | `bullet_list` | Преобразовать lines в Markdown bullet list |
 | `comma_list` | Объединить через `, ` |
 | `slugify` | Превратить в slug (`my-title-here`) |
-| `truncate(n)` | Обрезать до N символов |
+| `truncate(length=50)` | Обрезать до заданной длины |
 | `default(value="...")` | Подставить fallback, если значение отсутствует |
-| `replace(from, to)` | Substring replace |
+| `replace(from="a", to="b")` | Substring replace |
 | `table` | Markdown-таблица из map (added per EVID-088) |
 
 ### Tera caveat — `default` syntax
@@ -162,13 +177,12 @@ fields:
 аргумент `value`, не позиционный. Пишите:
 
 ```yaml
-title: "{{ section.purpose | default(value='Code element') }}"
+title: "{{ heading_text | default(value='Code element') }}"
 ```
 
-**Не пишите** `default('Code element')` — синтаксис позиционных
-аргументов в Tera работает только для встроенных filter'ов вроде
-`truncate(50)`, у `default` он отвергается. См. EVID-088 (W2-B
-deviation note).
+**Не пишите** `default('Code element')` или `truncate(50)`:
+используйте именованные аргументы Tera, например `default(value='Code element')`
+и `truncate(length=50)`. Старый пример позиционного `truncate` был ошибкой.
 
 ### Любой фильтр вне whitelist → load error
 
@@ -192,16 +206,12 @@ sources_section:
   source_hash: true              # для idempotency (PRD-066 AC-3, FR-5)
 ```
 
-`include: false` — **schema validation fails**: ADR-009
-hallucination-proof invariant. Каждый ингестированный артефакт обязан
-указать источник с точностью до line range. Это даёт:
-
-- **Аудит**: `forgeplan doctor --sources` сверяет, существует ли
-  каждый цитируемый файл.
-- **Idempotency**: `source_hash` позволяет переходу источника
-  triggerнуть update артефакта без дубликатов.
-- **Stale detection**: удалили source — артефакт получает status
-  `stale`, не молча живёт с устаревшим контентом.
+`include: false` отклоняется schema validation. Требование `## Sources` сохраняет
+проверяемую ссылку на источник, но не делает вывод автоматически истинным.
+Зарегистрированного `forgeplan doctor --sources` в выбранной сборке нет.
+`source_hash` помогает повторному ingest определить изменение; применение
+изменённого результата требует `--update`. Удаление исходного файла не переводит
+артефакт автоматически в `stale`.
 
 ## Target kind — куда ингестим
 
@@ -246,13 +256,15 @@ guards:
   forbid_overwrite_active: true   # не апдейтить activated артефакты
 ```
 
-`max_artifacts` — критичен. Без лимита mapping на 10K-LOC C4-вывод
-может создать сотни Note'ов и засрать workspace. Ставьте
-realistic cap (50–200).
+Без явного `max_artifacts` engine всё равно применяет default 10 000; меньший
+предел позволяет ограничить конкретный импорт. Значение 50–200 — пример
+настройки, не измеренная универсальная норма.
 
-`forbid_overwrite_active: true` — дефолт; ingest никогда не мутирует
-already-active артефакт (это нарушило бы immutability per CLAUDE.md).
-Update идёт только в draft.
+`forbid_overwrite_active: true` объявлен в schema как защитное намерение.
+В текущем CLI `write_draft` не найдено проверки lifecycle status перед
+обновлением совпавшего по kind/title файла; полагаться на этот флаг как на
+исполненный запрет нельзя. Политика сохранения active-артефактов остаётся
+обязательной; не запускайте `--update`, предполагая такую автоматическую защиту.
 
 ## Five `source_kind` enum
 
@@ -268,16 +280,15 @@ forgeplan-core (`crates/forgeplan-core/src/ingest/types.rs`).
 
 ## Idempotency
 
-`source_hash: true` (default) → каждый ингестированный артефакт
-получает frontmatter-поле `source_hash`. На повторный run:
+При включённом `source_hash` движок добавляет HTML body comment, не поле
+frontmatter. Хеш учитывает rule ID и текст источника.
 
-- Source не изменился, артефакт существует → **skip** (no-op).
-- Source изменился, артефакт существует → **update** + log diff.
-- Source удалён → **stale** (не delete, чтобы не потерять manual
-  enrichment).
+- Совпали kind/title и source hash — skip.
+- Источник изменился — по умолчанию skip; запись требует `--update`.
+- Источник исчез — автоматического изменения status нет.
 
-Это покрывает PRD-066 AC-3 («не создаёт дубликатов») и AC-4
-(`forgeplan doctor --sources` валидирует).
+Это механизм повторного импорта, не доказательство всех AC PRD-066 и не
+проверка существования каждой цитаты.
 
 ## Errors — частые ошибки
 
@@ -294,20 +305,20 @@ forgeplan-core (`crates/forgeplan-core/src/ingest/types.rs`).
 | Source `pattern` не нашёл файлов | WARN |
 | Generated artifact field validation fails | ERROR per artifact, mapping продолжает |
 | Idempotent re-run, same `source_hash` | INFO (skip) |
-| Idempotent re-run, изменённый content | WARN (update + log diff) |
+| Idempotent CLI re-run, изменённый content | Skip по умолчанию; запись только с `--update` |
 | `guards.max_artifacts` превышен | ERROR (abort + partial-state report) |
 
 ## Запуск
 
 ```bash
 # Dry-run — посмотреть, что будет создано
-forgeplan ingest --mapping c4-to-forge --source C4-Documentation/ --dry-run
+forgeplan ingest --mapping marketplace/mappings/c4-to-forge.yaml --source C4-Documentation/ --dry-run
 
 # Реальный run
-forgeplan ingest --mapping c4-to-forge --source C4-Documentation/
+forgeplan ingest --mapping marketplace/mappings/c4-to-forge.yaml --source C4-Documentation/
 
 # Принудительный update (вместо warn о diff)
-forgeplan ingest --mapping c4-to-forge --source C4-Documentation/ --update
+forgeplan ingest --mapping marketplace/mappings/c4-to-forge.yaml --source C4-Documentation/ --update
 ```
 
 ## Workflow integration: ingest из playbook (Phase 6)
@@ -317,20 +328,22 @@ forgeplan ingest --mapping c4-to-forge --source C4-Documentation/ --update
 текущем процессе forgeplan, без subprocess или CLI shell-out (как
 было в Phase 5).
 
-Это значит:
+Это прямой in-process вызов, но dispatcher открывает свежий `LanceStore` handle:
+он не гарантирует повторное использование уже открытого соединения или общего
+LLM state. Нужен типизированный `input` шага с `mapping_path`, `source_path`
+и при необходимости `dry_run`/`update`; одних полей шага `mapping`/`produces_at`
+недостаточно для аргументов ForgeplanCoreDispatcher.
 
-- **No process overhead**: ingest шаг наследует уже загруженные
-  workspace state, LanceDB connection и LLM provider config —
-  не нужно re-init.
-- **Shared journal**: журналируемые события идут в тот же
-  `.forgeplan/journal/playbook-runs.jsonl` без race с CLI.
-- **Same security boundary**: whitelist filters (10) + `## Sources`
-  invariant + `compat_spec_version` остаются обязательными — direct
-  call использует тот же `ingest::engine::run()`, что и CLI.
+Engine собирает drafts; запись выполняет вызывающий путь. CLI ingest пишет.
+Full MCP ingest выполняет проверки допустимости путей и пределов размера,
+отражает параметры с `wave3_status: "planned"` и возвращает пустые массивы
+`drafts`, `skipped`, `errors`. Он не вызывает `IngestEngine` и не составляет
+draft-план. Проверяйте layout и контракт конкретного caller: одно имя операции
+не означает одинаковую запись или security boundary. Journal playbook
+не обеспечивает exactly-once применение или автоматическое возобновление.
 
-Pack authors могут полагаться, что ingest-шаг внутри playbook'а
-ведёт себя идентично standalone `forgeplan ingest --mapping <name>`,
-включая идемпотентность через `source_hash` и dry-run preview.
+Дополнительно internal `run_ingest` принимает, но не использует `update`;
+не считайте это тем же overwrite/idempotency-контрактом, что CLI.
 
 См. [ADR-010 §Affected Files](../../.forgeplan/adrs/ADR-010-phase-6-subprocess-invocation-via-tokio-process-with-kill-on-drop-and-timeout.md)
 + [PLAYBOOK-AUTHORING.ru.md §Subprocess lifecycle](PLAYBOOK-AUTHORING.ru.md#subprocess-lifecycle-phase-6).
@@ -343,4 +356,4 @@ Pack authors могут полагаться, что ingest-шаг внутри 
 - [ADR-009 — Forgeplan as orchestrator](../../.forgeplan/adrs/ADR-009-forgeplan-as-orchestrator-playbook-skill-agent-mapping-pack-marketplace-model.md) — hallucination-proof invariant
 - [EVID-088 — Spike-1 c4-to-forge concept validation](../../.forgeplan/evidence/EVID-088-spike-1-c4-to-forge-mapping-concept-validated-on-scoring-module.md) — measurement-based gaidlines (target=note default, table filter, default(value=...))
 - [PLAYBOOK-AUTHORING.ru.md](PLAYBOOK-AUTHORING.ru.md) — как ссылаться на mapping из playbook step
-- [marketplace/mappings/c4-to-forge.yaml](../../marketplace/mappings/c4-to-forge.yaml) — рабочий образец для копирования
+- [marketplace/mappings/c4-to-forge.yaml](../../marketplace/mappings/c4-to-forge.yaml) — reference-пример с условиями применимости: нужен совместимый source contract для semantic fields; `heading_path` с `*` трактуется буквально. Не готовый исполняемый шаблон для копирования.

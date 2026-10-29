@@ -1,5 +1,13 @@
 # PRD Process Engine — Implementation Plan
 
+> **Исторический implementation plan раннего проекта, не текущий backlog.**
+> Дата исходного снимка не указана. 42/50 и 20 CLI/20 MCP/176 tests ниже —
+> его собственный объём, не свежие измерения или приёмка Constellation.
+> Схемы tera/Tantivy/ort/Desktop в архитектурном эскизе не доказывают
+> наличие реализации. Desktop остаётся планом; текущие sources и команды —
+> README и docs/README.md, правила работы — AGENTS.md/CLAUDE.md.
+> Исходные чекбоксы и границы незавершённого сохранены.
+
 ## Phases
 
 ```

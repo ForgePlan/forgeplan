@@ -43,14 +43,9 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
     // PRD-058 FR-001 + S1-R2: the canonical Markdown is written FIRST for
     // every imported document, and the legacy projection is taken afterwards
     // only where one still exists. No source file is ever moved or deleted.
-    let result = scan_and_import_to_workspace(
-        project_root,
-        &ws,
-        lock.as_ref(),
-        store.as_ref(),
-        &options,
-    )
-    .await?;
+    let result =
+        scan_and_import_to_workspace(project_root, &ws, lock.as_ref(), store.as_ref(), &options)
+            .await?;
     drop(lock);
 
     // ONE reconcile for the whole successful batch, after the lock is

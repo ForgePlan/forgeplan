@@ -56,7 +56,7 @@ forgeplan discover complete <session-id>
 
 1.  **Многоуровневый порядок чтения** - код > git > тесты > документация. Нижние уровни только валидируют верхние, никогда не переопределяют их.
 2.  **Категории находок** - решения, инварианты, дрейф, долг, риски, сигналы владения.
-3.  **Как сообщать** - добавлять каждую находку с помощью инструмента `discover_finding` MCP (только MCP, по задумке - исключает участие людей во время проведения обследования).
+3. **Как сообщать** - инструментом `forgeplan_discover_finding` через MCP; аналога CLI для добавления находок нет. Это не исключает ревью человеком.
 4.  **Когда останавливаться** - эвристики для охвата (например, все модули/крейты верхнего уровня затронуты, основные эпохи git проанализированы).
 5.  **Передача** - по завершении вызвать `discover complete`, чтобы запустить проход рекомендаций.
 
@@ -81,3 +81,22 @@ discover start  →  агент обходит источники  →  discover
 - [`forgeplan discover list`](/docs/cli/discover-list/) - все сессии
 - [`forgeplan discover complete`](/docs/cli/discover-complete/) - завершение + рекомендации
 - [`forgeplan init`](/docs/cli/init/) - шаг начальной загрузки рабочего пространства перед обнаружением
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan discover start --help`.
+
+```text
+Start a new discovery session — prints protocol for AI agent
+
+Usage: forgeplan discover start <NAME>
+
+Arguments:
+  <NAME>  Project name for the discovery session
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -2,15 +2,18 @@
 # greenfield-kickoff.yaml — Canonical playbook: empty repo bootstrap
 # =====================================================================
 #
+# Target applicability: ForgeplanCore steps still open the legacy artifacts/
+# evidence/relations tables. The current `new` dispatcher is not proof of
+# compatibility with a Constellation-only workspace; do not restore retired tables.
+#
 # Purpose:
 #   Take a brand-new project (empty repo or just `git init`-ed) from
 #   "no artifacts at all" to a structured Forgeplan workspace with a
-#   captured vision, an initial stack ADR, an Epic, three PRD stubs,
-#   and (optionally) a scaffolded `docs/` tree — all written through
-#   the in-process `ForgeplanCore` dispatcher so this playbook has
-#   **zero external plugin/agent dependencies**. The single optional
-#   skill step (forge-scaffolder) degrades gracefully via
-#   `fallback_hint` when the skill is not installed.
+#   Note, stack ADR, Epic and three PRD templates through the in-process
+#   ForgeplanCore dispatcher, with no external plugin/agent dependency for
+#   those creates. These are drafts to fill, not captured decisions.
+#   The optional skill step currently emits a trace only; it does not
+#   scaffold docs or check whether forge-scaffolder is installed.
 #
 # When to run:
 #   `forgeplan playbook run greenfield-kickoff --yes`
@@ -18,8 +21,8 @@
 #   PRD-072 FR-6 / AC-3) — surfaced by the recommendation engine when
 #   `triggered_by` matches the detected project state below.
 #
-# Expected duration: ~3-5 seconds (all six artifact creates run
-# in-process; only the final skill step may shell out).
+# Duration is environment-dependent; six in-process template creates do not
+# establish that the requested skill work ran.
 #
 # Where it fits in ForgePlan:
 #   This is the canonical "Shape" entry point of the methodology
@@ -39,18 +42,17 @@ schema_version: "1.0"
 name: greenfield-kickoff
 title: "Greenfield project bootstrap"
 description: |
-  Bootstrap a new project end-to-end through ForgeplanCore:
-    1. Capture the project vision as a Note
-    2. Record the initial stack decision as an ADR
-    3. Create the kickoff Epic that groups the first PRDs
-    4. Stub three feature PRDs hanging off the Epic
-    5. Scaffold a docs/ tree (optional skill — gracefully skipped
-       with an install hint if forge-scaffolder is missing)
+  Create six draft templates through ForgeplanCore:
+    1. Project-vision Note
+    2. Initial-stack ADR
+    3. Kickoff Epic
+    4. Three feature PRDs
+    5. Request docs scaffolding (trace-only skill step in this target)
 
-  Every artifact-creating step is a `forgeplan_core: new` op, so this
-  playbook runs identically with or without external plugins
-  installed. The only soft dependency is the forge-scaffolder skill
-  for step 7; its absence does not abort the run (`on_error: continue`).
+  `requires` orders execution; it does not create artifact parent links.
+  Fill the drafts immediately, select actual decisions, add their links and
+  validate before coding. No PRD is complete merely because this run succeeds.
+  SkillDispatcher neither invokes forge-scaffolder nor checks installation.
 
 # ---------------------------------------------------------------------
 # Recommendation engine signals (PRD-067 FR-5)
@@ -61,9 +63,9 @@ triggered_by:
   has_git: true
 
 # ---------------------------------------------------------------------
-# Prerequisites — no plugins required (this playbook is self-contained
-# via ForgeplanCore). One optional skill — surfaced via doctor + step
-# `fallback_hint` at runtime; a missing skill does not abort the run.
+# Prerequisites — no external plugins for the six core creates.
+# The optional skill declaration is reference intent; current SkillDispatcher
+# emits a trace without verifying installation or displaying fallback_hint.
 # ---------------------------------------------------------------------
 requires:
   plugins: []
@@ -73,8 +75,8 @@ requires:
 
 # ---------------------------------------------------------------------
 # Steps — strict DAG via `requires:` (step IDs only, never freeform).
-# Phase 6 v1 schema: no `timeout_seconds` field yet (deferred to FR-8
-# follow-up which bumps SPEC-003 to 1.1).
+# This example uses the backward-compatible 1.0 shape; the current Step type
+# also supports timeout_seconds (1.1) and budget/tool fields (1.2).
 # ---------------------------------------------------------------------
 steps:
 
@@ -103,8 +105,8 @@ steps:
     requires: [capture-vision]
     on_error: abort
 
-  # 3. Create the kickoff Epic. Hangs the three feature PRDs off a
-  #    single parent so the project graph stays connected from day one.
+  # 3. Create the kickoff Epic template. No parent links are created by `new`;
+  #    author its Children table and actual graph links separately.
   - id: kickoff-epic
     delegate_to:
       type: forgeplan_core
@@ -115,11 +117,9 @@ steps:
     requires: [stack-decision]
     on_error: abort
 
-  # 4-6. Three feature PRD stubs — same parent (kickoff-epic). All three
-  #      depend only on the Epic, so the executor can fan them out in
-  #      parallel once the DAG scheduler supports it (Phase 7 follow-up;
-  #      Phase 6 executor runs them sequentially per their declaration
-  #      order, which is still correct).
+  # 4-6. Three feature PRD templates ordered after kickoff-epic.
+  #      The executor is sequential; `requires` is a step dependency,
+  #      not an artifact parent relation. Fill and link the resulting drafts.
   - id: prd-feature-1
     delegate_to:
       type: forgeplan_core
@@ -150,11 +150,10 @@ steps:
     requires: [kickoff-epic]
     on_error: abort
 
-  # 7. Optional docs/ scaffold via the forge-scaffolder skill. Sits at
-  #    the leaf of the DAG so an absent or failing skill does not
-  #    cascade — `on_error: continue` records the failure in the report
-  #    while the rest of the playbook still counts as a successful
-  #    bootstrap.
+  # 7. Optional scaffolding request, not an executed scaffold in this target.
+  #    on_error: continue permits later steps after failure, but a failed or
+  #    skipped step still makes ExecutionReport::ok() false. A trace success
+  #    also does not prove any docs were written.
   - id: scaffold-docs
     delegate_to:
       type: skill

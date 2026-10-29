@@ -12,19 +12,21 @@ translations:
   ru: how-to-use-fpf
 ---
 
-The [first post](/blog/en/what-is-fpf/) covered what FPF is: where it comes from, how the basic vocabulary works, and how it differs from a textbook. The [situation catalog](/blog/en/where-fpf-helps/) looked at 25 concrete cases where FPF patterns solve real problems.
+> **Edition and example note, 2026-10-23.** This May 2026 workflow is advice, not a measured LLM benchmark. The cases and Name Cards are adapted author examples, not authenticated transcripts or the exact current F.18 schema. For current use, pin a specification revision: [34a1ae7145309f8c18b4c8864513e3456d43de71](https://github.com/ailev/FPF/blob/34a1ae7145309f8c18b4c8864513e3456d43de71/FPF-Spec.md). Its [F.18](https://fpf.tools/F.18) starts with the governed value, candidate names, rationale and reopen condition; public naming has further requirements. The abbreviated cards below do not claim conformance to that edition.
+
+The [first post](/blog/what-is-fpf/) covered what FPF is: where it comes from, how the basic vocabulary works, and how it differs from a textbook. The [situation catalog](/blog/where-fpf-helps/) looked at 25 concrete cases where FPF patterns solve real problems.
 
 This post answers the third question: how to start. No course, no prior study of a 7-megabyte file, no special environment. Three steps, two examples, and a list of traps - especially one that catches nearly everyone on the first LLM + FPF attempt.
 
-Key framing: FPF is not a tool you need to master. It is an instruction the LLM reads. Your task remains your task: describe the situation, ask the question, get a response with disciplined structure rather than generic advice. The model handles everything else.
+FPF can supply a vocabulary and reasoning patterns to consult with an LLM. The model can help apply them, but you still need to verify the actual passage, its fit to the task and the answer's unsupported assumptions.
 
 ## The minimal protocol: three steps
 
 ### Step 1. Load the FPF file into an LLM chat
 
-The FPF specification lives in an open repository: [github.com/ailev/FPF](https://github.com/ailev/FPF). It is one large markdown file. Download it, open a chat with any LLM - ChatGPT, Claude, Gemini, whichever you prefer - and attach the file.
+The specification is in [ailev/FPF](https://github.com/ailev/FPF). Select a revision and use a client that can handle the relevant text. If the full file exceeds attachment or context limits, supply the needed sections and their dependencies; attachment alone does not prove the model read them.
 
-One detail that affects quality: if you are also working with your own document - a PRD, spec, technical brief, postmortem - attach it first, then FPF. An LLM's context window is processed in order, so earlier content carries more weight. Your task should be in focus; FPF is the instruction layered on top.
+Provide the project question, its relevant document and the selected FPF sections explicitly. There is no general rule that earlier attachments receive more weight; retrieval, truncation, model and client behavior matter. Ask the model to identify the passages it actually used.
 
 No special prompt engineering needed. Just the file and a question. If the model responds superficially, repeat the question and ask it to "use patterns from FPF." One clarification usually does it.
 
@@ -46,11 +48,11 @@ The algorithm for one working iteration:
 4. Bring it to a state you can actually use
 5. Record the result - in a document, a spec, a task
 
-Recording the result matters: the chat does not persist, and the LLM will not remember this conversation a week from now. Pull anything useful into your own artifacts.
+Record useful results in your own artifacts. Chat retention and cross-session memory vary by service and settings; neither is a dependable project record without an explicit retention contract.
 
 The right size for one iteration is a task that fits in one paragraph. If the description stretches to a page, break it into parts first. An LLM handles "help me rename role X in context Y" far better than "help me figure out the team structure."
 
-FPF updates often: the authors commit nearly every day. If you use FPF regularly, delete the old file from the chat once a day and reload. New patterns appear, and existing wording gets refined.
+Keep the original revision with your result. Review upstream changes when they matter to the task; do not silently replace the basis of an ongoing decision or delete the only copy of its source.
 
 ## Example one: renaming a role at a professional education program
 
@@ -66,7 +68,7 @@ there are mentors. What do we call former students? "Intern" does not work
 due to its connotations. Provide a Name Card per F.18.
 ```
 
-The LLM returns a Name Card following pattern F.18 - FPF's card format for designing terms. Abbreviated:
+An illustrative abbreviated Name Card, adapted from F.18 naming ideas rather than quoted as a current schema:
 
 ```
 Name Card: StudioResident / studio resident
@@ -105,7 +107,7 @@ to open-source projects and community-driven content, not marketing.
 How should we rename it? Name Card per F.18.
 ```
 
-The LLM returns (abbreviated):
+A second adapted example (not an authenticated model transcript):
 
 ```
 Name Card: CommunityEngineer / community engineer
@@ -142,25 +144,25 @@ Signs of hollow output:
 
 How to check. Ask for specifics: "FPF pattern A.6 classifies into L/A/D/E - show me exactly how you applied each category to my contract, with concrete entries." If the LLM evades and gives a generic answer, it improvised rather than working from the file.
 
-A second filter: ask the same question twice, a few messages apart. Substantially different structures in the two answers means the first was improvised. When an LLM works from an actual pattern, the structure stays stable - F.18 fields are F.18 fields, not reinvented each time.
+A second response with a different structure is a reason to compare both against the pinned source, not proof that the first was fabricated. Repeatedly identical output is not proof of source fidelity either.
 
 A third check: ask the LLM to cite the specific line or heading in the FPF file where the pattern is described. If it names a section, locate it in your downloaded copy and compare. Explanation instead of citation usually means the pattern was invented on the fly.
 
-This is not a reason to avoid LLMs. It is a reason not to accept a nicely formatted response as automatically correct. Verification through specifics takes one or two minutes and filters most hallucination cases. Early attempts are where this surfaces most: the model sees a large file, infers the expected response style, but does not anchor to the actual content. Form looks right; substance is generic.
+Verify citations and application, not just formatting. The article supplies no measurement that a one- or two-minute check filters most hallucinations; the necessary review depends on the claims and their consequences.
 
 ## Frequently asked questions
 
-**Do you need to read all of FPF before starting?** No. Around 3,000 headings - reading it cover-to-cover takes days, and reading without a task gives minimal return. FPF reveals itself through application. Formulate a real task, look at which patterns the LLM used, and study those. If `G.4 CAL Pack` appears, ask the same LLM with the same loaded file to explain G.4. Three targeted questions beat an hour of sequential reading.
+**Do you need to read all of FPF before starting?** No. Begin with a bounded task and read the relevant patterns and dependencies directly. An LLM explanation can help navigate, but is not a substitute for the selected source; the file size and reading-time figures are historical estimates.
 
-**FPF updates constantly - do you need to track changes?** If you use it occasionally, no. For regular work, updating the file daily makes sense: wording changes, new patterns appear. Most day-to-day tasks are unaffected by a one-day version gap, but for sustained work on a specific pattern, keeping the current file is better.
+**Should you track changes?** Pin the revision used for a decision, and review changes before adopting a newer one. A daily reload is optional workflow advice, not a correctness requirement.
 
-**FPF did not answer my question - is that normal?** The task probably falls outside FPF's scope. FPF covers the discipline of reasoning: how to structure, name, and verify logical correctness. Forecasts, facts, and judgment calls require other tools. If the task is structural but the response is not working, narrow it: instead of "help with product strategy," try "classify the claims in this document using A.6."
+**What if FPF did not answer the question?** Check task scope, whether the relevant source was available, and whether the model applied it correctly. Failure can have any of these causes; it does not by itself prove the task is outside FPF's scope.
 
-**Where to start right now?** Take a real document you are working with - a spec, technical brief, postmortem, or process description. Load it along with FPF and ask: "Find category errors in this document and suggest corrections using A.7." In 10-15 minutes you will know if FPF belongs in your workflow.
+**Where to start?** Select a real document and ask for specific category distinctions with citations to the pinned A.7 passage. Compare the proposed corrections with your document; no fixed trial duration establishes usefulness.
 
 ---
 
 Links:
 - FPF itself: [github.com/ailev/FPF](https://github.com/ailev/FPF)
-- What FPF is (long overview): [/blog/en/what-is-fpf/](/blog/en/what-is-fpf/)
-- Where it helps (25 situations): [/blog/en/where-fpf-helps/](/blog/en/where-fpf-helps/)
+- What FPF is (long overview): [/blog/what-is-fpf/](/blog/what-is-fpf/)
+- Where it helps (25 situations): [/blog/where-fpf-helps/](/blog/where-fpf-helps/)

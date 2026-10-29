@@ -150,7 +150,7 @@ pub fn merge_base(repo_root: &Path, ref_name: &str) -> Option<String> {
 }
 
 /// Detect .forgeplan/ files changed between two git refs (or since last N commits).
-/// Returns list of changed files with their status.
+/// Returns A/M/D paths; rename detection is disabled so no path is hidden in R rows.
 pub fn changed_artifact_files(
     repo_root: &Path,
     since_ref: &str,
@@ -159,6 +159,7 @@ pub fn changed_artifact_files(
         .args([
             "diff",
             "--name-status",
+            "--no-renames",
             since_ref,
             "HEAD",
             "--",
@@ -639,6 +640,25 @@ mod tests {
         let files = changed_artifact_files(repo.path(), "HEAD");
         assert!(files.is_ok());
         assert!(files.unwrap().is_empty());
+    }
+
+    #[test]
+    fn changed_artifact_files_reports_both_paths_of_a_rename() {
+        let old_path = ".forgeplan/notes/NOTE-001-before.md";
+        let new_path = ".forgeplan/notes/NOTE-001-after.md";
+        let repo = init_repo_with_files(&[(old_path, "---\nid: NOTE-001\n---\nSame body.\n")]);
+        run_git(repo.path(), &["config", "diff.renames", "true"]);
+        std::fs::rename(repo.path().join(old_path), repo.path().join(new_path)).unwrap();
+        run_git(repo.path(), &["add", "-A"]);
+        run_git(repo.path(), &["commit", "-q", "-m", "move source"]);
+
+        let files = changed_artifact_files(repo.path(), "HEAD~1").unwrap();
+        let mut paths = files
+            .iter()
+            .map(|file| (file.status, file.path.as_str()))
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        assert_eq!(paths, vec![('A', new_path), ('D', old_path)]);
     }
 
     // PROB-060 / SPEC-005 Phase 1.3 — slug_exists_in_filenames pure function.

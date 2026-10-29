@@ -27,10 +27,10 @@ A strategic initiative that groups PRD[], RFC[], ADR[]. Has aggregated progress 
 A set of evidence: tests, benchmarks, measurements. An artifact type (`evid-`). Backs decisions with measurable data.
 
 ### ID Format
-Canonical format: `TYPE-NNN` (uppercase). Examples: `PRD-001`, `EPIC-042`, `ADR-007`, `PROB-003`, `SOL-001`, `SPEC-015`, `RFC-128`. For files: `TYPE-NNN-kebab-case-title.md` (e.g. `PRD-001-social-login.md`). In Rust code, a lowercase prefix with date is used: `prd-20260321-001`.
+Display IDs use `TYPE-NNN` (uppercase), for example `PRD-001`, `EPIC-042`, `ADR-007`. Files commonly use `TYPE-NNN-kebab-case-title.md`. Slug identity (`prd-auth-system`) is separate but not a proven globally unique key; the current creator normally assigns the display number immediately, while nullable assignment and CI finalization belong to the staged ID-assignment design.
 
 ### Note
-A micro-decision. No rationale required. Auto-expires after 90 days. The lightest artifact type. Prefix: `note-`.
+A micro-decision. No full rationale required. A 90-day review interval is a local convention, not an automatic creation default. Prefix: `note-`.
 
 ### PRD (Product Requirements Document)
 A requirements document: **what**, **why**, **for whom**. Defines scope and acceptance criteria. Does not describe implementation. Prefix: `prd-`.
@@ -46,7 +46,7 @@ A formal specification — API contracts, data models, protocols. Describes exac
 ## Scoring & Quality
 
 ### CL (Congruence Level)
-Congruence level 0–3. Indicates how well evidence transfers between contexts:
+Forgeplan's local congruence rubric is 0–3. The fixed penalties below are product heuristics, not universal upstream FPF penalties:
 
 | Level | Penalty | Description |
 |-------|---------|-------------|
@@ -59,18 +59,17 @@ Congruence level 0–3. Indicates how well evidence transfers between contexts:
 A computed artifact status. **Never** stored directly — always calculated based on the current state:
 
 ```
-UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED → REFRESH_DUE
+STUB → SHAPED → VALIDATED → EVIDENCED → ACTIVATED
 ```
 
 ### Evidence Decay
-Evidence has a TTL (`valid_until`). Expired evidence receives a score = 0.1 (weak, but not absent). Graduated epistemic debt — the longer it has been expired, the less reliable it is.
+Evidence may have a `valid_until` date. The scorer returns 0.1 after expiry; it does not gradually reduce the score as time passes. No date means no expiry in this calculation. Expiry detection does not itself rewrite the persisted status.
 
 ### F-G-R Trust Calculus
-Three axes for assessing knowledge quality from FPF:
+Distinguish upstream concepts from the product adaptation:
 
-- **Formality** — how formalized the knowledge is
-- **Granularity** — level of detail
-- **Reliability** — source reliability
+- Current FPF (revision `34a1ae7145309f8c18b4c8864513e3456d43de71`, B.3/C.2.2/C.2.3): **F** is ordinal rigor of expression (default F0–F9), **G** is set-like ClaimScope, **R** is claim-specific warrant. It does not prescribe one universal numeric aggregation or fixed CL penalties.
+- Forgeplan `scoring/fgr.rs`: **Formality** is validation-rule pass fraction; **Granularity** is five content-completeness checks; **Reliability** combines R_eff, links and freshness. Each is 0–1; overall FGR is `cbrt(F * G * R)`. These heuristics are not calibrated probabilities.
 
 ### Pareto Front
 A set of non-dominated options — none is strictly worse across **all** dimensions simultaneously. Used when comparing options in a SolutionPortfolio.
@@ -79,14 +78,14 @@ A set of non-dominated options — none is strictly worse across **all** dimensi
 ```
 R_eff = min(evidence_scores) with CL penalties
 ```
-Trust = weakest link, **NEVER** average. Decision reliability is determined by the weakest piece of *current* evidence, not the average. Terminal-status packs (`superseded`/`deprecated`) are excluded from the min (ADR-020); an active `refutes` still zeroes the score.
+Forgeplan uses a weakest-link minimum over eligible current evidence and, in the explicit recursive score report, eligible dependencies. Terminal packs (`superseded`/`deprecated`) are excluded (ADR-020). Unexpired `refutes` contributes zero; expired evidence returns 0.1 first. Recursive scoring also subtracts evidence-type modifiers (test/measurement 0, benchmark 0.1, audit 0.2) and dependency penalties. Flat captured scores omit those modifiers and recursion, so surfaces can differ. See [QUALITY-GATES.md](QUALITY-GATES.md).
 
 ### Stepping Stone
 An option that opens future possibilities even if not optimal now. A boolean flag in SolutionPortfolio. Considered when choosing an option alongside R_eff.
 
 ### Valid Until
 TTL of an artifact or evidence. Upon expiration:
-- Status → `REFRESH_DUE`
+- Expiry/refresh is separate from persisted lifecycle status; the lifecycle uses `stale`, not `REFRESH_DUE`
 - Evidence score → 0.1
 - Re-evaluation via RefreshReport is required
 
@@ -107,10 +106,10 @@ What limits system reliability. System reliability <= min(component reliability)
 ## Workflow
 
 ### Adversarial Review
-A review protocol from BMAD: the reviewer **MUST** find problems; 0 problems found = redo the review. Ensures quality through constructive confrontation.
+A locally adapted review protocol: actively search for defects and justify each finding. Zero confirmed defects is acceptable with stated scope and unexamined risks; optional Rust adversarial checks emit `adversarial-too-clean` at COULD. Pinned BMAD prompting requests at least ten issues; native `/forge-cycle` separately retains its own issue quota. Those prescriptions do not prove defects exist, and this glossary does not amend native policy.
 
 ### Contextual Chain
-A pattern from BMAD: the output of each phase = the input to the next. Automatic context transfer without loss. Guarantees that no intermediate step result is lost.
+An adopted hand-off convention: use each phase's output as input to the next. It encourages explicit context transfer but is not a guarantee of lossless automatic transfer across agents or tools.
 
 ### Depth Calibration
 4 levels of documentation depth that determine the set of artifacts to create:
@@ -123,10 +122,10 @@ A pattern from BMAD: the output of each phase = the input to the next. Automatic
 | Critical | Subsystem, cross-team | Epic → PRD[] → Spec[] → RFC[] → ADR[] |
 
 ### Forge Cycle
-A full FPF-aligned development cycle: Observe → Route → Shape → Sprint → Build → Audit → Fix → Evidence → Commit → PR → Activate → Next. Implemented as the `/forge-cycle` command in Claude Code. Automatically resolves conflicts via ADI + WLNK + Reversibility.
+A local FPF-aligned development-cycle convention: Observe → Route → Shape → Sprint → Build → Audit → Fix → Evidence → Commit → PR → Activate → Next. The `/forge-cycle` Claude Code prompt guides the agent; it is not a Rust executor or a guarantee of automatic completion or conflict resolution.
 
 ### Forge Mode
-A permission model for AI agents with 3 trust zones (FPF B.3): Green (auto — cargo, forgeplan, git read), Yellow (acceptEdits — files), Red (blocked — force push, rm -rf). Implemented via a whitelist in settings + a PreToolUse blacklist hook.
+A local permission-model convention with Green/Yellow/Red zones, not an FPF B.3 permission standard. Actual authorization depends on the host's settings and loaded hooks; the illustrative configuration in [FORGEPLAN-GUIDE.md](FORGEPLAN-GUIDE.md) does not install or prove those controls.
 
 ### Invariants
 What **MUST** always hold true. Inviolable constraints. Part of DDR. If an invariant is violated, the decision is considered invalid and requires reconsideration.
@@ -152,16 +151,16 @@ A mechanism in `/forge-cycle` Phase 0: fixes SESSION_SCOPE (tactical/strategic).
 ## AI & Integration
 
 ### ADI cycle
-Abduction (3+ hypotheses) → Deduction (logical verification) → Induction (practical verification). A reasoning cycle from FPF. Each phase filters and refines the result of the previous one.
+Abduction (candidate explanations) → Deduction (testable consequences) → Induction (evaluation against evidence), following FPF B.5. Forgeplan's prompt requests 3+ distinct alternatives as a local anti-anchoring heuristic; its parser does not enforce that count. Current upstream B.5.2 requires a serious rival or a justified absence, not a universal three-option threshold.
 
 ### FPF (First Principles Framework)
 An "operating system for thinking." A trans-disciplinary architecture for reasoning. The source of the ADI cycle, F-G-R Trust Calculus, Verification Gate, and other Forgeplan patterns.
 
 ### FPF auto-resolve
-Automatic conflict/choice resolution during the `/forge-cycle` Build phase. Uses the ADI cycle: Abduction (3 hypotheses) → Deduction (consequences of each) → Induction (WLNK + Reversibility → choice). Asks the user only for irreversible decisions.
+The native `/forge-cycle` Build prompt uses ADI, weakest-link and reversibility checks to recommend choices. Its local stop conditions include irreversible decisions, equally weak options and cross-cutting/other-PRD impact. This is agent guidance, not a Rust conflict resolver or a grant of permission beyond the current assignment.
 
 ### LanceDB
-An embedded database: structured tables + vector embeddings in one DB. Source of truth for Forgeplan. Enables combining exact field-based search and semantic content search.
+An embedded database for structured tables and vector embeddings. It is a derived, rebuildable index over canonical Markdown in `.forgeplan/<kind>/`, not Forgeplan's source of truth. Constellation publishes immutable index generations; legacy and migrated layouts are not interchangeable.
 
 ---
 
@@ -171,19 +170,22 @@ An embedded database: structured tables + vector embeddings in one DB. Source of
 - [PRD-RFC-ADR-FLOW.md](PRD-RFC-ADR-FLOW.md) — decision tree: which document to create
 - [VISION.md](../../VISION.md) — architecture and data model
 
-## Lifecycle statuses by artifact type
+## Persisted Lifecycle Statuses
 
-| Type | Lifecycle |
-|------|-----------|
-| PRD | Draft → Review → Approved → Implementing → Implemented → Closed (or Rejected) |
-| Epic | Draft → Active → Done → Archived (or Cancelled) |
-| Spec | Draft → Approved → Implemented |
-| RFC | Draft → Discussion → Accepted → Implemented → Superseded |
-| ADR | Proposed → Accepted → Deprecated → Superseded |
-| ProblemCard | Draft → Active → Resolved |
-| SolutionPortfolio | Draft → Active → Decided |
-| EvidencePack | Draft → Active → Expired |
-| Note | Active → Expired (auto-expires 90 days) |
-| RefreshReport | Draft → Complete |
+Core lifecycle kinds use this status vocabulary; other kinds may have different
+or no stored lifecycle.
 
-**Important**: these are type-specific lifecycles. Do not confuse them with DerivedStatus (UNDERFRAMED→...→APPLIED), which is calculated automatically based on the completeness of the ProblemCard→SolutionPortfolio→ADR→EvidencePack chain and is NOT stored as a field.
+```text
+draft --activate--> active
+active --> superseded | deprecated | stale
+stale --renew--> active
+stale --reopen--> deprecated + new draft
+stale --deprecate--> deprecated
+```
+
+`superseded` and `deprecated` are terminal. Review, Approved, Implementing,
+Implemented, Done, Archived, Resolved, Decided, Expired and Complete are process
+descriptions, not additional persisted status values. `review` is a check, not a
+status transition. Session phases and artifact lifecycle phase markers are
+separate, as is DerivedStatus (STUB→SHAPED→VALIDATED→EVIDENCED→ACTIVATED).
+Its labels are computed from inputs, not proof that every earlier check ran.

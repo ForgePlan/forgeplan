@@ -27,7 +27,10 @@ flowchart LR
   D --> E[Build] --> F[Prove] --> G[Activate]
 ```
 
-Consider a real scenario: your team decides to use JWT for authentication. Six months later, a security audit asks why you chose JWT over session-based auth. With Forgeplan, the ADR explains the reasoning, the Evidence shows the benchmark results, and the PRD traces back to the original requirements. Without Forgeplan, you are digging through Slack history and hoping someone remembers.
+Consider a hypothetical scenario: your team chooses JWT for authentication.
+Six months later, a security audit asks why. A maintained ADR can explain the
+choice, linked Evidence can record the actual checks, and the PRD can preserve
+requirements. Creating the files alone does not guarantee that trail exists.
 
 ## What Forgeplan Is NOT
 
@@ -40,7 +43,9 @@ Forgeplan is a **structured knowledge base for engineering decisions** -- local-
 ## Core Principles
 
 ### 1. Pipeline is a guideline, not bureaucracy
-Don't create all 10 artifact types for every task. Tactical depth = just code. Deep depth = full pipeline. If the answer is obvious and reversible, skip the paperwork. A one-line bug fix does not need a PRD.
+Do not create every artifact kind for every task. Tactical depth can proceed
+without an artifact; Deep work uses the fuller pipeline. Base the choice on
+consequences and reversibility, not just the number of changed lines.
 
 ### 2. Every requirement: "[Actor] can [capability]"
 No implementation leakage in PRDs. Describe WHAT, not HOW. Write "User can persist and query structured data with ACID guarantees" -- not "Use PostgreSQL for storage." The moment you name a technology in a requirement, you have closed off alternatives before evaluating them.
@@ -53,30 +58,42 @@ Old artifacts get `status: superseded`. History is preserved. When your team ask
 
 ### 5. R_eff = min(evidence)
 Trust is the weakest link. Not average -- minimum. One blind spot drags everything down. If you have three solid benchmarks and one completely untested assumption about production load, your decision reliability equals that untested assumption.
+The scorer can only aggregate represented evidence and dependencies.
+It does not automatically discover an undocumented assumption. Terminal
+evidence packs are excluded; explicit score reports and captured record
+fields also use different scoring populations.
 
 ## The Full Cycle
+
+This is a methodology outline, not a runnable transcript. Use real returned
+IDs and the pipeline for the selected depth. See [Constellation](/docs/reference/constellation/)
+for recorded compatibility coverage and remaining limits. Passing validation
+is not the same as satisfying activation gates.
 
 ```
 1. Route:    forgeplan route "your task" -> determines depth
 2. Shape:    forgeplan new prd "Title" -> create artifact
 3. Validate: forgeplan validate PRD-XXX -> quality gates
-4. Reason:   forgeplan reason PRD-XXX -> ADI hypotheses (Standard+)
+4. Reason:   forgeplan reason PRD-XXX -> ADI (recommended Standard; required Deep+)
 5. Build:    write code, test every pub fn
 6. Prove:    forgeplan new evidence -> link -> score
 7. Activate: forgeplan activate PRD-XXX
 ```
 
-**Work isn't done until:** PRD filled + validated + evidence created + R_eff > 0 + activated.
+For work closing a lifecycle decision, completion includes the filled,
+validated artifact, required evidence/review and deliberate activation.
+A validated plan can intentionally remain draft; Tactical work may have
+no PRD at all. R_eff > 0 alone does not prove every activation gate passed.
 
 ## Common Mistakes
 
-- **Creating artifacts for everything.** A button color change does not need a PRD. Use `forgeplan route` to determine the right level of rigor -- most tasks are Tactical and need zero documentation.
+- **Creating artifacts for everything.** A low-risk color change may not need a PRD. Route by consequences; no measured proportion of Tactical tasks is implied.
 - **Leaving PRD stubs.** Creating an empty PRD and moving on to code means you now have a stub that clutters your project health. Either fill it immediately or do not create it.
 - **Activating without evidence.** An active PRD with no code, no tests, and R_eff = 0 is a false promise. It tells anyone reading your project that this decision is validated when it is not.
-- **Skipping ADI on Deep decisions.** If the router says Deep and you jump straight to code, you are betting on your first idea without checking alternatives. ADI takes 10 minutes; a wrong architecture takes weeks to undo.
+- **Skipping ADI on Deep decisions.** Examine serious alternatives before coding. Three approaches are the product prompt's anti-anchoring heuristic, not a guaranteed reasoning duration or proof of correctness.
 - **Treating the pipeline as a checklist.** The pipeline is a thinking tool. Going through the motions mechanically (create PRD, check; create RFC, check) without actually reasoning through each step defeats the purpose.
 
-## 10 Artifact Types
+## Ten Common Artifact Types
 
 | Type | Question it answers | When to use |
 |------|-------------------|-------------|
@@ -88,10 +105,12 @@ Trust is the weakest link. Not average -- minimum. One blind spot drags everythi
 | **Problem** | What's the signal? | Bug, risk, observation |
 | **Evidence** | Does it work? | Test results, benchmarks |
 | **Solution** | Which option? | 2-3 variant comparison |
-| **Note** | Quick decision | Micro-decision (90-day TTL) |
+| **Note** | Quick decision | Micro-decision; 90 days is a suggested review interval, not automatic runtime expiry |
 | **Refresh** | Still valid? | Stale artifact re-evaluation |
 
-In practice, most teams use 5-6 types regularly: PRD, RFC, ADR, Evidence, Problem, and Epic. The rest (Note, Solution, Spec, Refresh) are situational. Do not feel obligated to use all 10.
+Choose types for the work, not a quota. The core also supports Memory and
+six brownfield kinds (UseCase, Glossary, Invariant, Scenario, Hypothesis,
+DomainModel); not every creation API exposes the same kind set.
 
 ## When NOT to Create an Artifact
 
@@ -116,7 +135,7 @@ this list is the index.
 5. **Supersede, don't delete** - [Lifecycle](/docs/methodology/lifecycle/)
 6. **Quality gates by depth** - Tactical = nothing, Standard = Verification Gate, Deep+ = Adversarial Review
 7. **Session start: `health` + memory recall** - fix orphans and blind spots first
-8. **Work isn't done until R_eff > 0 + activated** - [Evidence & R_eff](/docs/methodology/evidence/)
+8. **Closing a decision: evidence and deliberate activation** - [Evidence & R_eff](/docs/methodology/evidence/)
 9. **ADI is mandatory on Deep+** - [ADI Reasoning](/docs/methodology/adi/)
 10. **Stale = re-validate, don't ignore** - set `valid_until` on every ADR
 

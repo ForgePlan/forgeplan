@@ -3,10 +3,9 @@ title: forgeplan unlink
 description: "Удалить связь между двумя артефактами"
 ---
 
-Удаляет типизированную связь между двумя артефактами. Обратная операция для
-[`forgeplan link`](/docs/cli/link/). Используйте `unlink`, чтобы исправить ошибки - неправильное
-направление, неправильный тип связи, просроченная связь, оставшаяся от замещённого
-решения - без ручного переписывания markdown.
+Удаляет типизированную связь между двумя артефактами, обратная операция к
+[`forgeplan link`](/ru/docs/cli/link/). Исправляет неверное направление
+или тип связи, оставляя сами артефакты на месте.
 
 ## Использование
 
@@ -31,13 +30,13 @@ forgeplan unlink [OPTIONS] <SOURCE> <TARGET>
 
 ## Что делает команда
 
-1.  Ищет связь в таблице `links` LanceDB по ключу
-    `(source, target, relation)`.
-2.  Удаляет строку, если найдена.
-3.  Обновляет все производные кэши - `score`, `graph` и `blocked` отразят
-    изменение при следующем запуске.
-4.  Завершает работу без ошибок, даже если соответствующая связь не существует,
-    что делает команду идемпотентной и безопасной для использования в скриптах.
+Команда удаляет совпавшее ребро `(source, target, relation)` и обновляет
+каноническую проекцию. В workspace Constellation локальной
+`0.39.0+constellation.s1.1` меняет `links:` frontmatter исходного файла и
+запрашивает reconcile без открытия legacy storage.
+
+Отсутствующее ребро - ошибка (`Relation '…' from … to … not found`), не
+успешный no-op. Второй одинаковый вызов поэтому может завершиться ошибкой.
 
 Отмена связи **не** удаляет ни один из артефактов. Она только удаляет ребро.
 
@@ -65,47 +64,62 @@ forgeplan unlink EVID-017 ADR-004 --relation contradicts
 
 ## Тип связи должен совпадать
 
-Флаг `--relation` должен соответствовать типу ребра, которое вы хотите удалить. Если
-вы связали `EVID-001 → PRD-001` с помощью `--relation informs`, вызов
-`forgeplan unlink EVID-001 PRD-001 --relation based_on` не даст никакого эффекта, потому что
-такого ребра не существует.
+`--relation` должен совпадать с записанным типом. Если ребро имеет тип
+`informs`, удаление `based_on` сообщит, что связь не найдена.
 
 Если сомневаетесь, сначала проверьте граф:
 
 ```bash
-forgeplan graph PRD-001         # показать все рёбра, связанные с PRD-001
-forgeplan show PRD-001 --links  # вывести связи в табличной форме
+forgeplan graph                 # граф workspace, без positional ID артефакта
+forgeplan get PRD-001 --json     # проверить links в ответе артефакта
 ```
 
 ## Защита от самосвязей (PROB-019)
 
-Поскольку самосвязи не могут быть созданы (см. [`forgeplan link`](/docs/cli/link/)),
-`forgeplan unlink PRD-001 PRD-001` никогда не найдёт совпадения и завершит работу без эффекта.
+Самосвязи отклоняются при создании. Попытка удалить несуществующую
+самосвязь поэтому сообщает об отсутствии связи, не об успешном no-op.
 
 ## Побочные эффекты
 
--   [`forgeplan score`](/docs/cli/score/) пересчитывает R_eff для целевого элемента. Если
-    вы удалите единственное поддерживающее ребро `informs`, оценка упадёт до 0, и
-    артефакт станет слепым пятном на [`forgeplan health`](/docs/cli/health/).
--   [`forgeplan blocked`](/docs/cli/blocked/) и
-    [`forgeplan order`](/docs/cli/order/) повторно запускают топологическую сортировку.
--   Граф Mermaid из [`forgeplan graph`](/docs/cli/graph/) теряет ребро.
+- [`forgeplan score`](/ru/docs/cli/score/) пересчитывает R_eff. Удаление
+  единственного supporting `informs` может убрать поддержку решения.
+- [`forgeplan blocked`](/ru/docs/cli/blocked/) и
+  [`forgeplan order`](/ru/docs/cli/order/) перечитывают структуру зависимостей.
+- [`forgeplan graph`](/ru/docs/cli/graph/) больше не показывает удалённое ребро.
 
 ## Примечания
 
--   Unlink идемпотентен - запуск дважды даёт тот же эффект, что и запуск
-    один раз. Нет ошибки при отсутствии ребра.
--   Чтобы полностью удалить артефакт (включая все его связи), используйте
-    [`forgeplan delete`](/docs/cli/delete/) - он каскадно удаляет связи за
-    один проход.
--   Прямые изменения файлов `.forgeplan/<kind>s/<id>.md` никогда не затрагивают таблицу `links`.
-    Если вам нужно вручную отредактировать связи, запустите
-    [`forgeplan scan-import`](/docs/cli/scan-import/) после этого.
+- Отсутствующее ребро вызывает ошибку; скрипт должен обработать такой результат.
+- Unlink удаляет ребро, не артефакт. Не удаляйте артефакт ради исправления связи.
+- После осознанной правки frontmatter используйте
+  [`forgeplan index`](/ru/docs/cli/index-command/) на Constellation или legacy `reindex` для подходящей раскладки,
+  не `scan-import`.
 
 ## См. также
 
--   [Обзор CLI](/docs/cli/)
--   [`forgeplan link`](/docs/cli/link/) - создать связь
--   [`forgeplan graph`](/docs/cli/graph/) - визуализировать текущие связи
--   [`forgeplan score`](/docs/cli/score/) - пересчитать R_eff после отмены связи
--   [Руководство по методологии](/docs/methodology/overview/)
+- [Обзор CLI](/ru/docs/cli/)
+- [`forgeplan link`](/ru/docs/cli/link/) - создать связь
+- [`forgeplan graph`](/ru/docs/cli/graph/) - граф связей
+- [`forgeplan score`](/ru/docs/cli/score/) - R_eff
+- [Методология](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan unlink --help`.
+
+```text
+Remove a relation between two artifacts
+
+Usage: forgeplan unlink [OPTIONS] <SOURCE> <TARGET>
+
+Arguments:
+  <SOURCE>  Source artifact ID
+  <TARGET>  Target artifact ID
+
+Options:
+      --relation <RELATION>  Relationship type to remove [default: informs]
+  -h, --help                 Print help
+  -V, --version              Print version
+```
+<!-- forgeplan-runtime:end -->

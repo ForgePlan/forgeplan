@@ -17,16 +17,21 @@ stateDiagram-v2
     draft --> active: activate<br/>(validation gate)
     active --> superseded: supersede --by
     active --> deprecated: deprecate --reason
-    active --> stale: valid_until expired
+    active --> stale: explicit stored-status transition
     stale --> active: renew --until
     stale --> deprecated: reopen (+ NEW draft)
     superseded --> [*]
     deprecated --> [*]
 ```
 
-**Terminal states** (superseded, deprecated) never transition out. The only
-way "back" is to create a new artifact that supersedes the terminal one, so
-decision history is preserved.
+This is the persisted-status model. Date-expiry detection reports overdue
+artifacts without rewriting `status: active` to `stale`. Reopen also accepts
+a stored `active` artifact and creates a new draft before deprecating the old.
+
+**Terminal states** have no outgoing ordinary lifecycle transitions.
+Re-evaluation creates a new artifact with lineage. Receipt-based recovery
+through [`restore`](/docs/cli/restore/) or `undo-last` is a separate mechanism
+for reversing a recorded accidental operation.
 
 ## States
 
@@ -41,6 +46,11 @@ decision history is preserved.
 Every artifact starts as **draft**. It stays there until you explicitly validate and activate it. This is intentional -- there is no automatic promotion. You have to earn the "active" status by passing validation gates.
 
 ## Lifecycle Commands
+
+The commands below illustrate lifecycle semantics, not runtime coverage for
+every tool. Registration in `tools/list` alone does not prove runtime
+acceptance. See [Constellation](/docs/guides/constellation/) for recorded
+compatibility coverage and remaining limits.
 
 ```bash
 # Validate before activating
@@ -68,7 +78,9 @@ forgeplan reopen PRD-001 --reason "Needs major revision"
 
 ### When to Use Each Transition
 
-**Activate** when the artifact is complete, validated, and you are ready to build from it. This is the "green light" that says "this plan is approved."
+**Activate** when the artifact is validated, in use, and backed by the
+required implementation and evidence. Approval to start work and successful
+schema validation alone are not activation readiness.
 
 **Supersede** when a better version exists. Your original auth PRD (PRD-001) called for basic JWT. Six months later, requirements changed and you wrote PRD-002 with OAuth2 federation. Supersede PRD-001 with PRD-002 so anyone looking at the old one is redirected to the new one.
 
@@ -76,18 +88,27 @@ forgeplan reopen PRD-001 --reason "Needs major revision"
 
 **Renew** when a stale artifact is still valid. Your ADR chose LanceDB a year ago and it expired. You re-evaluated and LanceDB is still the right choice. Renew it with a new expiration date.
 
-**Reopen** when a stale artifact needs a major rethink. The old version is deprecated but you need a fresh take. This creates a new draft with lineage back to the original.
+`renew` checks the stored status, not merely membership in `stale` output.
+An expired record still stored as `active` cannot pass active→active through
+that guard. The generic guard also admits draft→active; neither fact makes
+date-only renewal proof of re-verification.
+
+**Reopen** when an active or stale artifact needs a major rethink. It creates
+a new draft with lineage and deprecates the original.
 
 ## Terminal States
 
-**Superseded** and **deprecated** are terminal -- no transitions out.
+**Superseded** and **deprecated** are terminal in normal status transitions.
 
-- Superseded: the replacement artifact should be used instead
-- Deprecated: use `forgeplan reopen` to create a new draft if needed
+- Superseded: use the replacement artifact.
+- Deprecated: create a new artifact if the decision needs to be made again.
 
-### Why Terminal Means Terminal
+### Recovery is not reactivation
 
-Once an artifact reaches superseded or deprecated, it never comes back. This is intentional. If you decided to replace your auth system (ADR-001 superseded by ADR-002), re-activating ADR-001 would create confusion about which decision is actually in effect. Instead, if circumstances change, create a new artifact with its own lineage.
+For an accidental delete, supersede, or deprecate, `restore`/`undo-last` can
+consume a matching soft-delete receipt and reverse its recorded operation.
+Without such a receipt, changing a terminal status back is not the ordinary
+lifecycle. Changed requirements call for a new decision, not recovery.
 
 **Example**: You chose JWT (ADR-001), then switched to sessions (ADR-002, supersedes ADR-001). A year later, you want JWT again. Do not reactivate ADR-001. Create ADR-003 that supersedes ADR-002 -- this preserves the full decision history: JWT then Sessions then JWT-again, with reasons documented at each step.
 
@@ -97,35 +118,43 @@ PRD, RFC, ADR, Epic, Spec require validation before activation:
 
 ```bash
 forgeplan validate PRD-001
-# Checks 30+ rules per artifact type:
+# Runs applicable kind/depth rules; not every rule applies to every artifact:
 # - MUST sections present (Problem, Goals, FR...)
 # - No implementation leakage in requirements
 # - Information density (no filler)
 # - Measurability (SMART criteria)
 ```
 
-Notes and Problems can be activated without validation gate. This is by design -- Notes are quick captures (90-day auto-expiry) and Problems are observations that need to be recorded fast without friction.
+Notes and Problems skip the ordinary activation validation gate. Notes are
+quick captures, but the current `new` path does not automatically assign a
+90-day expiry. Set an explicit `valid_until` date when expiry is wanted.
 
 ### What Validation Actually Checks
 
-Validation is not just "are the sections present." It inspects content quality:
+Validation includes content heuristics as well as schema checks. Severity
+depends on kind and depth; warnings are not necessarily blocking MUST errors,
+and passing the validator is not proof of semantic correctness.
 
 - **Information density**: filler phrases like "it is important to note that" are flagged. Every sentence should carry meaning.
 - **Implementation leakage**: naming specific frameworks or libraries in requirements (e.g., "Use Redis for caching") gets flagged. Requirements describe capabilities, not implementations.
-- **Measurability**: vague requirements like "system should be fast" fail. Good requirements have numbers: "API response time < 200ms at p95 under 1000 RPS."
+- **Measurability**: vague requirements can produce findings. Concrete targets such as "API response time < 200ms at p95 under 1000 RPS" are testable, but the validator does not exercise that workload.
 - **Traceability**: requirements should trace back to goals, and goals should trace back to the problem statement.
 
 ## Stale: The Forgotten State
 
-Stale is the state most teams ignore -- and it is the most dangerous. When an artifact's `valid_until` date expires, it becomes stale. This does not mean it is wrong; it means nobody has verified it is still right.
+When `valid_until` expires, detection reports the artifact as overdue; it
+does not automatically persist a new status. Expiry means the review date
+passed, not that the decision is proven wrong.
 
-**Example**: You created an ADR six months ago choosing LanceDB because it had the best Rust SDK at the time. The `valid_until` was set to 180 days. Now it is stale. Maybe LanceDB is still the right choice -- or maybe a better option emerged. The stale status forces you to explicitly re-evaluate rather than silently assuming.
+**Example**: an ADR has a calendar `valid_until` date chosen 180 days after
+creation. Once that date passes, reassess the decision before extending it.
+The field is a date, not the literal duration `180 days`.
 
 ```bash
 # Find all stale artifacts
 forgeplan stale
 
-# Re-validate and extend
+# Only if the stored status permits renewal; stale detection alone is insufficient
 forgeplan renew ADR-001 --reason "Re-evaluated, still best option" --until 2027-06-30
 
 # Or acknowledge it needs rethinking
@@ -136,8 +165,8 @@ forgeplan reopen ADR-001 --reason "New alternatives available, needs fresh evalu
 
 - **Activating a PRD before writing any code.** Active means "validated and in use." If the code does not exist yet, the PRD is not in use -- it is still a plan. Keep it in draft until implementation begins and evidence exists.
 - **Never superseding, only creating new artifacts.** If ADR-002 replaces ADR-001 but you do not mark the supersession, both appear active and nobody knows which is current.
-- **Ignoring stale warnings.** When `forgeplan health` reports stale artifacts, address them. Stale evidence means your R_eff scores are silently degrading to 0.1.
-- **Treating draft as "done enough."** Draft artifacts show up as incomplete in health checks. Either finish them and activate, or delete the stub if you decided against it.
+- **Ignoring stale warnings.** An expired eligible evidence item contributes `0.1` when scored. The artifact's aggregate also depends on other evidence/dependencies; expiry is a step change, not gradual decay or a universal final score of `0.1`.
+- **Treating a draft as already active.** A complete, validated artifact can intentionally remain draft while implementation, evidence or approval is pending. Do not activate merely to clear a dashboard warning.
 - **Forgetting `valid_until` on ADRs.** Every architecture decision has a shelf life. Set realistic expiration dates (90-180 days) so stale detection works.
 
 ## Related

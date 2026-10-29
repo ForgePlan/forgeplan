@@ -2,7 +2,21 @@
 
 # ForgePlan — Agent Enforcement Guide
 
-How to make an AI agent MANDATORY follow the ForgePlan methodology.
+Early enforcement design examples, not an installed or copy-ready configuration.
+
+> The snippets below preserve the original design vocabulary and proposed
+> policies; they do not override current `AGENTS.md`/`CLAUDE.md`. Instructions,
+> MCP registration and warnings alone cannot force tool use or block a merge.
+> The selected CLI does not accept `serve --mcp`, `status --brief`,
+> `drift --quiet --files`, `drift --ci --fail-on-drift`,
+> `validate --all --fail-on-incomplete`, `coverage --percent` or
+> `score --stale-count`. `context` takes an artifact ID; there is no registered
+> `forgeplan_context` tool. Proposed hook variables and flat hook JSON below are
+> not the current Claude Code hook contract. Use [AGENT-HOOKS.md](AGENT-HOOKS.md)
+> and [QUALITY-GATES.md](QUALITY-GATES.md) for maintained instructions, then
+> inspect the selected executable's help/catalog and actual host configuration.
+> File-count thresholds and Standard+ ADI below are sample local policies, not
+> the Rust routing algorithm. No native policy is installed or changed here.
 
 **5 enforcement levels** (from soft to hard):
 

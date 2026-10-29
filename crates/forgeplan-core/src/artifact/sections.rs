@@ -351,10 +351,11 @@ Make it work.
 
     #[test]
     fn flat_spans_are_the_exact_bytes_of_each_section() {
+        let lone_range = 0..13;
         let cases: [(&str, &[std::ops::Range<usize>]); 4] = [
             ("## A\n\nalpha\n\n## B\n\nalpha\n", &[0..13, 13..25]),
             ("## Same\n\nalpha\n\n## Same\n\nalpha\n\n", &[0..16, 16..32]),
-            ("# Lone title\n", &[0..13]),
+            ("# Lone title\n", std::slice::from_ref(&lone_range)),
             ("## A\n## B\nx\n", &[0..5, 5..12]),
         ];
         for (md, expected) in cases {

@@ -3,10 +3,10 @@ title: forgeplan calibrate-estimate
 description: "Compare estimated vs actual hours and measure estimation drift after a sprint."
 ---
 
-`forgeplan calibrate-estimate` closes the loop on `forgeplan estimate`. You pass the
-actual hours you spent on an artifact, and it reports how far the estimate was off -
-per grade, per FR, and overall. Over time this feeds back into your `grade_profile`
-config so estimates get sharper.
+`forgeplan calibrate-estimate` reruns the estimate and compares one estimated total
+with positive, finite actual hours. `--grade` selects a grade total; without it,
+the command uses the total score. It prints actual/estimated ratio and accuracy,
+but does not allocate actual hours per FR, save a calibration dataset or update config.
 
 Without calibration, estimates drift silently: you think you're "senior on backend" but
 consistently overshoot 50%. This command surfaces that gap so you can adjust the
@@ -16,7 +16,7 @@ multiplier, not just your intuition.
 
 - End of sprint: run on every PRD/RFC you closed to build a calibration dataset.
 - After a surprise (big over/under-run) - immediate feedback while context is fresh.
-- Quarterly review - aggregate `--json` output to tune `estimate.grade_profile` in config.
+- Quarterly review — save the text reports and review profile changes manually; this command has no `--json`.
 - Benchmarking a new grade profile - compare actual vs different grade assumptions.
 
 ## When NOT to use
@@ -53,14 +53,13 @@ forgeplan calibrate-estimate [OPTIONS] --actual-hours <ACTUAL_HOURS> <ID>
 forgeplan calibrate-estimate PRD-001 --actual-hours 18
 ```
 
-Output:
+Hypothetical excerpt if the selected estimate is 13.5h (not a captured run):
 
 ```text
-PRD-001 - Auth System
-  estimated (senior):    13.5h
-  actual:                18.0h
-  drift:                 +33.3%  (over)
-  verdict:               estimate undershot - adjust senior backend multiplier +15%
+Estimated:  13.5h
+Actual:     18.0h
+Ratio:      1.33x (actual / estimated)
+Accuracy:   75%
 ```
 
 ### Compare against a different grade
@@ -69,13 +68,13 @@ PRD-001 - Auth System
 forgeplan calibrate-estimate PRD-001 --actual-hours 18 --grade middle
 ```
 
-Output:
+Hypothetical excerpt if the middle-grade estimate is 22h:
 
 ```text
-estimated (middle):   22.0h
-actual:               18.0h
-drift:                -18.2%  (under)
-verdict:              you performed between middle and senior on this one
+Estimated:  22.0h
+Actual:     18.0h
+Ratio:      0.82x (actual / estimated)
+Accuracy:   82%
 ```
 
 ### Aggregate across the sprint
@@ -91,16 +90,14 @@ multipliers for `.forgeplan/config.yaml`.
 
 ## Output interpretation
 
-| Drift range     | Interpretation                                |
-|-----------------|-----------------------------------------------|
-| within ±15%     | estimate is accurate - no tuning needed       |
-| +15% … +40%     | under-estimated - increase grade multiplier   |
-| > +40%          | depth was wrong, not estimate - escalate      |
-| -15% … -40%     | over-estimated - decrease multiplier          |
-| < -40%          | scope was cut or estimate inflated            |
+`ratio = actual / estimated`; accuracy is `min(ratio, 1 / ratio) × 100%`.
+The implementation gives optimistic-estimate advice above 1.1x and stronger
+buffer advice above 1.5x; below 0.7x it warns about conservative estimates,
+with stronger advice below 0.5x.
 
-Track drift per domain (backend, frontend, devops, ai_ml). A single PRD is noise;
-ten PRDs is signal.
+These are estimation heuristics, not proof of a depth mistake or scope change.
+Inspect what actually changed before tuning a profile. A larger, comparable
+set of completed artifacts is more useful than a single result.
 
 ## How it fits the workflow
 
@@ -117,3 +114,24 @@ you review the drift and decide what to change.
 - [`forgeplan config`](/docs/getting-started/configuration/) - where grade_profile lives
 - [Unified Workflow](/docs/guides/git-workflow/) - sprint close rituals
 - [CLI overview](/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan calibrate-estimate --help`.
+
+```text
+Compare estimated vs actual hours — calibrate estimation accuracy
+
+Usage: forgeplan calibrate-estimate [OPTIONS] --actual-hours <ACTUAL_HOURS> <ID>
+
+Arguments:
+  <ID>  Artifact ID to calibrate
+
+Options:
+      --actual-hours <ACTUAL_HOURS>  Actual hours spent
+      --grade <GRADE>                Grade to compare (junior, mid, senior). Defaults to total score
+  -h, --help                         Print help
+  -V, --version                      Print version
+```
+<!-- forgeplan-runtime:end -->

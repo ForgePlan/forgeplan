@@ -2,7 +2,15 @@
 
 [English](README.md) · [Русский](README.ru.md)
 
-Production documentation for the Forgeplan project.
+Contributor documentation for the Forgeplan project. Task-oriented user guides
+and CLI/MCP references live on [the website](https://forgeplan.dev/docs/).
+
+- [Constellation user guide](https://forgeplan.dev/docs/guides/constellation/)
+- [Constellation interface reference](https://forgeplan.dev/docs/reference/constellation/)
+- [Portable pilot and rollback runbook (RU)](operations/CONSTELLATION-PILOT.ru.md)
+
+Constellation documentation targets the scoped `0.39.0+constellation.s1.1`
+build, not the published `0.38.0` release. It is not a full S1-G/S2 acceptance claim.
 
 > **Local notes** (research, planning, sessions, raw source materials) live in `.local/` (gitignored) — not part of this tree.
 
@@ -15,7 +23,7 @@ docs/
 ├── methodology/       ← how the Forgeplan methodology works (for humans)
 ├── architecture/      ← system architecture references (C4, Constellation)
 ├── operations/        ← agent hooks, enforcement, repo protection (devops)
-└── schemas/           ← formal artifact schemas (contracts for the validator)
+└── schemas/           ← artifact conventions and implemented validation rules
 ```
 
 **Artifacts** (PRDs, RFCs, ADRs, Epics, Specs, Evidence, Problems, Notes) live in the Forgeplan workspace at `.forgeplan/` — see [Artifacts](#artifacts) below.
@@ -35,7 +43,7 @@ Full methodology reference. Canonical source for humans learning to use Forgepla
 | [UNIFIED-WORKFLOW.md](methodology/UNIFIED-WORKFLOW.md) | Forgeplan × Orchestra × Hindsight integration |
 | [USAGE-BY-ROLE.md](methodology/USAGE-BY-ROLE.md) | How to use Forgeplan based on your role |
 | [METHODOLOGY-COURSE.md](methodology/METHODOLOGY-COURSE.md) | Full learning path (course format) |
-| [GLOSSARY.md](methodology/GLOSSARY.md) | 31 terms + lifecycle reference table |
+| [GLOSSARY.md](methodology/GLOSSARY.md) | Core terms and lifecycle reference table |
 | [LESSONS.ru.md](methodology/LESSONS.ru.md) | Lessons learned — dependent sprint base verification, audit incidents, process improvements |
 | [agent-protocol.md](methodology/agent-protocol.md) | **Hint contract (PRD-071)** — 5 markers (Next/Or/Wait/Done/Fix), good/bad examples, agent reading protocol |
 | [release-workflow.md](methodology/release-workflow.md) | End-to-end release recipe — dependabot triage gate, version bump, release/* PR strategy, post-release sync (CLAUDE.md red lines #9 + #10), hotfix flow, anti-patterns |
@@ -58,6 +66,8 @@ Setup, hooks, and repository protection.
 | [PLAYBOOK-AUTHORING.ru.md](operations/PLAYBOOK-AUTHORING.ru.md) | **v0.26.0+ playbook authoring** — declarative YAML workflows, 5 delegation types, fallback hints, DAG ordering. **v0.27.0+ Subprocess lifecycle** section (real dispatchers, kill_on_drop, timeout policy, security model) per ADR-010/PRD-072 |
 | [INGEST-MAPPINGS.ru.md](operations/INGEST-MAPPINGS.ru.md) | **v0.26.0+ ingest mapping authoring** — translate plugin output to forge artifacts with hallucination-proof `## Sources` invariant (PRD-066/SPEC-004) |
 | [QUALITY-GATES.ru.md](operations/QUALITY-GATES.ru.md) | **v0.28.0+ CI quality gates** — all CI gates (fmt, clippy, test, health, validate, drift detector) with local run commands and fix guides. Note: `docs/methodology/QUALITY-GATES.md` covers methodology gates (R_eff, Verification Gate). |
+| [CONSTELLATION-PILOT.ru.md](operations/CONSTELLATION-PILOT.ru.md) | Portable sandbox pilot: version gate, backups, embedding prerequisites, single writer and rollback |
+| [DOCUMENTATION-AUDIT-2026-10-23.ru.md](operations/DOCUMENTATION-AUDIT-2026-10-23.ru.md) | Measured documentation audit: source boundaries, Constellation coverage, resolved drift, verification and remaining gaps |
 
 ## Architecture
 
@@ -68,7 +78,8 @@ Setup, hooks, and repository protection.
 
 ## Schemas
 
-Formal specifications that the validator enforces.
+Authoring conventions with implemented validation rules called out separately.
+Recommendations are not promises of automated semantic enforcement.
 
 | Document | Purpose |
 |---|---|
@@ -83,7 +94,8 @@ Formal specifications that the validator enforces.
 **Storage model (per [ADR-003](../.forgeplan/adrs/ADR-003-markdown-files-as-source-of-truth-lancedb-as-index-layer.md)):**
 - **Markdown files** in `.forgeplan/{adrs,rfcs,prds,epics,specs,evidence,problems,solutions,notes,refresh,memory}/` = **source of truth** (git-tracked)
 - **LanceDB** in `.forgeplan/lance/` = derived index layer (git-ignored, rebuildable)
-- **Config** `.forgeplan/config.yaml` = local LLM keys (git-ignored)
+- **Constellation** publishes derived generations through `.forgeplan/lance/CURRENT.json`; this layout is not interchangeable with the legacy index.
+- **Config** `.forgeplan/config.yaml` = workspace settings, including LLM and embedding configuration; not an index or an artifact body. In this repository it is git-tracked and uses environment-variable references rather than embedded secrets. Other projects may keep their configuration local.
 
 **Directories:**
 
@@ -96,30 +108,46 @@ Formal specifications that the validator enforces.
 | [`.forgeplan/specs/`](../.forgeplan/specs/) | Formal specifications (API contracts, data models) |
 | [`.forgeplan/evidence/`](../.forgeplan/evidence/) | EvidencePacks — tests, benchmarks, measurements |
 | [`.forgeplan/problems/`](../.forgeplan/problems/) | ProblemCards — problem framing with anti-Goodhart indicators |
-| [`.forgeplan/solutions/`](../.forgeplan/solutions/) | SolutionPortfolios — 2-3+ variants with weakest-link scoring |
-| [`.forgeplan/notes/`](../.forgeplan/notes/) | Micro-decisions (auto-expire 90 days) |
-| [`.forgeplan/refresh/`](../.forgeplan/refresh/) | RefreshReports — re-evaluation of stale artifacts |
+| `.forgeplan/solutions/` | SolutionPortfolios — 2-3+ variants with weakest-link scoring |
+| [`.forgeplan/notes/`](../.forgeplan/notes/) | Notes — small decisions; expiry is not guaranteed merely by their kind |
+| `.forgeplan/refresh/` | RefreshReports — re-evaluation of stale artifacts |
 | [`.forgeplan/memory/`](../.forgeplan/memory/) | Decision memory |
 
-**Managing artifacts:** always use `forgeplan` CLI — do not hand-edit YAML frontmatter.
+`solutions/` and `refresh/` are paths, not links to available data: this checkout
+does not contain those directories. Create artifacts through the supported
+interface rather than adding empty directories just to satisfy navigation.
+
+**Managing artifacts:** use supported CLI/MCP operations rather than hand-editing
+YAML frontmatter. CLI `validate` works on legacy and migrated Constellation
+layouts; full MCP `forgeplan_validate` was also exercised successfully.
+See the [pilot compatibility notes (RU)](operations/CONSTELLATION-PILOT.ru.md)
+for the tested scope; 76 registered full-profile tools do not mean every behavior was verified.
 
 ```bash
 forgeplan new prd "Title"        # create new artifact
 forgeplan list -t adr            # list all ADRs
 forgeplan get ADR-003            # read one
-forgeplan validate PRD-024       # check quality
+forgeplan validate PRD-024       # check artifact schema
 forgeplan score PRD-024          # compute R_eff
-forgeplan reindex                # rebuild LanceDB index from markdown
+forgeplan index                  # build/reconcile the Constellation index
+forgeplan reindex                # legacy rebuild; delegates to index on migrated layout
 ```
 
-**Fresh clone workflow:**
+**New directory versus existing clone:**
 
-```bash
-git clone <repo> && cd forgeplan
-forgeplan init -y                # creates .forgeplan/lance/ locally (empty)
-forgeplan reindex                # syncs tracked markdown into LanceDB
-forgeplan list                   # verify — should see all artifacts
-```
+- In a genuinely new directory outside any existing workspace, `forgeplan init -y`
+  creates the workspace. Discovery walks up the directory tree; check the reported
+  path before any writes.
+- A clone with tracked `.forgeplan/` is already discoverable: `init -y` may return
+  early without creating a local config or index. If `.forgeplan/config.yaml`
+  already exists, use `forgeplan index` for Constellation or `forgeplan reindex`
+  for the legacy layout, then inspect `forgeplan list` and the expected artifacts.
+- If local config is missing, back up the entire `.forgeplan/` and MCP config,
+  then initialize config deliberately with `forgeplan init --force -y`. This keeps
+  artifact bodies but activates default config; custom settings, including
+  `embedding`, survive only in the backup until restored. Afterwards, use `index`
+  for Constellation or `reindex` for the legacy layout.
+  This is not the normal index-recovery command.
 
 ## See also
 
@@ -131,7 +159,7 @@ forgeplan list                   # verify — should see all artifacts
 
 ## Conventions
 
-- **All paths in documents are relative to repository root.**
-- **Artifact files in `.forgeplan/` are managed by the `forgeplan` CLI** — hand-editing works but may cause drift with the LanceDB index until `reindex` runs.
-- **Methodology docs here are authoritative** — if a tutorial and a schema disagree, the schema wins.
-- **Activated artifacts are immutable** — supersede via `forgeplan supersede`, do not rewrite history.
+- **Source paths in prose are relative to repository root unless qualified.** Markdown links resolve relative to the containing document.
+- **Artifact files in `.forgeplan/` are managed through supported CLI/MCP operations.** For index recovery, use `index` for Constellation or `reindex` for the legacy layout, not `scan-import`.
+- **Methodology docs define authoring conventions.** Schema pages distinguish those recommendations from implemented validation and separate activation gates.
+- **Preserve active decisions by convention** — replace them via `forgeplan supersede ID --by NEW-ID`, rather than rewriting the decision history. Activation is not filesystem write protection or a blanket runtime ban on body updates.

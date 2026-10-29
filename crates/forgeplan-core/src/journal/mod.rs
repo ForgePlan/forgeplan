@@ -199,20 +199,30 @@ mod tests {
          ## Verdict\n\nThe parity run observed the same evidence population on both \
          workspace layouts, and this pack is what it observed.\n";
 
+    struct ArtifactFixture<'a> {
+        id: &'a str,
+        kind: &'a str,
+        title: &'a str,
+        status: &'a str,
+        created_at: &'a str,
+        valid_until: Option<&'a str>,
+        links: &'a [(&'a str, &'a str)],
+        body: &'a str,
+    }
+
     /// One canonical artifact file, rendered by hand so the fixture cannot
     /// depend on the code under test.
-    fn write_artifact(
-        ws: &Path,
-        dir: &str,
-        id: &str,
-        kind: &str,
-        title: &str,
-        status: &str,
-        created_at: &str,
-        valid_until: Option<&str>,
-        links: &[(&str, &str)],
-        body: &str,
-    ) -> PathBuf {
+    fn write_artifact(ws: &Path, dir: &str, fixture: ArtifactFixture<'_>) -> PathBuf {
+        let ArtifactFixture {
+            id,
+            kind,
+            title,
+            status,
+            created_at,
+            valid_until,
+            links,
+            body,
+        } = fixture;
         let mut fm = format!(
             "---\nid: {id}\ntitle: {title}\nkind: {kind}\nstatus: {status}\n\
              depth: standard\ncreated_at: {created_at}\n"
@@ -247,14 +257,16 @@ mod tests {
         write_artifact(
             ws,
             "evidence",
-            id,
-            "evidence",
-            &format!("Pack {id}"),
-            "active",
-            "2026-01-01T00:00:00Z",
-            valid_until,
-            links,
-            EVIDENCE_BODY,
+            ArtifactFixture {
+                id,
+                kind: "evidence",
+                title: &format!("Pack {id}"),
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until,
+                links,
+                body: EVIDENCE_BODY,
+            },
         )
     }
 
@@ -276,7 +288,12 @@ mod tests {
             std::fs::create_dir_all(ws.join(dir)).unwrap();
         }
         write_evidence(&ws, "EVID-001", None, &[]);
-        write_evidence(&ws, "EVID-002", Some("2020-01-01"), &[("PRD-001", "informs")]);
+        write_evidence(
+            &ws,
+            "EVID-002",
+            Some("2020-01-01"),
+            &[("PRD-001", "informs")],
+        );
         write_evidence(&ws, "EVID-003", None, &[("RFC-001", "informs")]);
         // A terminal pack attached to NOTE-001: ADR-020 excludes it from the
         // R_eff minimum, so NOTE-001 must read as evidenced-but-unscored
@@ -284,65 +301,75 @@ mod tests {
         write_artifact(
             &ws,
             "evidence",
-            "EVID-004",
-            "evidence",
-            "Retired pack",
-            "deprecated",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[("NOTE-001", "informs")],
-            EVIDENCE_BODY,
+            ArtifactFixture {
+                id: "EVID-004",
+                kind: "evidence",
+                title: "Retired pack",
+                status: "deprecated",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("NOTE-001", "informs")],
+                body: EVIDENCE_BODY,
+            },
         );
         write_artifact(
             &ws,
             "adrs",
-            "ADR-001",
-            "adr",
-            "Pin the report engine",
-            "active",
-            "2026-01-03T00:00:00Z",
-            None,
-            &[("EVID-001", "informs")],
-            "## Context\n\nBoth layouts must answer with the same population.\n",
+            ArtifactFixture {
+                id: "ADR-001",
+                kind: "adr",
+                title: "Pin the report engine",
+                status: "active",
+                created_at: "2026-01-03T00:00:00Z",
+                valid_until: None,
+                links: &[("EVID-001", "informs")],
+                body: "## Context\n\nBoth layouts must answer with the same population.\n",
+            },
         );
         write_artifact(
             &ws,
             "notes",
-            "NOTE-001",
-            "note",
-            "Unlinked capture note",
-            "active",
-            "2026-01-02T00:00:00Z",
-            None,
-            &[],
-            "## Context\n\nRecorded during the parity run, linked to nothing.\n",
+            ArtifactFixture {
+                id: "NOTE-001",
+                kind: "note",
+                title: "Unlinked capture note",
+                status: "active",
+                created_at: "2026-01-02T00:00:00Z",
+                valid_until: None,
+                links: &[],
+                body: "## Context\n\nRecorded during the parity run, linked to nothing.\n",
+            },
         );
         write_artifact(
             &ws,
             "prds",
-            "PRD-001",
-            "prd",
-            "Renew the expired pack",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            // Deliberately empty: this decision's ONLY evidence edge comes
-            // from EVID-002's own links block, so a scan that ignored the
-            // evidence→artifact direction would score it 0.0 / 1 evidence.
-            &[],
-            "## Context\n\nThe pack attached to this decision expired in 2020.\n",
+            ArtifactFixture {
+                id: "PRD-001",
+                kind: "prd",
+                title: "Renew the expired pack",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                // Deliberately empty: this decision's ONLY evidence edge comes
+                // from EVID-002's own links block, so a scan that ignored the
+                // evidence→artifact direction would score it 0.0 / 1 evidence.
+                links: &[],
+                body: "## Context\n\nThe pack attached to this decision expired in 2020.\n",
+            },
         );
         write_artifact(
             &ws,
             "rfcs",
-            "RFC-001",
-            "rfc",
-            "Pack points the other way",
-            "active",
-            "2026-01-04T00:00:00Z",
-            None,
-            &[],
-            "## Context\n\nA fresh pack attaches itself to this decision.\n",
+            ArtifactFixture {
+                id: "RFC-001",
+                kind: "rfc",
+                title: "Pack points the other way",
+                status: "active",
+                created_at: "2026-01-04T00:00:00Z",
+                valid_until: None,
+                links: &[],
+                body: "## Context\n\nA fresh pack attaches itself to this decision.\n",
+            },
         );
         (tmp, ws)
     }
@@ -376,7 +403,10 @@ mod tests {
             store.replace_record(record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
-            store.add_relation(&source, &target, &relation).await.unwrap();
+            store
+                .add_relation(&source, &target, &relation)
+                .await
+                .unwrap();
         }
         store
     }
@@ -465,8 +495,11 @@ mod tests {
         // fresh CL3 pack at R_eff 1.0 and are not, whichever direction that
         // pack was attached from.
         assert_eq!(ids(&risky), vec!["NOTE-001", "PRD-001"]);
-        assert!(risky.iter().all(|e| e.evidence_count == 0 || e.r_eff < 0.3
-            || e.has_stale_evidence));
+        assert!(
+            risky
+                .iter()
+                .all(|e| e.evidence_count == 0 || e.r_eff < 0.3 || e.has_stale_evidence)
+        );
     }
 
     #[tokio::test]
@@ -475,7 +508,9 @@ mod tests {
         let read = open_read(&ws).await;
 
         assert_eq!(
-            ids(&build_journal_captured(&read, Some("adr"), false).await.unwrap()),
+            ids(&build_journal_captured(&read, Some("adr"), false)
+                .await
+                .unwrap()),
             vec!["ADR-001"]
         );
         // The filter is an exact kind match applied to the whole corpus, not
@@ -527,8 +562,10 @@ mod tests {
                 "kind_filter={kind_filter:?} risk_only={risk_only}"
             );
             for (l, c) in legacy.iter().zip(&captured) {
-                assert_eq!((&l.id, &l.title, &l.kind, &l.status, &l.created_at),
-                    (&c.id, &c.title, &c.kind, &c.status, &c.created_at));
+                assert_eq!(
+                    (&l.id, &l.title, &l.kind, &l.status, &l.created_at),
+                    (&c.id, &c.title, &c.kind, &c.status, &c.created_at)
+                );
                 assert_eq!(
                     (l.r_eff, l.evidence_count, l.has_stale_evidence),
                     (c.r_eff, c.evidence_count, c.has_stale_evidence),

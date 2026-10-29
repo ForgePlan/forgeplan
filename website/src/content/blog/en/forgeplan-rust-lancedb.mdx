@@ -1,6 +1,6 @@
 ---
 title: "Forgeplan: agent harness for AI coding agents (Rust + LanceDB)"
-description: "Forgeplan is a local-first Rust CLI + MCP server that constrains where an AI coding agent can write, what state it must read, what evidence it must produce, and what gates it must pass. Markdown source of truth, compile-enforced invariant, weakest-link trust scoring, hint protocol contract."
+description: "A historical introduction to Forgeplan's local-first Rust CLI and MCP server: Markdown authority, derived indexing, evidence scoring and workflow hints. These methodology checks are not an agent filesystem sandbox."
 slug: forgeplan-rust-lancedb
 lang: en
 publishedAt: 2026-05-03
@@ -12,13 +12,15 @@ translations:
   ru: forgeplan-rust-lancedb
 ---
 
-Forgeplan is a local-first Rust CLI + MCP server that I now describe as an **agent harness**: a structured environment that constrains where an AI coding agent can write, what state it has to read, what evidence it has to produce, and what gates it has to pass before declaring success. The "harness engineering" framing is from walkinglabs ([walkinglabs.github.io/learn-harness-engineering](https://walkinglabs.github.io/learn-harness-engineering/)) - twelve short lectures that legitimised vocabulary I'd been using badly for six months.
+> **Historical snapshot; clarification added 2026-10-23.** Counts, binary size, fastembed stack and roadmap below are the author's May 2026 report, not current release measurements or acceptance results. The code pictured on the cover is schematic, not an executable API example. In the selected `0.39.0+constellation.s1.1` build, captured catalogs list 76 full-profile MCP tools and 9 read-profile tools; public `0.38.0` is a separate release.
+
+Forgeplan is a local-first Rust CLI + MCP server that I describe as an **agent harness**: structured artifacts, validation and lifecycle operations help organize what an agent should read and prove. They do not sandbox arbitrary filesystem writes or guarantee that the agent obeys instructions. The "harness engineering" framing comes from walkinglabs ([course](https://walkinglabs.github.io/learn-harness-engineering/)); that attribution describes the author's framing, not independent validation of Forgeplan.
 
 What's specific to Forgeplan:
 
 - **Markdown is source of truth, LanceDB is a derived index** (ADR-003, compile-enforced after a 32-violation cleanup that ended with `pub(crate)` lockdown).
-- **Trust = weakest link.** `R_eff = min(evidence_scores)`, never the average. CL penalty (0.0/0.1/0.4/0.9) makes "I read it on a blog" structurally weaker than "we measured it ourselves." Activation gate blocks `forgeplan activate` if `R_eff = 0`.
-- **Hint protocol contract** (PRD-071): every CLI/MCP response emits exactly one terminal next-action hint (`Next:` / `Or:` / `Fix:` / `Wait:` / `Done.`), so an agent never invents its own ordering.
+- **Product scoring uses the weakest eligible evidence.** CL penalties are 0/0.1/0.4/0.9, but context fit must be assessed rather than inferred from "blog" versus "our measurement." The recursive scorer also uses verdicts, evidence types and dependencies. Activation has validation, substance and evidence-link gates; a score alone is not release approval.
+- **Hint protocol** (PRD-071): intended next-action markers are `Next:` / `Or:` / `Fix:` / `Wait:` / `Done.`. They help order work, but not every response carries a hint, and emitted hints can contain defects. Agents must still check the command contract and result.
 - **73 MCP tools** for Claude Code, Cursor, Aider. BGE-M3 1024d local search.
 
 Stack: Rust 3-crate workspace, LanceDB embedded, fastembed, rmcp. Single ~41 MB stripped binary. 1995 tests.

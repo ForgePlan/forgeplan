@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use console::style;
 
-use forgeplan_core::db::store::LanceStore;
+use forgeplan_core::db::store::ArtifactRecord;
 use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
@@ -10,9 +10,20 @@ use crate::ui;
 
 /// `forgeplan tree [ID] [--depth N] [--json]` — ASCII tree view of artifact hierarchy.
 pub async fn run(id: Option<&str>, depth: usize, json: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
-
-    let (children_map, all_records) = build_hierarchy(&store).await?;
+    let (_, source) = common::open_read_source().await?;
+    let relations = match &source {
+        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Captured(read) => read.get_all_relations(),
+    };
+    let legacy_records;
+    let records = match &source {
+        common::ReadSource::Legacy(store) => {
+            legacy_records = store.list_records(None).await?;
+            legacy_records.as_slice()
+        }
+        common::ReadSource::Captured(read) => read.records(),
+    };
+    let (children_map, all_records) = build_hierarchy(records, &relations);
 
     if json {
         return render_json(id, depth, &children_map, &all_records);
@@ -118,19 +129,17 @@ struct DisplayRecord {
     r_eff: f64,
 }
 
-/// Column width for the tree part (left side).
 /// Build parent->children mapping from all relations and parent_epic fields.
-async fn build_hierarchy(
-    store: &LanceStore,
-) -> anyhow::Result<(
+/// Both read sources feed this single hierarchy algorithm.
+fn build_hierarchy(
+    records: &[ArtifactRecord],
+    relations: &[(String, String, String)],
+) -> (
     BTreeMap<String, Vec<String>>,
     BTreeMap<String, DisplayRecord>,
-)> {
-    let records = store.list_records(None).await?;
-    let relations = store.get_all_relations().await?;
-
+) {
     let mut records_map = BTreeMap::new();
-    for r in &records {
+    for r in records {
         records_map.insert(
             r.id.clone(),
             DisplayRecord {
@@ -152,7 +161,7 @@ async fn build_hierarchy(
     let mut children_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut has_parent: HashSet<String> = HashSet::new();
 
-    for (source, target, relation) in &relations {
+    for (source, target, relation) in relations {
         if child_relations.contains(relation.as_str()) && !has_parent.contains(source) {
             has_parent.insert(source.clone());
             children_map
@@ -162,7 +171,7 @@ async fn build_hierarchy(
         }
     }
 
-    for r in &records {
+    for r in records {
         if let Some(parent) = &r.parent_epic
             && !parent.is_empty()
             && !has_parent.contains(&r.id)
@@ -179,7 +188,7 @@ async fn build_hierarchy(
         kids.sort();
     }
 
-    Ok((children_map, records_map))
+    (children_map, records_map)
 }
 
 /// Print the tree rooted at `id`. This is the entry point that prints the root

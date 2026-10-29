@@ -8,7 +8,7 @@
 
 1. Прочитать issue полностью, включая dependencies, non-goals и acceptance criteria.
 2. Проверить связанные open issues и активные ForgePlan artifacts.
-3. Выполнить `forgeplan health`, `forgeplan context` и routing/depth check.
+3. Выполнить `forgeplan health`, routing/depth check и `forgeplan context <ID> --json` для выбранного артефакта; `<ID>` — обязательный аргумент, а не буквальный placeholder для запуска.
 4. Создать или обновить нужный PRD/RFC/ADR/Spec до code changes.
 5. Не расширять scope issue без отдельного комментария/approval.
 6. Создать отдельную branch/worktree через текущий orchestrator.

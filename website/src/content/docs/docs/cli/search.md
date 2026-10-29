@@ -6,7 +6,23 @@ description: "Smart search - BM25 + semantic + graph expansion with Russian morp
 Smart search across artifacts. As of v0.18.0, Forgeplan ships **production
 BM25** (via the `bm25` crate v2.3.2) with Russian Snowball stemming,
 template-noise stripping, and 1-hop graph expansion. Semantic vectors are
-used as a ranker booster when the `semantic-search` feature flag is enabled.
+used as a booster only with a compatible build, cached model and eligible vectors.
+Reads do not download the model or embed missing inputs.
+
+For the local `0.39.0+constellation.s1.1` build, migrated workspaces use
+Constellation. Ordinary `search` defaults to **20** results; the separate
+`constellation search` command defaults to **10**. Do not infer one
+interface's parameters or response shape from the other.
+
+Forced `--semantic` does not guarantee keyword fallback on a migrated
+workspace. Check availability and coverage rather than treating empty
+results as a complete semantic answer. See the
+[Constellation guide](/docs/guides/constellation/) and
+[reference](/docs/reference/constellation/).
+
+Forced modes have narrower filtering in this revision: `--keyword` uses query
+and kind, not status/depth/evidence/date/limit; migrated `--semantic` uses kind,
+status and limit, not the other smart filters. Use smart mode for composite filters.
 
 ## When to use
 
@@ -75,7 +91,7 @@ forgeplan search "rate limit" --no-evidence
 
 ## Output interpretation
 
-Default output is a ranked list:
+Illustrative output (not a captured runtime transcript):
 
 ```
 PRD-001  [active ]  score=8.42  Auth system (BM25 + semantic)
@@ -87,8 +103,8 @@ Columns: `ID`, `STATUS`, `SCORE`, `TITLE`, plus a `(graph-expanded)` marker
 when a hit came in as a 1-hop neighbor rather than a direct term match.
 Scores are not comparable across queries - they rank within one call only.
 
-Russian queries work the same - "авторизация" will match "авторизации",
-"авторизованный", etc., thanks to Snowball stemming.
+Smart search's stemming can match inflected forms, not every related word.
+Forced keyword mode is substring matching, not Snowball matching.
 
 ## How it fits
 
@@ -108,3 +124,33 @@ expansion), see the [Search v2 guide](/docs/guides/search-v2/).
 - [`forgeplan get`](/docs/cli/get/) - read a hit in full
 - [`forgeplan recall`](/docs/cli/recall/) - search memories (not artifacts)
 - [`forgeplan reindex`](/docs/cli/reindex/) - rebuild the BM25 index
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan search --help`.
+
+```text
+Search artifacts (smart by default: keyword + semantic + boosters)
+
+Usage: forgeplan search [OPTIONS] <QUERY>
+
+Arguments:
+  <QUERY>  Search query
+
+Options:
+  -t, --type <TYPE>      Filter by kind (prd, rfc, adr, note, ...)
+  -s, --status <STATUS>  Filter by status (draft, active, superseded, deprecated, stale)
+      --depth <DEPTH>    Filter by depth (tactical, standard, deep, critical)
+      --with-evidence    Only artifacts with evidence linked (R_eff > 0)
+      --no-evidence      Only artifacts WITHOUT evidence (blind spots)
+      --since <SINCE>    Only artifacts created after this date (YYYY-MM-DD)
+      --no-expand        Disable graph expansion (1-hop neighbors in results)
+      --keyword          Force keyword-only search (substring grep)
+      --semantic         Force semantic-only search (vector similarity)
+  -n, --limit <LIMIT>    Max results to return (default: 20) [default: 20]
+      --json             Output as JSON for machine consumption
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

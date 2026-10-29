@@ -14,7 +14,7 @@ Structured artifacts (PRD, RFC, ADR, Epic, Spec), quality scoring, evidence, and
 [![License: MIT](https://img.shields.io/badge/license-MIT-000.svg?style=flat-square)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/ForgePlan/forgeplan?include_prereleases&style=flat-square&color=orange)](https://github.com/ForgePlan/forgeplan/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/ForgePlan/forgeplan/ci.yml?branch=main&style=flat-square)](https://github.com/ForgePlan/forgeplan/actions)
-[![Artifacts](https://img.shields.io/badge/artifacts-437-blue?style=flat-square)](.forgeplan/)
+[![Artifacts](https://img.shields.io/badge/artifacts-git--tracked-blue?style=flat-square)](.forgeplan/)
 
 **[Website](https://forgeplan.dev)** ·
 **[Documentation](docs/README.md)** ·
@@ -67,7 +67,7 @@ Structured artifacts (PRD, RFC, ADR, Epic, Spec), quality scoring, evidence, and
 - Every decision is a git-tracked artifact
 - Full `Problem → Decision → Consequence` trail
 - Depth calibration forces appropriate rigor
-- `forgeplan new adr` — one command, done
+- `forgeplan new adr` — create a draft template, then fill and validate it
 - ADI reasoning demands 3+ hypotheses
 
 </td>
@@ -87,92 +87,74 @@ curl -fsSL https://raw.githubusercontent.com/ForgePlan/forgeplan/main/install.sh
 
 # From source
 git clone https://github.com/ForgePlan/forgeplan.git && cd forgeplan
-cargo install --path crates/forgeplan-cli
+cargo install --path crates/forgeplan-cli --features semantic-search
 ```
 
-### After installing: three steps that are not automatic
+### After installing
 
-The binary gives you routing, artifacts, validation, scoring, the graph and
-keyword search. Three more capabilities need one command each — and **each one
-fails quietly if you skip it**. Nothing crashes; you just get a worse answer
-with no sign that you did.
+Release binaries include semantic search; a plain Cargo build does not enable it
+by default. The source-install recipe above enables `semantic-search`. Inference
+uses the pure-Rust `tract` engine, but model weights are downloaded separately.
 
-| Step | Command | Cost of skipping |
-|---|---|---|
-| **1. Embedding model** (~2.1 GB) | `forgeplan setup` | `search --semantic` degrades to keyword matching |
-| **2. FPF knowledge base** | `/plugin install fpf@ForgePlan-marketplace`, then `forgeplan fpf ingest` | `fpf search` returns "no matches"; `reason --fpf` loses its grounding |
-| **3. Agent harness** | 5 marketplace plugins ([list](https://forgeplan.dev/docs/getting-started/installation/)) | `/smith`, `/forge-cycle`, `/audit` do not exist |
+| Capability | Preparation |
+|---|---|
+| Local semantic search | `forgeplan setup` downloads the BGE-M3 model (about 2.1 GB). A complete cached snapshot is required offline. |
+| FPF knowledge base | Install `/plugin install fpf@ForgePlan-marketplace`, then run `forgeplan fpf ingest`. Inspect it with `forgeplan fpf status`. |
+| Agent commands | Install the [agent harness plugins](https://forgeplan.dev/docs/getting-started/installation/) for commands such as `/smith` and `/audit`. |
 
-**1 — the model.** Semantic search ships in every binary; the engine is
-`tract`, pure Rust, so there is no platform where the feature is in the source
-but missing from the build. What is *not* in the binary is the 2.1 GB of
-weights. `forgeplan setup` downloads them with a progress bar and, on a
-`cargo install`, creates the `fpl` alias that brew and `install.sh` get for
-free from cargo-dist. Both steps are idempotent; `--skip-model` and
-`--skip-alias` opt out of either.
+Models are shared across workspaces in `~/.forgeplan/models`
+(`%USERPROFILE%\.forgeplan\models` on Windows). `FORGEPLAN_MODEL_CACHE` takes
+priority; `HF_HOME` does not override the tract cache. Existing cache directories
+are not moved or deleted automatically.
 
-Weights are cached in `~/.forgeplan/models` on macOS, Linux, and Windows
-(`%USERPROFILE%\.forgeplan\models`) — shared across all projects and binary
-versions. Override with `FORGEPLAN_MODEL_CACHE` if you use another volume.
-Existing models in an older platform cache are not moved automatically: move
-them to the new directory, or temporarily point `FORGEPLAN_MODEL_CACHE` at
-the old location. `HF_HOME` does not override the tract engine's cache.
+`forgeplan init` can offer a model download interactively; scripted initialization
+must explicitly request `forgeplan init -y --with-model`. This is not a download
+recipe for an already initialized workspace, where init may return early.
+`forgeplan setup --skip-model` skips the model; `--skip-alias` skips the `fpl` alias.
 
-`forgeplan init` offers the same download interactively. It never downloads
-under `-y`, so agents and CI runners cannot pull gigabytes by accident; pass
-`--with-model` when a scripted install wants it. Until the model is present,
-`forgeplan search --semantic` falls back to keyword search and says so — easy
-to miss, and keyword search will not find "how do we handle auth failures" in a
-document that says "retry policy for rejected credentials". To see which state
-you are in, run `forgeplan embed`; `forgeplan --version` does not report it.
+Search mode matters. Default smart search can combine keyword and semantic
+results; do not assume forced `search --semantic` silently falls back.
+On a Constellation workspace it reports an error when the published embedding
+profile or eligible vectors are unavailable. Run `forgeplan embed` explicitly
+after indexing. Automatic embedding additionally requires active
+`config.embedding`, a supported cached model, and a live maintenance writer.
+Manual `embed` does not save that configuration.
 
-**2 — FPF.** The First Principles Framework spec is a 204-section corpus that
-ships as a separate skill, not inside the binary. It is what `forgeplan reason`
-uses for ADI reasoning — the step that makes an artifact produce real
-alternatives instead of restating your first idea, required at Standard depth
-and above. Skipping ingest gives a closed loop that looks like a working
-system: search says "no matches, run ingest", and an empty corpus is
-indistinguishable from a missing one. `forgeplan fpf status` tells them apart.
+**2 — FPF.** The First Principles Framework corpus ships as a separate skill,
+not inside the binary. Install and ingest it for FPF knowledge-base search;
+inspect the result with `forgeplan fpf status`. `forgeplan reason` runs ADI
+through the configured LLM provider. The project's Standard+ workflow requires
+that reasoning step; ingestion alone neither configures the provider nor proves
+that real alternatives were evaluated.
 
-**3 — the harness.** Everything above works from a plain shell, but Forgeplan
-is designed to be driven by an agent, and the driving commands live in
-marketplace plugins. Without them you have a well-organised filing system and
-nobody to run it.
+**3 — the harness.** CLI operations also work from a plain shell. Marketplace
+plugins add agent-driving commands; they are not prerequisites for direct
+CLI use.
 
-Everything else — routing, artifacts, scoring, validation, the graph, keyword
-search — works identically on every build.
+Interface availability also depends on workspace layout. In the scoped
+`0.39.0+constellation.s1.1` build, CLI `validate` gives a named legacy-store
+refusal on migrated workspaces; full MCP `forgeplan_validate` was exercised
+successfully there. This does not establish parity for all tools (issue #538).
 
-## 60-Second Demo
+## Start a draft
 
-```console
-$ forgeplan init -y
-  ✓ Workspace initialized at .forgeplan/
+Use a new directory outside any existing workspace: discovery walks up parent
+directories. `init -y` is a no-op when a workspace is already found.
 
-$ forgeplan route "Add OAuth2 authentication"
-  Depth:      Standard
-  Pipeline:   PRD → RFC
-  Confidence: 92%
-
-$ forgeplan new prd "OAuth2 Authentication"
-  ID:    PRD-001
-  Next:  fill Problem, Goals, Non-Goals, Target Users, FR
-
-$ forgeplan validate PRD-001
-  Result: PASS (0 errors, 0 warnings)
-
-$ forgeplan reason PRD-001
-  Hypothesis 1: Session-based flow   (confidence: 0.6)
-  Hypothesis 2: JWT with refresh     (confidence: 0.8)  ← best supported
-  Hypothesis 3: OAuth proxy service  (confidence: 0.4)
-
-$ forgeplan new evidence "15 tests pass, 180ms p95 on benchmark"
-$ forgeplan link EVID-001 PRD-001 --relation informs
-$ forgeplan score PRD-001
-  R_eff: 1.00  (Adequate)
-
-$ forgeplan activate PRD-001
-  ✓ PRD-001 (draft → active)
+```bash
+forgeplan init -y
+forgeplan route "Add OAuth2 authentication" --level 0
+forgeplan new prd "OAuth2 Authentication"
 ```
+
+This creates a template, not an activation-ready PRD. Fill its requirements and
+depth-specific sections, configure an LLM before `reason`, and record real
+evidence rather than a sample test claim. On a compatible legacy workspace,
+`forgeplan validate PRD-001` reports schema findings and `forgeplan review PRD-001`
+shows the lifecycle checklist. Activation also checks length, evidence and stubs;
+zero validation MUST findings alone does not guarantee activation.
+For migrated workspaces, use the [Constellation interface reference](https://forgeplan.dev/docs/reference/constellation/)
+to select a supported CLI/MCP operation.
 
 <div align="center">
 <img src=".github/assets/pipeline.png" alt="ForgePlan Pipeline — Shape, Validate, Reason, Build, Prove + Depth Routing" width="100%">
@@ -185,10 +167,10 @@ $ forgeplan activate PRD-001
 | **📝 Markdown-first** | All artifacts are plain markdown in git. LanceDB is a derived index — you can rebuild it from the files. |
 | **🎯 Quality scoring** | `R_eff` (weakest-link evidence trust) and `F-G-R` (formality, granularity, reliability), automatic. |
 | **🧭 Smart routing** | Analyzes your task, picks the right depth and artifact pipeline. No over-documenting typo fixes. |
-| **🧠 ADI reasoning** | Abduction → Deduction → Induction. Forces 3+ hypotheses before every decision. |
-| **🤖 MCP-native** | 73 tools for Claude Code, Cursor, Aider, Continue. Agents speak the methodology natively. |
-| **🔍 Local semantic search** | BGE-M3 (1024 dims) on `tract` — pure-Rust inference, no C++ runtime. No network, no API keys, no egress. |
-| **⏰ Evidence decay** | Expired `valid_until` → artifact goes stale. Trust decays honestly, nothing rots in the dark. |
+| **🧠 ADI reasoning** | Abduction → Deduction → Induction. The reasoning workflow asks for 3+ hypotheses; it does not prove their independence or correctness automatically. |
+| **🤖 MCP-native** | Agent tools for Claude Code, Cursor, Aider, Continue. The scoped Constellation build registers 76 full-profile tools and a separate 9-tool read profile; registration is not proof of migrated-layout support. |
+| **🔍 Local semantic search** | BGE-M3 (1024 dims) on `tract` — pure-Rust inference without API keys or query egress once the model is cached. |
+| **⏰ Evidence decay** | Expired `valid_until` is reported as stale; expired evidence scores 0.1. This is deadline-based detection, not automatic renewal or a background lifecycle transition. |
 
 ## Artifacts at a glance
 
@@ -245,6 +227,12 @@ Three entry points — pick the one that matches what you need right now.
 | **Learn the methodology** | [`docs/methodology/FORGEPLAN-GUIDE.md`](docs/methodology/FORGEPLAN-GUIDE.md) |
 | **Browse all docs** | [`docs/README.md`](docs/README.md) |
 | **Work with AI agents** | [`CLAUDE.md`](CLAUDE.md) · [`AGENTS.md`](AGENTS.md) |
+| **Use Constellation** | [User guide](https://forgeplan.dev/docs/guides/constellation/) · [Interface reference](https://forgeplan.dev/docs/reference/constellation/) |
+| **Pilot a migration** | [Portable runbook (RU)](docs/operations/CONSTELLATION-PILOT.ru.md) |
+
+The website is the task-oriented user documentation; `docs/` holds contributor
+methodology, architecture and operational contracts. Constellation pages describe
+the scoped `0.39.0+constellation.s1.1` build, not the published `0.38.0` release.
 
 ## Dogfood
 
@@ -256,6 +244,9 @@ Three entry points — pick the one that matches what you need right now.
 <td align="center"><b>73</b><br>MCP tools</td>
 </tr>
 </table>
+
+These are historical repository counters, not a fresh measurement or acceptance
+result for the Constellation build.
 
 This repository uses ForgePlan to manage itself. Every PRD, RFC, ADR, and Evidence lives in
 [`.forgeplan/`](./.forgeplan/) — browse them or run `forgeplan list` locally.
@@ -278,7 +269,7 @@ git checkout -b feat/my-feature
 
 | Feature | Default | Purpose |
 |---|---|---|
-| `semantic-search` | **on** in released binaries | BGE-M3 vector search on the pure-Rust `tract` engine. Model downloads on first use: **~2.1 GB**, cached per machine (override: `FORGEPLAN_MODEL_CACHE`) — see [Install](#first-run-fetch-the-embedding-model). Off by default in a plain `cargo build`. |
+| `semantic-search` | **on** in released binaries | BGE-M3 vector search on the pure-Rust `tract` engine. Weights are separate (**~2.1 GB**), cached per machine (`FORGEPLAN_MODEL_CACHE`) — see [Install](#install). Off by default in a plain `cargo build`; offline use needs a complete cached snapshot. |
 | `test-helpers` | off | **Test fixtures only** — exposes `*_for_test` escape hatches on `LanceStore` that bypass the projection pipeline. **MUST NOT be enabled in production binaries.** Internally gated on `cfg(debug_assertions)` so release builds with the feature accidentally enabled still keep the ADR-003 lockdown. Downstream test crates that need direct DB seeding should enable it under `[dev-dependencies]` only (see `forgeplan-mcp/Cargo.toml` for the canonical example). |
 
 ## License

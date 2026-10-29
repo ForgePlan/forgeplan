@@ -15,9 +15,17 @@
 //! See [SPEC-004 §`source_hash`](../../../../.forgeplan/specs/SPEC-004-mapping-yaml-schema.md)
 //! for the contract.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
 use sha2::{Digest, Sha256};
 
+use super::IngestArtifactDraft;
 use super::sources::ParsedSource;
+use crate::artifact::types::ArtifactKind;
+use crate::constellation::capture::CaptureLimits;
+use crate::constellation::facade::open_workspace_read;
+use crate::projection::{self, MutationContext};
 
 /// Decision returned by [`artifact_needs_update`].
 ///
@@ -102,6 +110,193 @@ pub fn extract_existing_source_hash(artifact_body: &str) -> Option<String> {
 /// Convenience helper used by the engine when assembling drafts.
 pub fn render_source_hash_marker(hash: &str) -> String {
     format!("<!-- source_hash: {hash} -->")
+}
+
+/// One hash-bearing artifact eligible for an ingest re-run.
+///
+/// Callers change `source_hash` only after the corresponding body write
+/// succeeds, so later drafts in the same operation see the actual new state.
+#[derive(Debug)]
+pub struct IngestCandidate {
+    pub id: String,
+    pub path: PathBuf,
+    pub source_hash: String,
+    rule_id: Option<String>,
+}
+
+/// One ingest operation's candidates and ID high-water marks, shared by the
+/// public CLI and native playbooks. Full bodies are examined once, not per
+/// draft, and an unmarked title collision is never an update candidate.
+#[derive(Default)]
+pub struct IngestCandidates {
+    by_kind: HashMap<String, HashMap<String, Vec<IngestCandidate>>>,
+    max_numbers: HashMap<String, u32>,
+}
+
+impl IngestCandidates {
+    /// Read candidates from the already selected owning source under the
+    /// caller's workspace lock. No legacy store is opened by this method.
+    /// A canonical capture must be complete; its errors are not empty results.
+    pub async fn load(ctx: &MutationContext<'_>) -> anyhow::Result<Self> {
+        let mut candidates = Self::default();
+        match ctx.legacy_sink() {
+            Some(store) => {
+                for record in store.list_records(None).await? {
+                    candidates.observe_number(&record.id);
+                    if let Some(source_hash) = extract_existing_source_hash(&record.body)
+                        && let Ok(kind) = record.kind.parse::<ArtifactKind>()
+                    {
+                        let path = ctx.workspace().join(kind.dir_name()).join(format!(
+                            "{}-{}.md",
+                            record.id,
+                            projection::projection_slug(&record.title),
+                        ));
+                        candidates.insert(
+                            &record.kind,
+                            &record.title,
+                            IngestCandidate {
+                                id: record.id,
+                                path,
+                                source_hash,
+                                rule_id: ingest_rule_id(&record.tags),
+                            },
+                        );
+                    }
+                }
+            }
+            None => {
+                let read =
+                    open_workspace_read(ctx.workspace(), None, CaptureLimits::default()).await?;
+                for artifact in &read.captured().artifacts {
+                    let relative_path = Path::new(&artifact.relative_path);
+                    candidates.observe_filename(relative_path);
+                    if let Some(source_hash) = extract_existing_source_hash(&artifact.body) {
+                        candidates.insert(
+                            &artifact.kind,
+                            &artifact.title,
+                            IngestCandidate {
+                                id: artifact.display_id.clone(),
+                                path: ctx.workspace().join(relative_path),
+                                source_hash,
+                                rule_id: ingest_rule_id(&artifact.tags),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        Ok(candidates)
+    }
+
+    /// Find the exact hash across all same-kind/title candidates first.
+    /// A changed import then uses its rule identity, or an older hash-bearing
+    /// candidate whose source tag was not persisted. Unrelated rules and
+    /// unmarked artifacts cannot mask the matching import.
+    pub fn matching(
+        &mut self,
+        kind: &str,
+        draft: &IngestArtifactDraft,
+    ) -> Option<&mut IngestCandidate> {
+        let bucket = self
+            .by_kind
+            .get_mut(kind)?
+            .get_mut(&draft.title.to_ascii_lowercase())?;
+        let index = bucket
+            .iter()
+            .position(|candidate| candidate.source_hash == draft.source_hash)
+            .or_else(|| {
+                bucket.iter().position(|candidate| {
+                    candidate.rule_id.as_deref() == Some(draft.rule_id.as_str())
+                })
+            })
+            .or_else(|| {
+                bucket
+                    .iter()
+                    .position(|candidate| candidate.rule_id.is_none())
+            })?;
+        bucket.get_mut(index)
+    }
+
+    /// Reserve the next ID from this operation's owning-source high-water
+    /// marks. The caller retains the same workspace lock through the write.
+    pub fn next_id(&mut self, kind: &ArtifactKind) -> String {
+        let prefix = kind.prefix().trim_end_matches('-').to_ascii_uppercase();
+        let number = self.max_numbers.entry(prefix.clone()).or_default();
+        *number += 1;
+        format!("{prefix}-{number:03}")
+    }
+
+    /// Remember a successfully created artifact before processing another
+    /// draft. Failed writes must not be inserted as existing candidates.
+    pub fn record_written(
+        &mut self,
+        kind: &str,
+        draft: &IngestArtifactDraft,
+        id: String,
+        path: PathBuf,
+    ) {
+        self.insert(
+            kind,
+            &draft.title,
+            IngestCandidate {
+                id,
+                path,
+                source_hash: draft.source_hash.clone(),
+                rule_id: Some(draft.rule_id.clone()),
+            },
+        );
+    }
+
+    fn insert(&mut self, kind: &str, title: &str, candidate: IngestCandidate) {
+        let bucket = self
+            .by_kind
+            .entry(kind.to_string())
+            .or_default()
+            .entry(title.to_ascii_lowercase())
+            .or_default();
+        match bucket.binary_search_by(|existing| existing.id.cmp(&candidate.id)) {
+            Ok(index) => bucket[index] = candidate,
+            Err(index) => bucket.insert(index, candidate),
+        }
+    }
+
+    fn observe_number(&mut self, id_or_filename: &str) {
+        let Some((prefix, rest)) = id_or_filename.split_once('-') else {
+            return;
+        };
+        let Some(number) = rest
+            .split('-')
+            .next()
+            .and_then(|part| part.parse::<u32>().ok())
+        else {
+            return;
+        };
+        let max_number = self
+            .max_numbers
+            .entry(prefix.to_ascii_uppercase())
+            .or_default();
+        *max_number = (*max_number).max(number);
+    }
+
+    fn observe_filename(&mut self, relative_path: &Path) {
+        let Some(filename) = relative_path.file_name().and_then(|name| name.to_str()) else {
+            return;
+        };
+        let Some((prefix, _)) = filename.split_once('-') else {
+            return;
+        };
+        let Some(kind) = ArtifactKind::from_slug_prefix(&prefix.to_ascii_lowercase()) else {
+            return;
+        };
+        if relative_path.parent() == Some(Path::new(kind.dir_name())) {
+            self.observe_number(filename);
+        }
+    }
+}
+
+fn ingest_rule_id(tags: &[String]) -> Option<String> {
+    tags.iter()
+        .find_map(|tag| tag.strip_prefix("source=ingest:").map(str::to_string))
 }
 
 // ---------------------------------------------------------------------------
@@ -208,5 +403,155 @@ mod tests {
         let body = "<!-- source_hash: not-a-hash -->\n";
         // "not" starts with non-hex chars, so leading hex token is empty → None.
         assert!(extract_existing_source_hash(body).is_none());
+    }
+
+    #[tokio::test]
+    async fn candidate_index_loads_both_owners_and_remembers_real_writes() {
+        use crate::constellation::facade::{MaintainCapability, maintain_index};
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+        use std::time::{Duration, Instant};
+
+        let draft = |title: &str, text: &str| {
+            let source_hash = compute_source_hash(&make_parsed(text), "rule");
+            IngestArtifactDraft {
+                kind: super::super::ArtifactTargetKind::Note,
+                title: title.to_string(),
+                body: format!(
+                    "## Summary\n\n{text}\n\n{}",
+                    render_source_hash_marker(&source_hash)
+                ),
+                source_hash,
+                links: Vec::new(),
+                rule_id: "rule".to_string(),
+                source_path: "source.md".to_string(),
+            }
+        };
+        let exact = draft("Shared title", "exact source");
+        let other = draft("Shared title", "other source");
+        let updated = draft("Shared title", "updated source");
+        let created = draft("New title", "new source");
+
+        for migrated in [false, true] {
+            let project = tempfile::TempDir::new().expect("project");
+            let ws = init_workspace(project.path(), "ingest-candidates").expect("workspace");
+            let lock = acquire_workspace_lock(&ws).await.expect("seed lock");
+            let store = LanceStore::init(&ws).await.expect("legacy fixture");
+            let ctx = MutationContext::new(&ws, &lock, Some(&store));
+            let mut unmarked_path = None;
+            for (id, body) in [
+                ("NOTE-001", "Unrelated unmarked title collision."),
+                ("NOTE-002", other.body.as_str()),
+                ("NOTE-003", exact.body.as_str()),
+            ] {
+                let path = projection::create_artifact_with_projection(
+                    &ctx,
+                    &NewArtifact {
+                        id: id.to_string(),
+                        kind: "note".to_string(),
+                        title: "Shared title".to_string(),
+                        body: body.to_string(),
+                        status: "draft".to_string(),
+                        depth: "tactical".to_string(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags: vec!["source=ingest:rule".to_string()],
+                    },
+                )
+                .await
+                .expect("seed canonical artifact");
+                if id == "NOTE-001" {
+                    unmarked_path = Some(path);
+                }
+            }
+            let unmarked_path = unmarked_path.expect("unmarked path");
+            let unmarked = std::fs::read(&unmarked_path).expect("unmarked bytes");
+            drop(store);
+            drop(lock);
+            if migrated {
+                let budget = Duration::from_secs(120);
+                maintain_index(
+                    &MaintainCapability::for_strict_maintenance(
+                        ws.canonicalize().expect("canonical"),
+                    ),
+                    CaptureLimits {
+                        budget,
+                        ..CaptureLimits::default()
+                    },
+                    Instant::now() + budget,
+                )
+                .await
+                .expect("publish fixture");
+            }
+
+            let lock = acquire_workspace_lock(&ws).await.expect("mutation lock");
+            let store = if migrated {
+                None
+            } else {
+                Some(LanceStore::open(&ws).await.expect("legacy owner"))
+            };
+            let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+            let mut candidates = IngestCandidates::load(&ctx).await.expect("owning source");
+            assert_eq!(
+                candidates.matching("note", &exact).expect("exact match").id,
+                "NOTE-003"
+            );
+            assert!(candidates.matching("prd", &exact).is_none());
+            assert!(candidates.matching("note", &created).is_none());
+
+            let id = candidates.next_id(&ArtifactKind::Note);
+            assert_eq!(id, "NOTE-004");
+            let path = projection::create_artifact_with_projection(
+                &ctx,
+                &NewArtifact {
+                    id: id.clone(),
+                    kind: "note".to_string(),
+                    title: created.title.clone(),
+                    body: created.body.clone(),
+                    status: "draft".to_string(),
+                    depth: "tactical".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: vec!["source=ingest:rule".to_string()],
+                },
+            )
+            .await
+            .expect("real creation");
+            candidates.record_written("note", &created, id, path.clone());
+            let candidate = candidates
+                .matching("note", &created)
+                .expect("created candidate");
+            assert_eq!(candidate.id, "NOTE-004");
+            assert_eq!(candidate.path, path);
+            assert!(
+                std::fs::read_to_string(&path)
+                    .expect("created body")
+                    .contains(&created.source_hash)
+            );
+
+            let candidate = candidates
+                .matching("note", &exact)
+                .expect("existing import");
+            projection::update_body_with_projection(&ctx, &candidate.id, &updated.body)
+                .await
+                .expect("real update");
+            candidate.source_hash.clone_from(&updated.source_hash);
+            assert_eq!(
+                candidates
+                    .matching("note", &updated)
+                    .expect("updated candidate")
+                    .id,
+                "NOTE-003"
+            );
+            assert_eq!(candidates.next_id(&ArtifactKind::Note), "NOTE-005");
+            assert_eq!(
+                std::fs::read(unmarked_path).expect("preserved collision"),
+                unmarked
+            );
+            drop(store);
+            drop(lock);
+        }
     }
 }

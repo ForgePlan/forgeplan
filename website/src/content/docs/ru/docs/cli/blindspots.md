@@ -1,27 +1,23 @@
 ---
 title: forgeplan blindspots
-description: "Активные решения без доказательств и сироты (артефакты без связей) - критический гейт здоровья"
+description: "Решения без связанных доказательств и изолированные артефакты — диагностика состояния"
 ---
 
-Найдите **слепые пятна** - активные решения, не имеющие под собой доказательств
-(R_eff = 0), и сироты (артефакты без связей), не привязанные ни к одному родительскому артефакту. Это
-самая важная команда для оценки состояния: активный PRD/RFC/ADR без
-доказательств - это «ложное обещание» - решение, которое выглядит реальным, но не имеет
-под собой никаких измерений.
+Показывает **слепые пятна** — решения подходящих типов без связанных доказательств — и **сироты**, у которых нет ни входящих, ни исходящих связей. Отсутствие доказательств и `R_eff = 0` — разные проверки: пакет может быть связан, но не поддерживать решение. Решения в `draft`, `deprecated`, `superseded` исключены из поиска слепых пятен.
 
 ## Когда использовать
 
 -   **Начало сессии** - запустите эту команду сразу после `forgeplan health` и исправьте
     проблемы, прежде чем начинать новую работу (не накапливайте долги).
--   **CI gate** - прерывайте сборку, если какой-либо активный `critical` артефакт не имеет доказательств.
+- **Отчёт для CI** — изучайте находки; для отдельного гейта с кодом выхода используйте `health --strict`.
 -   **Перед релизом** - устраните все слепые пятна перед созданием тега.
 -   **Ретроспектива** - подсчитайте, сколько слепых пятен накопилось за спринт.
 
 ## Когда не использовать
 
--   Если вы хотите найти _застрявшие_ элементы (другая проблема) → используйте [`forgeplan blocked`](/docs/cli/blocked/)
--   Если вам нужен общий сводный отчёт → используйте [`forgeplan health`](/docs/cli/health/)
--   Если вам нужна временная шкала решений → используйте [`forgeplan journal`](/docs/cli/journal/) с флагом `--risk`
+- Зависимости → [`forgeplan blocked`](/ru/docs/cli/blocked/)
+- Общая диагностика → [`forgeplan health`](/ru/docs/cli/health/)
+- Временная шкала → [`forgeplan journal`](/ru/docs/cli/journal/) с `--risk`
 
 ## Использование
 
@@ -44,13 +40,13 @@ forgeplan blindspots
 forgeplan blindspots
 ```
 
-Использовать как CI gate (выход с ненулевым кодом при наличии слепых пятен):
+Для гейта с кодом выхода используйте `health --strict`. Сам `blindspots` не завершается ошибкой только из-за наличия находок:
 
 ```bash
-forgeplan blindspots || exit 1
+forgeplan health --strict
 ```
 
-В сочетании с [`health --ci`](/docs/cli/health/) для полной проверки:
+В сочетании с [`health --ci`](/ru/docs/cli/health/), у которого собственные правила отказа:
 
 ```bash
 forgeplan health --ci && forgeplan blindspots
@@ -58,14 +54,14 @@ forgeplan health --ci && forgeplan blindspots
 
 ## Интерпретация вывода
 
-Две секции - _слепые решения_ и _сироты (артефакты без связей)_:
+Иллюстрация находок, не дословный CLI-транскрипт и не измерение вашего workspace:
 
 ```
-BLIND DECISIONS (active, R_eff = 0.00)
+BLIND DECISIONS (no linked evidence)
   PRD-046  Docs v0.18.0 catch-up    → create EvidencePack + link
   ADR-008  Cloudflare Pages choice  → create EvidencePack + link
 
-ORPHANS (no parent)
+ORPHANS (no incoming or outgoing links)
   PRD-044  Unused PRD               → link to Epic or deprecate
   NOTE-031 One-off observation      → link to artifact or ignore
 
@@ -74,16 +70,16 @@ Summary: 2 blind decisions, 2 orphans
 
 | Секция                      | Что это значит                                        |
 |-----------------------------|-------------------------------------------------------|
-| Слепые решения              | Активный PRD/RFC/ADR с `R_eff = 0` (без доказательств) |
-| Сироты (артефакты без связей) | Артефакт без `parent` и без входящей ссылки           |
+| Слепые решения | Решения подходящих типов без связанных доказательств |
+| Сироты | Артефакты без входящих и исходящих связей |
 
-Код выхода: `0`, если всё чисто, `1` в противном случае. Используйте это в git pre-push хуках или CI.
+`blindspots` возвращает успех после вывода находок. У `health --ci` и `health --strict` собственные правила отказа; не выводите их из поведения этой команды.
 
 ## Как это работает
 
-`blindspots` - это строгое подмножество того, что сообщает [`health`](/docs/cli/health/)
-- выделенное в отдельную команду, потому что это наиболее распространённый гейт,
-который необходимо применять. Единый рабочий процесс предписывает:
+`blindspots` выделяет два класса из [`health`](/ru/docs/cli/health/) для разбора.
+Для CI выбирайте команду с явными правилами отказа.
+Рекомендуемый рабочий процесс:
 
 ```
 начало сессии → health → blindspots → (исправление) → новая работа
@@ -95,10 +91,24 @@ Summary: 2 blind decisions, 2 orphans
 
 ## См. также
 
--   [`forgeplan health`](/docs/cli/health/) - полная панель мониторинга проекта (с
-    режимом `--ci`)
--   [`forgeplan journal --risk`](/docs/cli/journal/) - временная шкала
-    слепых решений
--   [`forgeplan score`](/docs/cli/score/) - R_eff для одного артефакта
--   [`forgeplan new evidence`](/docs/cli/new/) - создать EvidencePack
--   [`forgeplan link`](/docs/cli/link/) - прикрепить доказательство с `--relation informs`
+- [`forgeplan health`](/ru/docs/cli/health/) - общая диагностика с режимами гейтинга
+- [`forgeplan journal --risk`](/ru/docs/cli/journal/) - решения во времени
+- [`forgeplan score`](/ru/docs/cli/score/) - R_eff одного артефакта
+- [`forgeplan new evidence`](/ru/docs/cli/new/) - создание EvidencePack
+- [`forgeplan link`](/ru/docs/cli/link/) - связь с доказательством через `informs`
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan blindspots --help`.
+
+```text
+Show blind spots — decisions without evidence, orphan artifacts
+
+Usage: forgeplan blindspots
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

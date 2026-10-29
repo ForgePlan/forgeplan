@@ -8,6 +8,12 @@ Rebuild the LanceDB search and metadata index from the markdown files in
 the `.md` files are the source of truth (ADR-003), and `lance/` is a derived,
 gitignored cache that can always be recomputed.
 
+In local `0.39.0+constellation.s1.1`, a Constellation-owned layout routes
+`reindex` through the same reconcile path as `forgeplan index`; it does not
+recreate legacy artifact tables. Configured embedding maintenance can also
+drain pending vectors. The legacy table description below applies only to
+the legacy layout. See [Constellation](/docs/guides/constellation/).
+
 ## Usage
 
 ```text
@@ -26,15 +32,17 @@ forgeplan reindex
 1. Scans every artifact directory under `.forgeplan/` (adrs, rfcs, prds, epics,
    specs, evidence, problems, solutions, notes, refresh).
 2. Parses YAML frontmatter + markdown body of each file.
-3. Rebuilds the LanceDB tables (`artifacts`, `links`, `tags`, `events`).
-4. Recomputes derived fields (R_eff scoring inputs, tag canonicalization).
+3. Upserts artifacts and frontmatter relations, then trims missing-file artifact
+   rows and orphan rows in the legacy `relations` table.
+4. Does not promise to recreate every auxiliary table or recompute every score.
 5. Leaves your markdown files untouched.
 
 ## When to run
 
-- **After `git clone`** - `.forgeplan/lance/` is gitignored and doesn't exist
-  on a fresh checkout. Run `forgeplan init -y && forgeplan reindex` to
-  bootstrap the workspace.
+- **After `git clone`** - verify the intended root first. `init -y` does
+  nothing if `.forgeplan/` exists, including in a parent. If config is
+  missing and defaults are intended, use `init -y --force` with its backup,
+  restore custom settings, then `reindex`.
 - **After manual markdown edits** - if you edited PRD/RFC files outside the
   CLI (text editor, find-and-replace), `reindex` syncs the changes into
   LanceDB so `search`, `list`, and `health` see them.
@@ -62,17 +70,15 @@ forgeplan search "auth"
 
 ## Safety
 
-`reindex` is **safe to run at any time**. It never writes to `.md` files, only
-to the `lance/` derived index. If you're unsure whether the index is
-in sync, just run it - the cost is a scan of your artifact tree (seconds for
-typical workspaces).
+`reindex` preserves canonical `.md` files while changing derived state.
+Keep the existing index and model cache for diagnosis rather than deleting
+them. Legacy and Constellation layouts are not interchangeable.
 
 ## v0.18.0 note (PROB-027)
 
-Prior to v0.18.0, `reindex` assumed `.forgeplan/lance/` already existed and
-could fail on fresh clones. As of v0.18.0 the command bootstraps the index
-directory if missing, so the "clone → reindex" workflow now works end-to-end
-without a separate `init` step on existing workspaces.
+Historically, v0.18.0 fixed rebuilding a missing legacy `lance/` directory.
+That does not remove the current requirement to load workspace configuration,
+nor does it make repeated `init -y` repair a missing config.
 
 ## Orphan relation cleanup (v0.17.1 hotfix)
 
@@ -84,6 +90,8 @@ Before v0.17.1, deleting or deprecating an artifact left its relation rows
 behind in LanceDB. These orphan links caused phantom `?` rows in
 `forgeplan tree` output and inflated link counts in `forgeplan health`. Phase 3
 removes them and prints a counter:
+
+Historical illustrative output, not a transcript of the local Constellation build:
 
 ```
 Reindex complete: 147 artifacts, 3 removed (corrupt kind), 5 orphan relations trimmed
@@ -113,9 +121,8 @@ Removal reasons reported in the output:
 
 - **`reindex`** - targeted rebuild of LanceDB from current markdown state.
   Use in normal day-to-day work.
-- **[`scan-import`](/docs/cli/scan-import/)** - lower-level scanner that can
-  also import legacy/foreign artifacts into a fresh workspace. Prefer
-  `reindex` unless you're doing a one-time import or migration.
+- **[`scan-import`](/docs/cli/scan-import/)** imports external Markdown, including through the migrated file-first path.
+  Use `index`/`reindex` to rebuild the index from existing canonical sources.
 
 ## See also
 
@@ -124,3 +131,19 @@ Removal reasons reported in the output:
 - [`forgeplan git-sync`](/docs/cli/git-sync/) - incremental sync after pull
 - [`forgeplan watch`](/docs/cli/watch/) - continuous auto-sync daemon
 - [`forgeplan health`](/docs/cli/health/) - verify index integrity
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan reindex --help`.
+
+```text
+Rebuild LanceDB index from .md files (files-first sync)
+
+Usage: forgeplan reindex
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

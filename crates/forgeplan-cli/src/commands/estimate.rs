@@ -1,5 +1,8 @@
+use std::borrow::Cow;
+
 use anyhow::Result;
 
+use forgeplan_core::db::store::ArtifactRecord;
 use forgeplan_core::estimate::types::{EstimateConfig, Grade, ItemSource};
 use forgeplan_core::estimate::{
     calculator, confidence, display, domain, extractor, overrides, scorer,
@@ -16,23 +19,21 @@ pub async fn run(
     complexity_overrides: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let store = common::store().await?;
+    let (_, source) = common::open_read_source().await?;
 
     // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    let id = store
-        .resolve_id(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
-    let id = id.as_str();
+    let canonical = match &source {
+        common::ReadSource::Legacy(store) => store.resolve_id(id).await?,
+        common::ReadSource::Captured(read) => read.resolve_id(id),
+    }
+    .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let id = canonical.as_str();
 
-    // Fetch artifact
-    let record = store.get_record(id).await?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Artifact '{}' not found
-Fix: forgeplan list",
-            id
-        )
-    })?;
+    let record: Cow<'_, ArtifactRecord> = match &source {
+        common::ReadSource::Legacy(store) => store.get_record(id).await?.map(Cow::Owned),
+        common::ReadSource::Captured(read) => read.get_record(id).map(Cow::Borrowed),
+    }
+    .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", id))?;
 
     // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
     // id post-merge so every hint emitted from this command stays canonical
@@ -125,13 +126,18 @@ Fix: forgeplan list",
         .collect();
 
     // Check linked Spec and Evidence for confidence boost
-    // Outgoing: this artifact → target (e.g., PRD → SPEC)
-    let outgoing = store.get_relations(&record.id).await.unwrap_or_default();
-    // Incoming: source → this artifact (e.g., EVID → PRD)
-    let incoming = store
-        .get_incoming_relations(&record.id)
-        .await
-        .unwrap_or_default();
+    // Read both directions from this report's source; a read failure is not
+    // evidence that no Spec or Evidence is linked.
+    let (outgoing, incoming) = match &source {
+        common::ReadSource::Legacy(store) => (
+            store.get_relations(&record.id).await?,
+            store.get_incoming_relations(&record.id).await?,
+        ),
+        common::ReadSource::Captured(read) => (
+            read.get_relations(&record.id),
+            read.get_incoming_relations(&record.id),
+        ),
+    };
 
     let has_spec = outgoing
         .iter()

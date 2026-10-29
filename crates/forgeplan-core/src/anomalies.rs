@@ -354,9 +354,11 @@ pub async fn detect_anomalies_captured(
     workspace: &Path,
     filter: &AnomalyFilter,
 ) -> anyhow::Result<AnomalyReport> {
-    Ok(detect_anomalies_captured_with_journal(read, workspace, filter)
-        .await?
-        .report)
+    Ok(
+        detect_anomalies_captured_with_journal(read, workspace, filter)
+            .await?
+            .report,
+    )
 }
 
 /// [`detect_anomalies_captured`] plus the journal state this scan produced,
@@ -602,10 +604,11 @@ fn detect_anomalies_from_records(
             if verdict != "refutes" && verdict != "weakens" {
                 continue;
             }
-            // A `supersedes` edge INTO this pack = a successor displaced it.
+            // Native supersede records the old pack -> replacement edge.
+            // An incoming edge only identifies this pack's predecessor.
             let has_successor = all_relations
                 .iter()
-                .any(|(_, tgt, rel)| rel == "supersedes" && tgt.eq_ignore_ascii_case(&r.id));
+                .any(|(src, _, rel)| rel == "supersedes" && src.eq_ignore_ascii_case(&r.id));
             if has_successor {
                 continue;
             }
@@ -1620,6 +1623,20 @@ mod tests {
             .add_relation_for_test("EVID-001", "PRD-001", "informs")
             .await
             .unwrap();
+        // An older predecessor does not replace EVID-001's own testimony.
+        store
+            .create_artifact_for_test(&new_artifact(
+                "EVID-000",
+                "evidence",
+                "superseded",
+                "verdict: supports\ncongruence_level: 3\n",
+            ))
+            .await
+            .unwrap();
+        store
+            .add_relation_for_test("EVID-000", "EVID-001", "supersedes")
+            .await
+            .unwrap();
 
         let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
             .await
@@ -1659,7 +1676,7 @@ mod tests {
             .create_artifact_for_test(&new_artifact(
                 "EVID-001",
                 "evidence",
-                "superseded",
+                "active",
                 "verdict: refutes\ncongruence_level: 3\n",
             ))
             .await
@@ -1677,8 +1694,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        store
-            .add_relation_for_test("EVID-002", "EVID-001", "supersedes")
+        crate::lifecycle::supersede(&store, "EVID-001", "EVID-002")
             .await
             .unwrap();
         // (b) deprecated SUPPORTS duplicate (sanctioned dedup flow).
@@ -2857,18 +2873,28 @@ mod captured_read_tests {
          ## Verdict\n\nThe anomaly run observed the same graph on both workspace \
          layouts, and this pack is part of that graph.\n";
 
-    fn write_artifact(
-        ws: &Path,
-        dir: &str,
-        id: &str,
-        kind: &str,
-        title: &str,
-        status: &str,
-        created_at: &str,
-        valid_until: Option<&str>,
-        links: &[(&str, &str)],
-        body: &str,
-    ) -> PathBuf {
+    struct ArtifactFixture<'a> {
+        id: &'a str,
+        kind: &'a str,
+        title: &'a str,
+        status: &'a str,
+        created_at: &'a str,
+        valid_until: Option<&'a str>,
+        links: &'a [(&'a str, &'a str)],
+        body: &'a str,
+    }
+
+    fn write_artifact(ws: &Path, dir: &str, fixture: ArtifactFixture<'_>) -> PathBuf {
+        let ArtifactFixture {
+            id,
+            kind,
+            title,
+            status,
+            created_at,
+            valid_until,
+            links,
+            body,
+        } = fixture;
         let mut fm = format!(
             "---\nid: {id}\ntitle: {title}\nkind: {kind}\nstatus: {status}\n\
              depth: standard\ncreated_at: {created_at}\n"
@@ -2882,9 +2908,10 @@ mod captured_read_tests {
                 fm.push_str(&format!("  - target: {target}\n    relation: {relation}\n"));
             }
         }
-        let path = ws
-            .join(dir)
-            .join(format!("{id}-{}.md", crate::artifact::types::slugify(title)));
+        let path = ws.join(dir).join(format!(
+            "{id}-{}.md",
+            crate::artifact::types::slugify(title)
+        ));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, format!("{fm}---\n\n{body}\n")).unwrap();
         path
@@ -2903,118 +2930,136 @@ mod captured_read_tests {
         write_artifact(
             &ws,
             "evidence",
-            "EVID-001",
-            "evidence",
-            "Mis-typed pack",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[("ADR-001", "based_on")],
-            EVIDENCE_BODY,
+            ArtifactFixture {
+                id: "EVID-001",
+                kind: "evidence",
+                title: "Mis-typed pack",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("ADR-001", "based_on")],
+                body: EVIDENCE_BODY,
+            },
         );
         write_artifact(
             &ws,
             "evidence",
-            "EVID-002",
-            "evidence",
-            "Expired pack",
-            "active",
-            "2026-01-01T00:00:00Z",
-            Some("2020-01-01"),
-            &[("ADR-001", "informs")],
-            EVIDENCE_BODY,
+            ArtifactFixture {
+                id: "EVID-002",
+                kind: "evidence",
+                title: "Expired pack",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: Some("2020-01-01"),
+                links: &[("ADR-001", "informs")],
+                body: EVIDENCE_BODY,
+            },
         );
         write_artifact(
             &ws,
             "evidence",
-            "EVID-003",
-            "evidence",
-            "Stuck draft pack",
-            "draft",
-            "2020-01-01T00:00:00Z",
-            None,
-            &[("ADR-002", "informs")],
-            EVIDENCE_BODY,
+            ArtifactFixture {
+                id: "EVID-003",
+                kind: "evidence",
+                title: "Stuck draft pack",
+                status: "draft",
+                created_at: "2020-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("ADR-002", "informs")],
+                body: EVIDENCE_BODY,
+            },
         );
         write_artifact(
             &ws,
             "adrs",
-            "ADR-001",
-            "adr",
-            "Evidenced decision",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[],
-            "## Context\n\nThree packs point at this decision.\n",
+            ArtifactFixture {
+                id: "ADR-001",
+                kind: "adr",
+                title: "Evidenced decision",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[],
+                body: "## Context\n\nThree packs point at this decision.\n",
+            },
         );
         write_artifact(
             &ws,
             "adrs",
-            "ADR-002",
-            "adr",
-            "Decision with a dangling link",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[("GHOST-001", "informs")],
-            "## Context\n\nThis decision links to an artifact that is gone.\n",
+            ArtifactFixture {
+                id: "ADR-002",
+                kind: "adr",
+                title: "Decision with a dangling link",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("GHOST-001", "informs")],
+                body: "## Context\n\nThis decision links to an artifact that is gone.\n",
+            },
         );
         write_artifact(
             &ws,
             "prds",
-            "PRD-001",
-            "prd",
-            "First half of a cycle",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[("PRD-002", "based_on")],
-            "## Problem\n\nThis requirement derives from the other one.\n",
+            ArtifactFixture {
+                id: "PRD-001",
+                kind: "prd",
+                title: "First half of a cycle",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("PRD-002", "based_on")],
+                body: "## Problem\n\nThis requirement derives from the other one.\n",
+            },
         );
         write_artifact(
             &ws,
             "prds",
-            "PRD-002",
-            "prd",
-            "Second half of a cycle",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[("PRD-001", "based_on")],
-            "## Problem\n\nThis requirement derives back from the first.\n",
+            ArtifactFixture {
+                id: "PRD-002",
+                kind: "prd",
+                title: "Second half of a cycle",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("PRD-001", "based_on")],
+                body: "## Problem\n\nThis requirement derives back from the first.\n",
+            },
         );
         write_artifact(
             &ws,
             "prds",
-            "PRD-003",
-            "prd",
-            "Unfinished requirement",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[],
-            // Three canonical stub markers: `check_stub_detailed` only
-            // counts an active artifact as a stub from three up.
-            "## Problem\n\
-             What we are building and why\n\n\
-             ## Users\n\
-             How the problem affects users\n\n\
-             ## Scope\n\
-             What's in the MVP\n\n",
+            ArtifactFixture {
+                id: "PRD-003",
+                kind: "prd",
+                title: "Unfinished requirement",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[],
+                // Three canonical stub markers: `check_stub_detailed` only
+                // counts an active artifact as a stub from three up.
+                body: "## Problem\n\
+                     What we are building and why\n\n\
+                     ## Users\n\
+                     How the problem affects users\n\n\
+                     ## Scope\n\
+                     What's in the MVP\n\n",
+            },
         );
         for id in ["PRD-004", "PRD-005"] {
             write_artifact(
                 &ws,
                 "prds",
-                id,
-                "prd",
-                "Shared title requirement",
-                "active",
-                "2026-01-01T00:00:00Z",
-                None,
-                &[],
-                "## Problem\n\nTwo requirements carry the same title on purpose.\n",
+                ArtifactFixture {
+                    id,
+                    kind: "prd",
+                    title: "Shared title requirement",
+                    status: "active",
+                    created_at: "2026-01-01T00:00:00Z",
+                    valid_until: None,
+                    links: &[],
+                    body: "## Problem\n\nTwo requirements carry the same title on purpose.\n",
+                },
             );
         }
         crate::phase::store::write_phase(
@@ -3058,7 +3103,10 @@ mod captured_read_tests {
             store.replace_record(record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
-            store.add_relation(&source, &target, &relation).await.unwrap();
+            store
+                .add_relation(&source, &target, &relation)
+                .await
+                .unwrap();
         }
         store
     }
@@ -3136,10 +3184,7 @@ mod captured_read_tests {
             "anom-duplicate-PRD-004-PRD-005",
             "anom-weakest-link-PRD-001",
         ] {
-            assert!(
-                found.contains(&expected),
-                "missing {expected} in {found:?}"
-            );
+            assert!(found.contains(&expected), "missing {expected} in {found:?}");
         }
 
         // An active pack that merely expired is not an unbacked
@@ -3401,11 +3446,7 @@ mod captured_read_tests {
             )
         );
         assert_eq!(
-            (
-                legacy.by_tier.auto,
-                legacy.by_tier.adi,
-                legacy.by_tier.user
-            ),
+            (legacy.by_tier.auto, legacy.by_tier.adi, legacy.by_tier.user),
             (
                 captured.by_tier.auto,
                 captured.by_tier.adi,

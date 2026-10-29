@@ -1,6 +1,6 @@
 ---
 title: "Process over model: three theses on why AI without guardrails breaks code"
-description: "Three aphorisms I repeat more than the rest: 'PRD = WHAT, not HOW', 'CLAUDE.md is one agent's constitution, BMAD is the team's', 'without a process, AI raises code complexity'. The last one isn't rhetoric - MSR 2026 gives numbers: 42.7% of agent commits raise cyclomatic complexity, 56.1% lower the Maintainability Index, +39% cognitive complexity over time."
+description: "Three theses about requirements, shared agent workflows, and quality assurance. What MSR 2026 studies actually measured about Cursor adoption and reverted agent changes - and why that supports a case for process, not a guarantee."
 slug: process-over-model
 lang: en
 publishedAt: 2026-05-25
@@ -50,7 +50,7 @@ That solves the problem of one developer with one agent. And that's exactly wher
 
 Take a team of five, each with their own agent. Every agent is correctly configured, every one works within its own CLAUDE.md. Developer one's agent implements feature A over a few hours - opens a PR. Developer two's agent implements feature B in parallel - also opens a PR. Both PRs are technically sound. During review it turns out: feature A assumes event X is stored in the database, feature B assumes it's in a queue. Both agents worked "correctly" by their own conventions. They had no shared space to align on an architectural assumption.
 
-Five developers with five agents isn't five people - it's twenty-five "workers" in one repository. To keep that from becoming Babel, you need a shared constitution: one PRD format, one architectural decision format, one depth scale for tasks. No single agent makes a unilateral decision, because "one person's rules" don't compose at "team scale."
+Five developers with five agents create more coordination work, not twenty-five literal workers. To keep that from becoming Babel, you need shared conventions: one PRD format, one architectural decision format, one depth scale for tasks. Shared artifacts help expose unilateral assumptions; they do not prevent them by themselves.
 
 BMAD (Breakthrough Method for Agile AI-Driven Development) is one format for that shared constitution. Not the only one, not necessarily the best fit for every team. What matters is the principle: a shared artifact format as the **lingua franca** between agents across different developers.
 
@@ -62,24 +62,25 @@ Details on coordinating two to five agents in one repository: [Multi-agent coord
 
 ---
 
-## 3. MSR 2026: AI without process raises code complexity
+## 3. MSR 2026: velocity gains can coexist with growing complexity
 
 > "Speed of AI is real. Quality drops almost symmetrically."
 
-The first two theses are methodological arguments. This one is backed by data.
+The first two theses are methodological arguments. The studies below motivate the third, but do not test whether PRDs or BMAD prevent technical debt.
 
-In 2026, Mining Software Repositories published a study I've re-read several times: **"Speed at the Cost of Quality: How Cursor AI Increases Short-Term Velocity and Long-Term Complexity in Open-Source Projects"** (Courtney E. Miller et al., MSR 2026). The authors examined commits made by AI agents in real open-source repositories and compared them to non-agent commits across several code complexity metrics.
+In **"Speed at the Cost of Quality: How Cursor AI Increases Short-Term Velocity and Long-Term Complexity in Open-Source Projects"** (Hao He, Courtney Miller et al., MSR 2026; arXiv v3, 26 January 2026), the authors compared project-level outcomes in 806 repositories with visible Cursor adoption against 1,380 matched control repositories. Adoption was inferred from committed Cursor configuration files, not by labeling each commit as AI- or human-authored.
 
-The numbers:
+The reported estimates from the study's difference-in-differences analysis:
 
-- **56.1%** of agent commits lower the Maintainability Index
-- **42.7%** of agent commits raise Cyclomatic Complexity
-- **+18%** in static compiler and linter warnings over time
-- **+39%** in cognitive complexity - a persistent "agent-induced technical debt"
+- **3–5×** more lines added in the first adoption month; the velocity gains dissipated after two months.
+- **+30%** static-analysis warnings after adoption.
+- **+41%** cognitive complexity after adoption.
+
+These are project-level estimates under the study's assumptions, not percentages of agent commits. The previously cited 56.1%, 42.7%, +18%, and +39% are not supported by this cited revision and should not be attributed to it.
 
 This doesn't mean AI writes bad code. It means AI writes code fast - with the same systemic issues a human developer produces when rushing. More commits per unit of time at the same defect rate equals more problems at the output. Speed amplifies what's already there.
 
-A second study from the same conference - **"When AI Code Doesn't Stick"** (MSR 2026) - examined reverted AI commits: why code an agent wrote got rolled back. The taxonomy of causes:
+A second study from the same conference - **"When AI Code Doesn't Stick"** (Issam Oukay et al., MSR 2026) - analyzed 33,580 agentic pull requests containing 86,315 commits. 2.66% of those pull requests contained at least one reverting commit. Its manual analysis of 500 reverting commits produced the following cause categories; these percentages are not failure rates for all AI-generated code:
 
 - **22.33%** - unintended side effects and over-engineering
 - **22.13%** - functional incorrectness
@@ -88,21 +89,21 @@ A second study from the same conference - **"When AI Code Doesn't Stick"** (MSR 
 
 What stops me in that taxonomy: the largest category isn't "wrong algorithm" or "syntax error." It's **over-engineering and side effects**. The agent solves the problem but does it in a way that touches things it shouldn't, or creates structure that's far more complex than the task required. That's the classic result of working without context - without understanding task boundaries, without architectural constraints, without a definition of done.
 
-What distinguished teams whose metrics held up? The MSR authors don't dedicate a separate section to it, but the pattern shows up in the examples: they had a process. Not a specific tool - a process: PRDs with clear boundaries, architectural decisions with revision conditions, a review cadence, artifacts where an agent could read "what's allowed here and what isn't."
+My interpretation is that teams should scale quality assurance with generation speed: clear task boundaries, reviewed architectural choices, and executable acceptance checks. The Cursor study recommends process adaptation, but does not establish that teams using PRDs or BMAD avoided the observed decline. That remains a hypothesis to test, not a reported result.
 
-The math is simple. An agent produces commits faster than a human. If the fraction of problematic commits hasn't dropped - as speed increases you get more problems in the same time window. The only way to lower that fraction is to give the agent guardrails that let it understand task context. That's what process is.
+The conditional arithmetic is simple: if output increases while the problematic fraction stays constant, more problems arrive in the same period. Guardrails, better tools or models, smaller changes, and stronger review can all affect that fraction. The cited studies do not isolate one sufficient remedy.
 
 The answer isn't "use agents less." It's to build the process before you push the speed. Speed is an outcome, not a cause. Process is the cause of good speed.
 
 Sources:
 
-- [Speed at the Cost of Quality (arxiv)](https://arxiv.org/pdf/2511.04427)
+- [Speed at the Cost of Quality (arXiv v3, 26 January 2026)](https://arxiv.org/html/2511.04427v3)
 - [When AI Code Doesn't Stick (MSR 2026)](https://2026.msrconf.org/details/msr-2026-mining-challenge/27/When-AI-Code-Doesn-t-Stick-An-Empirical-Study-on-Reverted-Changes-Introduced-by-AI-C)
 
 ---
 
 If there's one thesis to take away from the three, make it the third.
 
-The first two are about how to think about tasks and teams. The third is about what happens when you don't. The numbers aren't rhetoric: 56%, 42%, +39% - that isn't "AI is bad," it's "AI without process produces debt at industrial scale." Not worse than a human without process. Just faster.
+The first two theses are about how to think about tasks and teams. The third is a reason to measure quality alongside velocity. The cited +30% warnings and +41% complexity are evidence from the sampled Cursor-adopting projects, not proof that AI without one particular process necessarily produces debt.
 
 Process isn't a luxury or bureaucracy. It's protection against technical debt that AI starts manufacturing at industrial pace the moment you give it speed without guardrails.

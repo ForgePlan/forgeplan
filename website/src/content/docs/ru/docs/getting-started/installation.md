@@ -5,20 +5,19 @@ description: Установите Forgeplan - CLI, AI Skill или MCP Server
 
 ## Сначала прочитайте это: три вещи, которые установка бинарника не делает
 
-После установки Forgeplan у вас работают маршрутизация, артефакты, валидация,
-скоринг, граф связей и поиск по ключевым словам. Ещё три возможности требуют
-по одной команде каждая, и **пропуск любой из них проходит молча**. Ничего не
-падает. Вы получаете ответ хуже — и никакого признака, что он хуже. Именно
-поэтому этот блок стоит вверху страницы, а не ниже по тексту.
+Бинарник, файлы модели и векторы workspace - разные prerequisites.
+Подготавливайте возможности под свою задачу; эти шаги сами по себе не
+доказывают semantic coverage или готовность полного конвейера.
 
-| Шаг | Команда | Что теряется, если пропустить |
+| Возможность | Подготовка | Без неё |
 |---|---|---|
-| **1. Модель эмбеддингов** (~2.1 GB) | `forgeplan setup` | `search --semantic` скатывается к поиску по ключевым словам |
-| **2. База знаний FPF** | поставить плагин `fpf`, затем `forgeplan fpf ingest` | `fpf search` отвечает «ничего не найдено», а `reason --fpf` теряет опору |
-| **3. Обвязка агентов** | поставить 5 плагинов из маркетплейса | `/smith`, `/forge-cycle`, `/audit` и агенты-специалисты просто не существуют |
+| Семантический поиск | Сборка с `semantic-search`, `forgeplan setup`, затем index/embed | Нет полноценного semantic-ответа; forced semantic на мигрированном workspace не обещает keyword fallback |
+| База знаний FPF | Установить `fpf`, затем `forgeplan fpf ingest` | Корпус FPF недоступен соответствующим поиску и reasoning |
+| Обвязка агентов | Установить нужные плагины клиента | Недоступны команды плагинов и агенты-специалисты |
 
-Шаги 1 и 2 нужны всем. Шаг 3 — если вы ведёте Forgeplan через AI-агента, а
-именно так его и задумывали использовать.
+Инструкции Constellation относятся к локальной
+`0.39.0+constellation.s1.1`, а не опубликованной 0.38.0. Они не заявляют
+готовность S1-G/S2. См. [Constellation](/ru/docs/guides/constellation/).
 
 ### 1. Скачать модель эмбеддингов
 
@@ -26,24 +25,17 @@ description: Установите Forgeplan - CLI, AI Skill или MCP Server
 forgeplan setup
 ```
 
-Каждый релизный бинарник — Homebrew, `install.sh`, архивы GitHub Releases —
-несёт в себе движок семантического поиска. Но **не** несёт 2.1 GB весов
-модели: иначе любая загрузка весила бы 2.1 GB независимо от того, нужен вам
-поиск или нет.
+Модель не входит в бинарник. Текущий движок tract поддерживает только
+BGE-M3 (около 2.1 GB). При установке из исходников feature включают явно;
+строка версии не доказывает её наличие.
 
-**Почему это важно.** Без модели `forgeplan search --semantic` всё равно
-что-то возвращает. Он откатывается на поиск BM25 по ключевым словам и пишет
-об этом — но строчку об откате легко пропустить, а поиск по словам не найдёт
-«как мы обрабатываем отказы аутентификации» в документе, где написано
-«политика повторов при отклонённых учётных данных». Результаты выглядят
-правдоподобно и тихо промахиваются мимо того, что вы искали.
+`forgeplan setup` явно подготавливает модель. `init -y` не скачивает её;
+для нового workspace скрипт может явно передать `init -y --with-model`.
+Ранний выход для существующего workspace может пропустить загрузку.
 
-**Если не скачалось.** `forgeplan setup` идемпотентен — запустите ещё раз.
-`forgeplan init -y` намеренно никогда не качает (агенты и CI не должны
-случайно тянуть гигабайты), поэтому скриптовой установке нужен
-`forgeplan init --with-model`. Проверить, что у вас на самом деле:
-`forgeplan embed` — он либо начнёт грузить модель, либо откажется и объяснит
-почему. `forgeplan --version` про это не сообщает.
+`forgeplan embed` вычисляет векторы workspace: наличие весов ещё не
+заполняет индекс. Запросы и фоновое обслуживание не скачивают недостающие
+снапшоты. Проверяйте coverage, не предполагайте полноценный semantic-результат.
 
 Подробности, пути кэша и переопределения: [Первый запуск](#первый-запуск-скачать-модель-эмбеддингов).
 
@@ -55,14 +47,17 @@ forgeplan fpf ingest                        # затем в обычной об�
 forgeplan fpf search "trust calculus"       # проверка — должен вернуть B.3
 ```
 
-Спецификация First Principles Framework — корпус из 204 разделов, который
+Состав корпуса First Principles Framework зависит от установленной редакции; он
 поставляется **отдельным скиллом**, а не внутри бинарника. `fpf ingest`
 разбирает его, считает эмбеддинги и пишет в базу знаний вашего рабочего
 пространства.
 
-**Почему это важно.** FPF — то, на чём работает `forgeplan reason`, шаг ADI:
-именно он заставляет артефакт породить настоящие альтернативы, а не пересказ
-вашей первой идеи. Для глубины Standard и выше он обязателен.
+**Почему это важно.** `forgeplan reason` использует настроенную LLM для ADI.
+`--fpf` дополнительно подключает найденный контекст FPF; сам корпус не нужен
+для запуска ADI. Методология рекомендует ADI для Standard и требует для
+Deep/Critical; более строгие правила проекта сохраняются.
+На migrated Constellation workspace этот CLI-путь пока продолжает работу
+без FPF-контекста, не открывая retired FPF table.
 
 **Почему тут легко ошибиться.** Пропуск даёт замкнутый цикл, выглядящий как
 рабочая система: `fpf search` отвечает «ничего не найдено, запустите ingest»,
@@ -71,7 +66,7 @@ forgeplan fpf search "trust calculus"       # проверка — должен 
 `fpf search` ничего не возвращает — запустите `forgeplan fpf status`, он
 различает эти два случая.
 
-Подробности: [`forgeplan fpf ingest`](/docs/cli/fpf-ingest/).
+Подробности: [`forgeplan fpf ingest`](/ru/docs/cli/fpf-ingest/).
 
 ### 3. Поставить обвязку агентов
 
@@ -94,7 +89,7 @@ forgeplan fpf search "trust calculus"       # проверка — должен 
 
 ## AI Skill (рекомендуется для AI-агентов)
 
-Установите навык `/forge` для Claude Code, Cursor, Codex, Gemini и более чем 40 AI-агентов:
+`forgeplan setup-skill` устанавливает встроенный навык `/forge` для Claude Code:
 
 ```bash
 forgeplan setup-skill   # пишет ~/.claude/skills/forge/SKILL.md, без сети
@@ -105,15 +100,15 @@ forgeplan setup-skill   # пишет ~/.claude/skills/forge/SKILL.md, без с�
 /forge "Add OAuth2 authentication"
 ```
 
-**Альтернатива**: если у вас уже установлен CLI, используйте вместо этого встроенную команду - она встраивает файл навыка напрямую, без необходимости подключения к сети:
+Это офлайн-установка навыка, а не установка плагина или настройка других клиентов:
 
 ```bash
 forgeplan setup-skill
 ```
 
-Подробности см. в [`forgeplan setup-skill`](/docs/cli/setup-skill/).
+Подробности см. в [`forgeplan setup-skill`](/ru/docs/cli/setup-skill/).
 
-**Откройте для себя больше плагинов**: [Обзор Marketplace](/docs/marketplace/overview/).
+**Другие плагины**: [обзор Marketplace](/ru/docs/marketplace/overview/).
 
 ## Полный harness-комплект (Claude Code)
 
@@ -126,14 +121,14 @@ forgeplan setup-skill
 /plugin marketplace add ForgePlan/marketplace
 
 # 5 MUST плагинов — полный pipeline зависит от всех пяти
-/plugin install fpl-skills@ForgePlan-marketplace          # 34 skill'а: smith, forge-cycle, forgeplan-cookbook, audit, sprint, methodology-check, ...
-/plugin install agents-pro@ForgePlan-marketplace          # 28 агентов: smith, guardian, brief-intake, adr-architect, research-analyst, ...
-/plugin install agents-sparc@ForgePlan-marketplace        # 5 SPARC phase-агентов — первый PRD диспатчится в specification
-/plugin install agents-core@ForgePlan-marketplace         # 11 базовых агентов: coder, code-reviewer, tester
+/plugin install fpl-skills@ForgePlan-marketplace          # smith, forgeplan-cookbook, audit, sprint, methodology-check, ...
+/plugin install agents-pro@ForgePlan-marketplace          # guardian, brief-intake, adr-architect, research-analyst, ...
+/plugin install agents-sparc@ForgePlan-marketplace        # одна фича в существующей системе: 4 специалиста + оркестратор
+/plugin install agents-core@ForgePlan-marketplace         # coder, code-reviewer, tester, ...
 /plugin install forgeplan-workflow@ForgePlan-marketplace  # /forge-cycle + /forge-audit + guardian gate enforcement
 
 # 2 SHOULD плагина — настоятельно рекомендуются
-/plugin install fpf@ForgePlan-marketplace                 # FPF ADI reasoning — обязателен для Standard+ артефактов
+/plugin install fpf@ForgePlan-marketplace                 # FPF reasoning и дополнительный контекст базы знаний
 /plugin install fpl-hsmem@ForgePlan-marketplace           # Hindsight cross-session memory (per-project bank)
 
 # Перезагрузить чтобы активировать
@@ -148,7 +143,7 @@ forgeplan setup-skill
 |---|---|
 | `fpl-skills` | Набираешь `/smith` — он сам понимает какая у тебя задача и какая методология подходит. Драйвит каждодневные команды: `/forge-cycle` чтобы провести задачу до конца, `/audit` для multi-expert code review, `/sprint` для волновой реализации, `/forgeplan-cookbook` чтобы быстро найти нужный forgeplan-инструмент. Мозги системы. |
 | `agents-pro` | Запускаешь именованных специалистов когда нужно: `brief-intake` превращает мутную идею в структурированный Brief, `adr-architect` пишет архитектурное решение с тремя обдуманными альтернативами, `research-analyst` собирает prior art до того как ты прыгнешь в реализацию, `guardian` делает последнюю проверку перед активацией артефакта. |
-| `agents-sparc` | Используешь SPARC пятифазный поток для любой новой фичи: Specification → Pseudocode → Architecture → Refinement → Completion. Без него первый PRD на новом проекте ляжет без SPARC-структуры — придётся переделывать spec-фазу руками. |
+| `agents-sparc` | Используешь Specification → Pseudocode → Architecture → Refinement → Completion для одной фичи в существующей, работающей системе. Это не обязательный путь первого PRD любого greenfield-проекта: методологию выбирают по задаче. |
 | `agents-core` | Реально пишешь, ревьюишь и тестируешь код. Агент `coder` правит файлы в изолированном worktree, `code-reviewer` выдаёт структурированные findings против спеки, `tester` гоняет suite и считает coverage delta. |
 | `forgeplan-workflow` | Запускаешь команду `/forge-cycle` — reactive-enforcer который проводит артефакт через validate → ADI → review → activate шаг за шагом. Плюс `/forge-audit` для multi-expert audit'а и guardian gate, который решает готов ли PRD к merge. |
 
@@ -162,7 +157,7 @@ forgeplan setup-skill
 | `forgeplan-brownfield-pack` | Онбординг существующих кодовых баз через 7-фазный Discover-протокол |
 | `forgeplan-orchestra` | Синхронизация с Orchestra task management |
 
-См. [Обзор Marketplace](/docs/marketplace/overview/) для полного каталога плагинов.
+Полный каталог: [обзор Marketplace](/ru/docs/marketplace/overview/).
 
 ## Бинарный файл CLI
 
@@ -198,49 +193,48 @@ cargo install forgeplan
 
 ### Первый запуск: скачать модель эмбеддингов
 
-Семантический поиск вкомпилирован в каждый релизный бинарник — и Homebrew, и
-install-скрипт, и архивы GitHub Releases. Движок — [`tract`](https://github.com/sonos/tract),
-чистый Rust, поэтому нет платформы, где фича есть в исходниках, но отсутствует в
-сборке.
+Локальная сборка Constellation использует
+[`tract`](https://github.com/sonos/tract), а не прежний fastembed runtime.
+При установке из исходников feature включают явно:
 
-Чего в бинарнике нет — так это самой модели. Выполните один раз на машину:
+```bash
+cargo install forgeplan --features semantic-search
+```
+
+Движок, снапшот BGE-M3 в кэше и векторы в индексе workspace - разные условия.
+Для явной подготовки модели:
 
 ```bash
 forgeplan setup
 ```
 
-Команда делает две вещи:
+Команда подготавливает модель и алиас, а также пытается установить Git-хуки:
 
 - заранее скачивает **модель эмбеддингов**, чтобы первый семантический поиск не
   вставал на несколько минут без объяснений
 - создаёт **алиас `fpl`**, если вы ставили через `cargo install` — brew и
   `install.sh` получают его из `bin-aliases` cargo-dist, но у cargo нет
   post-install хука, поэтому при сборке из исходников есть `forgeplan` и нет `fpl`
+- устанавливает хуки синхронизации индекса `post-merge` и `post-checkout`
+  в текущем Git-репозитории, если это применимо; чужие хуки сохраняются.
 
-Оба шага идемпотентны; `--skip-model` и `--skip-alias` отключают любой из них.
-Существующий `fpl` в вашем PATH никогда не перезаписывается.
+`--skip-model`, `--skip-alias` и `--skip-hooks` отключают соответствующие действия.
+Алиас создаётся рядом с запущенным бинарником; занятый путь алиаса
+не перезаписывается.
 
-Пока модели нет, `forgeplan search --semantic` деградирует в keyword-поиск BM25
-и сообщает об этом; всё остальное — маршрутизация, артефакты, валидация,
-скоринг, граф — работает без изменений.
+Запросы и фоновое обслуживание используют готовые веса и не скачивают
+недостающие снапшоты. `init -y --with-model` явно разрешает загрузку для
+нового workspace, но уже инициализированный workspace может завершиться раньше.
 
-`forgeplan init` тоже предлагает загрузку при интерактивном запуске. Под `-y` он
-не качает никогда — агенты и CI-раннеры не должны случайно тянуть гигабайты, —
-поэтому для скриптовой установки, которой модель действительно нужна, передавайте
-`--with-model`.
+Модель размером около **2.1 GB** общая для проектов. Текущий приоритет кэша:
 
-Модель весит **~2.1 GB**, скачивается один раз на машину с прогресс-баром, и
-кэш хранится вне ваших проектов, в платформенном кэш-каталоге:
+1. Непустой `FORGEPLAN_MODEL_CACHE` (корень кэша, не каталог снапшота).
+2. `~/.forgeplan/models` на macOS, Linux и Windows.
+3. Платформенный кэш, затем старый относительный путь, лишь без home.
 
-| Платформа | Расположение кэша |
-|---|---|
-| macOS | `~/Library/Caches/forgeplan/models` |
-| Linux | `~/.cache/forgeplan/models` |
-| Windows | `%LOCALAPPDATA%\forgeplan\models` |
-
-Переопределяется переменной `FORGEPLAN_MODEL_CACHE`. Если у вас выставлена
-`HF_HOME`, приоритет за ней — это поведение fastembed, и мы его сознательно не
-переопределяем, чтобы общий кэш HuggingFace оставался главным.
+`HF_HOME` **не** переопределяет путь tract. Старые платформенные кэши
+остаются на месте; при необходимости выберите их явно через
+`FORGEPLAN_MODEL_CACHE`. Не удаляйте кэши ради диагностики.
 
 Проверить, какая у вас сборка, можно командой `forgeplan embed`: сборка без
 функции сразу откажется и напечатает команду установки, сборка с функцией
@@ -268,7 +262,13 @@ forgeplan setup
 forgeplan init -y
 ```
 
-Это создаст каталог `.forgeplan/` с конфигурацией и хранилищем LanceDB.
+В новом проекте создаёт `.forgeplan/` с config и производным индексом.
+Повторный `init -y` ничего не меняет, если workspace найден, в том числе
+в родительском каталоге. Если клон уже содержит `.forgeplan/`, но не config,
+проверьте корень и используйте `init -y --force` только для осознанного
+включения defaults: Markdown сохраняется, прежнее локальное состояние
+попадает в копию. Затем выполните `reindex`.
+См. [конфигурацию](/ru/docs/getting-started/configuration/).
 
 ## Проверка установки
 

@@ -3,7 +3,7 @@ title: forgeplan activate
 description: "Transition a draft artifact to active state through a validation gate - the moment a decision goes live."
 ---
 
-`forgeplan activate` moves an artifact from `draft` to `active`. This is the most frequent lifecycle transition: it marks the point at which a PRD, RFC, ADR, Epic or Spec is considered live, ready to be referenced by other artifacts, and expected to be backed by evidence. For structured artifacts, activation runs the validation gate - all MUST rules must pass. For lightweight artifacts (`Note`, `Problem`), activation is unguarded and happens immediately.
+`forgeplan activate` moves a draft artifact to `active`. For PRD, RFC, ADR, Epic and Spec, it checks MUST validation rules and methodology gates for body length, linked evidence and unfilled template content. `Note` and `Problem` skip those methodology gates, but still obey lifecycle transition rules. A positive R_eff remains a workflow requirement; the activation evidence-link gate does not itself prove evidence quality.
 
 ## When to use
 
@@ -55,7 +55,7 @@ forgeplan review ADR-005
 forgeplan activate ADR-005
 ```
 
-`review` runs the same checks `activate` uses but without changing state - useful as a dry run before flipping the switch.
+`review` runs the shared validation and methodology gates without changing state. Activation also checks the status transition and, on its legacy-store path, configured Git-delta provenance; a passed review is not a guarantee that activation will succeed.
 
 ### Example 3: Force activation despite validation errors
 
@@ -73,10 +73,10 @@ This command belongs in the [full artifact lifecycle](/docs/guides/first-artifac
 
 | Error | Cause | Fix |
 |---|---|---|
-| `MUST rule failed: Problem section missing` | Required frontmatter or section is empty | Edit the artifact file, then re-run `forgeplan validate <id>` |
-| `Artifact already in state: active` | Already activated in a previous session | No action needed; inspect with `forgeplan show <id>` |
-| `R_eff = 0 after activation` | No EvidencePack linked | Create evidence with `forgeplan new evidence`, then `forgeplan link` + `forgeplan score` |
-| `Cannot activate from terminal state` | Artifact is `superseded` or `deprecated` | Terminal states never re-activate - create a new draft instead |
+| MUST validation finding | Required frontmatter or section is empty | Update the artifact with `forgeplan update <id> --body @body.md`, then validate again |
+| Invalid transition from `active` | Already activated | Inspect with `forgeplan get <id>`; activation is not an idempotent no-op |
+| `R_eff = 0 after activation` | Linked evidence may be absent or refuting | Inspect the packs and their fields before adding evidence or rescoring |
+| `Cannot activate from terminal state` | Artifact is `superseded` or `deprecated` | Direct activation is refused. Create a new draft, or use receipt-based `restore`/`undo-last` for recovery. |
 
 ## See also
 
@@ -87,3 +87,23 @@ This command belongs in the [full artifact lifecycle](/docs/guides/first-artifac
 - [`forgeplan deprecate`](/docs/cli/deprecate/) - retire an active artifact without replacement
 - [Lifecycle v2 guide](/docs/guides/lifecycle-v2/)
 - [Methodology: Artifact Lifecycle](/docs/methodology/lifecycle/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan activate --help`.
+
+```text
+Activate an artifact (draft → active) with validation gate
+
+Usage: forgeplan activate [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID
+
+Options:
+      --force    Force activation even if validation has MUST errors
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

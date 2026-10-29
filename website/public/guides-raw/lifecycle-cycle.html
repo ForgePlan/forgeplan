@@ -189,9 +189,9 @@
     </div>
     <div class="pipe-arrow">→</div>
     <div class="pipe-box">
-      <div class="step-tag">02 · 6 transitions</div>
-      <div class="step-title">Какая команда - какой переход</div>
-      <div class="step-desc">activate · supersede · deprecate · renew · reopen · stale (auto)</div>
+      <div class="step-tag">02 · действия + детект</div>
+      <div class="step-title">Команда или сигнал по дате</div>
+      <div class="step-desc">activate · supersede · deprecate · renew · reopen · stale (только обнаружение)</div>
     </div>
     <div class="pipe-arrow">→</div>
     <div class="pipe-box">
@@ -208,9 +208,9 @@
     <h3 class="concept-h">Каждый артефакт всегда находится в одном из пяти состояний</h3>
     <p class="analogy">
       Паспорт сам по себе - это draft: документ есть, но без визы пересечь границу нельзя.
-      Активная виза - это active. Виза с истёкшим сроком - stale: не invalid, но требует
-      переоформления. Аннулированная виза - superseded или deprecated в зависимости от причины:
-      заменили на новую (supersede) или просто закрыли страну для въезда (deprecate).
+      Активная виза напоминает active, просроченная — необходимость пересмотра.
+      Но у артефакта дата сама не записывает <code>status: stale</code>: это отдельное явное изменение.
+      Замена визы напоминает supersede, отмена без замены — deprecate.
     </p>
     <p class="analogy">
       Система журналирования фиксирует это явно - у каждого артефакта в frontmatter поле <code>status:</code>
@@ -221,17 +221,17 @@
       <div class="state-card draft">
         <div class="sc-tag">● draft</div>
         <div class="sc-title">Work in progress</div>
-        <div class="sc-can">→ <span class="s-active">active</span> (через validate)</div>
+        <div class="sc-can">→ <span class="s-active">active</span> (activate; нужны все применимые проверки)</div>
       </div>
       <div class="state-card active">
         <div class="sc-tag">● active</div>
         <div class="sc-title">Validated, in use</div>
-        <div class="sc-can">→ <span class="s-super">superseded</span><br>→ <span class="s-dep">deprecated</span><br>→ <span class="s-stale">stale</span></div>
+        <div class="sc-can">→ <span class="s-super">superseded</span><br>→ <span class="s-dep">deprecated</span><br>→ <span class="s-stale">stale</span> (явная запись, не детект)</div>
       </div>
       <div class="state-card stale">
         <div class="sc-tag">● stale</div>
-        <div class="sc-title">valid_until истёк</div>
-        <div class="sc-can">→ <span class="s-active">active</span> (renew)<br>→ <span class="s-dep">deprecated</span> (reopen)</div>
+        <div class="sc-title">Записан status: stale</div>
+        <div class="sc-can">→ <span class="s-active">active</span> (renew)<br>→ <span class="s-dep">deprecated</span> + новый draft (reopen)</div>
       </div>
       <div class="state-card super">
         <div class="sc-tag">● superseded</div>
@@ -247,7 +247,7 @@
 
     <!-- State machine SVG -->
     <div class="sm-wrap">
-      <div class="sm-tag">State machine · 5 состояний + 6 переходов</div>
+      <div class="sm-tag">State machine · выбранные переходы записанного статуса, не детект срока</div>
       <svg viewBox="0 0 720 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="State machine жизненного цикла артефакта">
         <defs>
           <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -276,7 +276,7 @@
         <g>
           <rect x="560" y="160" width="130" height="60" rx="6" fill="#1f1606" stroke="#f59e0b" stroke-width="1.5" />
           <text x="625" y="186" text-anchor="middle" fill="#fcd34d" font-family="Inter, sans-serif" font-size="14" font-weight="500">stale</text>
-          <text x="625" y="204" text-anchor="middle" fill="#737373" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">valid_until истёк</text>
+          <text x="625" y="204" text-anchor="middle" fill="#737373" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">записан явно</text>
         </g>
 
         <!-- superseded (top-right) -->
@@ -306,9 +306,9 @@
         <line x1="395" y1="220" x2="475" y2="310" stroke="#a3a3a3" stroke-width="1.2" marker-end="url(#arr)" />
         <text x="445" y="265" fill="#a3a3a3" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">deprecate</text>
 
-        <!-- active → stale (auto, dotted) -->
+        <!-- active → stale: explicit stored-status change, not expiry detection -->
         <line x1="420" y1="190" x2="560" y2="190" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#arr)" />
-        <text x="490" y="180" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">stale (auto)</text>
+        <text x="490" y="180" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">явно stale</text>
 
         <!-- stale → active (renew, arc back) -->
         <path d="M 560 200 Q 490 250 425 215" stroke="#ff5a1f" stroke-width="1.5" fill="none" marker-end="url(#arr-orange)" />
@@ -316,14 +316,18 @@
 
         <!-- stale → deprecated (reopen, down) -->
         <line x1="600" y1="220" x2="540" y2="310" stroke="#a3a3a3" stroke-width="1.2" marker-end="url(#arr)" />
-        <text x="595" y="270" fill="#a3a3a3" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">reopen</text>
+        <text x="595" y="270" fill="#a3a3a3" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">reopen → new draft</text>
       </svg>
       <div class="sm-legend">
         <span class="item"><span class="sw" style="background: var(--accent)"></span>транзишн, требующий действия</span>
         <span class="item"><span class="sw" style="background: var(--text-3)"></span>транзишн в терминальное состояние</span>
-        <span class="item"><span class="sw" style="background: var(--warn); border-radius: 0; width: 14px; height: 0; border-top: 1.5px dashed var(--warn);"></span>auto-transition (по TTL)</span>
+        <span class="item"><span class="sw" style="background: var(--warn); border-radius: 0; width: 14px; height: 0; border-top: 1.5px dashed var(--warn);"></span>явная запись stale, не авто-переход</span>
       </div>
     </div>
+    <p>Схема не исчерпывающая: общий guard для <code>renew</code> допускает записанные
+      <code>draft → active</code> и <code>stale → active</code>, но не <code>active → active</code>.
+      <code>reopen</code> принимает active или stale, создаёт новый draft и переводит старый в deprecated.
+      Обнаружение истёкшего <code>valid_until</code> не является ни одной из этих записей.</p>
 
     <div class="insight">
       <div class="insight-tag">Terminal - буквально terminal</div>
@@ -339,7 +343,7 @@
   </div>
 
   <!-- CONCEPT 02 · TRANSITIONS DECISION TREE -->
-  <h2>02 · Шесть переходов · какой когда</h2>
+  <h2>02 · Пять команд и отдельный сигнал по дате</h2>
   <div class="concept">
     <div class="concept-tag">Концепция 02 · decision tree переходов</div>
     <h3 class="concept-h">Не «как переименовать» - а «какой transition отражает реальность»</h3>
@@ -370,55 +374,59 @@
       </div>
       <div class="tree-row">
         <span class="tr-cmd">renew</span>
-        <span class="tr-when">Stale-артефакт всё ещё валиден после re-evaluation</span>
-        <span class="tr-flow">stale → active</span>
-        <span class="tr-example">ADR про LanceDB через год - пересмотрели, всё ещё лучший выбор</span>
+        <span class="tr-when">Пересмотр обосновал продление; записан draft или stale, не active</span>
+        <span class="tr-flow">draft/stale → active</span>
+        <span class="tr-example">Учебный ADR про LanceDB: выбор подтверждён; evidence обновляется отдельно</span>
       </div>
       <div class="tree-row">
         <span class="tr-cmd">reopen</span>
-        <span class="tr-when">Stale-артефакт нужно переосмыслить заново</span>
-        <span class="tr-flow">stale → deprecated + new draft</span>
+        <span class="tr-when">Active- или stale-артефакт нужно переосмыслить заново</span>
+        <span class="tr-flow">active/stale → deprecated + new draft</span>
         <span class="tr-example">Старый deprecated, новый draft создаётся с lineage</span>
       </div>
       <div class="tree-row">
-        <span class="tr-cmd">(auto)</span>
-        <span class="tr-when"><code>valid_until</code> истёк - артефакт автоматически становится stale</span>
-        <span class="tr-flow">active → stale</span>
-        <span class="tr-example">Не команда, а сигнал: пора пересмотреть</span>
+        <span class="tr-cmd">stale (детект)</span>
+        <span class="tr-when">Необязательный <code>valid_until</code> истёк — запись найдена как просроченная</span>
+        <span class="tr-flow">status не меняется</span>
+        <span class="tr-example">Это сигнал для ревью, не запись active → stale и не таймер по умолчанию</span>
       </div>
     </div>
 
     <div class="code-block">
-      <span class="cb-tag">Шпаргалка · когда какой переход</span>
-<span class="cb-comment">// Проверить готовность перед активацией</span>
+      <span class="cb-tag">Независимые учебные примеры · не протокол запуска</span>
+<span class="cb-comment">// Проверить готовность; PASS сам по себе не доказывает все условия активации</span>
 review PRD-001
-<span class="cb-ok">→</span> Review PASSED -- ready to activate
+<span class="cb-comment">// Иллюстративный исход: Review PASSED; проверить остальные применимые условия</span>
 
 <span class="cb-comment">// Активировать: draft → active</span>
 activate PRD-001
-<span class="cb-ok">→</span> Validation gate passes MUST rules
+<span class="cb-ok">→</span> Activated PRD-001 (draft → active)
 
 <span class="cb-comment">// Заменить: active → superseded, PRD-002 становится преемником</span>
 supersede PRD-001 --by PRD-002
-<span class="cb-ok">→</span> Creates link: PRD-002 supersedes PRD-001
+<span class="cb-ok">→</span> Superseded PRD-001 → PRD-002
 
 <span class="cb-comment">// Устаревить: больше не релевантен</span>
 deprecate PRD-001 --reason <span style="color: #ff8a5b">"No longer needed"</span>
+<span class="cb-ok">→</span> Deprecated PRD-001: No longer needed
 
-<span class="cb-comment">// Продлить stale: пересмотрели, всё ещё актуален</span>
+<span class="cb-comment">// Отдельный пример с записанным stale (draft тоже допустим); active отклоняется</span>
 renew PRD-001 --reason <span style="color: #ff8a5b">"Re-validated"</span> --until 2026-12-31
+<span class="cb-ok">→</span> Renewed PRD-001 (stale → active)
 
-<span class="cb-comment">// Открыть пересмотр: старое устаревает, новый draft создаётся</span>
+<span class="cb-comment">// Другой пример с active/stale, не продолжение supersede/deprecate выше</span>
 reopen PRD-001 --reason <span style="color: #ff8a5b">"Needs major revision"</span>
-<span class="cb-ok">→</span> PRD-001 deprecated, new draft created (PRD-NNN)
+<span class="cb-ok">→</span> Reopened PRD-001 → deprecated
+    Link: PRD-NNN --based_on--> PRD-001
     </div>
 
     <div class="insight">
       <div class="insight-tag">Validation gates по типу артефакта</div>
       <p>
         PRD, RFC, ADR, Epic, Spec требуют проверки перед активацией -
-        30+ правил на тип артефакта (MUST-секции, отсутствие implementation leakage,
-        information density, measurability, traceability). Note и Problem могут активироваться
+        десятки правил на тип артефакта (MUST-секции, отсутствие implementation leakage,
+        information density, measurability, traceability): у глубокого PRD их больше
+        тридцати, у Spec, ADR, RFC и Epic - от десятка. Note и Problem могут активироваться
         без validation gate - они быстрые captures, и формальные правила здесь только мешали бы
         фиксировать сигнал.
       </p>
@@ -432,24 +440,36 @@ reopen PRD-001 --reason <span style="color: #ff8a5b">"Needs major revision"</spa
     <h3 class="concept-h">Stale не значит «неверно». Stale значит «никто не проверил, что всё ещё верно»</h3>
     <p class="analogy">
       Большинство команд игнорируют stale - и это самая опасная ошибка. Когда дата
-      <code>valid_until</code> у артефакта истекает, он автоматически становится stale. Это не
-      «он сломался» - это сигнал, что <b class="k">контекст мог измениться, а решение
-      зафиксировано на старых данных</b>.
+      <code>valid_until</code> у артефакта истекает, артефакт попадает в список
+      просроченных. Это не «он сломался» - это сигнал, что <b class="k">контекст мог
+      измениться, а решение зафиксировано на старых данных</b>.
+    </p>
+    <p>
+      Просроченность вычисляется по необязательной дате: <code>forgeplan stale</code> находит записи,
+      у которых <code>valid_until</code> уже в прошлом. Поле <code>status:</code> не переписывается:
+      active остаётся active, а не автоматически становится stale. Без даты такого срока нет;
+      универсального TTL для артефактов или evidence здесь нет.
+      <code>renew</code> использует общий guard: записанные <code>draft → active</code> и
+      <code>stale → active</code> допустимы, <code>active → active</code> — нет.
+      Для просроченной active-записи сначала нужен осмысленный выбор: отдельная явная запись stale
+      перед renew либо <code>reopen</code> для нового разбора. Reopen принимает active и stale.
+      Продление даты решения не перезамеряет и не обновляет связанные evidence.
     </p>
 
     <div class="stale-story">
-      <div class="ss-tag">⚡ типичный пример</div>
+      <div class="ss-tag">⚡ учебный сценарий · не история измерений</div>
       <p>
-        Вы создали ADR полгода назад: выбрали LanceDB, потому что у него тогда был лучший
-        Rust SDK. Поставили <code>valid_until: 180 дней</code>. Сейчас он stale. Может быть,
-        LanceDB всё ещё лучший вариант - а может быть, появился более зрелый конкурент.
-        Статус stale заставляет вас явно переоценить, вместо тихого допущения «оно ещё работает».
+        Допустим, полгода назад команда выбрала LanceDB, считая Rust SDK подходящим для своих задач.
+        Для ревью ADR задали <code>valid_until: 2026-04-15</code>. В этом вымышленном сценарии
+        дата уже прошла. Выбор может оставаться подходящим, а может потребовать замены.
+        Сигнал просроченности предлагает пересмотр, но не меняет записанный active.
+        Оценка SDK здесь — условие примера, не измеренный рейтинг продуктов.
       </p>
       <p>
-        Без stale-состояния это решение продолжало бы быть active, R_eff его evidence считался
-        бы по 6-месячному бенчмарку, и вы бы спокойно жили в иллюзии «всё проверено и работает».
-        Через год команда упирается в проблему, начинает гадать «почему мы выбрали LanceDB», и
-        выясняется, что evidence давно нерелевантен.
+        У связанного бенчмарка своя дата <code>valid_until</code>, если она задана.
+        Шесть месяцев возраста сами по себе не делают его просроченным в scorer.
+        Применимость к новой версии и нагрузке нужно оценить отдельно; отсутствие даты
+        не доказывает актуальность, но и не включает несуществующий таймер.
       </p>
     </div>
 
@@ -457,52 +477,55 @@ reopen PRD-001 --reason <span style="color: #ff8a5b">"Needs major revision"</spa
     <div class="stale-time">
       <div class="st-step now">
         <div class="stm-tag">01 · сейчас</div>
-        <div class="stm-title">active · fresh</div>
-        <div class="stm-desc">valid_until ещё в будущем. R_eff считается по evidence как обычно.</div>
+        <div class="stm-title">active · до даты ревью</div>
+        <div class="stm-desc">Дата решения ещё впереди. Evidence оцениваются по собственным полям и датам.</div>
       </div>
       <div class="st-step aging">
         <div class="stm-tag">02 · истечение</div>
-        <div class="stm-title">active → stale (auto)</div>
-        <div class="stm-desc">valid_until прошёл. Артефакт переходит в stale без вашего действия. Оценка evidence → 0.1.</div>
+        <div class="stm-title">active · обнаружен просроченным</div>
+        <div class="stm-desc">valid_until решения прошёл; <code>forgeplan stale</code> находит запись. Status остаётся active. Даты и оценки evidence от этого не меняются.</div>
       </div>
       <div class="st-step choice">
         <div class="stm-tag">03 · выбор</div>
         <div class="stm-title">renew или reopen</div>
-        <div class="stm-desc">Пересмотр обязателен. <code>renew</code> - всё ещё лучший выбор. <code>reopen</code> - нужен новый разбор.</div>
+        <div class="stm-desc">Рекомендуется пересмотр. Renew допускает записанные draft/stale → active, но не active → active. Для active сначала явно записывают stale либо выбирают reopen (active/stale → новый draft + deprecated старого).</div>
       </div>
       <div class="st-step terminal">
         <div class="stm-tag">04 · итог</div>
-        <div class="stm-title">active → или → deprecated + new</div>
-        <div class="stm-desc">После renew - продлеваем valid_until. После reopen - старое уходит в deprecated, начинается новый draft с lineage.</div>
+        <div class="stm-title">Продление или новый draft</div>
+        <div class="stm-desc">Renew меняет статус/дату цели и добавляет причину. Reopen создаёт новый draft с lineage и закрывает старый. Новый замер evidence — отдельная работа.</div>
       </div>
     </div>
 
     <div class="code-block">
-      <span class="cb-tag">Работа со stale-артефактами</span>
-<span class="cb-comment">// Просмотреть все stale-артефакты в проекте</span>
-list --status stale
+      <span class="cb-tag">Независимые учебные команды · не результаты запуска</span>
+<span class="cb-comment">// Найти просроченные по дате записи, не переписывая status</span>
+forgeplan stale
 
-<span class="cb-comment">// Продлить - всё ещё лучший вариант после пересмотра</span>
+<span class="cb-comment">// Только если записан draft/stale и продление обосновано; не для active</span>
 renew ADR-001 --reason <span style="color: #ff8a5b">"Re-evaluated, still best option"</span> --until 2027-06-30
 
-<span class="cb-comment">// Или открыть пересмотр заново - появились новые альтернативы</span>
+<span class="cb-comment">// Альтернатива для active/stale: новый разбор, не автоматический результат renew</span>
 reopen ADR-001 --reason <span style="color: #ff8a5b">"New alternatives available, fresh evaluation"</span>
     </div>
 
     <div class="insight">
       <div class="insight-tag">Связь со scoring</div>
       <p>
-        Когда evidence становится stale, его оценка падает до 0.1 (а не до 0 - «решение было,
-        контекст мог измениться»). Это значит, что R_eff = min(scores) у всего связанного
-        артефакта тоже падает до 0.1 - <b class="k">тихий сигнал</b>, который виден в
-        health-дашборде системы. Игнорировать его = молчаливо принимать риск.
+        Дата ревью артефакта и дата каждого evidence — разные входы. Если пригодный элемент
+        evidence просрочен по собственной дате, его вклад равен <b class="k">0.1 до расчёта
+        verdict, CL и модификатора типа</b>. Для непросроченного refutes вклад 0,
+        поэтому его истечение может повысить вклад с 0 до 0.1, а не понизить.
+        Итоговый рекурсивный R_eff — минимум по пригодным собственным evidence и вкладам
+        зависимостей с их штрафами; он может быть ниже 0.1. Плоский helper не учитывает типы
+        и зависимости. Без valid_until у элемента нет истечения в этом scorer.
       </p>
     </div>
   </div>
 
   <!-- WORKED EXAMPLE -->
   <h2>Полный цикл на одном артефакте · ADR-001</h2>
-  <p>Vault choice - LanceDB как embedded DB. Артефакт проживает все возможные состояния за 18 месяцев.</p>
+  <p>Учебный сценарий выбора Vault DB за 18 месяцев, не исторический отчёт. Все числа, исходы проверок, замеры и сравнения API ниже иллюстративны; это один путь, не все состояния.</p>
   <div class="worked">
     <div class="worked-step">
       <div class="step-num">М 0 · draft</div>
@@ -514,29 +537,29 @@ reopen ADR-001 --reason <span style="color: #ff8a5b">"New alternatives available
     <div class="worked-step">
       <div class="step-num">М 0.5 · active</div>
       <div class="step-content">
-        <h4>Validation pass → артефакт активирован</h4>
-        <p>3 quality gates прошли, evidence линкован (бенчмарк CL2), R_eff = 0.7. <code>status: active</code>, <code>valid_until: 2026-12-01</code>. Файл immutable.</p>
+        <h4>Учебный исход: проверки пройдены → активация</h4>
+        <p>Условно прошли 3 quality gates; это не полный список условий активации, остальные применимые условия также считаем выполненными. Ровно один пригодный непросроченный собственный evidence: supports, явный CL2, benchmark — max(0, 1 − 0.1 − 0.1) = 0.8. Ровно одна пригодная based_on-зависимость с таким же единственным evidence и без своих зависимостей даёт 0.8 − 0.1 = 0.7. Других вкладов нет; оба evidence не terminal, source_tier не задан. Рекурсивный R_eff = min(0.8, 0.7) = 0.7; плоский helper только собственного evidence дал бы 0.9. <code>status: active</code>, дата ревью ADR <code>valid_until: 2026-12-01</code>; evidence имеют отдельные даты после неё. Активный Markdown можно править.</p>
       </div>
     </div>
     <div class="worked-step crit">
-      <div class="step-num">М 12 · stale</div>
+      <div class="step-num">М 12 · детект</div>
       <div class="step-content">
-        <h4>valid_until истёк · автоматический переход в stale</h4>
-        <p>Контекст не меняли, ничего не делали - но <code>valid_until</code> прошёл. <code>status: stale</code> выставлен системой. Health-дашборд показывает: «1 stale artifact, R_eff degraded».</p>
+        <h4>valid_until истёк · артефакт помечен просроченным</h4>
+        <p>В учебном сценарии дата ревью ADR прошла. <code>forgeplan stale</code> находит его, но <code>status: active</code> сохраняется. Из этого нельзя вывести падение R_eff: собственные даты evidence ещё не прошли. Это не наблюдавшийся вывод health.</p>
       </div>
     </div>
     <div class="worked-step">
       <div class="step-num">М 12 · renew</div>
       <div class="step-content">
-        <h4>Re-evaluation → продлено до 2027-06-30</h4>
-        <p>Перезамерили на новой версии LanceDB. Те же тренды - выбор валиден. Renew продлевает <code>valid_until</code>, статус возвращается в active, evidence актуализируется.</p>
+        <h4>Учебный исход: явный stale → renew до 2027-06-30</h4>
+        <p>Renew прямо из active был бы отклонён. После пересмотра оператор отдельно и явно меняет frontmatter на <code>status: stale</code>, затем <code>renew ADR-001 --reason "Re-evaluated" --until 2027-06-30</code> использует допустимый stale → active (общий guard допускает также draft → active). Команда добавляет причину и меняет статус/дату ADR, не evidence. Отдельный новый замер на новой версии LanceDB в этом вымышленном примере подтверждает выбор; его результаты и собственную дату нужно записать как новое evidence, связать с решением и пересчитать оценку. Реального замера здесь не заявлено.</p>
       </div>
     </div>
     <div class="worked-step">
       <div class="step-num">М 18 · supersede</div>
       <div class="step-content">
         <h4>Появился лучший вариант → ADR-002 заменяет ADR-001</h4>
-        <p>В индустрии появился sqlite-vec с лучшим API. ADR-002 (новое решение) создан, активирован. ADR-001 помечается как superseded, ADR-002 ссылается на ADR-001 как на источник lineage. ADR-001 уходит в terminal.</p>
+        <p>В учебном сценарии команда сочла API sqlite-vec более подходящим — это не измеренный факт о продуктах. Предположим, ADR-002 создан и активирован после всех применимых проверок. Затем ADR-001 явно superseded с заменой на ADR-002; история сохранена. Успех этих операций здесь иллюстративен.</p>
       </div>
     </div>
   </div>
@@ -545,7 +568,7 @@ reopen ADR-001 --reason <span style="color: #ff8a5b">"New alternatives available
 
   <div class="footer">
     <span>lifecycle-cycle · explainer · v1</span>
-    <span><span class="arrow">→</span> один из инструментов, реализующих этот lifecycle, - <a href="https://forgeplan.dev/docs/methodology/lifecycle" style="color: inherit; text-decoration: none;">Forgeplan</a></span>
+    <span><span class="arrow">→</span> один из инструментов, реализующих этот lifecycle, - <a href="https://forgeplan.dev/ru/docs/methodology/lifecycle" style="color: inherit; text-decoration: none;">Forgeplan</a></span>
   </div>
 
 </main>

@@ -770,7 +770,7 @@ mod tests {
         }
     }
 
-    fn keys(ids: &[&str]) -> HashSet<&str> {
+    fn keys<'a>(ids: &[&'a str]) -> HashSet<&'a str> {
         ids.iter().copied().collect()
     }
 
@@ -793,7 +793,10 @@ mod tests {
             section("rfc-wire", 0),
             section("rfc-wire", 1),
         ];
-        assert_eq!(expected_rows(&sections, &keys(&["prd-auth", "rfc-wire"])), 6);
+        assert_eq!(
+            expected_rows(&sections, &keys(&["prd-auth", "rfc-wire"])),
+            6
+        );
     }
 
     /// Sections of an artifact OUTSIDE the filter are not counted — the

@@ -8,9 +8,7 @@ Model Context Protocol. It is **not** a tool you call from agents - its subcomma
 the host machine to wire the binary into client config files (`mcp install`) or to start
 the stdio server when launched manually (`mcp serve`, an alias for [`forgeplan serve`](/docs/cli/serve/)).
 
-Forgeplan is MCP-first: most of the day-to-day surface area (73 tools) is exposed via
-the server. This parent command exists so a one-shot `forgeplan mcp install --client claude`
-gets you from a fresh `brew install forgeplan` to a working agent without hand-editing JSON.
+The selected `0.39.0+constellation.s1.1` binary exposes 76 tools in the full profile and 9 in the additional read-only profile. Those are captured inventories, not acceptance of every operation or a global write ban. The installed `0.38.0` release is unchanged. `mcp install` configures a client; successful initialization and calls still need verification in that client.
 
 ## When to use
 
@@ -54,8 +52,7 @@ forgeplan mcp <COMMAND>
 forgeplan mcp install --client claude --scope user
 ```
 
-Writes Forgeplan into `~/.claude.json` so every Claude Code session sees `mcp__forgeplan__*`
-tools. Idempotent - safe to re-run after upgrades.
+Writes a user-scoped entry to `~/.claude.json`. The client must still load and successfully initialize it before tools are available; inspect the executable path after upgrades.
 
 ### Project-scoped Cursor config
 
@@ -63,8 +60,7 @@ tools. Idempotent - safe to re-run after upgrades.
 forgeplan mcp install --client cursor --scope project
 ```
 
-Creates `./.cursor/mcp.json` so the Forgeplan server only runs when this repo is open.
-Ideal for monorepos where some projects use Forgeplan and others do not.
+Writes a project-scoped entry to `./.cursor/mcp.json`. Loading and startup depend on the actual client's workspace and policy.
 
 ### Manually run the server (debugging only)
 
@@ -78,10 +74,7 @@ Same effect as `forgeplan serve`. Useful when piping JSON-RPC by hand or attachi
 
 ## How it fits the workflow
 
-`mcp install` is a one-time setup step that lives between "binary on disk" and "agent
-can call tools". After it succeeds, the rest of the methodology (Shape → Validate → Code
-→ Evidence → Activate) runs through the MCP tools the server exposes. `mcp serve` is the
-runtime; you almost never invoke it manually because the client launches it for you.
+`mcp install` is client configuration, while `mcp serve` is the runtime. The client normally launches that runtime. Confirm the intended binary, profile, workspace and handshake before relying on its tools; registration alone does not establish methodology gate completion.
 
 ## See also
 
@@ -90,3 +83,27 @@ runtime; you almost never invoke it manually because the client launches it for 
 - [`forgeplan serve`](/docs/cli/serve/) - primary reference for the MCP server
 - [MCP tools index](/docs/mcp/) - what the server exposes
 - [`forgeplan health`](/docs/cli/health/) - verify the workspace before connecting
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan mcp --help`.
+
+```text
+MCP integration helpers (install config for AI agent clients)
+
+Usage: forgeplan mcp <COMMAND>
+
+Commands:
+  serve    Start MCP server (alias for `forgeplan serve`)
+  install  Install forgeplan MCP config into a client (Claude / Cursor / Windsurf)
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+- [`forgeplan mcp serve`](/docs/cli/mcp-serve/)
+- [`forgeplan mcp install`](/docs/cli/mcp-install/)
+<!-- forgeplan-runtime:end -->

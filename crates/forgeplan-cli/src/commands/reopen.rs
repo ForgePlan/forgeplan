@@ -95,22 +95,20 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     }
 
     common::log_change_field(
-        &store,
+        &ws,
+        Some(&store),
         id,
         "update",
-        "status",
-        Some(&record.status),
-        Some("deprecated"),
+        ("status", Some(&record.status), Some("deprecated")),
         "cli",
     )
     .await;
     common::log_change_field(
-        &store,
+        &ws,
+        Some(&store),
         &new_id,
         "create",
-        "status",
-        None,
-        Some("draft"),
+        ("status", None, Some("draft")),
         "cli",
     )
     .await;
@@ -181,6 +179,25 @@ async fn run_file_first(
         .await
         .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
     };
+
+    common::log_change_field(
+        &ws,
+        None,
+        &canonical,
+        "update",
+        ("status", Some(&record.status), Some("deprecated")),
+        "cli",
+    )
+    .await;
+    common::log_change_field(
+        &ws,
+        None,
+        &new_id,
+        "create",
+        ("status", None, Some("draft")),
+        "cli",
+    )
+    .await;
 
     common::note_constellation_owns_index();
     // Lock released before reconcile — see `common::reconcile_after_file_mutation`.

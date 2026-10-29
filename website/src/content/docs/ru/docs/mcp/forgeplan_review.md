@@ -3,7 +3,7 @@ title: forgeplan_review
 description: "Проверить артефакт - запустить валидацию и показать контрольный список жизненного цикла. Показывает результаты MUST/SHOULD и готовность артефакта к активации."
 ---
 
-Проверяет один артефакт - запускает валидацию (правила MUST / SHOULD с учётом глубины), проверяет предварительные условия жизненного цикла (доказательство, R_eff, связанные отношения) и возвращает чёткий вердикт о том, готов ли артефакт к активации. Это объединённый гейт "могу ли я активировать?", используемый перед вызовом `forgeplan_activate`.
+Проверяет результаты depth-aware валидации и условия жизненного цикла, возвращает `can_activate` и предупреждения. Это read-only предварительная проверка, не активация и не гарантия успешной последующей записи: handler активации отдельно проверяет настроенный provenance-гейт и условия на момент записи.
 
 **Категория**: Качество
 
@@ -19,39 +19,17 @@ description: "Проверить артефакт - запустить вали�
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
 | `id` | `string` | yes | ID артефакта для проверки. |
+| `workspace` | `string \| null` | no | Явный абсолютный путь workspace или путь с `~/`. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ReviewParams`_
 
 ## Возвращает
 
-```json
-{
-  "artifact_id": "PRD-042",
-  "kind": "prd",
-  "depth": "standard",
-  "status": "draft",
-  "validation": {
-    "must_errors": [],
-    "should_warnings": ["density < 50 words in section Goals"]
-  },
-  "lifecycle": {
-    "r_eff": 0.72,
-    "has_evidence": true,
-    "ready_to_activate": true
-  },
-  "verdict": "ПРОЙДЕНО - готов к активации"
-}
-```
-
-Если заблокировано:
-
-```json
-{
-  "verdict": "FAIL",
-  "validation": { "must_errors": ["Missing section: Problem"] },
-  "lifecycle": { "ready_to_activate": false }
-}
-```
+JSON-текст payload содержит `artifact_id`, boolean `can_activate`,
+`must_findings`, `should_findings`, `warnings`, `_next_action`.
+Вложенных объектов `validation`/`lifecycle`, числового `r_eff`
+и строкового поля `verdict` в ответе нет. `can_activate: false` —
+результат обзора; tool error отдельно означает невозможность выполнить обзор.
 
 ## Пример вызова
 
@@ -61,10 +39,10 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ReviewParams`
 
 ## Типичная последовательность
 
-1.  `forgeplan_review` → если `FAIL`, исправьте проблемы.
-2.  `forgeplan_update` для исправления тела.
-3.  `forgeplan_review` снова → ожидается `PASS`.
-4.  `forgeplan_activate` - перевести черновик → активный.
+1. Изучите `can_activate`, все findings и предупреждения `forgeplan_review`.
+2. Исправьте подтверждённые проблемы через `forgeplan_update`; не придумывайте правки ради чистого отчёта.
+3. Повторите review, сохранив невыполненные обязательства по реализации и evidence.
+4. Вызывайте `forgeplan_activate` лишь после выполнения условий задачи; изучите отдельный результат активации.
 
 ## Эквивалент CLI
 
@@ -78,3 +56,48 @@ forgeplan review PRD-042
 - [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) - только пересчёт R_eff.
 - [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) - действие, контролируемое этим ревью.
 - [Руководство по методологии](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Review an artifact — run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `id` | да | string | Artifact ID to review |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "Artifact ID to review",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "ReviewParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

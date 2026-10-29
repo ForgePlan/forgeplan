@@ -5,7 +5,7 @@ description: "List live claims in the workspace - who is working on what right n
 
 `forgeplan claims` показывает все активные клеймы в воркспейсе - какой агент сейчас работает над каким артефактом и через сколько истекает его клейм. Клеймы отсортированы по времени до истечения, ближайшие - сверху, чтобы самые срочные слоты бросались в глаза. Истёкшие клеймы пропускаются (считаются освобождёнными).
 
-Команда только читает и не берёт лок: оркестратор может опрашивать её хоть раз в секунду, не замедляя агентов, которые в это же время пишут клеймы. Если файл клейма повреждён или превышает лимит размера, он молча пропускается и попадает в счётчик `skipped` в выводе - потом `forgeplan health` это покажет, чтобы можно было прибрать.
+Команда только читает и не берёт блокировку записи клеймов. Это не гарантирует отсутствие затрат при частом опросе. Повреждённые или слишком большие файлы пропускаются и учитываются в `skipped`; при ненулевом значении изучите каталог клеймов.
 
 Аналог [`forgeplan_claims`](/ru/docs/mcp/forgeplan_claims/) на MCP-стороне.
 
@@ -18,7 +18,7 @@ description: "List live claims in the workspace - who is working on what right n
 
 ## Когда НЕ использовать
 
-- Нужен lifecycle-статус (`draft` / `active` / `superseded`) - это отдельно от клеймов; используйте [`forgeplan list`](/ru/docs/cli/list/) или `forgeplan show <id>`.
+- Нужен lifecycle-статус (`draft` / `active` / `superseded`) - используйте [`forgeplan list`](/ru/docs/cli/list/) или `forgeplan get <id>`.
 - Хотите изменить состояние - эта команда только читает. Для записи используйте [`forgeplan claim`](/ru/docs/cli/claim/) и [`forgeplan release`](/ru/docs/cli/release/).
 - Нужна долгосрочная история - клеймы эфемерны (максимум 24 часа TTL). Для истории запросов используйте [`forgeplan activity`](/ru/docs/cli/activity/).
 
@@ -44,7 +44,7 @@ forgeplan claims [OPTIONS]
 forgeplan claims
 ```
 
-Печатает таблицу живых клеймов, отсортированных по сроку истечения. Типичный вывод:
+Иллюстрация таблицы, не записанный runtime transcript:
 
 ```text
 ID        agent      expires_in   note
@@ -66,7 +66,7 @@ forgeplan claims --json | jq '.claims[] | select(.agent_id == "worker-1")'
 forgeplan claims --json | jq '.skipped'
 ```
 
-Ненулевое значение `skipped` означает, что хотя бы один файл клейма не разобрался или превысил максимальный размер - раньше такие файлы молча терялись, теперь они явно вынесены в вывод. Запустите [`forgeplan health`](/ru/docs/cli/health/), чтобы найти, какой именно файл сломан.
+Ненулевой `skipped` означает, что хотя бы один файл не разобрался или превысил лимит размера. Изучите `.forgeplan/claims/`: сам счётчик не указывает повреждённый файл.
 
 ## Место в рабочем процессе
 
@@ -78,3 +78,20 @@ forgeplan claims --json | jq '.skipped'
 - [`forgeplan claim`](/ru/docs/cli/claim/) - взять клейм
 - [`forgeplan release`](/ru/docs/cli/release/) - снять клейм
 - [`forgeplan dispatch`](/ru/docs/cli/dispatch/) - план multi-agent работы
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan claims --help`.
+
+```text
+List active claims (sorted by expiry, soonest first)
+
+Usage: forgeplan claims [OPTIONS]
+
+Options:
+      --json     Output as JSON for machine consumption
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -22,37 +22,19 @@ _No input parameters. Call this tool with an empty object `{}`._
 
 ## Returns
 
-A structured health report with:
+The JSON text payload includes:
 
-- `total_artifacts` - count by kind (PRD/RFC/ADR/Epic/Spec/Evidence/...).
-- `by_status` - draft / active / stale / superseded / deprecated breakdown.
-- `blind_spots` - active decisions (PRD/RFC/ADR/Epic) with no linked evidence.
-- `orphans` - artifacts with zero incoming + outgoing links.
-- `stale` - artifacts with expired `valid_until` dates.
-- `risks` - decisions with R_eff below a confidence threshold.
-- `next_actions` - ordered list of suggested fixes (create evidence, link orphan, refresh stale).
-- `verdict` - `"healthy"` or `"debt"` (presence of blind spots / orphans / stale flips to debt).
+- `total`, `by_kind`, `by_status`, `by_derived_status`: inventory and breakdowns.
+- `blind_spots`, `at_risk`, `orphans`, `stale_count`: trust/link/expiry findings; `orphans` is an array of IDs.
+- `possible_duplicates`, `active_stubs`, `stale_drafts`, `gitignore_drift`: additional findings.
+- `phase_mismatches`, `advisory_phase_mismatches`, `phase_read_errors`: advisory phase diagnostics.
+- `active_claims`, `active_claim_count`, `skipped_claim_files`: MCP claim information.
+- `next_actions`, `_next_action`, `verdict_summary`: suggested follow-up and explanation.
+- `verdict`: exactly `"healthy"`, `"needs_attention"`, or `"unhealthy"`; **not** `"debt"`.
 
-```json
-{
-  "verdict": "debt",
-  "total_artifacts": 184,
-  "blind_spots": [
-    { "id": "PRD-042", "kind": "prd", "reason": "active, no evidence" }
-  ],
-  "orphans": [
-    { "id": "NOTE-017", "kind": "note" }
-  ],
-  "stale": [
-    { "id": "ADR-003", "days_expired": 12 }
-  ],
-  "next_actions": [
-    "Create EvidencePack for PRD-042 and link",
-    "Link NOTE-017 to parent decision or deprecate",
-    "Refresh ADR-003 (expired 2026-03-30)"
-  ]
-}
-```
+Do not branch on the old `total_artifacts`, `risks`, or `stale` example
+fields. This dashboard aggregates implemented checks; it does not prove
+that all project requirements, handlers, or documentation claims were reviewed.
 
 ## Example invocation
 
@@ -64,7 +46,7 @@ A structured health report with:
 
 1. `memory_recall("Forgeplan")` - restore context from prior sessions.
 2. `forgeplan_health` - get current state.
-3. If `verdict == "debt"` → fix blind spots / orphans **first**, before new work.
+3. If `verdict != "healthy"`, inspect the actual findings and prioritise them with the task owner; the aggregate label is not permission for unrelated mutations.
 4. `forgeplan_route` - route next task once health is clean.
 
 ## CLI equivalent
@@ -79,3 +61,29 @@ forgeplan health
 - [`forgeplan_blindspots`](/docs/mcp/forgeplan_blindspots/) - focused blind-spot list.
 - [`forgeplan_stale`](/docs/mcp/forgeplan_stale/) - expired `valid_until` list.
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. Returns aggregate `verdict` field ("healthy" | "needs_attention" | "unhealthy") + `verdict_summary` for one-line human rendering. Branch on `verdict` for CI gates and agent decision logic. No LLM needed.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| — | — | — | No parameters. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "properties": {},
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

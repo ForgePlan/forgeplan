@@ -9,6 +9,7 @@ status: active
 title: R_eff excludes terminal-status evidence from the weakest-link min
 ---
 
+
 ## Context
 
 `R_eff = min(evidence_scores)` («weakest link, никогда не среднее») сегодня включает в min() эвиденцию с терминальным статусом. Вытесненный (`superseded`) refutes-пак навсегда пиннит R_eff артефакта к 0 — восстановление невозможно даже после честной ре-верификации на более поздних коммитах (PROB-084; upstream #436 / PROB-102: цепочка PRD-177 → EVID-249 refutes superseded + EVID-250/251 supports → R_eff 0.00).
@@ -38,7 +39,7 @@ title: R_eff excludes terminal-status evidence from the weakest-link min
 
 - **`supersede`** требует `--by <successor>` и валидного перехода (`active → superseded`); создаёт ребро `supersedes`; пропуск виден в factors.
 - **`update --status superseded|deprecated`** (CLI и MCP) — **ЗАПЕРТ** этим же изменением (аудит-BLOCKER: сырая запись статуса обходила переход, наследника, ребро и журнал — однокомандное отмывание score). Redirect на lifecycle-команды, как ранее для `active`. MCP `update --status active` также заперт (обходил бы validation/R_eff/provenance-гейты). Открытым остаётся только `draft` — score-нейтральный или занижающий, и это recovery-путь после случайной терминальной записи.
-- **`deprecate`** наследника не требует (санкционированный dedup-flow) — канал ограничен **детектором** `unbacked_displacement` (аудит-MAJOR): refutes/weakens-пак с терминальным статусом БЕЗ входящего ребра `supersedes`, информирующий живой артефакт → аномалия Medium. Честный supersede несёт ребро — не флагается; deprecate supports-дубля — не флагается.
+- **`deprecate`** наследника не требует (санкционированный dedup-flow) — канал ограничен **детектором** `unbacked_displacement` (аудит-MAJOR): refutes/weakens-пак с терминальным статусом БЕЗ исходящего ребра `supersedes` к пакету-замене (`старый → новый`), информирующий живой артефакт → аномалия Medium. Честный supersede несёт ребро — не флагается; deprecate supports-дубля — не флагается.
 - **`unlink`** — дожившийся до ADR-020 однокомандный канал (снять ребро — пак вне сбора), существовал и до этого изменения; полноценный «audited Evidence dismissal» (актор/причина/policy) — зона vNext FPV-06.
 - Window-дисциплина FPF: честное вытеснение опирается на измерение из более нового окна (поздний коммит). Механическая проверка — provenance-gate (PRD-082, `base_sha`/`result_sha`), уже в dev; связка «supersede требует более нового окна» — кандидат в follow-up.
 
@@ -80,3 +81,7 @@ title: R_eff excludes terminal-status evidence from the weakest-link min
 
 
 
+
+## Уточнение направления связи — 2026-10-27
+
+`forgeplan supersede OLD --by NEW` записывает `OLD --supersedes--> NEW`. Слово «входящего» в прежней редакции пункта о детекторе было ошибочным; существующие связи не переворачиваются. Правила исключения терминальных Evidence из min(), сохранения истории и проверки действующей отрицательной Evidence не менялись.

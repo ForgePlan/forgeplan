@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>First Artifact · interactive walkthrough - ForgePlan</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505; --bg-1: #0b0b0b; --bg-2: #141414; --bg-3: #1a1a1a;
+    --text: #f5f5f5; --text-1: #e5e5e5; --text-2: #a3a3a3; --text-3: #737373; --text-4: #525252;
+    --line: rgba(255, 255, 255, 0.06); --line-2: rgba(255, 255, 255, 0.14);
+    --accent: #ff5a1f; --accent-soft: #ff8a5b; --accent-bg: rgba(255, 90, 31, 0.18);
+    --ok: #22c55e; --err: #ef4444; --warn: #f59e0b; --info: #60a5fa;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body { line-height: 1.55; -webkit-font-smoothing: antialiased; background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px); background-size: 24px 24px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+
+  /* Progress bar */
+  .progress-wrap { margin: 22px 0 0; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 20px; }
+  .progress-meta { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .progress-meta .pm-current { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
+  .progress-meta .pm-total { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); }
+  .progress-steps { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
+  .ps-step { height: 6px; background: var(--bg-3); border-radius: 0; transition: background .3s; cursor: pointer; }
+  .ps-step:hover { background: var(--bg-2); }
+  .ps-step.done { background: var(--ok); opacity: 0.7; }
+  .ps-step.current { background: var(--accent); }
+  .progress-labels { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; margin-top: 8px; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em; color: var(--text-3); text-align: center; }
+  .progress-labels .pl { padding: 0 2px; }
+
+  /* ============ Tutorial container ============ */
+  .tutorial { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; margin: 18px 0 0; overflow: hidden; }
+  .tutorial-head { background: var(--bg-2); padding: 18px 24px; border-bottom: 1px solid var(--line-2); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .tutorial-head .th-step { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .tutorial-head .th-title { font-size: 20px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .tutorial-head .th-time { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; color: var(--text-3); }
+
+  .tutorial-body { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+  @media (max-width: 900px) { .tutorial-body { grid-template-columns: 1fr; } }
+
+  /* Left column: description */
+  .tut-left { padding: 24px 26px 20px; border-right: 1px solid var(--line-2); }
+  @media (max-width: 900px) { .tut-left { border-right: none; border-bottom: 1px solid var(--line-2); } }
+  .tut-desc { font-size: 14.5px; color: var(--text-1); line-height: 1.6; margin-bottom: 16px; }
+  .tut-desc p { margin-bottom: 12px; color: var(--text-1); }
+  .tut-cmd-block { background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0; padding: 12px 14px; margin: 14px 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; color: var(--accent-soft); position: relative; }
+  .tut-cmd-block .tcb-prompt { color: var(--text-3); margin-right: 6px; }
+
+  .tut-error { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--warn); border-radius: 0; padding: 12px 14px; margin: 14px 0 0; }
+  .tut-error summary { cursor: pointer; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--warn); user-select: none; outline: none; }
+  .tut-error summary::-webkit-details-marker { display: none; }
+  .tut-error summary::before { content: "▶"; display: inline-block; margin-right: 8px; transition: transform .2s; font-size: 8px; }
+  .tut-error[open] summary::before { transform: rotate(90deg); }
+  .tut-error[open] summary { margin-bottom: 10px; }
+  .tut-error .te-body { font-size: 13px; color: var(--text-1); line-height: 1.55; }
+  .tut-error .te-body code { background: var(--bg-3); color: var(--err); }
+  .tut-error .te-fix { font-family: var(--font-mono); font-size: 12px; color: var(--ok); padding: 8px 10px; background: rgba(34, 197, 94, 0.06); border-radius: 0; margin-top: 8px; }
+
+  /* Right column: terminal + workspace state */
+  .tut-right { background: var(--bg); padding: 0; display: flex; flex-direction: column; }
+  .terminal { background: var(--bg-3); padding: 0; flex: 1; min-height: 320px; }
+  .terminal-bar { background: var(--bg-2); padding: 8px 14px; border-bottom: 1px solid var(--line-2); display: flex; align-items: center; gap: 8px; }
+  .terminal-bar .tb-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-4); }
+  .terminal-bar .tb-dot.r { background: #ef4444; }
+  .terminal-bar .tb-dot.y { background: #f59e0b; }
+  .terminal-bar .tb-dot.g { background: #22c55e; }
+  .terminal-bar .tb-title { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-3); margin-left: auto; letter-spacing: 0.04em; }
+  .terminal-out { padding: 14px 18px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.65; color: var(--text-1); white-space: pre-wrap; overflow-x: auto; min-height: 280px; }
+  .to-prompt { color: var(--accent-soft); }
+  .to-comment { color: var(--text-3); }
+  .to-ok { color: var(--ok); }
+  .to-err { color: var(--err); }
+  .to-warn { color: var(--warn); }
+  .to-emph { color: var(--accent); }
+  .to-key { color: var(--text-3); }
+  .to-val { color: var(--text); }
+
+  /* Workspace state panel */
+  .workspace { background: var(--bg-2); border-top: 1px solid var(--line-2); padding: 14px 18px; }
+  .ws-head { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 10px; }
+  .ws-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 6px 0; font-size: 12.5px; }
+  .ws-row .ws-name { font-family: var(--font-mono); color: var(--text-1); }
+  .ws-row .ws-name.id { color: var(--text-3); }
+  .ws-row .ws-status { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 8px; border-radius: 0; }
+  .ws-row .ws-status.draft  { background: rgba(163, 163, 163, 0.18); color: var(--text-1); }
+  .ws-row .ws-status.active { background: rgba(34, 197, 94, 0.14); color: #86efac; }
+  .ws-row .ws-status.reff   { background: rgba(255, 90, 31, 0.14); color: var(--accent); }
+  .ws-empty { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-4); font-style: italic; padding: 6px 0; }
+
+  /* Nav buttons */
+  .tut-nav { background: var(--bg-2); padding: 14px 24px; border-top: 1px solid var(--line-2); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .tut-btn { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; padding: 10px 18px; border-radius: 0; cursor: pointer; user-select: none; transition: all .15s; background: var(--bg-3); color: var(--text-1); border: 1px solid var(--line-2); }
+  .tut-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .tut-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .tut-btn.primary:hover { background: var(--accent-soft); border-color: var(--accent-soft); color: #fff; }
+  .tut-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .tut-btn.primary:disabled:hover { background: var(--accent); border-color: var(--accent); }
+  .tut-btn-group { display: flex; gap: 8px; }
+
+  /* Completion screen */
+  .completion { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .completion .comp-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ok); margin-bottom: 8px; }
+  .completion h3 { font-size: 22px; color: var(--text); font-weight: 500; margin: 0 0 14px; }
+  .completion p { font-size: 15px; color: var(--text-1); line-height: 1.6; max-width: 760px; }
+  .completion ul { color: var(--text-2); font-size: 14.5px; line-height: 1.7; padding-left: 20px; }
+  .completion ul li { margin: 6px 0; }
+  .completion ul li b { color: var(--text); font-weight: 500; }
+
+  /* Cross-links */
+  .cross-links { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; position: relative; }
+  .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
+  .next-step h3 { font-size: 15.5px; line-height: 1.3; }
+  .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 0; transition: background .2s; }
+  .next-step a.ns-link:hover { background: var(--accent-bg); }
+
+  .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .progress-labels { display: none; }
+    .cross-links { grid-template-columns: 1fr; }
+    h1 { font-size: 32px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">Practical · illustrative walkthrough</p>
+  <h1>First Artifact · from init to active in 10 steps</h1>
+  <p class="lead">
+    Follow a proposed <code>--dry-run</code> feature for <code>forgeplan new</code>
+    through routing, drafting, validation, reasoning, implementation, evidence, and activation.
+    The selected CLI does not implement that proposed flag.
+    This terminal and its workspace panel are <b class="k">authored JavaScript illustrations</b>,
+    not a live workspace or a verified transcript. Clicking does not run commands.
+    The ten steps focus on one PRD; Standard routing also calls for an RFC.
+  </p>
+  <p>Interface notes refer to the inspected <code>0.39.0+constellation.s1.1</code> source snapshot, not the public <code>0.38.0</code> release. Command syntax comes from captured help; behavioral qualifications come from source review and existing captured observations, not a new run.</p>
+
+  <!-- Progress bar -->
+  <div class="progress-wrap">
+    <div class="progress-meta">
+      <span class="pm-current" id="pm-current">Step 01 of 10</span>
+      <span class="pm-total">Self-paced · select a point to jump</span>
+    </div>
+    <div class="progress-steps" id="progress-steps">
+      <!-- populated by JS -->
+    </div>
+    <div class="progress-labels" id="progress-labels">
+      <!-- populated by JS -->
+    </div>
+  </div>
+
+  <!-- Tutorial -->
+  <div class="tutorial">
+    <div class="tutorial-head">
+      <div>
+        <div class="th-step" id="th-step">step 01 · init</div>
+        <div class="th-title" id="th-title">Initialize a workspace</div>
+      </div>
+      <span class="th-time" id="th-time">Suggested reading: ~1 minute</span>
+    </div>
+
+    <div class="tutorial-body">
+      <div class="tut-left">
+        <div class="tut-desc" id="tut-desc">
+          <!-- step description populated by JS -->
+        </div>
+        <div class="tut-cmd-block" id="tut-cmd">
+          <span class="tcb-prompt">$</span><span id="tut-cmd-text">forgeplan init -y</span>
+        </div>
+        <details class="tut-error" id="tut-error">
+          <summary id="tut-error-summary">A possible problem at this step</summary>
+          <div class="te-body" id="tut-error-body">
+            <!-- populated -->
+          </div>
+        </details>
+      </div>
+
+      <div class="tut-right">
+        <div class="terminal">
+          <div class="terminal-bar">
+            <span class="tb-dot r"></span>
+            <span class="tb-dot y"></span>
+            <span class="tb-dot g"></span>
+            <span class="tb-title" id="tb-title">~/forgeplan-tutorial · illustration, not a shell</span>
+          </div>
+          <div class="terminal-out" id="terminal-out">
+            <!-- populated -->
+          </div>
+        </div>
+        <div class="workspace">
+          <div class="ws-head">Illustrative workspace state</div>
+          <div id="ws-body">
+            <div class="ws-empty">empty · nothing created in the illustration</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tut-nav">
+      <button class="tut-btn" id="btn-prev" disabled>← back</button>
+      <div class="tut-btn-group">
+        <button class="tut-btn" id="btn-restart">↺ restart</button>
+        <button class="tut-btn primary" id="btn-next">next →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Completion (hidden until last step done) -->
+  <div class="completion" id="completion" style="display: none;">
+    <div class="comp-tag">✓ illustration complete</div>
+    <h3>You have explored a decision’s path to activation</h3>
+    <p>The ten authored steps show routing → shape → validate → reason → build → prove → activate. No project was changed, no tests ran, and no current R_eff or health result was measured. In a real Standard task, complete the RFC and required checks as well.</p>
+    <p style="margin-top: 18px; font-weight: 500; color: var(--text);">Practices to take away:</p>
+    <ul>
+      <li><b>Route first.</b> Assess the task’s depth before choosing its artifacts.</li>
+      <li><b>Shape before code.</b> Record why the change is needed and what it must do.</li>
+      <li><b>Validate early.</b> Inspect actual findings; a template check is not behavioral proof.</li>
+      <li><b>Reason with ADI.</b> Compare alternatives and test their consequences.</li>
+      <li><b>Prove with evidence.</b> Link inspectable observations. R_eff is an implementation-specific heuristic, not a correctness probability.</li>
+      <li><b>Activate when ready.</b> Satisfy the applicable gates. Active files remain editable; record substantial changes with explicit lineage.</li>
+    </ul>
+  </div>
+
+  <div class="footer">
+    <span>first-artifact · interactive walkthrough · v1</span>
+    <span><span class="arrow">→</span> forgeplan · forgeplan.dev/docs/guides/first-artifact</span>
+  </div>
+
+</main>
+
+<script>
+  // ============ Steps data ============
+  const steps = [
+    {
+      tag: 'init', title: 'Initialize a workspace', time: 'Suggested reading: ~1 minute',
+      desc: '<p>Forgeplan stores project artifacts in <code>.forgeplan/</code>. <code>forgeplan init -y</code> initializes the workspace directories and configuration. The <code>-y</code> option accepts the defaults without interactive prompts.</p><p>Use a disposable directory for practice, not an existing project. This panel shows authored instructions, not command execution.</p>',
+      cmd: 'forgeplan init -y',
+      output: '<span class="to-comment"># Illustration — commands are not executed</span>\n<span class="to-prompt">$</span> mkdir ~/forgeplan-tutorial &amp;&amp; cd ~/forgeplan-tutorial\n<span class="to-prompt">$</span> forgeplan init -y\n\n<span class="to-key">Expected purpose:</span> initialize .forgeplan/ and config.yaml.\nInspect the real command result before continuing.\n\n<span class="to-emph">Next:</span> forgeplan health',
+      error: { summary: 'If the directory is already initialized', body: 'Do not delete an existing workspace to repeat this exercise. Use a different disposable directory.<div class="te-fix">$ mkdir another-tutorial &amp;&amp; cd another-tutorial &amp;&amp; forgeplan init -y</div>For real-project backup, the captured syntax is <code>forgeplan export --output backup.json</code>. This is guidance, not a captured error literal.' },
+      workspace: { artifacts: [] }
+    },
+    {
+      tag: 'health', title: 'Inspect the empty workspace', time: 'Suggested reading: ~30 seconds',
+      desc: '<p><code>forgeplan health</code> reports project gaps, risks, and next actions. It is useful at the start of a session, but an empty dashboard does not prove installation, runtime behavior, or a feature correct.</p><p>No health command runs in this browser. Read the actual output in your own workspace.</p>',
+      cmd: 'forgeplan health',
+      output: '<span class="to-comment"># Illustration — no health verdict was measured</span>\n<span class="to-prompt">$</span> forgeplan health\n\nInspect artifact counts, blind spots, orphans, and stale records.\nAn empty workspace contains no implemented feature to verify.\n\n<span class="to-emph">Next:</span> forgeplan route "add --dry-run flag to forgeplan new for preview"',
+      error: null,
+      workspace: { artifacts: [] }
+    },
+    {
+      tag: 'route', title: 'Route the task by depth', time: 'Suggested reading: ~30 seconds',
+      desc: '<p>Describe the task in ordinary language and inspect the recommendation. Here we choose <span class="to-emph" style="background: var(--bg-3); padding: 1px 6px; border-radius: 0;">Standard</span> for an illustration about a proposed preview flag. That is not a captured router result.</p><p>The selected <code>new</code> parser has no <code>--dry-run</code>. Standard uses PRD → RFC; this walkthrough follows the PRD, not every project artifact. Help describes level 0 as the default; the handler may select LLM routing when configured.</p>',
+      cmd: 'forgeplan route "add --dry-run flag to forgeplan new for preview"',
+      output: '<span class="to-comment"># Authored routing example, not a measured classification</span>\n<span class="to-prompt">$</span> forgeplan route "add --dry-run flag to forgeplan new for preview"\n\n<span class="to-key">Illustrative depth:</span> Standard\n<span class="to-key">Standard pipeline:</span> PRD → RFC\n<span class="to-key">Confidence:</span> not measured; router confidence is not a correctness probability.\n\n<span class="to-emph">Next:</span> forgeplan new prd "CLI dry-run flag"',
+      error: { summary: 'If the recommendation differs', body: 'Inspect the task signals and your project policy rather than blindly overriding the router. Security and public-API signals can require Deep; cross-team work can require Standard.<div class="te-fix">Document why the chosen depth fits the actual scope.</div>This example’s Standard choice is not a universal pipeline.' },
+      workspace: { artifacts: [] }
+    },
+    {
+      tag: 'new', title: 'Create and shape the PRD', time: 'Suggested reading: ~2 minutes',
+      desc: '<p><code>forgeplan new prd "CLI dry-run flag"</code> creates a draft from the local template. Fill its required sections with substantive content. Express functional requirements as <code>[Actor] can [capability]</code>, not implementation choices.</p><p>Use the ID and path actually returned. PRD-001 is an illustrative ID here. For Standard work, also create and complete the RFC; the PRD alone is not the full routed pipeline. Use authorized update tools for artifact mutations.</p>',
+      cmd: 'forgeplan new prd "CLI dry-run flag"',
+      output: '<span class="to-comment"># Illustration — no artifact is written by this page</span>\n<span class="to-prompt">$</span> forgeplan new prd "CLI dry-run flag"\n\n<span class="to-key">Illustrative record:</span> PRD-001 · draft\n<span class="to-comment"># Complete the local template, including:</span>\n  ## Problem\n  ## Goals\n  ## Non-Goals\n  ## Target Users\n  ## Functional Requirements\n\n<span class="to-emph">Next:</span> forgeplan validate PRD-001',
+      error: null,
+      workspace: { artifacts: [{ id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' }] }
+    },
+    {
+      tag: 'validate', title: 'Validate the PRD', time: 'Suggested reading: ~2 minutes',
+      desc: '<p><code>forgeplan validate</code> checks completeness against rules selected for the artifact kind and depth. It can flag missing sections, filler, vague goals, and implementation leakage. In the selected rules, Standard PRD leakage is SHOULD, not MUST.</p><p>Read actual findings rather than expecting this authored example. Captured help documents the syntax; it does not prove handler support on every layout. The selected CLI validate path reports an explicit legacy-store limitation on migrated workspaces.</p>',
+      cmd: 'forgeplan validate PRD-001',
+      output: '<span class="to-comment"># Illustrative review findings, not captured CLI output</span>\n<span class="to-prompt">$</span> forgeplan validate PRD-001\n\n<span class="to-warn">SHOULD:</span> Standard FR2 names serde rather than a user capability.\n  "Use JSON output with serde"\n  → "User can inspect structured output"\n\n<span class="to-key">Manual review:</span> make "system should be fast" testable.\n  Example acceptance target, not a measurement: p99 &lt; 50 ms on 1000 notes.\n\n<span class="to-emph">Fix:</span> revise the requirements and inspect a new validation result.',
+      error: { summary: 'After revision, validate again', body: 'Repeat validation after changes and resolve applicable MUST findings. A clean structural report does not establish behavior.<div class="te-fix">$ forgeplan validate PRD-001</div>If the command refuses the workspace layout, retain that error and use a supported, authorized path; do not invent a PASS result.' },
+      workspace: { artifacts: [{ id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' }] }
+    },
+    {
+      tag: 'reason', title: 'ADI · compare three alternatives', time: 'Suggested reading: ~3 minutes',
+      desc: '<p>ADI means Abduction → Deduction → Induction. Propose alternatives, derive testable consequences, and compare them with observations. The product prompt asks for 3+ approaches; its parser does not enforce that count. It is a local anti-anchoring heuristic, not a universal FPF threshold.</p><p><code>forgeplan reason</code> requires a configured LLM provider. Without one it errors; it does not emit an offline blank-slot scaffold. Manual reasoning is a separate writing activity, not successful execution of the command.</p>',
+      cmd: 'forgeplan reason PRD-001',
+      output: '<span class="to-comment"># Authored ADI illustration, not provider output</span>\n<span class="to-prompt">$</span> forgeplan reason PRD-001\n\n<span class="to-key">Abduction — alternatives:</span>\n  H1: proposed --dry-run branch that avoids file writes\n  H2: proposed preview subcommand (not an existing command)\n  H3: proposed interactive confirmation\n\n<span class="to-key">Deduction — what to check:</span>\n  H1: can preview and write paths use the same renderer?\n  H2: does a new command improve discoverability without duplication?\n  H3: can non-interactive clients still work?\n\n<span class="to-key">Induction:</span> collect observations before choosing.\nNo confidence value or winner was measured here.\n\n<span class="to-emph">Next:</span> implement the justified choice and collect evidence.',
+      error: { summary: 'If no provider is configured', body: 'The command requires an LLM provider. Consult the actual error and project-approved configuration; this page does not configure one.<div class="te-fix">You may write alternatives and checks manually, but record that reason did not run.</div>The missing-provider explanation here is not an exact captured error string.' },
+      workspace: { artifacts: [{ id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' }] }
+    },
+    {
+      tag: 'build', title: 'Build · implement and test', time: 'Reading example only; implementation time varies',
+      desc: '<p>Implement the selected approach and run the checks required by the project. A Rust project might require tests, formatting, and compiler checks. Record what actually ran, including failures and warnings.</p><p>This browser does not compile or test anything. The proposed feature is not implemented by clicking through the example, and no test count, duration, or release version is a result of this walkthrough.</p>',
+      cmd: 'cargo test  &amp;&amp;  cargo fmt --check  &amp;&amp;  cargo check',
+      output: '<span class="to-comment"># Example check commands — NOT_RUN by this page</span>\n<span class="to-prompt">$</span> cargo test\n<span class="to-prompt">$</span> cargo fmt --check\n<span class="to-prompt">$</span> cargo check\n\nRecord the actual scope, exit status, and output.\nDo not write "tests pass" before those checks have run.\n\n<span class="to-emph">Next:</span> create evidence describing the observed result.',
+      error: null,
+      workspace: { artifacts: [{ id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' }] }
+    },
+    {
+      tag: 'evidence', title: 'Create evidence with scoring fields', time: 'Suggested reading: ~2 minutes',
+      desc: '<p>Evidence records an observation and its limits, not merely an assertion that code works. Use a title matching the actual result.</p><p>Include standalone body fields <code>verdict</code> (supports/weakens/refutes), <code>congruence_level</code> (0–3), and <code>evidence_type</code> (measurement/test/benchmark/audit). Missing or unrecognized verdict, or missing CL, forces CL0. An omitted type defaults to measurement; the separate completeness predicate checks verdict and explicit CL, not all three fields.</p>',
+      cmd: 'forgeplan new evidence "CLI dry-run verification record"',
+      output: '<span class="to-comment"># Illustrative evidence fields — choose values from actual observations</span>\n<span class="to-prompt">$</span> forgeplan new evidence "CLI dry-run verification record"\n\n<span class="to-key">Illustrative record:</span> EVID-001 · draft\n<span class="to-comment"># Standalone body lines for a genuinely supporting, directly applicable test:</span>\nverdict: supports\ncongruence_level: 3\nevidence_type: test\n\nInclude the tested revision, command, output, scope, and limits.\nThese field values alone do not establish that a test ran.\n\n<span class="to-emph">Next:</span> forgeplan link EVID-001 PRD-001 --relation informs',
+      error: { summary: 'If the evidence only contains prose', body: 'A scoring parser cannot infer trust from praise. Supply explicit verdict and CL declarations on separate body lines, not only in a table or HTML comment. A missing declaration forces CL0 with a 0.9 penalty for unexpired evidence.<div class="te-fix">Describe what was observed and justify the fields; do not raise CL merely to raise the score.</div>' },
+      workspace: { artifacts: [
+        { id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' },
+        { id: 'EVID-001', name: 'CLI dry-run verification', status: 'draft' },
+      ] }
+    },
+    {
+      tag: 'link', title: 'Link evidence and inspect R_eff', time: 'Suggested reading: ~1 minute',
+      desc: '<p>Link evidence to the decision it bears on, then inspect <code>forgeplan score</code>. The recursive report uses the weakest eligible evidence/dependency contribution, not min(F,G,R). Terminal evidence is excluded; drafts remain eligible.</p><p>Unexpired supports/CL3/test evidence has a base contribution of 1.0, but that does not guarantee a decision score of 1.0. Other evidence and dependencies matter. Expired evidence contributes 0.1. Flat record fields can differ from the recursive report.</p>',
+      cmd: 'forgeplan link EVID-001 PRD-001 --relation informs  &amp;&amp;  forgeplan score PRD-001',
+      output: '<span class="to-comment"># Illustration — no link or score is written by this page</span>\n<span class="to-prompt">$</span> forgeplan link EVID-001 PRD-001 --relation informs\n<span class="to-prompt">$</span> forgeplan score PRD-001\n\n<span class="to-key">Inspect:</span> eligible evidence, expiry, dependency penalties, and scope.\n<span class="to-key">Actual R_eff:</span> not measured here.\nA score is not a probability that the implementation is correct.\n\n<span class="to-emph">Next:</span> forgeplan review PRD-001',
+      error: { summary: 'If the score is zero or unexpected', body: 'Check the record, declarations, relationships, expiry, and all eligible dependencies.<div class="te-fix">$ forgeplan list -t evidence<br>$ forgeplan get EVID-001 --json<br>$ forgeplan graph<br>$ forgeplan score PRD-001</div>Missing evidence is one possible cause, not a universal diagnosis.' },
+      workspace: { artifacts: [
+        { id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft', reff: 'not measured' },
+        { id: 'EVID-001', name: 'CLI dry-run verification', status: 'draft' },
+      ] }
+    },
+    {
+      tag: 'activate', title: 'Activation · an explicit lifecycle transition', time: 'Suggested reading: ~30 seconds',
+      desc: '<p><code>forgeplan review</code> helps inspect readiness; <code>forgeplan activate</code> attempts draft → active. Activation checks more than validation plus R_eff &gt; 0: content length, stub detection, evidence-link requirements, MUST findings, and caller-level provenance handling also matter.</p><p>Activation does not make the file immutable. Authorized updates remain possible. For a changed decision, create a replacement first and use <code>forgeplan supersede PRD-001 --by PRD-002</code>; supersede links an existing replacement, not a new file it creates.</p>',
+      cmd: 'forgeplan review PRD-001  &amp;&amp;  forgeplan activate PRD-001',
+      output: '<span class="to-comment"># Authored lifecycle illustration — no activation or health check ran</span>\n<span class="to-prompt">$</span> forgeplan review PRD-001\n<span class="to-prompt">$</span> forgeplan activate PRD-001\n\n<span class="to-key">Illustrated transition if applicable gates pass:</span> draft → active\n<span class="to-key">Actual gate result / R_eff:</span> not measured here.\n\n<span class="to-prompt">$</span> forgeplan health\nRead the actual verdict; this page makes no HEALTHY claim.\n\n<span class="to-emph">Done:</span> illustration only.',
+      error: { summary: 'If activation is refused', body: 'Read the actual refusal and resolve its cause. A prior validation result is not permission to bypass later checks.<div class="te-fix">$ forgeplan review PRD-001<br>$ forgeplan validate PRD-001</div>Retain layout, evidence, and provenance errors rather than presenting them as a successful activation.' },
+      workspace: { artifacts: [
+        { id: 'PRD-001', name: 'CLI dry-run flag', status: 'active', reff: 'not measured' },
+        { id: 'EVID-001', name: 'CLI dry-run verification', status: 'draft' },
+      ] }
+    },
+  ];
+
+  // ============ Render functions ============
+  let current = 0;
+
+  function renderProgress() {
+    const ps = document.getElementById('progress-steps');
+    const pl = document.getElementById('progress-labels');
+    ps.innerHTML = steps.map((s, i) =>
+      '<div class="ps-step' + (i < current ? ' done' : (i === current ? ' current' : '')) +
+      '" data-step="' + i + '" title="Step ' + (i + 1).toString().padStart(2, '0') + ' · ' + s.tag + '"></div>'
+    ).join('');
+    pl.innerHTML = steps.map((s, i) => '<div class="pl">' + (i + 1).toString().padStart(2, '0') + '</div>').join('');
+
+    // Click handlers
+    ps.querySelectorAll('.ps-step').forEach(el => {
+      el.addEventListener('click', () => {
+        current = parseInt(el.dataset.step, 10);
+        render();
+      });
+    });
+  }
+
+  function renderStep() {
+    const s = steps[current];
+    document.getElementById('pm-current').textContent = 'Step ' + (current + 1).toString().padStart(2, '0') + ' of 10';
+    document.getElementById('th-step').textContent = 'step ' + (current + 1).toString().padStart(2, '0') + ' · ' + s.tag;
+    document.getElementById('th-title').textContent = s.title;
+    document.getElementById('th-time').textContent = s.time;
+    document.getElementById('tut-desc').innerHTML = s.desc;
+    document.getElementById('tut-cmd-text').innerHTML = s.cmd;
+    document.getElementById('terminal-out').innerHTML = s.output;
+
+    // Error block
+    const errBlock = document.getElementById('tut-error');
+    if (s.error) {
+      errBlock.style.display = 'block';
+      document.getElementById('tut-error-summary').textContent = s.error.summary;
+      document.getElementById('tut-error-body').innerHTML = s.error.body;
+    } else {
+      errBlock.style.display = 'none';
+    }
+
+    // Workspace state
+    const wsBody = document.getElementById('ws-body');
+    if (s.workspace.artifacts.length === 0) {
+      wsBody.innerHTML = '<div class="ws-empty">empty · nothing created in the illustration</div>';
+    } else {
+      wsBody.innerHTML = s.workspace.artifacts.map(a =>
+        '<div class="ws-row">' +
+          '<span class="ws-name"><span class="id">' + a.id + ' · </span>' + a.name + '</span>' +
+          '<span class="ws-status ' + a.status + '">' + a.status + '</span>' +
+        '</div>' +
+        (a.reff ? '<div class="ws-row"><span class="ws-name" style="padding-left: 20px; color: var(--text-3); font-size: 11.5px;">R_eff</span><span class="ws-status reff">' + a.reff + '</span></div>' : '')
+      ).join('');
+    }
+
+    // Nav buttons
+    document.getElementById('btn-prev').disabled = current === 0;
+    document.getElementById('btn-next').disabled = current === steps.length - 1;
+    document.getElementById('btn-next').textContent = current === steps.length - 1 ? 'complete ✓' : 'next →';
+
+    // Completion screen
+    const comp = document.getElementById('completion');
+    comp.style.display = current === steps.length - 1 ? 'block' : 'none';
+  }
+
+  function render() {
+    renderProgress();
+    renderStep();
+    window.scrollTo({ top: document.querySelector('.tutorial').offsetTop - 80, behavior: 'smooth' });
+  }
+
+  // ============ Event handlers ============
+  document.getElementById('btn-next').addEventListener('click', () => {
+    if (current < steps.length - 1) { current += 1; render(); }
+  });
+  document.getElementById('btn-prev').addEventListener('click', () => {
+    if (current > 0) { current -= 1; render(); }
+  });
+  document.getElementById('btn-restart').addEventListener('click', () => {
+    current = 0; render();
+  });
+
+  // Initial render
+  renderProgress();
+  renderStep();
+</script>
+
+</body>
+</html>

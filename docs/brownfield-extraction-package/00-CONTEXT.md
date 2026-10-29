@@ -1,5 +1,7 @@
 # Context: Why this package exists
 
+> Historical design context. The TripSales observations, quotations and totals below are the author's account, not independently revalidated measurements. The listed artifact categories total 92, while the account reports 97; the package does not establish the missing five. See [implementation status](README.md#implementation-status-2026-10-23) for the current Forgeplan boundary.
+
 ## The triggering situation
 
 A real brownfield project (TripSales — Node.js + Moleculer microservices logistics system, 138 services, 80 Sequelize models, 15 calculator classes) was analyzed using:
@@ -27,6 +29,8 @@ Concrete examples of the gap:
   ❌ We didn't write the formula in full pseudo-code that survives code deletion.
 - ✅ We wrote: *"`_confirm` branching on `user.company.type_company`"*
   ❌ We didn't write: *"Forwarder confirmation means the carrier committed capacity; cargo_owner confirmation means the shipper finalized cargo specs. Both are required before the order can be fulfilled — if either is missing, the order is stuck"*.
+
+The proposed business explanations above are **unverified intent hypotheses**, including the freight-law rationale. No legal source or Domain Owner confirmation is supplied here; they must not be treated as established requirements.
 
 ## Why this happened — root cause
 
@@ -60,6 +64,8 @@ But `/learn` specifically produces the same style of docs we have — inventory-
 - Blindspot detection.
 
 But its artifact kinds (`prd, epic, spec, rfc, adr, problem, solution, evidence, note, refresh`) are designed for **project decisions**, not for **knowledge extraction**. We need new kinds optimized for brownfield business documentation: `glossary, use-case, invariant, scenario, hypothesis, domain-model`.
+
+That list describes the original baseline. The six brownfield kinds are registered in the current target; this does not mean the complete extraction workflow has been implemented.
 
 ## Why this package is needed
 

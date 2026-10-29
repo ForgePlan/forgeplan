@@ -5,6 +5,18 @@
 > Three systems as a single organism. Each does what it does best.
 > Data lives in one place, references — everywhere.
 
+> **Scope (2026-10-23):** this is the local workflow design first recorded in
+> April 2026, not proof of an installed three-system integration. Status/Phase
+> mappings, six custom fields, team sizes, capacities and setup/overhead times
+> are conventions or planning estimates, not product limits or measurements.
+> Slash commands and automation require their actual host implementation.
+> Examples with PASS, test counts and R_eff are illustrative, not receipts.
+> Discover workspace field/option UIDs before writes, inspect `failedFields`,
+> and update task completion only when its actual scope is done. Native
+> authorization, memory/privacy and G1/G2/G3 policies are unchanged.
+> CLI `validate` works on legacy and migrated Constellation layouts; full MCP
+> validation was also exercised. See the [pilot compatibility notes (RU)](../operations/CONSTELLATION-PILOT.ru.md).
+
 ---
 
 ## Table of Contents
@@ -57,11 +69,11 @@ Three **bounded contexts** (FPF A.1.1) with clear separation of responsibilities
 
 ### Why This Way (research)
 
-**FPF A.1.1 U.BoundedContext**: "Make meaning local; make translation explicit." Each system is a semantic locale with its own vocabulary. "Status" in Orchestra and "lifecycle" in Forgeplan are DIFFERENT concepts, even if they map to each other. They must not be mixed.
+**Local application of FPF A.1.1**: keep meaning local and translate explicitly. Orchestra execution status and Forgeplan lifecycle are different concepts; the mapping below is this workflow's convention, not their identity or a verbatim upstream rule.
 
-**FPF A.7 Strict Distinction**: method ≠ work ≠ role. Forgeplan = method (HOW to think about work). Orchestra = work (WHAT is done by WHOM). Claude Code = role (WHO executes). Mixing these categories is the main source of chaos.
+**FPF A.7 distinction applied locally**: method, work and role must not be conflated. Forgeplan, Orchestra and Claude Code are software systems supporting those concerns; they are not literally instances of method, work and role respectively.
 
-**FPF B.3 Trust Calculus**: Custom fields in Orchestra = low-trust proxy. They show a *reference* to an artifact, but quality scoring is Forgeplan's responsibility. We don't duplicate data — we trust each system with its own domain.
+**Local trust boundary inspired by FPF B.3**: Orchestra custom fields carry references, not authoritative scoring evidence. Resolve the artifact and its actual score in Forgeplan; this is an architectural convention, not an upstream permission standard.
 
 **FPF A.14 Mereology**: Forge has TWO orthogonal axes — artifact hierarchy (Epic→PRD→RFC) and execution flow (Sprint→Wave→Task). Orchestra reflects *execution*, it does not duplicate the artifact hierarchy.
 
@@ -152,7 +164,7 @@ Two fields reflect different aspects of the same work:
 
 ### Synchronization Rule
 
-If one is updated — the other must be updated too. The AI agent automatically updates Phase when updating Status, and vice versa. On conflict — Status wins (Orchestra = source of truth for execution state).
+Keep both fields consistent with real work when this convention is adopted. The agent must explicitly issue and inspect the applicable field updates; no automatic bidirectional synchronization is established here. Do not overwrite a genuine discrepancy merely to fit the table.
 
 ---
 
@@ -378,7 +390,7 @@ Workspace: ForgePlan
 | Views | Per-role views |
 | Daily overhead | ~15 minutes (standup + status + triage) |
 | Setup time | 1-2 hours |
-| Max nesting | 3 levels (workspace → project → sub-project) — this is Orchestra's LIMIT |
+| Max nesting | This design uses workspace → project → sub-project; a platform-wide maximum is not established here |
 
 #### When to Use
 
@@ -397,7 +409,7 @@ Workspace: ForgePlan
 | Communication | Task messages | + Channels |
 | Shared documents | N/A | Orchestra Documents |
 | QA workflow | Review status | Review = QA queue |
-| Nesting | Workspace → Project | Workspace → Project → Sub-project (MAX!) |
+| Nesting | Workspace → Project | Workspace → Project → Sub-project (chosen design) |
 
 #### Roles and Views
 
@@ -424,8 +436,8 @@ Do not use Sprint field and sub-project simultaneously (see Anti-patterns, secti
 
 #### Limitations
 
-- **3 nesting levels — Orchestra's MAXIMUM**. You cannot add another level. If you need more — use parent-child tasks within a sub-project
-- **Sprint sub-projects multiply** — over a year, 24+ sub-projects per area. Mitigation: archive completed ones (showArchived=false by default)
+- **Chosen depth: three levels**. This is a design constraint here, not verified proof of Orchestra's platform maximum.
+- **Sprint sub-projects multiply** — a two-week cadence can create about 26 per year per area; archive only through an available authorized operation and verify visibility settings.
 - **Cross-area task** — lives in one sub-project, subtask reference in another. Relations for visibility
 
 ---
@@ -549,9 +561,9 @@ You already have a project with artifacts in Forgeplan, but Orchestra is empty o
 forgeplan list --status active    # → list of active artifacts
 forgeplan list --status draft     # → list of draft artifacts
 
-# For each active artifact:
-→ Orch: create task "[ID] Title"
-  Fields: Artifact=ID, Type=kind, Phase=Done, Status=Done
+# For each artifact, inspect actual completion before choosing task status:
+→ Orch: create task "[ID] Title" only if it has no existing task
+  Fields: Artifact=ID, Type=kind, Phase=actual, Status=actual
 
 # For each draft artifact:
 → Orch: create task "[ID] Title"
@@ -624,7 +636,7 @@ forgeplan health → compare with Orchestra
 6. Sprint field → optional (sub-project = sprint)
 ```
 
-**Effort**: 1-2 hours. **Risk**: Medium — tasks need to be moved, history may be lost.
+**Planning estimate**: 1-2 hours. **Risk**: field, access and parent-scope changes need review; moving an entity is not itself proof that message history is lost.
 
 ### C → B: Downsize (team shrunk)
 
@@ -633,7 +645,7 @@ forgeplan health → compare with Orchestra
 **What to do**:
 ```
 1. Merge sub-projects into project root
-2. Delete empty sub-projects
+2. Only with explicit deletion authorization, remove confirmed-empty sub-projects; otherwise retain them
 3. Return to Sprint field instead of sub-projects
 4. Channels can be kept or archived
 ```
@@ -644,7 +656,7 @@ forgeplan health → compare with Orchestra
 
 ```
 1. Merge all area projects into one "Development"
-2. Delete empty projects
+2. Only with explicit deletion authorization, remove confirmed-empty projects; otherwise retain them
 3. Remove Assignee (everything = me)
 ```
 
@@ -871,7 +883,7 @@ forgeplan route "fix typo" → Tactical
 **Mitigation**: AI agent checks "does Artifact exist?" when Status → Doing. Tactical tasks are allowed without an artifact.
 
 ### R8: Nesting Limit (Config C only)
-**Description**: Orchestra supports max 3 levels. Cannot add another.
+**Description**: This design chooses three levels; the platform maximum has not been verified here.
 **Probability**: Low (only needed for Config C)
 **Impact**: High (structural limitation)
 **Mitigation**: Use parent-child tasks within a sub-project. Do not attempt to add a 4th project level.
@@ -903,7 +915,7 @@ forgeplan route "fix typo" → Tactical
 | Ignore Session Start Protocol | Lost context, duplicates | ALWAYS execute |
 | Project per task | Overhead, lost overview | Project = area, not task |
 | Sprint field + Sprint sub-project simultaneously | Confusion: where's the truth? | Choose one per configuration |
-| Move tasks between projects without reason | History is lost | Move only during migration |
+| Move tasks between projects without reason | Access/scope/field changes need review | Move deliberately and inspect the result |
 | Archive instead of Done | Task disappears from views | Done = visible, Archived = hidden |
 
 ---
@@ -953,7 +965,7 @@ forgeplan blocked             # dependency graph
 mcp__orch__get_workspace_overview()     — workspace overview
 mcp__orch__query_entities()             — search with filters
 mcp__orch__create_entity()              — create task/project
-mcp__orch__set_fields()                 — update fields
+mcp__orch__update_entity(fields=[...])   — update values after list_fields UID discovery
 mcp__orch__manage_field()               — create/modify field definition
 mcp__orch__search_entities()            — search by name
 mcp__orch__get_entity()                 — entity details
@@ -1075,7 +1087,9 @@ AI: 1. Checks unclosed Sprint 9 tasks:
     5. Suggests prioritization by Priority field
 ```
 
-### Finished a Task (full cycle)
+### Finished a Task (illustrative full cycle)
+
+The counts and scores below are constructed examples, not observed receipts.
 
 ```
 AI: code written, tests passing
@@ -1104,7 +1118,7 @@ AI: "PRD-XXX completed. R_eff=1.00, activated, PR created."
 ```
 You: "Can't work on PRD-025 until RFC-005 is ready"
 
-AI: forgeplan link PRD-025 RFC-005 --relation blocked-by
+AI: forgeplan link PRD-025 RFC-005 --relation based_on
     Orch: adds relation between tasks
     PRD-025 Status → Backlog (blocked)
 
@@ -1140,8 +1154,8 @@ AI: mcp__orch__send_message(chatUid=task, message="Started working...")
     ← ONLY on explicit request!
 
 You: "What was written in the PROB-021 chat?"
-AI: mcp__orch__read_messages(entityUid=task)
-    → Shows history
+AI: mcp__orch__read_messages(chatUid=task)
+    → Reads one page; follow nextPage until complete for a whole-history answer
 ```
 
 ### End of Day
@@ -1247,7 +1261,7 @@ Chat Orch │   Git    │  Calls   │  AI background
 STEP 1: COLLECTION (read-only, safe)
 ├── mcp__orch__get_unread_chats()     → new messages
 ├── mcp__orch__get_mentions()         → @mentions
-├── git log --since="last session"    → new commits
+├── git log --since="<actual timestamp>" → commits since a recorded session boundary
 ├── forgeplan health                  → stale, blind spots
 └── memory_recall                     → previous session context
 
@@ -1303,7 +1317,7 @@ STEP 4: AI EXECUTES the decisions
 | **Meeting notes document** | Medium | Document in Orchestra "Meeting 2026-04-03" → AI parses |
 | **Transcription** | High | Otter.ai / Fireflies → feed AI to extract decisions |
 
-**Recommendation**: "Tell AI" is the fastest and most reliable. AI knows the context and creates the right artifacts.
+**Recommendation**: tell the agent the decisions and their reasons, then review the proposed artifacts. Context and correctness still need checking; this is not a measured fastest/most-reliable method.
 
 ### What Can Run in Background (safety matrix)
 
@@ -1313,7 +1327,7 @@ STEP 4: AI EXECUTES the decisions
 | Read git log | Yes | Read-only |
 | forgeplan health | Yes | Read-only |
 | Classify signals | Yes | Preparation for triage |
-| Save to Memory/Hindsight | Yes | Non-destructive |
+| Save to Memory/Hindsight | Only if authorized for the actual bank and privacy rules | It is a persistent write, not read-only collection |
 | **Create artifact** | No | Requires confirmation |
 | **Create task** | No | Requires confirmation |
 | **Send message** | No | Safety rule |
@@ -1380,7 +1394,7 @@ Right after the call:
 
 **Problem**: Chat discussion about an approach yesterday, already decided differently this morning.
 
-**Solution**: AI looks at the entire thread when collecting the inbox, not individual messages. Shows the latest state of the discussion, not every intermediate message.
+**Solution**: read enough of the actual thread to establish its latest state, following pagination and separate thread history. A newest-message page alone cannot establish complete history or absence of earlier decisions.
 
 ### Inbox in Session Start Protocol (updated)
 

@@ -5,6 +5,8 @@ description: "Анализ артефакта с использованием ц
 
 `forgeplan reason` выполняет структурированный анализ существующего артефакта с помощью ИИ, используя цикл **ADI** FPF: **абдукция** (генерация 3+ гипотез) → **дедукция** (прогнозирование последствий каждой) → **индукция** (проверка прогнозов на основе существующих доказательств). Это гейт между «PRD выглядит разумным» и «я действительно знаю, какой подход выбрать» - он заставляет агента перечислять альтернативы вместо того, чтобы зацикливаться на первом правдоподобном ответе. Для глубины Deep и Critical это **обязательно**: никакого кода, пока `reason` не сгенерирует как минимум три конкурирующие гипотезы и обоснованного победителя.
 
+Это локальный ADI-процесс проекта, не доказательство соответствия upstream FPF. Промпт требует 3+ гипотезы, но парсер не проверяет их количество. Для Deep/Critical проверьте обязательное условие вручную: успешная команда его не доказывает. Нужен LLM-провайдер: HTTP использует `llm.api_key_env`, явно выбранные локальные CLI-профили - собственный login, только для личной локальной разработки.
+
 ## Когда использовать
 
 - Сразу после `forgeplan new prd` + `forgeplan validate` PASS, до начала работы с кодом.
@@ -13,7 +15,7 @@ description: "Анализ артефакта с использованием ц
 
 ## Когда НЕ использовать
 
-- Глубина **Tactical** - исправление ошибки за один час не требует трёх гипотез.
+- Tactical-задача без решения, требующего альтернатив; длительность сама по себе не задаёт глубину.
 - Разделы MUST ещё не заполнены - ADI на заглушке создаёт галлюцинаторный контекст.
 - Артефакт является чистым EvidencePack, Note или RefreshReport (нет решения для рассуждений).
 
@@ -47,7 +49,7 @@ forgeplan reason [OPTIONS] <ID>
 forgeplan reason PRD-001
 ```
 
-Считывает `PRD-001`, извлекает его разделы Problem/Goals/Related и просит LLM сгенерировать 3+ гипотезы о том, как достичь целей. Для каждой гипотезы он перечисляет прогнозируемые последствия и существующие доказательства, которые её поддерживают или ослабляют.
+Читает тело артефакта и просит настроенную LLM описать гипотезы, предположения, прогнозы, риски, осуществимость, потребность в доказательствах и рекомендацию. Вход не ограничен именованными Problem/Goals/Related.
 
 ### Пример 2: ADI с контекстом базы знаний FPF
 
@@ -55,7 +57,7 @@ forgeplan reason PRD-001
 forgeplan reason PRD-001 --fpf
 ```
 
-`--fpf` внедряет соответствующие разделы из базы знаний FPF (B.3 Trust Calculus, B.5 Reasoning loops) в промпт. Используйте это, когда решение затрагивает границы доверия, обратимость или качество рассуждений - LLM будет оценивать гипотезы по инвариантам FPF, а не только по инженерной интуиции.
+`--fpf` запрашивает контекст базы знаний, когда этот источник доступен. В выбранном migrated CLI-пути FPF-обогащение пропускается; legacy-путь может дополнить промпт. Ни один путь не гарантирует конкретные upstream-разделы и не вычисляет соответствие инвариантам FPF. Проверяйте переданный контекст и утверждения отдельно.
 
 ### Пример 3: Сохранение анализа как Note
 
@@ -63,7 +65,7 @@ forgeplan reason PRD-001 --fpf
 forgeplan reason PRD-001 --save
 ```
 
-Создаёт артефакт `note-*`, содержащий полный вывод ADI, и связывает его с исходным PRD (отношение `informs`). Полезно, когда вы хотите, чтобы рассуждения сохранились после текущей сессии терминала и отображались в `forgeplan get PRD-001 --graph`.
+Создаёт Note с выводом ADI и связывает с источником. Читайте его по возвращённому ID; связи смотрите через `forgeplan graph`. Опции `forgeplan get --graph` нет.
 
 ### Пример 4: Машиночитаемый вывод для агентов
 
@@ -71,30 +73,66 @@ forgeplan reason PRD-001 --save
 forgeplan reason PRD-001 --json
 ```
 
-Выводит структурированный JSON с `hypotheses[]`, каждый из которых содержит `summary`, `confidence`, `supporting_evidence[]`, `weakening_evidence[]` и `verdict`. Используется клиентами MCP и скриптами аудита.
+Результат содержит метаданные и `adi_output` при успешном разборе, иначе сырой `adi_analysis`. У гипотез поля `id`, `description`, `assumptions`, строка `confidence`; у дедукций - `hypothesis_id`, `consequence`, `risks`, `feasibility`. `evidence_needed` и `recommendation` отдельные, не массивы evidence/verdict у каждой гипотезы.
 
 ## Интерпретация вывода
 
-Типичный запуск markdown выводит три раздела:
+Проверьте запрошенные этапы:
 
-- **Абдукция** - 3+ гипотезы, каждая с однострочным утверждением и оценкой достоверности (0-100%). Если все три сходятся на одном и том же подходе, вы можете действовать с высоким уровнем доверия. Если они расходятся, расценивайте это как сигнал для обсуждения с человеком перед кодированием.
-- **Дедукция** - прогнозируемые последствия для каждой гипотезы (производительность, стоимость отката, радиус поражения, влияние на пользователя).
-- **Индукция** - вердикт по каждой гипотезе: `supported` (подтверждена), `weakened` (ослаблена) или `insufficient evidence` (недостаточно доказательств). Окончательная рекомендация перечисляет выигрышную гипотезу и пробелы в доказательствах, которые должны стать последующими EvidencePack.
+- **Абдукция**: для Deep/Critical нужны минимум три реально конкурирующие гипотезы; успешный parse не проверяет это.
+- **Дедукция**: изучите прогнозы, риски и осуществимость.
+- **Индукция**: проверьте реальные потребности в доказательствах и рекомендацию. Команда не проводит эксперименты и не валидирует рекомендацию.
 
-Красные флаги:
-
-- Все гипотезы имеют достоверность < 50% - PRD недостаточно детализирован, вернитесь к Shape
-- Победитель - `insufficient evidence` - создайте целевые доказательства перед реализацией
-- Сгенерирована только одна гипотеза - привязка LLM, повторите запуск с `--fpf` или другой моделью
+Строки confidence - суждения модели, не калиброванные проценты или измеренное доверие. Согласие гипотез не является независимым доказательством. При отсутствии альтернатив или данных нужно дополнительное shaping либо целевые доказательства до прохождения гейта. Вердикты EvidencePack `supports` / `weakens` / `refutes` отличаются от суждений в сгенерированной прозе.
 
 ## Как это вписывается в рабочий процесс
 
-Эта команда является частью [полного жизненного цикла артефакта](/docs/guides/first-artifact/) - см. руководство для сквозного процесса. `reason` запускается после `validate` PASS и до написания кода; для глубины Critical, используйте в паре с `/audit` и человеческим ревью перед реализацией.
+Команда входит в [жизненный цикл](/ru/docs/guides/first-artifact/): после validate PASS и до кода. Для Critical сохраняются `/audit` и человеческое ревью до реализации.
 
 ## См. также
 
-- [`forgeplan route`](/docs/cli/route/) - решить, требуется ли ADI
-- [`forgeplan decompose`](/docs/cli/decompose/) - разбить проанализированный PRD на задачи RFC
-- [`forgeplan validate`](/docs/cli/validate/) - предварительное условие перед рассуждением
-- [`forgeplan generate`](/docs/cli/generate/) - черновик содержимого артефакта
-- [Методология: цикл ADI](/docs/methodology/overview/)
+- [`forgeplan route`](/ru/docs/cli/route/) - глубина
+- [`forgeplan decompose`](/ru/docs/cli/decompose/) - декомпозиция
+- [`forgeplan validate`](/ru/docs/cli/validate/) - предварительная валидация
+- [`forgeplan generate`](/ru/docs/cli/generate/) - черновик
+- [Цикл ADI](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan reason --help`.
+
+```text
+Analyze an artifact using FPF ADI reasoning cycle (Abduction→Deduction→Induction)
+
+REQUIRES LLM: generates structured three-hypothesis ADI output through the provider configured in `.forgeplan/config.yaml::llm`.
+
+AUTHENTICATION: HTTP providers use the API-key environment variable named by `llm.api_key_env`. Local subscription providers reuse an existing stock CLI login and need no API key in ForgePlan:
+
+llm: provider: codex-cli model: gpt-5.1-codex
+
+Supported local profiles are `claude-code`, `codex-cli`, `devin-cli`, `gemini-cli`, and `cursor-agent`. They are explicit opt-ins for personal local development, not production/shared/CI use. Each invocation consumes the corresponding vendor plan and is subject to that vendor's terms.
+
+Usage: forgeplan reason [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          Artifact ID to analyze
+
+Options:
+      --json
+          Output structured JSON instead of markdown
+
+      --save
+          Save ADI analysis as a Note artifact linked to the source
+
+      --fpf
+          Inject relevant FPF patterns into the ADI prompt
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+```
+<!-- forgeplan-runtime:end -->

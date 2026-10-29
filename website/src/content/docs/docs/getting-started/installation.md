@@ -5,20 +5,19 @@ description: Install Forgeplan - CLI, AI Skill, or MCP Server
 
 ## Read this first: three things installing the binary does not do
 
-Installing Forgeplan gives you routing, artifacts, validation, scoring, the
-link graph and keyword search. Three further capabilities each need one
-command, and **each one fails quietly if you skip it**. Nothing crashes. You
-get a worse answer and no indication that you got one — which is exactly why
-this block is at the top of the page rather than buried below.
+The binary, model files, and workspace vectors are separate prerequisites.
+Install only the capabilities your workflow needs; none of the steps below
+is evidence that semantic coverage or the full methodology pipeline is ready.
 
-| Step | Command | What you lose by skipping it |
+| Capability | Preparation | Without it |
 |---|---|---|
-| **1. Embedding model** (~2.1 GB) | `forgeplan setup` | `search --semantic` degrades to keyword matching |
-| **2. FPF knowledge base** | install the `fpf` plugin, then `forgeplan fpf ingest` | `fpf search` answers "no matches" and `reason --fpf` loses its grounding |
-| **3. Agent harness** | install 5 marketplace plugins | `/smith`, `/forge-cycle`, `/audit` and the specialist agents do not exist |
+| Semantic search | `semantic-search` build, `forgeplan setup`, then index/embed | No complete semantic answer; forced semantic search on a migrated workspace does not promise keyword fallback |
+| FPF knowledge base | Install `fpf`, then `forgeplan fpf ingest` | FPF corpus is unavailable to its search/reasoning paths |
+| Agent harness | Install the relevant client plugins | Plugin commands and specialist agents are unavailable |
 
-Steps 1 and 2 apply to everyone. Step 3 applies if you drive Forgeplan
-through an AI agent — which is the intended way to use it.
+The Constellation instructions here describe local
+`0.39.0+constellation.s1.1`, not the published 0.38.0. They do not assert
+S1-G/S2 readiness. See [Constellation](/docs/guides/constellation/).
 
 ### 1. Fetch the embedding model
 
@@ -26,23 +25,17 @@ through an AI agent — which is the intended way to use it.
 forgeplan setup
 ```
 
-Every released binary — Homebrew, `install.sh`, GitHub Release archives —
-carries the semantic search engine. It does **not** carry the 2.1 GB of model
-weights, because shipping them in the binary would make every download 2.1 GB
-whether you use search or not.
+The model is not bundled with the binary. The current engine is tract and
+supports only BGE-M3 (roughly 2.1 GB). A source install needs the feature
+explicitly; do not infer enabled features from the version string.
 
-**Why it matters.** Without the model, `forgeplan search --semantic` still
-returns results. It falls back to BM25 keyword matching and says so — but a
-line of fallback text is easy to miss, and keyword search cannot find "how do
-we handle auth failures" in a document that says "retry policy for rejected
-credentials". You get plausible results that quietly miss the thing you were
-looking for.
+`forgeplan setup` deliberately prepares the model. `init -y` does not download
+it; a new scripted workspace can opt in with `init -y --with-model`.
+An existing-workspace early return can bypass that download.
 
-**If it did not download.** `forgeplan setup` is idempotent — run it again.
-`forgeplan init -y` deliberately never downloads (agents and CI must not pull
-gigabytes by accident), so a scripted setup needs `forgeplan init --with-model`.
-To check what you actually have, run `forgeplan embed`: it starts loading the
-model, or refuses and tells you why. `forgeplan --version` does not report this.
+`forgeplan embed` computes workspace vectors; fetching weights alone does
+not populate the index. Queries and background maintenance do not fetch
+missing snapshots. Check coverage instead of assuming a semantic result.
 
 Details, cache locations and overrides: [First run](#first-run-fetch-the-embedding-model).
 
@@ -54,13 +47,16 @@ forgeplan fpf ingest                        # then, in your shell
 forgeplan fpf search "trust calculus"       # verify — should return B.3
 ```
 
-The First Principles Framework spec is a 204-section corpus that ships as a
+The First Principles Framework corpus depends on the installed edition and ships as a
 **separate skill**, not inside the binary. `fpf ingest` parses it, embeds it,
 and writes it into your workspace knowledge base.
 
-**Why it matters.** FPF is what `forgeplan reason` uses for ADI reasoning —
-the step that makes an artifact generate genuine alternatives instead of
-restating your first idea. It is required for Standard-depth work and above.
+**Why it matters.** `forgeplan reason` uses a configured LLM for ADI.
+`--fpf` optionally adds retrieved FPF context; the corpus is not a prerequisite
+for running ADI itself. The methodology recommends ADI at Standard depth and
+requires it for Deep/Critical; a project's stricter workflow still applies.
+On migrated Constellation workspaces this CLI path currently proceeds without
+FPF context rather than opening the retired FPF table.
 
 **Why this step is easy to get wrong.** Skipping it produces a closed loop
 that looks like a working system: `fpf search` reports "no matches, run
@@ -92,7 +88,7 @@ issues rather than rubber-stamp.
 
 ## AI Skill (recommended for AI agents)
 
-Install the `/forge` skill for Claude Code, Cursor, Codex, Gemini and 40+ AI agents:
+`forgeplan setup-skill` installs the bundled `/forge` skill for Claude Code:
 
 ```bash
 forgeplan setup-skill   # writes ~/.claude/skills/forge/SKILL.md, no network
@@ -103,7 +99,7 @@ After installation, use in chat:
 /forge "Add OAuth2 authentication"
 ```
 
-**Alternative**: if you already have the CLI installed, use the built-in command instead -- it embeds the skill file directly, no network required:
+This is an offline skill installation, not a plugin or cross-client installer:
 
 ```bash
 forgeplan setup-skill
@@ -124,14 +120,14 @@ Run these inside a Claude Code session:
 /plugin marketplace add ForgePlan/marketplace
 
 # 5 MUST plugins — full pipeline depends on all five
-/plugin install fpl-skills@ForgePlan-marketplace          # 34 skills: smith, forge-cycle, forgeplan-cookbook, audit, sprint, methodology-check, ...
-/plugin install agents-pro@ForgePlan-marketplace          # 28 agents: smith, guardian, brief-intake, adr-architect, research-analyst, ...
-/plugin install agents-sparc@ForgePlan-marketplace        # 5 SPARC phase agents — first PRD is dispatched to specification
-/plugin install agents-core@ForgePlan-marketplace         # 11 baseline agents: coder, code-reviewer, tester
+/plugin install fpl-skills@ForgePlan-marketplace          # smith, forgeplan-cookbook, audit, sprint, methodology-check, ...
+/plugin install agents-pro@ForgePlan-marketplace          # guardian, brief-intake, adr-architect, research-analyst, ...
+/plugin install agents-sparc@ForgePlan-marketplace        # one feature in an existing system: 4 phase specialists + orchestrator
+/plugin install agents-core@ForgePlan-marketplace         # coder, code-reviewer, tester, ...
 /plugin install forgeplan-workflow@ForgePlan-marketplace  # /forge-cycle + /forge-audit + guardian gate enforcement
 
 # 2 SHOULD plugins — strongly recommended
-/plugin install fpf@ForgePlan-marketplace                 # FPF ADI reasoning — mandatory for Standard+ artifacts
+/plugin install fpf@ForgePlan-marketplace                 # FPF reasoning and optional knowledge-base context
 /plugin install fpl-hsmem@ForgePlan-marketplace           # Hindsight cross-session memory (per-project bank)
 
 # Reload to activate
@@ -146,7 +142,7 @@ After reload, `/smith-bootstrap` for a fresh repo or `/smith` for next-action re
 |---|---|
 | `fpl-skills` | Type `/smith` and it figures out what kind of task you have and which methodology fits. Drives the day-to-day commands: `/forge-cycle` to walk a task to completion, `/audit` for multi-expert code review, `/sprint` for wave-based execution, `/forgeplan-cookbook` to look up the right forgeplan tool. The skills brain of the system. |
 | `agents-pro` | Dispatch named specialists when you need them: `brief-intake` turns a vague idea into a structured Brief, `adr-architect` produces architecture decisions with three considered alternatives, `research-analyst` gathers prior art before you commit to a direction, `guardian` runs the last check before activation. |
-| `agents-sparc` | Use the SPARC five-phase flow for any new feature: Specification → Pseudocode → Architecture → Refinement → Completion. Without it, the first PRD on a fresh project lands without the SPARC structure and you have to redo the spec phase by hand. |
+| `agents-sparc` | Use Specification → Pseudocode → Architecture → Refinement → Completion for one feature in an existing, active system. It is not a mandatory first-PRD workflow for every greenfield project; choose the methodology for the task. |
 | `agents-core` | Actually write, review, and test code. The `coder` agent edits files in an isolated worktree, `code-reviewer` produces structured findings against the spec, `tester` runs the suite and reports coverage delta. |
 | `forgeplan-workflow` | Run the `/forge-cycle` command — the reactive enforcer that walks an artifact through validate → ADI → review → activate one step at a time. Plus `/forge-audit` for multi-expert code audit and the guardian gate enforcement that decides whether a PRD is ready to ship. |
 
@@ -196,48 +192,48 @@ Download pre-built binaries from [GitHub Releases](https://github.com/ForgePlan/
 
 ### First run: fetch the embedding model
 
-Semantic search is compiled into every released binary — Homebrew, the install
-script and the GitHub Release archives alike. The engine is [`tract`](https://github.com/sonos/tract),
-pure Rust, so there is no platform where the feature exists in the source but
-not in the build.
+The local Constellation build uses [`tract`](https://github.com/sonos/tract),
+not the earlier fastembed runtime. Source installation must enable the
+feature explicitly:
 
-What the binary does *not* carry is the model itself. Run once per machine:
+```bash
+cargo install forgeplan --features semantic-search
+```
+
+The engine, cached BGE-M3 snapshot, and vectors in your workspace index are
+separate. To deliberately prepare the model:
 
 ```bash
 forgeplan setup
 ```
 
-It does two things:
+It prepares the model and alias, and also attempts to install Git hooks:
 
 - downloads the **embedding model** up front, so your first semantic search
   does not stall for minutes with no explanation
 - creates the **`fpl` alias** when you installed via `cargo install` — brew and
   `install.sh` get it from cargo-dist's `bin-aliases`, but cargo has no
   post-install hook, so a source install has `forgeplan` and no `fpl`
+- installs `post-merge` and `post-checkout` index-sync hooks in the current
+  Git repository when applicable; existing foreign hooks are left intact.
 
-Both steps are idempotent; `--skip-model` and `--skip-alias` opt out of either.
-An existing `fpl` on your PATH is never overwritten.
+`--skip-model`, `--skip-alias` and `--skip-hooks` opt out of those actions.
+The alias is created beside the running executable; an occupied alias path
+is not overwritten.
 
-Until the model is present, `forgeplan search --semantic` falls back to BM25
-keyword search and says so; everything else — routing, artifacts, validation,
-scoring, the graph — is unaffected.
+Queries and background maintenance use cached weights; they do not download
+missing snapshots. `init -y --with-model` is an explicit download opt-in for
+a new workspace, but an already-initialized workspace can return before it.
 
-`forgeplan init` also offers the download when run interactively. It never
-downloads under `-y` — agents and CI runners must not pull gigabytes by
-accident — so pass `--with-model` when a scripted install genuinely wants it.
+The roughly **2.1 GB** model is shared across projects. Current cache priority:
 
-The model is **~2.1 GB**, downloaded once per machine with a progress bar, and
-cached outside your projects, in the platform cache directory:
+1. Nonempty `FORGEPLAN_MODEL_CACHE` (cache root, not snapshot directory).
+2. `~/.forgeplan/models` on macOS, Linux and Windows.
+3. Platform cache, then legacy relative fallback, only if no home is available.
 
-| Platform | Cache location |
-|---|---|
-| macOS | `~/Library/Caches/forgeplan/models` |
-| Linux | `~/.cache/forgeplan/models` |
-| Windows | `%LOCALAPPDATA%\forgeplan\models` |
-
-Override with `FORGEPLAN_MODEL_CACHE`. If you already have `HF_HOME` set, it
-takes precedence over both — that is fastembed's behaviour and we do not
-override it, so a shared HuggingFace cache stays authoritative.
+`HF_HOME` does **not** override the tract path. Earlier platform caches stay
+in place; select one explicitly with `FORGEPLAN_MODEL_CACHE` if needed.
+Do not delete caches for diagnosis.
 
 To check which kind of build you have, run `forgeplan embed`: a build without
 the feature refuses immediately and prints the install command above, while a
@@ -266,7 +262,12 @@ Add to your project's `.mcp.json`:
 forgeplan init -y
 ```
 
-This creates `.forgeplan/` directory with config and LanceDB storage.
+For a new project this creates `.forgeplan/` with config and a derived index.
+Repeated `init -y` is a no-op when a workspace is found, including in a parent
+directory. On a clone that already has `.forgeplan/` but no config, inspect
+the root and use `init -y --force` only if you intend to activate defaults;
+it preserves Markdown and backs up the old local state. Then run `reindex`.
+See [Configuration](/docs/getting-started/configuration/).
 
 ## Verify Installation
 

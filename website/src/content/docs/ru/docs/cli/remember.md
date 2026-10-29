@@ -3,11 +3,7 @@ title: forgeplan remember
 description: "Сохраните запись памяти (факт, соглашение, процедуру, наблюдение, ограничение) для последующего вызова"
 ---
 
-Зафиксируйте краткую запись памяти - факт, соглашение, процедуру, наблюдение или
-ограничение - в журнал решений Forgeplan. Записи памяти - это легковесные,
-локальные заметки, которые вы можете позже найти с помощью
-[`recall`](/docs/cli/recall/) или преобразовать в полноценный артефакт (Note, Problem,
-ADR) с помощью [`promote`](/docs/cli/promote/).
+Сохраняет короткую локальную память проекта для [`recall`](/ru/docs/cli/recall/) или [`promote`](/ru/docs/cli/promote/). Markdown-записи отличаются от банка сервера Hindsight. Создание не задаёт дату действия и не удаляет запись автоматически.
 
 Представьте это как рабочую память для проекта: то, что вы не хотите потерять,
 но что ещё не готово стать PRD или ADR.
@@ -27,25 +23,16 @@ forgeplan remember [OPTIONS] [TEXT]
 ## Опции
 
 ```text
-  -c, --category <CATEGORY>  Тип записи памяти: fact | convention | procedure | observation | constraint
+  -c, --category <CATEGORY>  Строка категории (по умолчанию fact; примеры: convention, procedure, insight)
       --list                 Перечислить все записи памяти
       --forget <FORGET>      Забыть (удалить) запись памяти по ID
   -h, --help                 Вывести справку
   -V, --version              Вывести версию
 ```
 
-## Пять типов
+## Категории, не правила продвижения
 
-Каждая запись памяти имеет один тип, который определяет, как вы её ищете и как
-`promote` позже преобразует её в полноценный артефакт.
-
-| Тип            | Когда использовать                                           | Преобразуется в |
-|----------------|--------------------------------------------------------------|-----------------|
-| `fact`         | Фундаментальная истина о проекте ("мы используем BGE-M3 для эмбеддингов") | Note            |
-| `convention`   | Соглашение команды ("PR всегда сливаются в dev, а не в main") | Note / RFC      |
-| `procedure`    | Повторяемая инструкция ("всегда `git pull` перед созданием новой ветки") | Note            |
-| `observation`  | Что-то, что вы заметили, но ещё не объяснили                 | ProblemCard     |
-| `constraint`   | Жёсткое ограничение или требование ("бинарный файл должен быть менее 50 МБ") | ADR / RFC       |
+`--category` сохраняет строковый тег, по умолчанию `fact`. Справка предлагает `fact`, `convention`, `procedure`, `insight`, но обработчик не ограничивает строку этим списком. Категория не выбирает целевой kind: у `promote` свой обязательный `--kind`. Запомненное наблюдение не становится независимо проверенным доказательством.
 
 ## Примеры
 
@@ -54,7 +41,7 @@ forgeplan remember [OPTIONS] [TEXT]
 ```bash
 forgeplan remember \
   "always pull dev before creating feature branch" \
-  --kind procedure
+  --category procedure
 ```
 
 Запишите наблюдение, которое может потребовать исследования:
@@ -62,7 +49,7 @@ forgeplan remember \
 ```bash
 forgeplan remember \
   "watch daemon drops events on nfs mounts" \
-  --kind observation
+  --category insight
 ```
 
 Запишите командное соглашение:
@@ -70,7 +57,7 @@ forgeplan remember \
 ```bash
 forgeplan remember \
   "release branches merge with merge-commit, not squash" \
-  --kind convention
+  --category convention
 ```
 
 Перечислите всё, что вы зафиксировали:
@@ -82,7 +69,7 @@ forgeplan remember --list
 Забудьте запись памяти по её ID:
 
 ```bash
-forgeplan remember --forget MEM-012
+forgeplan remember --forget mem-example   # условный ID; скопируйте настоящий из --list
 ```
 
 ## Типичный рабочий процесс
@@ -93,26 +80,42 @@ forgeplan remember --forget MEM-012
 
 1.  **Во время работы** - заметьте факт, соглашение или неожиданность. Зафиксируйте это
     немедленно с помощью `remember`, чтобы контекст не был потерян.
-2.  **Позже** - [`forgeplan recall "keyword"`](/docs/cli/recall/) выводит
-    соответствующие записи памяти, когда вы начинаете связанную работу.
-3.  **Когда запись созреет** - [`forgeplan promote MEM-XXX`](/docs/cli/promote/)
-    преобразует запись памяти в полноценный Note, ProblemCard или ADR, сохраняя
-    исходную фиксацию в качестве доказательства.
+2. **Позже** - [`forgeplan recall "keyword"`](/ru/docs/cli/recall/) ищет записи.
+3. **Когда запись созреет** - [`forgeplan promote`](/ru/docs/cli/promote/) с настоящим ID и явным `--kind` создаёт draft с содержимым и происхождением, затем удаляет исходную локальную память. Не создаёт EvidencePack и не сохраняет исходный record как отдельное доказательство.
 
 Это легковесный конец спектра артефактов Forgeplan: вам не нужно
 валидировать, оценивать или активировать запись памяти - просто зафиксируйте её и двигайтесь дальше.
 
 ## Хранение
 
-Записи памяти хранятся в `.forgeplan/memory/` как файлы markdown (отслеживаемые Git) и
-индексируются в LanceDB, как и любой другой артефакт. На них распространяются те же
-правила "источника истины": редактируйте через CLI или редактируйте markdown и запустите
-[`reindex`](/docs/cli/reindex/).
+Канонические записи - Markdown в `.forgeplan/memory/`; отслеживание Git зависит от репозитория. Мутации file-first сверяются с владеющим индексом. Для Constellation используйте `index`, не воссоздание legacy-таблиц. Банк Hindsight не является источником локальных записей.
 
 ## См. также
 
-- [Обзор CLI](/docs/cli/)
-- [`forgeplan recall`](/docs/cli/recall/) - поиск и извлечение записей памяти
-- [`forgeplan promote`](/docs/cli/promote/) - преобразование записи памяти в артефакт
-- [`forgeplan journal`](/docs/cli/journal/) - полный журнал решений с R_eff
-- [`forgeplan new note`](/docs/cli/new/) - сразу создать Note, если запись памяти уже созрела
+- [Обзор CLI](/ru/docs/cli/)
+- [`forgeplan recall`](/ru/docs/cli/recall/) - поиск
+- [`forgeplan promote`](/ru/docs/cli/promote/) - draft из памяти
+- [`forgeplan journal`](/ru/docs/cli/journal/) - журнал решений
+- [`forgeplan new note`](/ru/docs/cli/new/) - сразу Note
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan remember --help`.
+
+```text
+Save a memory (fact, convention, procedure) for later recall
+
+Usage: forgeplan remember [OPTIONS] [TEXT]
+
+Arguments:
+  [TEXT]  Text to remember (omit for --list or --forget)
+
+Options:
+  -c, --category <CATEGORY>  Memory category: fact, convention, procedure, insight
+      --list                 List all memories
+      --forget <FORGET>      Forget (delete) a memory by ID
+  -h, --help                 Print help
+  -V, --version              Print version
+```
+<!-- forgeplan-runtime:end -->

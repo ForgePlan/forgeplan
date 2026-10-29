@@ -3,14 +3,14 @@ title: forgeplan export
 description: "Dump all artifacts, links, and evidence to a JSON file - mandatory backup before any destructive operation"
 ---
 
-`forgeplan export` serializes the entire workspace - artifacts, links, evidence records, scoring state, and metadata - into a single JSON file. It is the mandatory backup step before any destructive operation on `.forgeplan/` and the only way to produce a restorable snapshot that captures state beyond the tracked markdown.
+`forgeplan export` writes artifact records and typed relations from the selected workspace into a JSON bundle with format version `1`. It is not a whole-workspace backup: configuration, secrets, logs, claims, session files, model caches, and published index generations are not included. Preserve canonical files and the required private filesystem backup rather than recreating retired tables.
 
 ## When to use
 
 - **Always before `rm -rf .forgeplan`, `forgeplan init --force`, or any other destructive workspace operation.** No exceptions.
 - Before upgrading the Forgeplan binary, as a safety net in case `forgeplan migrate` fails.
 - Periodically as a disaster-recovery backup, especially before major methodology restructurings.
-- When moving a workspace between machines and you need full state (scoring, evidence decay) rather than just markdown.
+- When moving artifact records and links between workspaces; preserve other files separately.
 - For debugging - sharing a workspace snapshot with teammates or attaching it to an issue.
 
 ## When NOT to use
@@ -46,37 +46,38 @@ Writes to `.forgeplan/export.json`. Convenient but lives inside the very folder 
 ### Example 2: Pre-reinit safety backup
 
 ```bash
-forgeplan export --output ~/backups/forgeplan-$(date +%Y%m%d-%H%M).json
+backup="$HOME/backups/forgeplan-$(date +%Y%m%d-%H%M).json"
+forgeplan export --output "$backup"
 cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)
-rm -rf .forgeplan
+# Keep the original workspace; try the JSON import in a separate empty directory.
+mkdir forgeplan-restore-demo && cd forgeplan-restore-demo
 forgeplan init -y
-forgeplan import ~/backups/forgeplan-*.json
+forgeplan import "$backup"
 ```
 
-The full "safe reinit" ritual. The export lands outside `.forgeplan/`, and a filesystem copy of the whole folder provides a secondary safety net.
+This keeps the original workspace and a filesystem copy while demonstrating JSON import separately. Check the imported records and links; this is not a verified full-state recovery procedure.
 
 ### Example 3: Pre-upgrade snapshot
 
 ```bash
-forgeplan export --output pre-v0.18-upgrade.json
-cargo install forgeplan
+forgeplan export --output pre-upgrade.json
+cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)
+# Upgrade to the intended release using its documented installation method.
 forgeplan migrate
 forgeplan health
-# if anything looks wrong:
-rm -rf .forgeplan && forgeplan init -y
-forgeplan import pre-v0.18-upgrade.json
+# If a problem appears, preserve both snapshots and investigate before restoring.
 ```
 
-Cheap insurance before a version bump.
+Back up before upgrading. Do not assume a selected Constellation build and the installed release use the same index layout.
 
 ### Example 4: Share workspace state with a teammate
 
 ```bash
 forgeplan export --output snapshot.json
-gh gist create snapshot.json   # or attach to an issue
+# Review snapshot.json for private content before sharing through an approved channel.
 ```
 
-Gives a teammate everything they need to reproduce scoring, health output, and decay state - markdown alone can't do this.
+The bundle can share artifact records and links, but cannot by itself reproduce all health, configuration, freshness, or runtime state.
 
 ## How it fits the workflow
 
@@ -94,14 +95,31 @@ The rule is simple: **if you are about to touch the workspace in a way you can't
 
 - **Default path lives inside `.forgeplan/`.** `forgeplan export` with no arguments writes to `.forgeplan/export.json`, which is lost if you then `rm -rf .forgeplan`. Always pass `-o` with a path outside the workspace for real backups.
 - **Exports are not encrypted.** They may contain LLM prompts, internal notes, and other sensitive content. Don't commit them to public repos.
-- **Export + filesystem copy is the gold standard.** `forgeplan export -o backup.json && cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)` gives you both a structured restore path and a raw bit-for-bit snapshot.
-- **`config.yaml` is NOT in the export.** LLM API key settings live in `.forgeplan/config.yaml` and must be backed up separately.
-- **Exports are versioned to the binary.** A backup made under v0.17 may require running `forgeplan migrate` after importing into v0.18.
+- **Keep the filesystem backup.** Export plus a copy preserves more than JSON alone; neither example establishes a tested disaster-recovery result.
+- **Configuration and secrets are separate.** Preserve `.forgeplan/config.yaml` and `.forgeplan/secrets.env` privately when present; do not publish credentials.
+- **JSON format has its own version.** The current exporter writes `"version": 1`; that is not the binary release number.
 
 ## See also
 
 - [`forgeplan import`](/docs/cli/import/) - the restore counterpart
-- [`forgeplan init`](/docs/cli/init/) - the destructive step export usually precedes
+- [`forgeplan init`](/docs/cli/init/) - initialize a workspace; `--force` rewrites configuration but preserves existing artifact bodies
 - [`forgeplan migrate`](/docs/cli/migrate/) - non-destructive schema upgrade (still back up first)
-- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild index from tracked markdown
+- [`forgeplan scan-import`](/docs/cli/scan-import/) - import new external Markdown, not rebuild the canonical index
 - [`forgeplan health`](/docs/cli/health/) - verify the workspace before and after backup cycles
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan export --help`.
+
+```text
+Export all artifacts to JSON file
+
+Usage: forgeplan export [OPTIONS]
+
+Options:
+  -o, --output <OUTPUT>  Output file path (default: .forgeplan/export.json)
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

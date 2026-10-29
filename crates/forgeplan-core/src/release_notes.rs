@@ -1197,16 +1197,27 @@ mod tests {
         );
     }
 
+    struct ArtifactFixture<'a> {
+        id: &'a str,
+        kind: &'a str,
+        status: &'a str,
+        tags: &'a [&'a str],
+        links: &'a [(&'a str, &'a str)],
+    }
+
     fn write_artifact(
         ws: &std::path::Path,
         dir: &str,
         file: &str,
-        id: &str,
-        kind: &str,
-        status: &str,
-        tags: &[&str],
-        links: &[(&str, &str)],
+        fixture: ArtifactFixture<'_>,
     ) -> PathBuf {
+        let ArtifactFixture {
+            id,
+            kind,
+            status,
+            tags,
+            links,
+        } = fixture;
         let mut fm = format!(
             "---\nid: {id}\ntitle: Fixture {id}\nkind: {kind}\nstatus: {status}\n\
              depth: standard\ncreated_at: 2026-01-01T00:00:00Z\n"
@@ -1225,8 +1236,11 @@ mod tests {
         }
         let path = ws.join(dir).join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, format!("{fm}---\n\n## Context\n\nRelease-notes fixture body.\n"))
-            .unwrap();
+        std::fs::write(
+            &path,
+            format!("{fm}---\n\n## Context\n\nRelease-notes fixture body.\n"),
+        )
+        .unwrap();
         path
     }
 
@@ -1246,28 +1260,54 @@ mod tests {
             std::fs::create_dir_all(ws.join(dir)).unwrap();
         }
 
-        let adr1 = write_artifact(&ws, "adrs", "ADR-001-first.md", "ADR-001", "adr", "active", &[], &[]);
+        let adr1 = write_artifact(
+            &ws,
+            "adrs",
+            "ADR-001-first.md",
+            ArtifactFixture {
+                id: "ADR-001",
+                kind: "adr",
+                status: "active",
+                tags: &[],
+                links: &[],
+            },
+        );
         let adr2 = write_artifact(
             &ws,
             "adrs",
             "ADR-002-security.md",
-            "ADR-002",
-            "adr",
-            "active",
-            &["security"],
-            &[],
+            ArtifactFixture {
+                id: "ADR-002",
+                kind: "adr",
+                status: "active",
+                tags: &["security"],
+                links: &[],
+            },
         );
         let evid2 = write_artifact(
             &ws,
             "evidence",
             "EVID-002-pack.md",
-            "EVID-002",
-            "evidence",
-            "active",
-            &[],
-            &[("ADR-002", "informs")],
+            ArtifactFixture {
+                id: "EVID-002",
+                kind: "evidence",
+                status: "active",
+                tags: &[],
+                links: &[("ADR-002", "informs")],
+            },
         );
-        write_artifact(&ws, "prds", "PRD-001-first.md", "PRD-001", "prd", "active", &[], &[]);
+        write_artifact(
+            &ws,
+            "prds",
+            "PRD-001-first.md",
+            ArtifactFixture {
+                id: "PRD-001",
+                kind: "prd",
+                status: "active",
+                tags: &[],
+                links: &[],
+            },
+        );
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-q", "-m", "v0.1.0"]);
         git(&repo, &["tag", "v0.1.0"]);
@@ -1286,31 +1326,37 @@ mod tests {
             &ws,
             "prds",
             "PRD-002-second.md",
-            "PRD-002",
-            "prd",
-            "draft",
-            &[],
-            &[],
+            ArtifactFixture {
+                id: "PRD-002",
+                kind: "prd",
+                status: "draft",
+                tags: &[],
+                links: &[],
+            },
         );
         write_artifact(
             &ws,
             "prds",
             "PRD-003-second.md",
-            "PRD-003",
-            "prd",
-            "active",
-            &[],
-            &[],
+            ArtifactFixture {
+                id: "PRD-003",
+                kind: "prd",
+                status: "active",
+                tags: &[],
+                links: &[],
+            },
         );
         write_artifact(
             &ws,
             "evidence",
             "EVID-003-pack.md",
-            "EVID-003",
-            "evidence",
-            "active",
-            &[],
-            &[],
+            ArtifactFixture {
+                id: "EVID-003",
+                kind: "evidence",
+                status: "active",
+                tags: &[],
+                links: &[],
+            },
         );
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-q", "-m", "second release"]);
@@ -1352,7 +1398,10 @@ mod tests {
             store.replace_record(record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
-            store.add_relation(&source, &target, &relation).await.unwrap();
+            store
+                .add_relation(&source, &target, &relation)
+                .await
+                .unwrap();
         }
         store
     }
@@ -1379,7 +1428,10 @@ mod tests {
         assert!(!notes.draft);
 
         // Both edited ADRs land under Changed, in basename order.
-        assert_eq!(ids_in(&notes, Category::Changed), vec!["ADR-001", "ADR-002"]);
+        assert_eq!(
+            ids_in(&notes, Category::Changed),
+            vec!["ADR-001", "ADR-002"]
+        );
         // EVID-002 links to a security-tagged decision, so it is Security,
         // not Internal; EVID-003 has no such neighbour and stays Internal.
         assert_eq!(ids_in(&notes, Category::Security), vec!["EVID-002"]);
@@ -1424,10 +1476,7 @@ mod tests {
         assert!(notes.draft);
         // PRD-002 is only reachable in draft mode: the release gate drops
         // artifacts with neither an active status nor a positive score.
-        assert_eq!(
-            ids_in(&notes, Category::Added),
-            vec!["PRD-002", "PRD-003"]
-        );
+        assert_eq!(ids_in(&notes, Category::Added), vec!["PRD-002", "PRD-003"]);
     }
 
     #[tokio::test]
@@ -1443,7 +1492,10 @@ mod tests {
         // not a hardcoded range.
         assert_eq!(notes.since, "v0.1.0");
         assert_eq!(notes.until, "HEAD");
-        assert!(notes.total() > 0, "the tagged range must resolve to entries");
+        assert!(
+            notes.total() > 0,
+            "the tagged range must resolve to entries"
+        );
     }
 
     #[tokio::test]
@@ -1470,13 +1522,14 @@ mod tests {
             let legacy = generate(&store, &repo, Some("v0.1.0"), Some("HEAD"), draft)
                 .await
                 .unwrap();
-            let captured =
-                generate_captured(&read, &repo, Some("v0.1.0"), Some("HEAD"), draft)
-                    .await
-                    .unwrap();
+            let captured = generate_captured(&read, &repo, Some("v0.1.0"), Some("HEAD"), draft)
+                .await
+                .unwrap();
 
-            assert_eq!((&legacy.since, &legacy.until, legacy.draft),
-                (&captured.since, &captured.until, captured.draft));
+            assert_eq!(
+                (&legacy.since, &legacy.until, legacy.draft),
+                (&captured.since, &captured.until, captured.draft)
+            );
             assert_eq!(legacy.total(), captured.total(), "draft={draft}");
             for category in Category::ordered() {
                 assert_eq!(
@@ -1489,10 +1542,22 @@ mod tests {
             let legacy_changed = legacy.sections.get("changed").unwrap();
             let captured_changed = captured.sections.get("changed").unwrap();
             for (l, c) in legacy_changed.iter().zip(captured_changed) {
-                assert_eq!((l.id.as_str(), l.title.as_str(), l.kind.as_str(), l.commit.as_str(),
-                    l.evid.as_deref()),
-                    (c.id.as_str(), c.title.as_str(), c.kind.as_str(), c.commit.as_str(),
-                    c.evid.as_deref()));
+                assert_eq!(
+                    (
+                        l.id.as_str(),
+                        l.title.as_str(),
+                        l.kind.as_str(),
+                        l.commit.as_str(),
+                        l.evid.as_deref()
+                    ),
+                    (
+                        c.id.as_str(),
+                        c.title.as_str(),
+                        c.kind.as_str(),
+                        c.commit.as_str(),
+                        c.evid.as_deref()
+                    )
+                );
             }
         }
     }

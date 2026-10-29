@@ -3,17 +3,19 @@ title: forgeplan context
 description: "Контекст для рассуждений в один вызов - артефакт + граф + валидация + скоринг в одной полезной нагрузке"
 ---
 
-`forgeplan context` возвращает всё, что нужно AI-агенту для рассуждений об артефакте за один вызов: тело артефакта, его родительские/дочерние связи, результаты валидации, оценку R_eff и связанную память. Вместо пяти обращений (`get`, `validate`, `score`, `graph`, `memory`), агент запрашивает один раз и получает полную картину.
+`forgeplan context` объединяет метаданные, связи, число находок валидации, R_eff, F-G-R и рекомендации. CLI не включает тело артефакта или связанную память; для тела используйте `forgeplan get <ID> --json`.
 
-Это основная точка доступа к данным для сервера Forgeplan MCP - каждый вызов инструмента `forgeplan_context` проходит через эту команду. Использование CLI в основном предназначено для отладки того, что фактически видит агент.
+Захваченный каталог MCP этой сборки не содержит инструмента `forgeplan_context`,
+поэтому эта CLI-проекция не является ответом MCP. Чтение через MCP выполняют
+инструменты из [обзора MCP](/ru/docs/mcp/) (`forgeplan_get`, `forgeplan_search`,
+инструменты Constellation).
 
 ## Когда использовать
 
-- AI-агенту (через MCP) требуется полное состояние артефакта перед редактированием или рассуждением
-- Отладка того, какой контекст передаётся в `forgeplan reason` или `forgeplan generate`
+- Изучение валидации, оценок и связей одного артефакта перед редактированием или рассуждением
 - Написание внешнего скрипта, который анализирует состояние и связи артефакта
 - Проверка, достаточно ли связанных доказательств у артефакта, чтобы быть надёжным
-- Подготовка входных данных для ручного ревью - единый вывод охватывает всё
+- Подготовка метаданных, валидации и связей для ручного ревью; тело прочитайте отдельно.
 
 ## Когда НЕ использовать
 
@@ -50,7 +52,7 @@ forgeplan context [OPTIONS] <ID>
 forgeplan context PRD-001
 ```
 
-Выводит тело PRD, вердикт валидации, оценку R_eff, восходящие/нисходящие связи и любые связанные примечания. По умолчанию выводятся в человекочитаемом формате Markdown.
+Выводит метаданные, статус валидации, R_eff, F-G-R, связи и рекомендации. Человекочитаемый вывод не содержит тела артефакта.
 
 ### Пример 2: Полезная нагрузка JSON для агента или скрипта
 
@@ -58,19 +60,18 @@ forgeplan context PRD-001
 forgeplan context PRD-001 --json
 ```
 
-Выводит структурированный JSON с ключами верхнего уровня:
+Иллюстративный JSON-фрагмент с выбранными полями, не результат прогона:
 
 ```json
 {
-  "artifact": { "id": "PRD-001", "kind": "prd", "status": "active", "body": "..." },
-  "validation": { "verdict": "PASS", "must": [], "should": [] },
-  "scoring": { "r_eff": 0.82, "evidence_count": 4 },
+  "artifact": { "id": "PRD-001", "kind": "prd", "status": "active", "r_eff": 0.82 },
   "graph": {
-    "parents": [{ "id": "EPIC-002", "relation": "child_of" }],
-    "children": [{ "id": "RFC-018", "relation": "implements" }],
-    "evidence": [{ "id": "EVID-042", "verdict": "supports" }]
+    "parent": "EPIC-002",
+    "evidence": ["EVID-042"],
+    "depends_on": [], "dependents": [], "related": []
   },
-  "memory": [{ "key": "decision", "value": "..." }]
+  "validation": { "passed": true, "must_errors": 0, "should_warnings": 0 },
+  "fgr": { "formality": 1.0, "granularity": 0.8, "reliability": 0.7, "grade": "A" }
 }
 ```
 
@@ -80,40 +81,59 @@ forgeplan context PRD-001 --json
 forgeplan context PRD-019 --json | jq '.graph.evidence'
 ```
 
-Если агент утверждает «нет связанных доказательств», но вы не согласны, запустите это, чтобы точно увидеть, что возвращает уровень MCP.
+Эта CLI-проекция показывает ID доказательств. При разборе ответа MCP-агенту изучайте отдельный ответ соответствующего MCP-инструмента.
 
 ## Интерпретация вывода
 
-Полезная нагрузка JSON состоит из пяти разделов; каждый из них необязателен, если пуст:
+CLI JSON содержит:
 
-- **artifact** - frontmatter + тело markdown точно так, как хранится на диске
-- **validation** - `verdict` имеет значение `PASS` или `FAIL`; `must` и `should` перечисляют нарушения правил
-- **scoring** - `r_eff` - это оценка доказательств по принципу «слабого звена» (0.0-1.0); `evidence_count` - это количество связанных EvidencePack
-- **graph** - массивы `parents`, `children`, `evidence` с ID и типом связи
-- **memory** - записи памяти решений, относящиеся к этому артефакту
+- **artifact** — метаданные, включая `r_eff`, заголовок, глубину и даты, но не тело
+- **derived_status** — вычисляемую метку состояния
+- **graph** — `parent` и массивы ID evidence/depends_on/dependents/related
+- **validation** — `passed`, `must_errors`, `should_warnings`
+- **fgr** — `formality`, `granularity`, `reliability`, `grade`
+- **suggestions**, **hints**, **_next_action** — рекомендации
 
-Красные флаги:
-
-- `r_eff: 0.0` и `evidence_count: 0` для активного артефакта - слепое пятно, создайте доказательство
-- `validation.verdict: "FAIL"` для активного артефакта - такого никогда не должно быть, показывает расхождение при приёме данных
-- Пустой `graph.parents` для PRD, который должен реализовывать Epic - отсутствует связь
+Нулевой R_eff, ошибки валидации и отсутствие ожидаемого родителя разбирайте отдельно.
+Активный артефакт может перестать проходить валидацию после правки содержимого;
+само наблюдение не устанавливает причину.
 
 ## Как это вписывается в рабочий процесс
 
 ```
 Shape → Validate → Reason → Code → Evidence → Activate
                     ^                   ^
-                context feeds here   context used in audits
+                необязательный ручной просмотр контекста
 ```
 
-- Вызывается автоматически `forgeplan reason`, `forgeplan generate` и инструментами MCP
-- Используйте вручную для предварительного просмотра того, что увидит агент, прежде чем запускать рассуждения
-- Используйте в паре с `forgeplan audit` для массовых проверок контекста по множеству артефактов
+- Используйте эту CLI-проекцию перед подготовкой запроса на рассуждение.
+- При необходимости прочитайте тело отдельно через `get`.
+- Для нескольких артефактов вызывайте `context` по выбранным ID; CLI-команды `forgeplan audit` нет.
 
 ## См. также
 
-- [`forgeplan get`](/docs/cli/get/) - более лёгкое подмножество (только артефакт)
-- [`forgeplan validate`](/docs/cli/validate/) - подмножество валидации
-- [`forgeplan score`](/docs/cli/score/) - подмножество скоринга
-- [`forgeplan reason`](/docs/cli/reason/) - использует контекст для анализа ADI
-- [`forgeplan health`](/docs/cli/health/) - панель мониторинга по всему проекту
+- [`forgeplan get`](/ru/docs/cli/get/) - чтение артефакта
+- [`forgeplan validate`](/ru/docs/cli/validate/) - валидация
+- [`forgeplan score`](/ru/docs/cli/score/) - скоринг
+- [`forgeplan reason`](/ru/docs/cli/reason/) - ADI со своей подготовкой входных данных
+- [`forgeplan health`](/ru/docs/cli/health/) - диагностика проекта
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan context --help`.
+
+```text
+Single-call reasoning context — artifact + graph + validation + scoring
+
+Usage: forgeplan context [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID
+
+Options:
+      --json     Output as JSON for machine consumption (primary mode for AI agents)
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -7,14 +7,11 @@ use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 
 use crate::commands::common;
 
-/// Watch .forgeplan/ markdown files and sync changes to LanceDB in real time.
+/// Watch .forgeplan/ markdown files through the workspace's index owner.
 ///
-/// `constellation` additionally runs a
-/// [`forgeplan_core::constellation::runtime::MaintenanceHost`]: the legacy sync
-/// keeps existing commands reading, while the corrected 0A/0B index picks up
-/// the same change atomically — creates, updates, deletes and renames land in
-/// one published generation, which is exactly what the per-file legacy path
-/// cannot express.
+/// A migrated workspace automatically uses the Constellation maintenance
+/// host. `--constellation` also selects that host on a legacy workspace and
+/// performs the protocol handoff; it never keeps a legacy writer beside it.
 ///
 /// # Two ways a change is noticed, and why both are there
 ///
@@ -24,19 +21,24 @@ use crate::commands::common;
 /// host also re-captures on its own control-scan clock, which is what bounds
 /// how long a missed event can hide a change.
 pub async fn run(constellation: bool) -> anyhow::Result<()> {
-    // The legacy store and the constellation index cannot coexist as live
-    // tables — bootstrap renames `artifacts.lance`/`relations.lance` aside so
-    // two protocols never write the same logical index. On a migrated
-    // workspace `LanceStore::open` fails with a bare ENOENT; detect that
-    // state explicitly so the failure names the cause and `--constellation`
-    // keeps watching through the corrected index alone.
-    let (ws, store) = common::open_store_tolerating_constellation().await?;
-    if store.is_none() {
-        if !constellation {
-            anyhow::bail!(
-                "this workspace's index moved to the constellation protocol — run `forgeplan watch --constellation`"
-            );
-        }
+    // Decide under the workspace lock, before opening any legacy tables.
+    // Damaged protocol files are errors, not permission to resume legacy
+    // migrations. The maintenance host takes its own locks after this guard
+    // is released.
+    let (ws, lock) = common::open_workspace_locked().await?;
+    let index_root = ws.join("lance");
+    forgeplan_core::constellation::storage::read_marker(&index_root)?;
+    forgeplan_core::constellation::storage::read_current(&index_root)?;
+    let migrated = common::index_migrated(&ws);
+    let constellation = constellation || migrated;
+    let store = if constellation {
+        None
+    } else {
+        Some(forgeplan_core::db::store::LanceStore::open(&ws).await?)
+    };
+    drop(lock);
+
+    if migrated {
         println!(
             "Legacy index retired (constellation owns .forgeplan/lance) — constellation maintenance only."
         );
@@ -57,17 +59,15 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
     // from here as well is how the two halves came to disagree about debounce
     // and about what a pass reports.
     //
-    // Only `--constellation` gets one. A legacy watch has no maintenance protocol
-    // to serve, and registering a runtime would make a short-lived legacy
-    // watcher reachable by `mark_dirty` for upkeep it never performs.
+    // The owner is selected by the existing flag or by the migrated layout.
+    // A default legacy watch keeps its per-file projection and registers no
+    // maintenance runtime.
     let host = if constellation {
-        // The capability is minted here, at the command that was explicitly
-        // asked to maintain this workspace — `watch --constellation`. The host
-        // takes it as a parameter and never constructs one itself, so no other
-        // path can reach maintenance without saying why.
+        // This foreground watch explicitly maintains the selected workspace.
+        // The host receives that capability rather than minting one itself.
         let capability =
             forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
-                ws.canonicalize().unwrap_or_else(|_| ws.clone()),
+                ws.canonicalize()?,
             );
         Some(
             forgeplan_core::constellation::runtime::MaintenanceHost::start(
@@ -144,6 +144,12 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
                     }
                     batch_had_change = true;
 
+                    // The host owns every change on the migrated layout,
+                    // including deletes and renames. Legacy-only diagnostics
+                    // and syncs must not run beside it.
+                    let Some(store) = store.as_ref() else {
+                        continue;
+                    };
                     // Determine if file was deleted or changed
                     if !path.exists() {
                         // File deleted — warn, don't remove from LanceDB
@@ -161,13 +167,7 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
                         continue;
                     }
 
-                    // File created or modified — sync to LanceDB. On a
-                    // migrated workspace there is no legacy store to feed;
-                    // the constellation pass below owns the index alone.
-                    let Some(store) = store.as_ref() else {
-                        batch_had_change = true;
-                        continue;
-                    };
+                    // File created or modified in the legacy index.
                     match sync_single_file(store, &ws, path).await {
                         Ok(Some(id)) => {
                             println!("SYNC {} — body updated from file", id);

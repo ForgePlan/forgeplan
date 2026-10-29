@@ -1,11 +1,21 @@
 ---
 title: Dev Toolkit Plugin
-description: Code auditing, sprint planning, research, builds, and context restore for Claude Code
+description: Deprecated Dev Toolkit, its shipped commands, and earlier catalog examples
 ---
+
+:::caution[Deprecated plugin]
+The reviewed marketplace revision
+[`b4e8a1b9`](https://github.com/ForgePlan/marketplace/tree/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7)
+marks `dev-toolkit` 1.9.1 deprecated in favor of `fpl-skills`. Existing
+installations can remain; new users should follow the upstream migration
+guide. The install block below is for the legacy plugin.
+:::
 
 ## What It Does
 
-The **dev-toolkit** plugin provides language-agnostic development tools for Claude Code and compatible AI agents. It covers the full development loop: research a topic, plan a sprint, build the implementation, audit the result, and restore context when you return.
+The **dev-toolkit** plugin supplies `/audit`, `/sprint`, `/recall` and
+`/report`, plus an advisor and hooks. The broader research/build list below
+is retained from the earlier portal catalog, not the 1.9.1 shipped manifest.
 
 ## Installation
 
@@ -14,13 +24,18 @@ The **dev-toolkit** plugin provides language-agnostic development tools for Clau
 /plugin install dev-toolkit@ForgePlan-marketplace
 ```
 
-## Commands
+## Commands and Earlier Catalog
+
+`/audit`, `/sprint`, `/recall`, and `/report` are shipped commands.
+The entries `/research` through `/team-up` and their descriptions below are
+legacy catalog examples, not an installation guarantee for this plugin.
+Some equivalents live in `fpl-skills`; consult its current skill definitions.
 
 | Command | Description |
 |---------|-------------|
 | `/audit` | Multi-expert code audit (4 parallel agents) |
 | `/sprint "goal"` | Adaptive sprint planning with wave-based execution |
-| `/recall` | Restore session context from Hindsight memory |
+| `/recall` | Restore context from project docs, Git and optional memory tools |
 | `/research "topic"` | Quick research with Explore agents |
 | `/deep-research "topic"` | Deep multi-agent research (4-7 agents), writes reports |
 | `/build "research-dir"` | Implement from existing research reports |
@@ -51,9 +66,9 @@ Best used before creating a pull request. Pair with `/forge-audit` from the [for
 
 Scales from a simple task to a full wave-based sprint:
 
-- **1 task** -- just executes it directly
-- **3-5 tasks** -- parallel execution
-- **10+ tasks** -- wave-based sprint with dependency tracking, progress reporting
+- **Tactical** -- one agent
+- **Standard** -- two parallel agents
+- **Deep** -- three or four parallel agents and a fuller pipeline
 
 ```
 /sprint "migrate database to PostgreSQL 16"
@@ -63,7 +78,8 @@ The sprint planner breaks the goal into ordered waves, assigns priorities, and t
 
 ## /recall -- Context Restore
 
-Restores session context from Hindsight memory -- what you worked on, what was decided, what is pending.
+Restores context from project documentation, Git and optional memory tools;
+Hindsight is one possible memory integration, not a requirement.
 
 ```
 /recall
@@ -145,6 +161,6 @@ Launches parallel Agent Teams for tasks that span multiple domains (e.g., backen
 
 ## See Also
 
-- [Commands Reference](/docs/marketplace/commands/) -- all commands across all plugins
+- [Commands Reference](/docs/marketplace/commands/) -- selected commands and historical examples
 - [Marketplace Overview](/docs/marketplace/overview/) -- full plugin catalog
 - [Forgeplan Workflow](/docs/marketplace/forgeplan-workflow/) -- methodology-aware commands

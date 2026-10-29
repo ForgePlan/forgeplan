@@ -13,7 +13,7 @@ Instructions for Claude Code when working in this repository.
 4. **DO NOT push to a branch after a PR is merged** — squash loses late commits.
 5. **DO NOT create a PR before `Code → Audit → Fix → Test → Fmt → Lint → Verify`**. **Verify** означает: unit tests + **РЕАЛЬНЫЙ E2E каждой затронутой surface** (не один tool из 45 — все затронутые). Dogfood with actual user tooling (brew binary, real client). Silent failures (PROB-035, PROB-039) все от того что протестировали только happy path.
 6. **DO NOT leave PRD stubs** — `forgeplan new prd` → immediately fill in the MUST sections.
-7. **DO NOT activate an artifact without code and evidence** — R_eff must be > 0. **EvidencePack body MUST contain** `verdict:`, `congruence_level:`, `evidence_type:` — без этих structured fields parser тихо ставит CL0 (silent failure → R_eff = 0.1).
+7. **DO NOT activate an artifact without code and evidence** — R_eff must be > 0. **EvidencePack body MUST contain** `verdict:`, `congruence_level:`, `evidence_type:`. Parser текущего среза предупреждает о нераспознанном/отсутствующем claim и использует CL0; flat score для неистёкшего `supports` — 0.1, не доказательство корректности пака. Recursive score имеет дополнительные modifiers (см. Key formulas).
 8. **DO NOT call `LanceStore::create_artifact / update_* / delete_* / add_relation / delete_relation` directly from `commands/*.rs` или `server.rs`** — нарушает ADR-003 (markdown — source of truth). Используй `forgeplan_core::projection::sync_file_to_store` + `render_projection` flow (см. canonical `crates/forgeplan-cli/src/commands/deprecate.rs`). Regression guard: `tests/adr_003_invariant.rs` блокирует рост counts. Migration tracker: PROB-048 + PRD-073.
 9. **DO NOT skip the post-release sync step** — после каждого `release/v* → main` PR merge обязательно открывай sync-PR `chore/sync-main-to-dev-after-vX.Y.Z` (branch protection blocks direct push to dev). Без этого dev forever lags `Cargo.toml` version, и следующий release создаст merge conflicts. См. PR #223 как канонический пример flow.
 10. **DO NOT ignore Dependabot alerts at release time** — перед каждым `release/v* → main` PR проверь `gh api repos/.../dependabot/alerts` и в release notes пометь: addressed / scheduled / accepted-with-justification. Накопление alerts — отдельный architectural debt (PROB-XXX TBD при первом triage).
@@ -23,14 +23,14 @@ Instructions for Claude Code when working in this repository.
   идут через `mcp__forgeplan__forgeplan_update`, `forgeplan_new`,
   `forgeplan_link`, `forgeplan_activate`, `forgeplan_deprecate` (или
   эквивалентный CLI `forgeplan update|new|link|activate|...`). Прямой Edit
-  десинхронизирует LanceDB index, state machine (`.forgeplan/state/<ID>.yaml`)
-  и canonical body — `forgeplan_get` начнёт возвращать stale данные,
-  semantic search промахнётся. Если случайно отредактирован — recover через
+  может оставить legacy index и advisory phase state несогласованными с файлом.
+  Constellation читает captured Markdown, но это не отменяет запрет прямой
+  мутации и не выполняет lifecycle-проверки. Если случайно отредактирован — recover через
   `forgeplan_update id=<ID> body=<full new body>` (читаешь файл, формируешь
   полное новое body без YAML frontmatter, пушишь через MCP). Last-resort
-  fallback: `forgeplan reindex` пересоберёт LanceDB из markdown
-  (**не** `scan-import` — тот ищет и импортирует новые артефакты из
-  произвольного markdown, существующие не синхронизирует; см. #420).
+  fallback зависит от раскладки: `forgeplan index` для Constellation;
+  `forgeplan reindex` для legacy. **Не** `scan-import`: он импортирует новые
+  внешние документы, а не восстанавливает существующий индекс (см. #420).
   Direct Edit OK ТОЛЬКО для не-forgeplan markdown (READMEs, CLAUDE.md,
   KNOWN-ISSUES, src code, .changeset/*.md).
 
@@ -49,6 +49,10 @@ Everything else in this file is guidelines, not red lines.
 
 JSON: `{"_next_action": "<command>" | null, ...}`. Полный контракт + bad/good примеры:
 [`docs/methodology/agent-protocol.md`](docs/methodology/agent-protocol.md).
+
+Это требование протокола, не утверждение о полном текущем покрытии: например,
+`score --all` JSON в выбранном срезе не содержит `_next_action`.
+Исторический аудит PRD-071 не доказывает соответствие всех нынешних ответов.
 
 ---
 
@@ -87,6 +91,13 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 гайдов (methodology, operations, schemas) и артефактов в `.forgeplan/`.
 
 ## Current status
+
+Текущий source snapshot — `0.39.0+constellation.s1.1` (не опубликованный
+релиз 0.38.0). Записи релизов ниже — датированная история, не новый прогон.
+В captured interface этого среза: 120 CLI command paths без root help,
+76 full MCP tools и отдельные 9 constellation-read tools.
+Регистрация не доказывает поддержку каждого handler: совместимость нужно
+проверять реальными сценариями на обоих форматах хранения.
 
 - **v0.38.0** (2026-10-12) — **используем уже оплаченную AI-подписку, не
   превращая ForgePlan в лазейку для произвольных команд**. `codex-cli`,
@@ -177,7 +188,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
   Migration: run `forgeplan score --all`; expect a small number of artifacts whose
   only evidence was retired to drop to 0 (1 of 89 here) — that is real debt the
   old formula masked.
-- **82 CLI commands** (+`setup`; прежние «82» считали авто-`help` от clap), **73 MCP tools**, **3349 tests + 9 doc-tests** (CI `nextest`; 5 doc-tests pass, 4 ignored), **0 warnings** on both feature configs
+- **Исторические счётчики до Constellation**: 82 CLI commands (+`setup`; прежние «82» считали авто-`help` от clap), 73 MCP tools, 3349 tests + 9 doc-tests (CI `nextest`; 5 doc-tests pass, 4 ignored), 0 warnings on both feature configs. Не результат проверки текущего дерева.
 - **EPIC-001/002/003 ✅**, **Epic #287 ✅** (brownfield). Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 on `tract` (pure-Rust inference — RFC-013; feature-gated, graceful fallback)
 
@@ -343,23 +354,32 @@ Pipeline = guideline, not bureaucracy. Don't create all 10 types for every task.
 
 ## EvidencePack — structured fields (critical for R_eff)
 
-Without these fields the R_eff parser sets CL0 (penalty 0.9) and score = 0.
+Без объявленных verdict/CL parser использует CL0 (penalty 0.9): flat score для неистёкшего `supports` = 0.1; recursive score также вычитает evidence-type modifier. Явный `refutes` даёт 0.0 до истечения срока; истёкший пак получает 0.1. `evidence_type` обязателен по проектному протоколу выше, хотя parser при его отсутствии использует `measurement`.
 
 ```markdown
 ## Structured Fields
 
-verdict: supports            # supports / weakens / refutes
-congruence_level: 3          # CL3 = same context (best) … CL0 = opposed (worst)
-evidence_type: measurement   # measurement / test / benchmark / audit
+verdict: supports
+congruence_level: 3
+evidence_type: measurement
 ```
+
+Допустимые scoring verdict: `supports` / `weakens` / `refutes`; это не
+`review_verdict`. CL — 0..3 (3 — наиболее подходящий контекст, 0 — минимальное
+доверие), evidence type — `measurement` / `test` / `benchmark` / `audit`.
+Поля должны быть отдельными строками, не таблицей; inline `#`-комментарий
+станет частью значения, поэтому пояснения держать вне машинных строк.
 
 **Code-claiming evidence** (пак утверждает, что код изменился) — добавь git-provenance
 (PRD-082 / #360). Все три поля или ни одного: частичный claim отвергается как `Incomplete`.
 
+Пример структуры, не свидетельство реальной git-дельты: подставить фактические
+коммиты и пути своего изменения, а не копировать значения ниже.
+
 ```markdown
-base_sha: 92154e19                          # состояние ДО изменения
-result_sha: 808db24                         # состояние ПОСЛЕ
-changed_paths: src/a.rs, tests/b.rs         # comma-separated
+base_sha: 92154e19
+result_sha: 808db24
+changed_paths: src/a.rs, tests/b.rs
 ```
 
 `forgeplan activate` перепроверяет claim против реальной git-дельты
@@ -371,7 +391,7 @@ changed_paths: src/a.rs, tests/b.rs         # comma-separated
 
 **R_eff считает только текущую эвиденцию** (ADR-020): паки с терминальным статусом
 (`superseded`/`deprecated`) исключаются из min, но остаются в графе как история.
-Активный `refutes` по-прежнему обнуляет score. Вытеснять — через
+Неистёкший активный `refutes` обнуляет score; истёкший пак получает 0.1. Вытеснять — через
 `supersede <old> --by <new>`, а не правкой вердикта.
 
 ---
@@ -383,8 +403,8 @@ forgeplan review <id>                   # check readiness
 forgeplan activate <id>                 # draft → active (validation gate)
 forgeplan supersede <id> --by <new>     # active → superseded (TERMINAL)
 forgeplan deprecate <id> --reason "..." # → deprecated (TERMINAL)
-forgeplan renew <id> --reason --until   # stale → active (extend)
-forgeplan reopen <id> --reason          # stale/active → deprecated + NEW draft
+forgeplan renew <id> --reason "Rechecked" --until YYYY-MM-DD # stale → active
+forgeplan reopen <id> --reason "Context changed"           # deprecate + NEW draft
 ```
 
 **State machine**: `draft → active → {superseded|deprecated|stale}` ; `stale → {active via renew | deprecated + new draft via reopen}`. `superseded`/`deprecated` are terminal.
@@ -592,11 +612,13 @@ Full guide: `docs/methodology/UNIFIED-WORKFLOW.ru.md`.
 
 ## Multi-agent (v0.24.0+)
 
-При работе 2-5 суб-агентов в одном workspace используй MCP tools:
-- `forgeplan_dispatch --agents N` — получить план (buckets + serial queue)
-- `forgeplan_claim <id> --ttl 30` — «я беру этот артефакт»
-- `forgeplan_release <id>` — «закончил»
-- `forgeplan_claims` — кто сейчас что делает
+При работе 2-5 суб-агентов в одном workspace используй MCP tools
+`forgeplan_dispatch`, `forgeplan_claim`, `forgeplan_release`, `forgeplan_claims`.
+CLI-эквиваленты (не синтаксис MCP):
+- `forgeplan dispatch --agents N` — план (buckets + serial queue)
+- `forgeplan claim <id> --agent <name> --ttl-minutes 30` — «я беру этот артефакт»
+- `forgeplan release <id> --agent <name>` — «закончил», то же имя владельца
+- `forgeplan claims` — кто сейчас что делает
 
 Guide: `docs/operations/MULTI-AGENT.ru.md`.
 
@@ -729,9 +751,9 @@ Each MUST find ≥3 issues. Zero findings → re-spawn (suspect superficial revi
 1. Re-Read file to capture current content
 2. Strip YAML frontmatter (forgeplan_update body excludes it)
 3. `mcp__forgeplan__forgeplan_update(id="<ID>", body=<full body>)`
-4. Last-resort fallback: `forgeplan reindex` rebuilds LanceDB from markdown
-   (**not** `scan-import` — that one discovers and imports *new* artifacts from
-   arbitrary markdown; it does not sync artifacts already in the graph, #420)
+4. Last-resort fallback зависит от раскладки: `forgeplan index` для
+   Constellation, `forgeplan reindex` для legacy. Не `scan-import`: он
+   импортирует новые внешние документы, а не синхронизирует существующие (#420).
 
 Document the violation в commit message so reviewer recognizes the pattern was caught.
 
@@ -759,7 +781,7 @@ JSON: `_next_action` field. Following hints = staying на methodology path
 
 ---
 
-## Artifacts (10 types, 6 actively used)
+## Artifacts (17 core kinds; creation interfaces have their own kind schemas)
 
 | Kind | Prefix | Description |
 |---|---|---|
@@ -768,11 +790,18 @@ JSON: `_next_action` field. Following hints = staying на methodology path
 | **Spec** | `spec-` | API contracts, data models |
 | **RFC** | `rfc-` | Architectural proposal with phases |
 | **ADR** | `adr-` | Architecture Decision Record (deep+: DDR fields) |
-| **Note** | `note-` | Micro-decision (auto-expires in 90 days) |
+| **Note** | `note-` | Micro-decision; expiration requires an explicit `valid_until` |
 | Problem | `prob-` | Problem with context |
 | Solution | `sol-` | 2–3 options (weakest-link) |
 | Evidence | `evid-` | Tests, benchmarks, measurements |
 | Refresh | `ref-` | Re-evaluation of stale decisions |
+| Memory | `mem-` | Lightweight project memory |
+| Use case | `uc-` | Extracted user capability |
+| Glossary | `glos-` | Domain term and definition |
+| Invariant | `inv-` | Business rule |
+| Scenario | `scen-` | Concrete behavioral example |
+| Hypothesis | `hyp-` | Inferred knowledge with confidence state |
+| Domain model | `dm-` | Aggregate domain description |
 
 **Hierarchy**: Epic → PRD[] → Spec[] + RFC[] + ADR[]. Child references parent.
 **Rule**: supersede, do not delete.
@@ -782,10 +811,18 @@ JSON: `_next_action` field. Following hints = staying на methodology path
 ## Key formulas
 
 ### R_eff (scoring)
-- `R_eff = min(evidence_scores)` — trust = weakest link, **never average**. Min идёт только по **текущей** эвиденции: пакеты с терминальным статусом (superseded/deprecated) исключаются (ADR-020); draft считается; активный `refutes` по-прежнему обнуляет
+- `R_eff = min(evidence_scores)` — trust = weakest link, **never average**. Min идёт только по **текущей** эвиденции: пакеты с терминальным статусом (superseded/deprecated) исключаются (ADR-020); draft считается; неистёкший активный `refutes` обнуляет score, истёкший пак получает 0.1.
 - Evidence Decay: `valid_until` TTL, expired = 0.1
 - CL penalty: CL3=0.0, CL2=0.1, CL1=0.4, CL0=0.9
-- DerivedStatus: UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED
+- `UNDERFRAMED → … → APPLIED` — историческая терминология Quint-code, не persisted lifecycle Forgeplan. Текущий derived display: Stub/Shaped/Validated/Evidenced/Activated; lifecycle отдельно: draft/active/superseded/deprecated/stale.
+
+Уточнение реализации: flat `r_eff`/captured `r_eff_score` считает собственные
+eligible evidence без type modifiers. Explicit recursive score также учитывает
+type modifiers (`benchmark` 0.1, `audit` 0.2; test/measurement 0), зависимости
+и штраф 0.1 для `based_on`/`informs`. Эти поверхности могут дать разные числа.
+Product F/G/R (Formality/Granularity/Reliability, 0..1; overall — geometric mean)
+не равно upstream FPF F/G/R, где G — ClaimScope; ни одна формула выше не есть
+`min(F,G,R)`. Истечение срока выявляется без автоматической перезаписи статуса.
 
 ### Smoke test (every sprint)
 
@@ -805,26 +842,30 @@ Any fail → do not commit, fix.
 
 ### Standard flow для фичи (Standard+)
 
+Пример CLI-синтаксиса: заменить placeholder IDs/пути фактическими значениями.
+`validate` ниже рассчитан на совместимый legacy layout; на migrated workspace
+выбирать поддержанный full MCP validate. Это не разрешает обход gate.
+
 ```bash
 forgeplan health                                         # observe
 forgeplan route "implement ad-account dashboard tile"
 forgeplan new prd "Ad-account dashboard tile"            # shape
-$EDITOR .forgeplan/prds/PRD-NNN-*.md                     # заполнить MUST sections
+forgeplan update PRD-NNN --body @/path/to/prd-body.md     # полное body без frontmatter
 forgeplan validate PRD-NNN                               # 0 MUST errors
 forgeplan reason PRD-NNN                                 # ADI (Standard+)
 # write code + tests (через subagent / orchestrator)
-forgeplan new evidence "PRD-NNN: vitest 14 pass, p95 180ms на staging"
-$EDITOR .forgeplan/evidence/EVID-MMM-*.md                # ## Structured Fields!
+forgeplan new evidence "PRD-NNN: implementation verification"
+forgeplan update EVID-MMM --body @/path/to/evidence-body.md # реальные результаты + Structured Fields
 forgeplan link EVID-MMM PRD-NNN --relation informs
 forgeplan score PRD-NNN                                  # R_eff > 0?
 forgeplan activate PRD-NNN                               # draft → active
-# gh pr create --base develop  (PR body: "Refs: PRD-NNN")
+# gh pr create --base dev  (PR body: "Refs: <actual artifact slug>")
 ```
 
 ### Multi-agent (`dispatch → claim → spawn → release`)
 
 ```bash
-forgeplan dispatch --agents 3 --json    # планер conflict-free buckets (НЕ спавнер!)
+forgeplan dispatch --agents 3 --json    # план по overlap heuristics, НЕ спавнер
 forgeplan claim PRD-NNN --agent <subagent-name> --ttl-minutes 60
 # … работа …
 forgeplan release PRD-NNN --agent <subagent-name>   # ТОТ ЖЕ agent, что и в claim
@@ -837,6 +878,10 @@ forgeplan release PRD-NNN --agent <subagent-name>   # ТОТ ЖЕ agent, что 
 оркестратора, а не способ освободить свой собственный захват.
 
 `dispatch` возвращает план, **спавнит main thread / orchestrator** через `Agent({subagent_type, prompt})` (несколько `Agent`-блоков в одном сообщении = параллель). `SendMessage` — НЕ спавнер; адресует только уже запущенные процессы.
+
+Claims — advisory markers, не блокировка доступа к source и не enforced WIP=1.
+Dispatch учитывает заявленные файлы и claims; он не гарантирует отсутствие
+конфликтов исполнения. Изоляцию source обеспечивают worktree/ownership правила.
 
 ### Команды-однострочники (на каждый день)
 
@@ -858,18 +903,21 @@ forgeplan claims              # кто что захватил
 ├── evidence/ problems/ solutions/
 ├── notes/ refresh/ memory/
 ├── config.yaml         ← tracked (env var refs only, no hardcoded secrets)
-├── lance/              ← ⚠️ gitignored (derived index — forgeplan reindex)
+├── lance/              ← ⚠️ gitignored (derived index; layout-specific maintenance below)
 ├── .fastembed_cache/   ← ⚠️ gitignored
 └── session.yaml        ← ⚠️ gitignored (per-machine runtime state)
 ```
 
-**Fresh clone**: `git clone → forgeplan init -y → forgeplan reindex → forgeplan list`.
+**Fresh clone**: определить раскладку существующего workspace; `init -y` при
+найденном workspace может ничего не делать. Для Constellation выполнить
+`forgeplan index`; для legacy — `forgeplan reindex`; затем `forgeplan list`.
 
-**`reindex` vs `scan-import`** — не взаимозаменяемы:
-- `forgeplan reindex` — синхронизирует **существующие** артефакты `.forgeplan/**.md` в LanceDB. Это команда восстановления индекса.
+**`index`, `reindex`, `scan-import`** — не взаимозаменяемы:
+- `forgeplan index` — проверенный capture → reconcile → publish для Constellation.
+- `forgeplan reindex` — legacy files-first sync. В scoped Constellation build также маршрутизируется в maintenance pass, но явный `index` отличает его от старого восстановления legacy-таблиц.
 - `forgeplan scan-import` — **находит и импортирует новые** артефакты из произвольного markdown. Существующие не трогает, и в этом репозитории затягивает `templates/` и `docs/` как ложные артефакты (PROB-047).
 
-**Rules**: edit via `forgeplan` CLI; direct markdown edits require `forgeplan reindex`; DO NOT commit `lance/` or `session.yaml`.
+**Rules**: edit via `forgeplan` CLI/MCP (RED LINE #11); recovery зависит от раскладки, как описано выше. DO NOT commit `lance/` or `session.yaml`.
 
 ---
 
@@ -877,12 +925,12 @@ forgeplan claims              # кто что захватил
 
 ```
 crates/
-├── forgeplan-core/    ← shared library (12.8K LOC, 194 tests)
+├── forgeplan-core/    ← shared library (не свежий LOC/test count)
 │   ├── artifact/ config/ db/ depth/ embed/ fpf/ graph/ health/
 │   ├── journal/ lifecycle/ link/ llm/ progress/ projection/
 │   ├── routing/ scoring/ search/ stale/ template/ validation/ workspace/
-├── forgeplan-cli/     ← clap derive, 76 commands
-└── forgeplan-mcp/     ← rmcp stdio, 73 tools
+├── forgeplan-cli/     ← clap derive; matching nested help defines command paths
+└── forgeplan-mcp/     ← rmcp stdio; full and constellation-read catalogs differ
 ```
 
 **Project structure**: `docs/README.md` — map of all documentation. Reference repositories in `sources/` (read-only).

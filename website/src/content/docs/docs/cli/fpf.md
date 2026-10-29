@@ -3,13 +3,13 @@ title: forgeplan fpf
 description: "First Principles Framework Knowledge Base - ingest, search, and apply FPF rules to artifacts"
 ---
 
-`forgeplan fpf` is the parent command for the **First Principles Framework (FPF) Knowledge Base** - a 204-section reasoning corpus that powers Forgeplan's ADI cycle, trust calculus, and explore/investigate/exploit rule engine.
+`forgeplan fpf` groups **First Principles Framework (FPF) Knowledge Base** ingestion, search, section inspection, dashboards, and executable rule inspection. The section count follows the installed source you ingest; it is not a fixed 204-section guarantee.
 
-FPF is the theoretical backbone behind `forgeplan reason`, R_eff scoring, and methodology integrity checks. The `fpf` subcommands let you load the spec, query it semantically, inspect active rules, and check how those rules apply to specific artifacts.
+FPF informs the product's reasoning conventions, but ForgePlan's numerical scoring and rules are local adaptations, not a literal implementation of every upstream FPF rule. The KB and executable rules are separate surfaces.
 
 ## When to use
 
-- **Once per workspace** - run `fpf ingest` after `forgeplan init` so the KB is available locally.
+- **After workspace initialization** - install the FPF section source or pass `fpf ingest --path` to make the KB available.
 - **During reasoning** - `fpf search "trust calculus"` to pull first-principles context while shaping a PRD or ADR.
 - **During sprint planning** - `fpf dashboard` to see bounded contexts, quality scores, and explore-vs-exploit recommendations.
 - **During validation** - `fpf check PRD-XXX` to see which FPF rules fire on an artifact and what action they suggest.
@@ -19,7 +19,7 @@ FPF is the theoretical backbone behind `forgeplan reason`, R_eff scoring, and me
 
 - For general artifact CRUD - use `forgeplan new`, `validate`, `review`, `activate` instead.
 - For project-wide health - use `forgeplan health`, not `fpf dashboard` (the two are complementary, not interchangeable).
-- For ADI reasoning runs - use `forgeplan reason --fpf`, which internally consults the KB; direct `fpf search` is for humans inspecting raw content.
+- For ADI runs use `forgeplan reason --fpf`; enrichment is conditional. The selected migrated-workspace path omits legacy KB context.
 
 ## Usage
 
@@ -51,7 +51,7 @@ forgeplan fpf <COMMAND>
 ## Examples
 
 ```bash
-# One-time setup after forgeplan init
+# Ingest installed FPF sections; otherwise supply --path to their directory
 forgeplan fpf ingest
 
 # Explore the KB
@@ -77,11 +77,11 @@ FPF sits at the **reasoning layer** of the Forgeplan pipeline:
 Shape → Validate → ADI (FPF KB) → Code → Evidence → Activate
 ```
 
-- **PRD-041** wires FPF rules into the route/validate stages.
-- **PRD-042** adds BGE-M3 vector search across the 204 sections (the same pipeline as the artifact search - BM25 + semantic fusion).
-- **PRD-043** enforces methodology integrity: an artifact that violates bounded-context or trust-calculus rules is flagged before activation.
+- **PRD-041** introduced the rule-inspection surface.
+- **PRD-042** added optional BGE-M3 vector lookup for ingested sections; it is separate from artifact BM25 retrieval.
+- **PRD-043** concerns methodology integrity; listing KB sections is not proof that lifecycle gates passed.
 
-The KB is stored in LanceDB under `.forgeplan/lance/` (derived, gitignored). Raw sections live in the Forgeplan repo and are embedded on ingest.
+Ingest reads installed FPF sections or an explicit `--path` and stores a derived `fpf_spec` table under `.forgeplan/lance/`. A semantic-search build attempts embeddings during ingestion; keyword-only builds store text. `fpf search`/`section`/`list` can read that auxiliary table without recreating artifact tables.
 
 ## See also
 
@@ -95,3 +95,39 @@ The KB is stored in LanceDB under `.forgeplan/lance/` (derived, gitignored). Raw
 - [`forgeplan fpf check`](/docs/cli/fpf-check/) - rules matching an artifact
 - [`forgeplan reason`](/docs/cli/reason/) - ADI cycle driven by FPF
 - [Methodology guide](/docs/methodology/overview/) - where FPF fits in the full workflow
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf --help`.
+
+```text
+FPF Knowledge Base — dashboard, ingest, search, sections
+
+Usage: forgeplan fpf <COMMAND>
+
+Commands:
+  dashboard  Show FPF dashboard — bounded contexts, quality scores, explore-exploit actions
+  ingest     Ingest FPF spec into knowledge base
+  search     Search FPF knowledge base
+  section    Show a specific FPF section
+  list       List all FPF sections
+  status     Show FPF knowledge base status — source, ingested count, staleness
+  rules      List active FPF rules grouped by action (EXPLORE/INVESTIGATE/EXPLOIT)
+  check      Check which FPF rules match a given artifact
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+- [`forgeplan fpf dashboard`](/docs/cli/fpf-dashboard/)
+- [`forgeplan fpf ingest`](/docs/cli/fpf-ingest/)
+- [`forgeplan fpf search`](/docs/cli/fpf-search/)
+- [`forgeplan fpf section`](/docs/cli/fpf-section/)
+- [`forgeplan fpf list`](/docs/cli/fpf-list/)
+- [`forgeplan fpf status`](/docs/cli/fpf-status/)
+- [`forgeplan fpf rules`](/docs/cli/fpf-rules/)
+- [`forgeplan fpf check`](/docs/cli/fpf-check/)
+<!-- forgeplan-runtime:end -->

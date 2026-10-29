@@ -2,6 +2,8 @@
 
 > The meta-command that drives the full 12-skill pipeline end-to-end for a given domain.
 
+> Original proposed orchestrator, not a shipped core command or plugin-availability claim. `forgeplan discover start` only creates a session and prints an agent protocol; interview tools are `not_implemented` stubs. This file groups phases differently from `03-ARCHITECTURE.md`; gates here use this file's five-phase numbering. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Purpose
 
 Running individual skills is possible, but the power of the methodology comes from running them in the right order with the right inputs and stopping at the right gates. This orchestration turns a pile of skills into a workflow.
@@ -18,7 +20,7 @@ Running individual skills is possible, but the power of the methodology comes fr
 ## Phases
 
 ```
-Phase 1 — Factum extraction (no LLM reasoning)
+Phase 1 — Factum extraction (source-backed; may use LLM assistance)
   C1  ubiquitous-language     → glossary[]
   C2  use-case-miner          → use-case[]
   C4  invariant-detector      → invariant[]
@@ -103,6 +105,9 @@ function extract_business_logic(domain, options):
       run_skill(C10_canonical_reproducer, mode="fix", target=failure)
     validation = run_skill(C11_reproducibility_validator, domain=domain)
 
+  if validation.fail_count > 0:
+    return partial_report(domain, validation)  # not validated output; no C12 export
+
   if options.output_rag:
     run_skill(C12_rag_packager, domain=domain)
 
@@ -116,13 +121,14 @@ function extract_business_logic(domain, options):
 All phases 1-5.
 
 ### `--mode=factum-only`
-Only phase 1 — useful for a first pass without LLM cost.
+Only phase 1 — omits intent generation, but C1 definition and C2 synthesis can still use LLM calls.
 
 ### `--mode=intent-only`
 Phases 2-3. Requires phase 1 output to exist.
 
 ### `--mode=refresh`
 Re-runs only artifacts flagged `needs_update` by forgeplan drift. Cheaper than full.
+This is intended C1–C12 refresh automation; current drift signals do not set those package-specific work queues by themselves.
 
 ### `--interview-mode=autopark` vs `manual`
 - `autopark`: parked hypotheses stay parked with current confidence; pipeline completes with known gaps.
@@ -139,7 +145,7 @@ Each phase emits structured log events:
 ## Error handling
 
 - Skill failure → retry up to 3x with exponential backoff.
-- Validation failure in phase 5 → route failures back to C10; re-validate once. If still failing, produce a `validation-report.md` and continue.
+- Validation failure in phase 5 → route failures back to C10; re-validate once. If still failing, produce a `validation-report.md` with a partial outcome, not a validated export or a successful phase-5 completion.
 - LLM rate limit → pause and resume.
 
 ## Checkpointing

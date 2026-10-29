@@ -1,5 +1,13 @@
 # Forgeplan DDD Analysis — Spike-3 (2026-04-21)
 
+> Historical agent-analysis output from 2026-04-21, retained with its original
+> code anchors and recommendations. “CL3” records EVID-082's classification of
+> that spike, not a renewed verification of every interpretation or present API.
+> In particular, the old glossary's `scan-import` definition is not current:
+> `scan-import` imports foreign Markdown; `reindex`/Constellation `index` rebuild
+> derived indexes. Counts, then-pending kinds and proposed events below are not
+> a current release inventory or proof that those proposals were implemented.
+
 > **Provenance**: Produced by the `agents-pro:ddd-domain-expert` agent on the Forgeplan
 > Rust workspace (`crates/forgeplan-core`, `crates/forgeplan-cli`, `crates/forgeplan-mcp`)
 > as Spike-3 for EPIC-008 Factum/Intent methodology validation. This is a **CL3

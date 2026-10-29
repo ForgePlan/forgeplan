@@ -167,7 +167,7 @@ ol li::before {
 
 - PNG → WebP конвертация обязательна перед подключением:
   `cwebp -q 82 -m 6 <file>.png -o <file>.webp`
-- Типичное сжатие 94-97% (от ~1MB до ~30-60K)
+- Пример возможного сжатия: 94-97% (от ~1MB до ~30-60K), не измеренная гарантия для любого изображения; фиксировать фактические размеры.
 - Schema (см. `src/content.config.ts`) разрешает только локальные пути:
   `/blog-covers/<slug>.{webp|png|jpg|jpeg|svg}`
 - Защита от `javascript:`, `data:`, `//evil.tld` — F-3 security guard
@@ -195,10 +195,18 @@ Fix: `kill <PID>` → `npm run dev`.
 Изменения в HTML/CSS/MDX content — HMR подхватит автоматически без
 restart.
 
-## Build verify после каждого изменения
+## Build verify перед сдачей связной правки
 
-`npm run build` в `website/` должен закрываться без warning'ов перед
-коммитом. Текущий baseline — 398 страниц, ~11-12 секунд.
+После завершения изменений `npm run build` в `website/` должен пройти перед
+коммитом. Записывать фактические число страниц и время для текущего снимка,
+не считать прежние 398 страниц постоянным критерием.
+
+Два известных baseline warning не являются новыми регрессиями:
+Vite о чанке больше 500 kB и Starlight `Entry docs → 404 was not found`.
+Другие warnings разбирать отдельно. Build не проверяет layout, anchors,
+смысл переводов и корректность ручных CLI-примеров; нужны соответствующие
+checks и браузер. Источники и команды обновления документации —
+[`README.md`](README.md#documentation-maintenance).
 
 При проблемах в production но не в dev — проверить:
 - Astro.site fallback (set in `astro.config.mjs`)
@@ -265,9 +273,12 @@ main > ul, main > ol { max-width: 820px; }
 
 - НЕ использовать iframe (отвергнуто пользователем дважды)
 - Извлекать body + style + script, обернуть в `.guide-embedded` класс
-- Удалять `:root`, `<html>`, `<body>` теги из CSS
+- При CSS extraction удалять правила с root-селекторами `:root`, `html`, `body`; это не HTML-теги внутри CSS
 - Префиксовать остальные правила wrapper-классом
 - Алиасить токены сайта (`--bg → var(--forge-bg)`)
 - Inline-скрипты оборачивать в IIFE
 - Wrapper минимальный: Header + breadcrumb + content + prev/next + Footer.
   НЕ дублировать h1/summary над lesson — у lesson своя шапка.
+- Источник EN lesson: `public/guides-raw/en/<slug>.html`; источник RU:
+  `public/guides-raw/<slug>.html`. Это отдельные полноценные языковые тексты,
+  не общий RU body под двумя URL. Standalone index — отдельно от 20 lesson slugs.

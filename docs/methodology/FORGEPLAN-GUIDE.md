@@ -38,12 +38,21 @@ The skill will be installed into selected agents. After that, in your AI chat:
 brew install forgeplan/tap/forgeplan
 # Homebrew 6.0+: if refused with "untrusted tap", run `brew trust forgeplan/tap` once, then re-run.
 
-# From source (Rust)
-cargo install forgeplan
+# From a checked-out source tree (not a crates.io install recipe)
+git clone https://github.com/ForgePlan/forgeplan.git && cd forgeplan
+cargo install --path crates/forgeplan-cli --features semantic-search
 
 # Or download a binary from GitHub Releases
 # https://github.com/ForgePlan/forgeplan/releases
 ```
+
+Release binaries include semantic search; ordinary Cargo builds leave the
+feature off by default. Weights are separate: `forgeplan setup` prepares the
+BGE-M3 cache. Offline inference requires a complete snapshot. Cache precedence
+is `FORGEPLAN_MODEL_CACHE` → `~/.forgeplan/models` → platform/legacy fallback when
+home is unavailable; `HF_HOME` does not override tract's cache.
+For a genuinely new workspace, `init -y --with-model` explicitly requests a
+download. An already initialized workspace can return before that step.
 
 ### 3. MCP Server (for AI agents)
 
@@ -64,13 +73,18 @@ Add to your project's `.mcp.json`:
 
 ## Quick Start (5 minutes)
 
+Use a new directory outside any existing workspace. Discovery walks up parents:
+`init -y` may be a no-op against a parent's `.forgeplan/`. Check the reported path
+before writing. For clones with tracked artifacts, see the [documentation index](../README.md)
+for local config and reindex handling.
+
 ```bash
 # 1. Initialize workspace
 forgeplan init
 
 # 2. Determine what to do
-forgeplan route "Add OAuth2 authentication"
-# -> Depth: Deep, Pipeline: PRD -> Spec -> RFC -> ADR
+forgeplan route "Add OAuth2 authentication" --level 0
+# Inspect the recommendation; it is not an execution or acceptance result.
 
 # 3. Create first artifact
 forgeplan new prd "OAuth2 Authentication"
@@ -79,7 +93,7 @@ forgeplan new prd "OAuth2 Authentication"
 forgeplan health
 ```
 
-> **Alias**: `fpl` = `forgeplan`. Create a symlink: `ln -s $(which forgeplan) /usr/local/bin/fpl`
+> **Alias**: `fpl` = `forgeplan`. Source installations can create it with `forgeplan setup --skip-model`.
 
 ---
 
@@ -99,10 +113,10 @@ Ask yourself one question: **"Is this reversible within a day?"**
 Or use automatic routing:
 
 ```bash
-forgeplan route "task description"
+forgeplan route "task description" --level 0
 ```
 
-The engine analyzes keywords (security -> Deep+, breaking change -> Deep+, cross-team -> Standard+) and provides an instant recommendation without LLM.
+`--level 0` forces keyword routing without an LLM. Plain `route` may attempt configured LLM routing and further analysis; do not use omission of `--explain` as an offline guarantee.
 
 ### Question 2: "Which artifact?"
 
@@ -123,7 +137,9 @@ forgeplan review PRD-001
 # -> Ready to activate? NO
 ```
 
-If MUST is empty -- activate. If not -- refine.
+If MUST findings remain, refine the artifact. Zero MUST findings is necessary
+for ordinary gated activation but not sufficient: activation also checks length,
+evidence and stubs. Review is not a status transition.
 
 ### The Main Rule
 
@@ -132,6 +148,22 @@ If MUST is empty -- activate. If not -- refine.
 ---
 
 ## All Commands (by category)
+
+### Workspace layout and interface availability
+
+The command examples below do not establish universal CLI/MCP parity.
+Constellation notes target the scoped `0.39.0+constellation.s1.1` build,
+not published `0.38.0`.
+
+| Operation | Compatible legacy layout | Migrated Constellation layout |
+|---|---|---|
+| CLI `validate` | Exercised successfully | Exercised successfully |
+| Full MCP `forgeplan_validate` | Validation interface | Exercised successfully on migrated artifacts |
+| Other registered full tools | Check their contract | Do not infer support from registration |
+
+See the [user guide](https://forgeplan.dev/docs/guides/constellation/),
+[interface reference](https://forgeplan.dev/docs/reference/constellation/) and
+[portable pilot (RU)](../operations/CONSTELLATION-PILOT.ru.md).
 
 ### Creating and Managing Artifacts
 
@@ -163,7 +195,7 @@ If MUST is empty -- activate. If not -- refine.
 | `forgeplan score [id]` | R_eff quality score | `forgeplan score PRD-001` |
 | `forgeplan fgr [id]` | F-G-R scores (Formality, Granularity, Reliability) | `forgeplan fgr` |
 | `forgeplan estimate <id>` | Effort estimate by grade (Jun/Mid/Sen/PS/AI) | `forgeplan estimate PRD-022` |
-| `forgeplan estimate <id> --grade mid` | Highlight specific grade | `forgeplan estimate PRD-022 --grade junior` |
+| `forgeplan estimate <id> --grade middle` | Highlight specific grade | `forgeplan estimate PRD-022 --grade junior` |
 | `forgeplan estimate <id> --my-grade` | Grade from config grade_profile | `forgeplan estimate PRD-022 --my-grade` |
 
 ### Lifecycle
@@ -175,7 +207,9 @@ If MUST is empty -- activate. If not -- refine.
 | `forgeplan supersede <id> --by <new>` | Active -> Superseded + chain warnings | `forgeplan supersede PRD-001 --by PRD-002` |
 | `forgeplan deprecate <id> --reason "..."` | Active -> Deprecated | `forgeplan deprecate PRD-001 --reason "Cancelled"` |
 
-**Rule:** Notes and Problems do not require a validation gate. PRD, RFC, ADR, Epic, Spec -- MUST rules must pass.
+**Rule:** PRD, RFC, ADR, Epic and Spec have validation gates. Notes and Problems
+do not use the same schema gate; additional lifecycle checks still depend on
+kind and depth. Do not equate successful `validate` with activation.
 
 ### Dashboards and Analytics
 
@@ -185,7 +219,7 @@ If MUST is empty -- activate. If not -- refine.
 | `forgeplan status` | Brief dashboard | `forgeplan status` |
 | `forgeplan blindspots` | Artifacts without evidence, orphans | `forgeplan blindspots` |
 | `forgeplan journal` | Decision timeline with R_eff | `forgeplan journal --risk` |
-| `forgeplan fpf` | FPF dashboard: contexts + F-G-R + actions | `forgeplan fpf` |
+| `forgeplan fpf dashboard` | FPF dashboard: contexts + F-G-R + actions | `forgeplan fpf dashboard` |
 | `forgeplan stale` | Artifacts with expired valid_until | `forgeplan stale` |
 | `forgeplan decay` | Impact of expired evidence on R_eff | `forgeplan decay` |
 | `forgeplan progress [id]` | Checkbox progress bars | `forgeplan progress` |
@@ -194,7 +228,7 @@ If MUST is empty -- activate. If not -- refine.
 
 | Command | What it does | Example |
 |---------|-------------|---------|
-| `forgeplan route "<description>"` | Rule-based depth + pipeline (no LLM) | `forgeplan route "Add OAuth2"` |
+| `forgeplan route "<description>" --level 0` | Keyword-only depth + pipeline, no LLM | `forgeplan route "Add OAuth2" --level 0` |
 | `forgeplan route "<desc>" --explain` | + LLM explanation | `forgeplan route "Add OAuth2" --explain` |
 | `forgeplan calibrate [id]` | Suggest depth for existing artifact | `forgeplan calibrate PRD-001` |
 
@@ -206,7 +240,15 @@ If MUST is empty -- activate. If not -- refine.
 | `forgeplan reason <id>` | ADI reasoning cycle | `forgeplan reason PRD-001 --json` |
 | `forgeplan decompose <id>` | PRD -> RFC tasks via AI | `forgeplan decompose PRD-001` |
 | `forgeplan capture "<decision>"` | Record a decision as Note/ADR | `forgeplan capture "Use Redis for cache"` |
-| `forgeplan search <query> --semantic` | Semantic vector search | `forgeplan search "auth" --semantic` |
+
+### Local semantic search (no LLM provider required)
+
+`forgeplan search "auth" --semantic` needs a `semantic-search` build and a
+complete compatible cached model, not `llm` config. On migrated layout it also
+needs a published embedding profile and eligible vectors; forced semantic errors
+are not a promise of keyword fallback. Run `index`, then `embed` explicitly.
+Automatic drain additionally needs active `config.embedding` (`model: bge-m3`)
+and live maintenance; manual `embed` does not save this setting.
 
 ### MCP Server
 
@@ -214,7 +256,13 @@ If MUST is empty -- activate. If not -- refine.
 forgeplan serve  # start MCP server (stdio transport)
 ```
 
-73 MCP tools -- all commands above are available via MCP protocol.
+The scoped Constellation build registers 76 full-profile tools and a separate
+9-tool `constellation-read` profile. `full` is the default and retains writing.
+Startup maintenance selection and per-request workspace selection differ.
+`--workspace` supplies the server default, but an explicit `FORGEPLAN_WORKSPACE`
+binding takes precedence for startup maintenance. Request resolution prefers
+explicit workspace, then environment, server default and cwd. Read-profile
+handles do not launch maintenance or accept arbitrary paths.
 
 ---
 
@@ -230,7 +278,7 @@ Turns documentation (FR in PRD, Phases in RFC) into effort estimates. No separat
 forgeplan estimate PRD-022
 ```
 
-Output table:
+Illustrative estimate output (heuristic hours, not measured task durations):
 
 ```
 Estimate for PRD-022: AI Estimation Engine
@@ -278,7 +326,7 @@ forgeplan estimate PRD-022 --json           # machine-readable output
 
 **Fibonacci complexity** (1, 2, 3, 5, 8, 13) -> base Senior hours (3h, 5h, 8h, 13h, 21h, 34h).
 
-**Confidence** depends on artifact completeness:
+**Confidence** is a completeness heuristic, not measured forecast accuracy. It starts at 10%, then adds:
 - Has FR in PRD: +30%
 - Has Implementation Phases in RFC: +25%
 - Has Spec: +15%
@@ -359,7 +407,7 @@ forgeplan new evidence "Benchmark: LanceDB vs SQLite insert performance"
 
 ### IMPORTANT: Structured Fields
 
-An EvidencePack **must** contain structured fields in the body:
+Author evidence with structured fields and real observations. The following numbers are **illustrative**, not a performed benchmark; do not copy them as evidence:
 
 ```markdown
 ## Measurements
@@ -381,14 +429,14 @@ evidence_type: benchmark
 | `congruence_level` | `0`-`3` | CL3 = same context (best). CL0 = opposed context (penalty 0.9) |
 | `evidence_type` | `measurement` / `test` / `benchmark` / `audit` | Type of evidence |
 
-**Without these fields**, the R_eff parser cannot find data and defaults to CL0 -> R_eff = 0.1 instead of 1.0.
+Missing/unknown verdict or missing CL declaration forces CL0; a plain undeclared pack scores about 0.1. `evidence_type` separately defaults to measurement. Actual R_eff also depends on expiry, other evidence and dependencies; the next single-benchmark example is not guaranteed to score 1.00 in the recursive report (benchmark modifier 0.1).
 
 ### Link Evidence to an Artifact
 
 ```bash
 forgeplan link EVID-001 ADR-002 --relation informs
 forgeplan score ADR-002
-# -> R_eff = 1.00 (was 0.00)
+# Inspect the actual report: its score, weakest link, expiry and dependency factors.
 ```
 
 ### Congruence Levels (CL)
@@ -412,9 +460,12 @@ R_eff = weakest link. If there are 3 evidence items and one is weak -- R_eff = t
 
 | Depth | PRD rules | RFC rules | ADR rules |
 |-------|-----------|-----------|-----------|
-| Tactical | 3 base rules | 3 base | 3 base |
-| Standard | 9 rules (+ audience, density, leakage) | 5 rules (+ options, phases) | 3 rules |
-| Deep | 16 rules (+ timeline, stakeholders, risks, acceptance) | 6 rules (+ risks) | 5 rules (+ invariants, rollback) |
+| Tactical | Core PRD sections plus shared checks | Summary, motivation, direction | Context, decision, consequences |
+| Standard | + audience; density/leakage SHOULD | + alternatives and phases | Core sections |
+| Deep | + timeline, stakeholders, risks, acceptance, metrics | + risks | + invariants and rollback |
+
+This is a section summary, not a frozen rule count. Shared rules and additional
+measurability/NFR/traceability checks are registered in `validation/rules.rs`.
 
 ### Validator Aliases
 
@@ -430,22 +481,36 @@ The validator accepts synonyms:
 
 ### What Validation Checks
 
-- **MUST** -- blocks activation. Required sections, frontmatter fields.
-- **SHOULD** -- warning. Text density, absence of tech leakage in FR.
-- **COULD** -- suggestion. FR format `[Actor] can [capability]`.
+- **MUST** — required implemented schema checks; ordinarily block gated activation.
+- **SHOULD** — warnings; density severity depends on depth (50 words: Standard SHOULD, Deep MUST).
+- **COULD** — advice, including `adversarial-too-clean` in optional adversarial checks.
+
+Authoring recommendations are broader than executable checks: section presence
+does not prove measurability, causal reasoning or consistency. Metadata checks
+for `id`/`status` presence do not alone verify all lifecycle values.
 
 ---
 
 ## Lifecycle -- From Draft to Active
 
-```
-Draft --review--> Draft (if MUST failures)
-Draft --activate--> Active (if MUST passed)
-Active --supersede--> Superseded (link to replacement)
-Active --deprecate--> Deprecated (with reason)
+```text
+draft --activate--> active
+active --> superseded | deprecated | stale
+stale --renew--> active
+stale --reopen--> deprecated + new draft
+stale --deprecate--> deprecated
 ```
 
+`superseded` and `deprecated` are terminal. `review` leaves status unchanged.
+Approved, Implemented and Closed are process descriptions, not persisted status
+values. Session phases and artifact phase markers are separate. Activation
+includes length/evidence/stub gates in addition to validation.
+
 ### Typical Flow
+
+Illustrative legacy-layout sequence, not an observed transcript. Before the
+last step, complete all depth-specific content and real evidence required by
+activation. On migrated layout use the supported interface listed above.
 
 ```bash
 # 1. Created artifact
@@ -462,11 +527,11 @@ forgeplan update PRD-001 --body @/tmp/prd-001-body.md
 
 # 5. Repeated review
 forgeplan review PRD-001
-# -> Review PASSED -- ready to activate
+# Inspect findings and activation checklist; no fabricated PASS output.
 
 # 6. Activated
 forgeplan activate PRD-001
-# -> draft -> active
+# Succeeds only if all applicable activation gates pass.
 ```
 
 ### build-on-draft Warning
@@ -531,13 +596,13 @@ In your project's `.mcp.json` (Claude Code, Cursor):
 6. forgeplan_activate   -> draft -> active
 ```
 
-73 MCP tools total. 6 core tools cover 90% of the workflow.
+The selected build inventories 76 full-profile tools and 9 separate read-profile tools. These six are a teaching selection, not measured 90% workflow coverage or acceptance of every registered tool.
 
 ---
 
 ## Forge Mode -- Permission Model for AI Agents
 
-When working with AI agents (Claude Code, Cursor) in autonomous mode, use **Forge Mode** -- a permission model with 3 trust zones (FPF B.3 Trust Calculus):
+**Forge Mode** is a local permission convention, not the FPF B.3 upstream trust algorithm. The configuration below is illustrative; actual permissions and hook loading must be checked in the host. It neither installs controls nor overrides assignment-specific restrictions.
 
 | Zone | What | Mode | Examples |
 |------|------|------|---------|
@@ -570,10 +635,10 @@ When working with AI agents (Claude Code, Cursor) in autonomous mode, use **Forg
 
 ### /forge-cycle -- Full FPF-aligned Dev Cycle
 
-The `/forge-cycle PRD-XXX` command launches an 8-phase cycle:
+The native `/forge-cycle PRD-XXX` prompt describes nine numbered phases (0–8):
 
 ```
-Phase 0: OBSERVE    -> forgeplan health + stale + fpf (what's happening?)
+Phase 0: OBSERVE    -> forgeplan health + stale + fpf dashboard (what's happening?)
 Phase 1: ROUTE      -> forgeplan route (what depth?)
 Phase 2: SPRINT     -> /sprint (wave plan)
 Phase 3: BUILD      -> /team-up (implementation with Rust skills)
@@ -584,15 +649,18 @@ Phase 7: COMMIT     -> git commit + PR + hindsight
 Phase 8: NEXT       -> forgeplan health -> next feature
 ```
 
-**FPF auto-resolve**: on conflicts/choices, the agent automatically applies the ADI cycle (Abduction -> Deduction -> Induction) + WLNK + Reversibility check. It asks the user only for irreversible decisions.
+The native AUDIT issue quota remains in that prompt; it is not evidence that
+defects exist, and this documentation does not amend that policy or satisfy G3.
+
+**Local auto-resolve guidance** uses ADI + weakest-link + reversibility. Native Build stop conditions also include equally weak options and cross-cutting/other-PRD impact, not only irreversible choices. Three alternatives are a local prompt heuristic, not an upstream FPF universal threshold.
 
 ---
 
 ## Pitfalls (from real dogfood experience)
 
-### 1. EvidencePack without structured fields -> R_eff = 0.1
+### 1. EvidencePack without structured fields -> no usable evidence signal
 
-The parser looks for `verdict:`, `congruence_level:`, `evidence_type:` in the body as plain text. Without them -- CL0 by default.
+The parser looks for `verdict:`, `congruence_level:`, `evidence_type:` in the body as plain text. Missing fields make the pack's congruence level uncertain; the exact R_eff returned depends on whether it is scored as a leaf, through another artifact, or with no eligible evidence at all.
 
 **Solution:** Always add a `## Structured Fields` section.
 
@@ -600,11 +668,16 @@ The parser looks for `verdict:`, `congruence_level:`, `evidence_type:` in the bo
 
 If you never run `forgeplan review` -> `forgeplan activate`, all artifacts remain in Draft forever. The health dashboard will show "ALL DRAFT".
 
-**Solution:** After filling an artifact -- immediately review + activate.
+**Solution:** Review the completed artifact, resolve applicable gates and activate only when it is ready.
 
 ### 3. Validator requires sections missing from body
 
-The body in LanceDB is stored WITHOUT frontmatter. The validator gets frontmatter from record fields (id, status, kind) and looks for sections in the body. If you only filled Summary + FR when creating via `forgeplan new` -- the validator will say "Missing Problem, Goals, Non-Goals".
+Body contracts depend on the interface. The current captured `ArtifactRecord`
+used by ordinary reads retains the full Markdown file including frontmatter;
+CLI `get --json` exposes that full `body`. Full MCP pinned
+`forgeplan_constellation_get` returns prose in nested `artifact.body`.
+Do not treat those payloads as interchangeable. The validator still needs the
+required sections: a template filled only with Summary + FR is incomplete.
 
 **Solution:** Fill all MUST sections for your depth. Or use aliases (Motivation instead of Problem, Out of Scope instead of Non-Goals).
 
@@ -618,13 +691,13 @@ No need to copy content into the command line.
 
 ### 5. 10 artifact types, but you really only need 6
 
-From dogfood experience: PRD, RFC, ADR, Note, Problem, Epic -- are actually used. EvidencePack, Spec, SolutionPortfolio, RefreshReport -- are for mature projects with many artifacts.
+The ten types here are an introductory selection, not the complete core taxonomy. Evidence is needed whenever the applicable gate requires it, not only in mature projects. The Rust core additionally supports Memory and six brownfield extraction kinds; individual CLI/MCP schemas expose their own subsets.
 
 ### 6. PRD stubs: "created an ID, forgot to fill it in"
 
 **Anti-pattern:** `forgeplan new prd "Title"` -> immediately write code -> PRD stays a stub forever.
 
-Result: `forgeplan validate` shows 5 MUST errors, PRD cannot be activated, no decision justification.
+Result: validation can report missing sections/placeholders; the exact findings depend on depth and content. A stub is not activation-ready.
 
 **Solution:** Shape -> Validate -> Code. After `forgeplan new` -- IMMEDIATELY fill MUST sections (Problem, Goals, Non-Goals, Target Users, Related). Run `forgeplan validate` and make sure it passes. Only then code.
 
@@ -653,10 +726,10 @@ forgeplan activate PRD-XXX
 
 | Document | Description |
 |----------|-------------|
-| `docs/guides/HOW-TO-USE.md` | 10 methodology rules with examples |
-| `docs/guides/DEPTH-CALIBRATION.md` | Details on the 4 depth levels + escalation |
-| `docs/guides/QUALITY-GATES.md` | Verification Gate + Adversarial Review |
-| `docs/guides/ARTIFACT-MODEL.md` | Artifact hierarchy: Epic -> PRD -> Spec -> RFC -> ADR |
-| `docs/guides/PRD-RFC-ADR-FLOW.md` | Decision tree: which document to create |
-| `docs/guides/GLOSSARY.md` | 31 terms |
+| [HOW-TO-USE.md](HOW-TO-USE.md) | Methodology rules with examples |
+| [DEPTH-CALIBRATION.md](DEPTH-CALIBRATION.md) | Depth levels and escalation |
+| [QUALITY-GATES.md](QUALITY-GATES.md) | Verification and adversarial review |
+| [ARTIFACT-MODEL.md](ARTIFACT-MODEL.md) | Artifact hierarchy |
+| [PRD-RFC-ADR-FLOW.md](PRD-RFC-ADR-FLOW.md) | Which document to create |
+| [GLOSSARY.md](GLOSSARY.md) | Terms and upstream/product distinctions |
 | `CLAUDE.md` | Instructions for AI agent + CLI quick reference |

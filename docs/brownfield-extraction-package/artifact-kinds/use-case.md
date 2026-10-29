@@ -2,6 +2,8 @@
 
 > A user journey from a triggering event to a business outcome. Captures the **flow**, not the code.
 
+> Original proposed schema and illustrative TripSales flow, not the current native template/validator. Domain intent, transaction behavior and external graph references are not independently verified here. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Purpose
 
 Use cases describe **what the business does** through the system, at a level that is meaningful to non-developers. They are the unit of scope for scenarios, the anchor for invariants, and the primary entity in business documentation.
@@ -91,7 +93,7 @@ trigger:
 # UC-003 — Confirm an order
 
 ## Overview
-An order participant (either the forwarder who will execute transport, or the cargo_owner whose goods are being moved) confirms their commitment to the order. When both parties have confirmed, the order transitions to fulfillment.
+An order participant (either the forwarder who will execute transport, or the cargo_owner whose goods are being moved) confirms their commitment to the order. In the sample's intended interpretation, a subsequent trip-start operation advances the order toward fulfillment; whether both confirmations are required remains an open hypothesis, not an automatic transition caused by confirmation itself.
 
 ## Actors
 - **Primary**: forwarder employee (happy path) or cargo_owner employee (mirror path).
@@ -174,4 +176,4 @@ Same as `glossary`.
 
 ## Freshness
 
-Re-validate when the trigger's code is modified (detected via `forgeplan_drift` tied to the symbol).
+Proposed freshness behavior: re-validate when the trigger's implementation changes. Current affected-file drift signals do not themselves provide symbol-level use-case re-verification.

@@ -12,9 +12,17 @@
 
 **Правило**: Epic = контейнер. Если у тебя 1 PRD и 1 RFC — Epic не нужен.
 
-## Обязательные секции
+## Checklist авторинга
 
-| # | Секция | Обязательно? | Валидация |
+Это конвенции содержания, не обещание автоматической количественной или
+семантической проверки. Валидатор проверяет наличие Vision, Outcomes,
+Children/Artifacts, Phases и Progress; это не доказывает одно предложение
+vision, два измеримых outcome или корректность агрегации progress. Базовые
+metadata rules проверяют наличие `id` и `status`, но не допустимость lifecycle
+status. Остальные детали checklist требуют review; результат validate и
+готовность к активации — разные вещи.
+
+| # | Секция | Ожидание к документу | Рекомендация по содержимому |
 |---|--------|-------------|-----------|
 | 1 | **Meta Header** | ✅ MUST | Status, Owner, Created, Target (quarter) |
 | 2 | **Vision** | ✅ MUST | 1 предложение — что хотим достичь |
@@ -27,7 +35,7 @@
 
 ## Aggregated Progress
 
-Epic progress = сумма progress из children (PRD, RFC):
+Epic progress = сумма progress от children (PRD, RFC):
 
 ```
 PRD-001  ████████████████████████  8/8   (100%) DONE
@@ -39,11 +47,17 @@ TOTAL                              15/26 (57.7%)
 
 ## Status Lifecycle
 
+```text
+draft --activate--> active
+active --> superseded | deprecated | stale
+stale --renew--> active
+stale --reopen--> deprecated + new draft
+stale --deprecate--> deprecated
 ```
-Draft → Active → Done → Archived
-          ↓
-      Cancelled (with reason)
-```
+
+`superseded` и `deprecated` — terminal. Done, Archived и Cancelled могут быть
+описательными этапами процесса, но не значениями сохраняемого `status`;
+`review` — проверка, не переход статуса.
 
 ## Numbering
 
@@ -51,4 +65,4 @@ Draft → Active → Done → Archived
 |--------|---------|
 | ID | `EPIC-NNN` |
 | File | `EPIC-{NNN}-{kebab-case}.md` |
-| Path | `docs/epics/EPIC-003-auth-system.md` |
+| Path | `.forgeplan/epics/EPIC-003-auth-system.md` |

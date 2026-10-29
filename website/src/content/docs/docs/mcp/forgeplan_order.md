@@ -3,7 +3,7 @@ title: forgeplan_order
 description: "Show artifacts in topological order (dependency order). Returns ordered list, ready/blocked classification, and cycle detection. Uses structural relations only."
 ---
 
-Return all artifacts in topological order - parents before children, based purely on structural relations (`based_on`, `refines`, `supersedes`, `contradicts`). Each node is classified as `ready` (no unmet prerequisites) or `blocked`. Cycles in the graph are detected and reported separately.
+Reports the structural relation graph (`based_on`, `refines`, `supersedes`, `contradicts`), its ordering, ready/blocked classification, and cycles. The implementation builds nodes from structural edge endpoints, so isolated artifacts need not appear. Dependencies with status `active`, `deprecated`, or `superseded` count as resolved. Use `ready` and `blocked` for scheduling; do not assume `order` is a complete inventory or a verified parents-first execution plan.
 
 **Category**: Dashboards & Graph
 
@@ -20,30 +20,13 @@ _No input parameters. Call this tool with an empty object `{}`._
 
 ## Returns
 
-```json
-{
-  "order": [
-    { "id": "EPIC-003", "kind": "epic", "ready": true },
-    { "id": "PRD-039", "kind": "prd", "ready": true },
-    { "id": "RFC-006", "kind": "rfc", "ready": false, "blocked_by": ["PRD-039"] },
-    { "id": "ADR-004", "kind": "adr", "ready": false, "blocked_by": ["RFC-006"] }
-  ],
-  "ready_count": 2,
-  "blocked_count": 2,
-  "cycles": []
-}
-```
+The JSON text payload has `order` and `ready` as arrays of artifact ID
+strings, `blocked` as entries with `id` and `blocked_by` arrays, `cycles`
+as arrays of cycle-path IDs, and `_next_action`. It has no per-node
+`kind`/`ready` fields or `ready_count`/`blocked_count` fields.
 
-If cycles exist, they're reported:
-
-```json
-{
-  "order": [...],
-  "cycles": [
-    ["PRD-042", "PRD-043", "PRD-042"]
-  ]
-}
-```
+An illustrative fragment is `{"ready":["PRD-039"],"blocked":[{"id":"RFC-006","blocked_by":["PRD-039"]}]}`.
+This is not a captured workspace result.
 
 ## Example invocation
 
@@ -53,10 +36,10 @@ If cycles exist, they're reported:
 
 ## Typical sequence
 
-1. `forgeplan_order` - get the full ordering.
-2. Pick the first `ready: true` node.
-3. `forgeplan_get` → `forgeplan_validate` → `forgeplan_activate`.
-4. Re-run `forgeplan_order` - downstream nodes should now become ready.
+1. Call `forgeplan_order` and inspect `cycles`, `ready`, and `blocked`.
+2. Choose an ID from `ready`, not a `ready: true` field.
+3. Read, implement, validate and supply evidence as required before activation.
+4. Re-read the graph after the prerequisite status changes; other unresolved dependencies may still block downstream work.
 
 ## CLI equivalent
 
@@ -69,3 +52,29 @@ forgeplan order
 - [`forgeplan_blocked`](/docs/mcp/forgeplan_blocked/) - focused view on blocked artifacts only.
 - [`forgeplan_graph`](/docs/mcp/forgeplan_graph/) - Mermaid rendering of the same graph.
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Show artifacts in topological order (dependency order). Returns ordered list, ready/blocked classification, and cycle detection. Uses structural relations only.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| — | — | — | No parameters. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "properties": {},
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

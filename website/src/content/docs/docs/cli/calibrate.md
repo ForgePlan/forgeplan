@@ -1,18 +1,13 @@
 ---
 title: forgeplan calibrate
-description: "Suggest a depth level (Tactical/Standard/Deep/Critical) by reading the artifact body."
+description: "Suggest Tactical, Standard, or Deep from artifact-content heuristics."
 ---
 
-`forgeplan calibrate` re-runs the depth heuristics on an existing artifact and suggests
-whether it should stay Tactical, be upgraded to Standard, or escalated to Deep/Critical.
-Where `forgeplan route` calibrates **before** you create the artifact, `calibrate` runs
-the same signals **after** the content is written - which usually produces a more
-accurate result because there is real content to read.
+`forgeplan calibrate` applies content heuristics to an existing artifact. Unlike pre-creation routing, it reads the written body and relation count. The selected implementation can suggest Tactical, Standard, or Deep; the captured help below also mentions Critical, which this heuristic does not produce.
 
-Signals include FR count, presence of irreversibility keywords ("schema migration",
-"public API"), cross-module scope, and linked parents. If the suggested depth differs
-from the artifact's current `depth` field, that's a signal to either upgrade the depth
-or split the artifact.
+Signals include checkbox count, security/breaking-change wording, relation count, `parent_epic`, section count, and body length. A recommendation is a review signal, not proof that the chosen depth is correct.
+
+Command registration alone does not establish runtime acceptance for every workspace layout.
 
 ## When to use
 
@@ -23,7 +18,7 @@ or split the artifact.
 
 ## When NOT to use
 
-- Tactical Notes - they don't carry a depth field, calibration is meaningless.
+- Small Tactical Notes usually do not need repeated calibration; the command still reads their stored depth and content.
 - On every artifact every day - this is a corrective tool, not a daily check.
 
 ## Usage
@@ -53,16 +48,16 @@ forgeplan calibrate [ID]
 forgeplan calibrate PRD-001
 ```
 
-Output:
+Illustrative explanation of a recommendation, not captured CLI output:
 
 ```text
 PRD-001 - Auth System
   current depth:     Standard
   suggested depth:   Deep
   drivers:
-    + 9 FR (Deep threshold 8+)
-    + irreversibility: "schema migration", "public API"
-    + cross-module: auth, session, db
+    + 11 checkbox items (Deep threshold: more than 10)
+    + security section present
+    + 6 dependency links (Deep threshold: more than 5)
   recommendation: upgrade to Deep, add Spec + ADR
 ```
 
@@ -72,18 +67,17 @@ PRD-001 - Auth System
 forgeplan calibrate
 ```
 
-Lists only mismatches (artifacts where current ≠ suggested). Empty output = everything
-is correctly routed.
+Without an ID, it prints artifacts needing escalation and a summary. Lower suggestions are not listed in this mode, and a no-escalation summary is not proof that routing is correct.
 
 ## Output interpretation
 
-| Signal            | Contributes to            |
-|-------------------|---------------------------|
-| FR count ≥ 8      | Deep                      |
-| irreversibility   | Deep or Critical          |
-| cross-team scope  | Critical                  |
-| 1 file, ≤1 day    | Tactical                  |
-| 1–3 days, 1 module| Standard                  |
+| Signal | Suggested minimum |
+|---|---|
+| More than 10 checkbox items, 8 `##` sections, 200 lines, or 5 links | Deep |
+| Security/authentication/compliance section or breaking-change wording | Deep |
+| More than 3 checkbox items, 4 `##` sections, 50 lines, or 2 links | Standard |
+| Nonempty `parent_epic` | Standard |
+| No matching signal | Tactical |
 
 If the recommendation is higher than current: either upgrade the `depth` field and add
 the missing pipeline stages (Spec, ADR) or split the artifact into smaller ones.
@@ -106,3 +100,22 @@ Use it when something feels off, or as a scheduled monthly health pass.
 - [`forgeplan estimate`](/docs/cli/estimate/) - depth shapes the estimation scale
 - [Depth Calibration](/docs/methodology/routing/)
 - [CLI overview](/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan calibrate --help`.
+
+```text
+Suggest depth level (Tactical/Standard/Deep/Critical) based on artifact content
+
+Usage: forgeplan calibrate [ID]
+
+Arguments:
+  [ID]  Artifact ID (checks all if omitted)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

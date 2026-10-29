@@ -1,13 +1,13 @@
 # F10 acceptance harness — local / federated / ContextPack
 
-F10 (`.local/planning/constellation-minimax/ACCEPTANCE.md`): 30 reference tasks
-run over the **same corpus snapshots** in three modes — `local` (single
-workspace `search`/`get`), `federated` (`constellation search`/`get` over a
-registry of both workspaces), `pack` (`constellation pack` under a token
-budget). Measured: найденные обязательные ограничения (must_include recall),
-неверные refs/omissions, payload bytes, latency p50/p95, первый полезный
-источник (rank of first useful hit). Violations tracked: source-boundary,
-version-substitution, hidden incomplete-negative — expected count is zero.
+F10 (`.local/planning/constellation-minimax/ACCEPTANCE.md`) is designed to
+compare 30 reference tasks over the same corpus in three modes — `local`
+(single workspace `search`/`get`), `federated` (`constellation search`/`get`
+over both workspaces), and `pack` (`constellation pack` under an estimated
+token budget). It records must_include recall, wrong refs/omissions, payload
+bytes, latency p50/p95 and first useful rank. The intended violation count is
+zero. The implemented snapshot and scoring checks have the limits below;
+this README is not a record of a passing run.
 
 ## Layout
 
@@ -27,23 +27,28 @@ run and gitignored — only markdown artifacts + `config.yaml` are committed.
 
 ## Run
 
+The runner uses `target/debug/forgeplan`; provide a compatible built binary,
+Python 3.9+ and a complete BGE-M3 cache before running it. It initializes and
+indexes the dedicated corpus workspaces and writes run state under a temporary
+HOME. Check inherited workspace bindings first; this is not a read-only check.
+
 ```bash
 python3 eval/run_eval.py                 # all three modes
 python3 eval/run_eval.py --mode local    # one mode only
 python3 eval/run_eval.py --out /tmp/res  # alternate output dir
 ```
 
-First run is slow: it `git init`s each corpus workspace, runs
-`forgeplan index`, then `forgeplan embed` (bge-m3, cached at
-`~/.forgeplan/models`, ~1-3 min of model load per workspace). Later runs skip
-all of it via `.forgeplan/lance/CURRENT.json` — that file is the "already
-provisioned" marker; delete it to force re-index.
+On first setup the runner initializes each corpus git repository if needed,
+runs `forgeplan index` when `CURRENT.json` is absent or invalid JSON, and
+attempts `forgeplan embed` when the published pointer lacks
+`embedding_artifacts_head` or `profile_id`. A nonzero embed exit is logged as
+a warning; the pointer alone is not proof of complete semantic readiness.
+No fixed model-load time is guaranteed.
 
-Isolation: every forgeplan invocation gets `HOME=<run tmpdir>` +
-`USERPROFILE` + `XDG_DATA_HOME`, so `~/.forgeplan/constellations.yaml` is
-hermetic per run (same trick as `cli_constellation_*.rs` tests). The shared
-model cache stays reachable because the runner sets
-`FORGEPLAN_MODEL_CACHE=<real ~/.forgeplan/models>` explicitly.
+The runner redirects `HOME`, `USERPROFILE` and `XDG_DATA_HOME` to a temporary
+directory and sets `FORGEPLAN_MODEL_CACHE` to the real user's model cache.
+It otherwise inherits the environment, including any workspace-binding
+variables; this is registry isolation, not a fully hermetic environment.
 
 ## What a row in results-*.jsonl means
 
@@ -59,12 +64,18 @@ model cache stays reachable because the runner sets
 | `latency_ms` | wall clock of the invocation(s); local fan-out sums its legs |
 | `payload_bytes` | stdout bytes |
 | `source_boundary_violation` | hit attributed to a ws that does not contain that key (local leak or federated misattribution) |
-| `version_substitution` | served `version_key`/`generation_id` ≠ the one CURRENT.json pinned at setup |
+| `version_substitution` | federated get/search compare source `version_key` with setup `generation_id`; pack compares it with setup `source_set_digest`; local get compares `generation_id` only when returned; local search has no version comparison |
 | `incomplete_negative` | expected content → empty / not-found / error |
 | `negative_fabrication` | no-answer task → hits or a found artifact |
 | `omissions_reported` | pack listed entries in `omitted` |
 
 Exit code is non-zero when any violation flag is non-zero.
+
+A zero exit means these implemented flags stayed clear, not that every
+read was proven snapshot-pinned or every required substring was found.
+Missing `must_include` strings are reported in recall metrics; the violation
+rules are narrower. Search scoring uses returned keys/titles (plus local
+sections), not a full-body fetch for each hit.
 
 ## Adding a task
 
@@ -85,6 +96,8 @@ Two query-grammar caveats the fields encode:
   corpus doesn't speak (e.g. the Russian semantic tasks) yields an honestly
   empty pack. Give those a `pack_query` with corpus-language terms.
 
-If you add artifacts to a corpus ws, delete its
-`.forgeplan/lance/CURRENT.json` afterwards so the next run re-indexes and
-re-embeds.
+After adding or changing corpus artifacts, refresh the dedicated corpus with
+`forgeplan index` and, when semantic evaluation is required, `forgeplan embed`
+before the next run. Do not delete `CURRENT.json`: it is the publication
+pointer, not a disposable cache marker. The runner's existence check does not
+detect every corpus change or rebuild an already-published snapshot.

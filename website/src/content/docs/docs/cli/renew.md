@@ -3,7 +3,7 @@ title: forgeplan renew
 description: "Extend the validity of a stale artifact and bring it back to active - the 'still valid' answer to valid_until expiry."
 ---
 
-`forgeplan renew` transitions a `stale` artifact back to `active` by setting a new `valid_until` date and recording a reason for the extension. Every artifact with evidence-backed scoring carries an expiry; when that date passes, the artifact becomes `stale` and is flagged by `forgeplan health`. Renew is the fast path when a review confirms the decision is still correct - no rewrite, no successor, just an extended validity window and a note explaining why the team trusts it for another cycle.
+`forgeplan renew` appends a `Renewal` reason section, writes `status: active` and updates `valid_until`. The source artifact may have no `valid_until`, but this command requires `--until <YYYY-MM-DD>`. An overdue date does not itself persist `status: stale`. The stored-status guard permits stale→active and draft→active, not active→active. Review evidence before extending a date; renewal itself is not a new measurement.
 
 ## When to use
 
@@ -17,7 +17,7 @@ description: "Extend the validity of a stale artifact and bring it back to activ
 - The decision has actually changed - draft a successor and use [`forgeplan supersede`](/docs/cli/supersede/) instead.
 - You want to re-evaluate the problem from scratch - use [`forgeplan reopen`](/docs/cli/reopen/) to deprecate the old artifact and start a new draft.
 - The artifact is no longer relevant at all - use [`forgeplan deprecate`](/docs/cli/deprecate/).
-- The artifact is still `active` and not yet stale - renewal does nothing useful until `valid_until` actually expires.
+- Stored status is `active` - an overdue date alone does not make active→active renewal legal.
 
 ## Usage
 
@@ -41,6 +41,9 @@ forgeplan renew --reason <REASON> --until <UNTIL> <ID>
 ```
 
 ## Examples
+
+Dates and IDs below are illustrative. Choose a future date justified by your
+review; historical sample dates are not current recommended deadlines.
 
 ### Example 1: Renew an ADR after an architecture review
 
@@ -70,16 +73,17 @@ Useful bridge when you know a replacement is coming but the current decision mus
 
 ## How it fits the workflow
 
-Renew is part of the decision-maintenance loop that runs alongside the main `Shape → Validate → Code → Evidence → Activate` cycle. As artifacts age, `valid_until` gradually pushes them into `stale`, and `forgeplan health` surfaces them for review. For each stale artifact, the team chooses: renew (still valid), supersede (replaced), deprecate (retired), or reopen (re-evaluate). Renew is the lowest-cost option - it preserves the original document entirely and only updates the validity metadata.
+Renew is part of decision maintenance. `stale` detects elapsed dates without changing source status. Review both the date and stored status. Renewal preserves existing body content and appends a reason, so it is not metadata-only.
 
 ## Common errors
 
 | Error | Cause | Fix |
 |---|---|---|
-| `Artifact is not in stale state` | Still `active`, not yet expired | Wait until it goes stale, or skip - renew only applies to stale |
-| `--until must be in the future` | Date is today or earlier | Pass a future date in `YYYY-MM-DD` format |
-| `Invalid date format` | Wrong format (e.g. `10/01/2026`) | Use ISO: `2026-10-01` |
-| `Cannot renew terminal artifact` | Already `deprecated` or `superseded` | Terminal states are final - create a new draft instead |
+| Transition refused | Stored status does not permit transition to active | Inspect source status; an overdue date is not a status update |
+| `Invalid date format` | Date cannot be parsed | Use `YYYY-MM-DD` |
+
+The selected handler validates format but does not require a future date.
+Choose a justified future date yourself; do not rely on a nonexistent future-date check.
 
 ## See also
 
@@ -90,3 +94,24 @@ Renew is part of the decision-maintenance loop that runs alongside the main `Sha
 - [`forgeplan health`](/docs/cli/health/) - surfaces stale artifacts that need attention
 - [Lifecycle v2 guide](/docs/guides/lifecycle-v2/)
 - [Methodology: Artifact Lifecycle](/docs/methodology/lifecycle/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan renew --help`.
+
+```text
+Renew a stale artifact (stale → active) with extended validity
+
+Usage: forgeplan renew --reason <REASON> --until <UNTIL> <ID>
+
+Arguments:
+  <ID>  Artifact ID
+
+Options:
+      --reason <REASON>  Reason for renewal
+      --until <UNTIL>    New valid_until date (YYYY-MM-DD)
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

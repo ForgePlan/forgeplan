@@ -53,7 +53,7 @@ forgeplan recall "branch workflow"
 forgeplan recall --category build
 ```
 
-Вывести всё в формате JSON:
+Вывести до 1000 воспоминаний в формате JSON (это не гарантия полного экспорта):
 
 ```bash
 forgeplan recall --json --limit 1000 > memories.json
@@ -61,7 +61,7 @@ forgeplan recall --json --limit 1000 > memories.json
 
 ## Интерпретация вывода
 
-Каждый результат отображается в виде короткой карточки:
+Иллюстрация содержания карточки, не transcript и не правило работы с ветками:
 
 ```
 [2026-04-05]  build    Do not delete feature branches after merge
@@ -69,9 +69,11 @@ forgeplan recall --json --limit 1000 > memories.json
    branch until the PR is closed for at least a week.
 ```
 
-Столбцы: дата, категория, заголовок, затем отрывок из тела. `--json` возвращает полную запись, включая любые теги и источник (вручную или автоматически сохранённый).
+Текстовый вывод содержит дату, категорию и текст. JSON содержит массив `memories` с полями `id`, `category`, `author`, `created_at`, `text`.
 
 В отличие от [`search`](/docs/cli/search/), `recall` выполняет чистое совпадение подстроки с фильтрацией по категориям - быстро и предсказуемо, без BM25 или семантического ранжирования.
+
+Это локальная память Forgeplan, отдельная от внешней памяти Hindsight.
 
 ## Как это вписывается
 
@@ -89,3 +91,25 @@ memories    →  remember, recall
 - [`forgeplan search`](/docs/cli/search/) - поиск артефактов
 - [`forgeplan journal`](/docs/cli/journal/) - хронология решений
 - [`forgeplan new note`](/docs/cli/new/) - повысить воспоминание до Note
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan recall --help`.
+
+```text
+Recall memories — search, filter, list
+
+Usage: forgeplan recall [OPTIONS] [QUERY]
+
+Arguments:
+  [QUERY]  Search query (substring match in title/body)
+
+Options:
+  -c, --category <CATEGORY>  Filter by category
+  -n, --limit <LIMIT>        Max results (default: 10) [default: 10]
+      --json                 Output as JSON for machine consumption
+  -h, --help                 Print help
+  -V, --version              Print version
+```
+<!-- forgeplan-runtime:end -->

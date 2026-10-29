@@ -264,6 +264,15 @@ async fn l03_a_target_keeps_its_exact_case_and_is_not_required_to_exist() {
         ],
         "targets are neither lower-cased nor required to resolve locally"
     );
+    assert!(
+        view.is_complete(),
+        "a target that resolves nowhere is still a valid source"
+    );
+    let plan = plan_reconcile(&view, None);
+    assert!(
+        plan.publishable,
+        "a dangling target publishes; only an unreadable links block refuses"
+    );
 }
 
 #[tokio::test]
@@ -296,6 +305,92 @@ async fn l03_a_malformed_edge_is_diagnosed_and_never_silently_dropped() {
             .diagnostic_codes
             .contains(&"invalid_links".to_string()),
         "the diagnostic must reach the durable source entry"
+    );
+}
+
+/// A `links:` block that is not a sequence is a different failure from a
+/// malformed entry inside one: there is no edge set to read, so publishing
+/// the artifact with an empty outgoing set would drop every relation the
+/// author wrote. The source is invalid — excluded from the current set, and
+/// the capture it belongs to is incomplete, so nothing publishes it.
+#[tokio::test]
+async fn l03_b_a_links_block_that_is_not_a_sequence_invalidates_the_source() {
+    let tmp = workspace();
+    write(
+        tmp.path(),
+        "prds",
+        "PRD-001-auth.md",
+        &artifact("PRD-001", "Auth", "draft", "", "Body.\n"),
+    );
+    write(
+        tmp.path(),
+        "prds",
+        "PRD-002-broken.md",
+        &artifact("PRD-002", "Broken", "draft", "", "Body.\n"),
+    );
+    let before = capture(tmp.path()).await;
+    let published = GenerationManifest::from_capture(
+        &before,
+        "gen-1",
+        forgeplan_core::constellation::manifest::TableVersions::new(2, 2, 2),
+    );
+
+    // The `links:` block is a mapping: there is no edge set to read.
+    write(
+        tmp.path(),
+        "prds",
+        "PRD-002-broken.md",
+        &artifact(
+            "PRD-002",
+            "Broken",
+            "draft",
+            "links:\n  target: ADR-003\n  relation: informs\n",
+            "Body.\n",
+        ),
+    );
+
+    let after = capture(tmp.path()).await;
+
+    assert_eq!(
+        after.coverage.expected, 2,
+        "both paths are still enumerated"
+    );
+    assert_eq!(after.coverage.read, 1, "only the readable one is current");
+    assert_eq!(after.coverage.invalid, 1);
+    assert!(
+        !after.is_complete(),
+        "a links block that is not a sequence is incomplete coverage"
+    );
+
+    let diagnostic = after
+        .diagnostics
+        .iter()
+        .find(|d| d.code == DiagnosticCode::InvalidLinks)
+        .expect("a per-source diagnostic naming the file");
+    assert_eq!(diagnostic.source.as_deref(), Some("prds/PRD-002-broken.md"));
+    assert!(after.is_unusable("prds/PRD-002-broken.md"));
+    assert!(
+        after.artifact("PRD-002").is_none(),
+        "a source whose links block cannot be read is excluded from current results"
+    );
+    assert!(
+        after.artifact("PRD-001").is_some(),
+        "one broken neighbour must not evict a healthy artifact"
+    );
+
+    let plan = plan_reconcile(&after, Some(&published));
+    assert_eq!(
+        plan.count(DeltaAction::Delete),
+        0,
+        "an unreadable edge set is not a confirmed deletion"
+    );
+    let delta = plan
+        .for_path("prds/PRD-002-broken.md")
+        .expect("the retained row is in the plan");
+    assert_eq!(delta.action, DeltaAction::Retain);
+    assert!(
+        !plan.publishable,
+        "a partial capture is never published as complete"
     );
 }
 

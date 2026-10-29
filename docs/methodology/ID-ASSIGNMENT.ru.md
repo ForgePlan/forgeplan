@@ -6,26 +6,53 @@
 
 > ⚠️ **Phase status (cross-phase audit 2026-05-06)**: этот документ описывает **end-state** контракт. Phase 1.x ships только базовая schema (slug + numbers в frontmatter); CI бот, lookup по обоим форматам, multi-agent pre-allocation — Phase 2+. Sections помечены 🟢 (shipped Phase 1.x), 🟡 (Phase 2+), 🔴 (Phase 4 migration).
 
+> **Уточнение текущего source (2026-10-23, c852f40c):** ниже сохранён
+> датированный end-state/Phase 1–2 дизайн, не transcript текущего релиза.
+> - `augment_identity_frontmatter` обычно назначает `assigned_number` сразу;
+>   явный template `null` сохраняет. Новый артефакт не обязательно имеет `?`.
+> - `ci-assign-id` уже существует. Workflow запускается по label `ready-to-merge`
+>   или вручную, не по merge; это prototype, его запуск/успех здесь не доказан.
+>   CLI пишет frontmatter без rename, `--auto-suffix` пока только предупреждает;
+>   `reconcile-ids --report-cross-pr` не выполняет обход cross-PR refs.
+> - Одинаковые titles могут дать одинаковые slugs в разных ветках; slug сам
+>   по себе не гарантирует глобальную уникальность. «100% race-window» ниже —
+>   историческая формулировка риска, не измеренная частота коллизий.
+> - Legacy lookup допускает отсутствие slug/assigned_number. На Constellation
+>   file-first resolver сопоставляет filename, `id` и `slug`; описание
+>   display-id primary key ниже относится к прежнему дизайну индекса.
+> - `migrate-legacy-ids` не входит в captured CLI help; не принимайте
+>   исторический script/command example за доступную команду.
+> - «До 10 — точно» и EVID-B ниже — неподтверждённый здесь исторический claim,
+>   не нынешняя гарантия dispatch. Ownership/overlap всё равно проверяются.
+
 ---
 
 ## TL;DR
 
 Forgeplan использует **двухслойную identity**:
 
-- **Slug** (`prd-auth-system`) — каноничный идентификатор. Создаётся локально на `forgeplan new`, никогда не меняется. **Используется в commit refs до merge.**
-- **Display number** (`PRD-074`) — отображаемый номер. Присваивается CI-ботом **на merge** в `dev`. Атомарно, без коллизий.
-- До merge артефакт виден как **`PRD-74?`** — `?` маркер означает «номер предсказан локально, ещё не финализирован».
-- После merge `?` уходит, остаётся **`PRD-074`**. Slug продолжает работать как алиас.
+- **Slug** (`prd-auth-system`) — локально создаваемый идентификатор слота. В текущем target creator он обычно сразу получает и display number; слово «canonical» ниже относится к staged design, а не к доказанной глобальной уникальности.
+- **Display number** (`PRD-074`) — отображаемый номер. Текущий creator обычно назначает его сразу; nullable `assigned_number` сохраняет поддержку staged CI assignment.
+- **`PRD-74?`** — форма для записи с `assigned_number: null`: номер ещё не финализирован.
+- Когда номер назначен, используется **`PRD-074`**. Slug остаётся поддерживаемым lookup/alias, но сам по себе не гарантирует уникальность между ветками.
 
-**Главное правило для коммитов**: **до merge — пиши slug в `Refs:`** (`Refs: prd-auth-system`). После merge оба формата работают (`Refs: PRD-074` или `Refs: prd-auth-system`).
+**Главное правило для коммитов**: пока `assigned_number` равен `null`, используй slug в `Refs:` (`Refs: prd-auth-system`). После назначения доступны display ID и slug; всегда сверяй фактический frontmatter.
 
 ---
 
 ## Зачем это нужно
 
-См. PROB-060 для полного контекста. Кратко: counter-based ID assignment (`max + 1` при `forgeplan new`) даёт **100% race-window** при параллельной работе на разных ветках или с multi-agent dispatch (PRD-057). Два разработчика/агента независимо получают `PRD-074`, на merge — конфликт + ref rot в commit messages.
+См. PROB-060 для полного контекста. Историческая формулировка ниже описывает
+counter-based allocation (`max + 1`) как **100% race-window** при параллельной
+работе на разных ветках или multi-agent dispatch (PRD-057). Это риск
+конкурентного выделения номеров, а не измеренная частота: одинаковый title
+даёт одинаковый slug, а одинаковый номер возможен при независимом создании
+в разных ветках.
 
-Двухслойная модель решает это без нарушения local-first: slug гарантированно уникален между ветками (через slug, не число), а атомарное assignment номера на merge сериализуется через GitHub Actions `concurrency` group.
+Двухслойная модель в staged design разделяет локальный slot и финальный
+номер, но сама по себе не доказывает глобальную уникальность slug. Номерные
+коллизии требуют явного merge/assignment workflow и проверки фактического
+состояния.
 
 ---
 
@@ -35,9 +62,9 @@ Forgeplan использует **двухслойную identity**:
 
 ```yaml
 ---
-slug: prd-auth-system          # canonical, IMMUTABLE после create
-predicted_number: 74           # local prediction = max + 1 на момент create
-assigned_number: null | 74     # null до merge, число после; write-once by CI bot
+slug: prd-auth-system          # локальный slot; staged design трактует его как immutable
+predicted_number: 74           # локальное предсказание номера
+assigned_number: null | 74     # current creator обычно пишет 74; null допустим для staged CI
 ---
 ```
 
@@ -52,7 +79,7 @@ id_display = assigned_number ? f"PRD-{assigned:03d}" : f"PRD-{predicted}?"
 | `slug` | DB keys, search index, cross-artifact `Related:`, MCP responses field `slug` |
 | `id_display` | CLI output, Web header, graph nodes, Slack-friendly format |
 | `assigned_number` | Сравнение для backward compat, sort order |
-| `predicted_number` | Только для `?` маркера до merge; не используется в lookups |
+| `predicted_number` | Локальное предсказание номера; используется для `?`-формы, но сам по себе не является lookup-ключом |
 
 ### Slug формат (regex)
 
@@ -76,12 +103,12 @@ id_display = assigned_number ? f"PRD-{assigned:03d}" : f"PRD-{predicted}?"
 git checkout dev && git pull
 git checkout -b feat/auth-system
 forgeplan new prd "Auth System"
-# Output:
+# Иллюстративный staged-null output:
 #   Created: .forgeplan/prds/prd-auth-system.md
 #   Slug: prd-auth-system
 #   Predicted: PRD-74?
-#   Hint: Use slug `prd-auth-system` in commit Refs: until merged.
 #   Next: forgeplan validate prd-auth-system
+# Текущий creator обычно сразу назначает assigned_number; сверь реальный output.
 ```
 
 ### Работа и коммиты
@@ -109,11 +136,12 @@ Refs: prd-074, FR-001..003   ← lowercase number — не валидный slug
 ## Related Artifacts
 | Artifact | Relation |
 |----------|----------|
-| prd-auth-system | based_on   ← slug pre-merge ✅
-| PRD-074         | based_on   ← number post-merge ✅
+| prd-auth-system | based_on   ← slot lookup
+| PRD-074         | based_on   ← assigned display lookup
 ```
 
-Обе формы валидны. Резолвер маппит в один canonical артефакт.
+Обе формы поддерживаются resolver'ом для существующей записи; они не
+доказывают глобальную уникальность slot или неизменность номера.
 
 ### Pre-commit check
 
@@ -122,25 +150,34 @@ Refs: prd-074, FR-001..003   ← lowercase number — не валидный slug
 - Slug уникален в origin/dev (если нет — warning с предложением alt-slug)
 - `assigned_number` не выставлен вручную (только CI бот)
 
-### Merge → CI бот → assigned_number
+### Label-triggered CI prototype → assigned_number
 
-При merge feat/* → dev:
-1. GitHub Actions workflow `assign-id.yml` с `concurrency: forgeplan-id-assign` — серилизует assignment между всеми параллельными PR
-2. CI бот сканирует новые артефакты в PR
-3. Находит `max(assigned_number) + 1` per kind в origin/dev
-4. Выставляет `assigned_number`, переименовывает файл (`prd-auth-system.md` → `prd-074-auth-system.md`)
-5. Делает auto-commit `chore: assign PRD-074`
-6. Push back в PR ветку
-7. PR можно мержить нормально
+Текущий workflow `assign-id.yml` запускается на PR с label
+`ready-to-merge` (или вручную), а не автоматически на merge. Он использует
+`concurrency: forgeplan-id-assign`, запускает `forgeplan ci-assign-id` и может
+сделать commit/push в PR-ветку. Prototype пишет frontmatter; переименование
+файла в нём не выполняется. Успешный запуск и отсутствие коллизий здесь не
+доказываются.
 
-### Slug collision (редко)
+Датированный end-state сценарий ниже описывает прежний замысел:
 
-Если двое независимо назвали `prd-auth`, второй мерж получит auto-suffix:
-- Alice мержится первой → `prd-auth` остаётся за ней, получает PRD-074
-- Bob мержится второй → CI бот видит коллизию → переименовывает в `prd-auth-2.md` → получает PRD-075
-- Bob получает PR comment с уведомлением
+1. Найти кандидатов с `assigned_number: null`.
+2. Вычислить `max(assigned_number) + 1` per kind относительно base ref.
+3. Выставить `assigned_number` без rename текущего CLI.
+4. Сделать auto-commit и вернуть изменение в PR-ветку.
 
-Cross-PR refs к Bob's оригинальному `prd-auth` (если кто-то успел сослаться) — `forgeplan reconcile-ids --report-cross-pr` детектит и предлагает фикс.
+На merge numbering не заменяет assignment автоматически.
+
+### Slug collision
+
+Одинаковые titles могут дать одинаковый slug. Текущий `ci-assign-id`
+обнаруживает коллизию, но `--auto-suffix` пока только предупреждает и сам
+файл не переименовывает; отдельный maintenance workflow для разрешения
+конфликта здесь не установлен. Не обещай suffix или уведомление без
+фактического результата.
+
+`forgeplan reconcile-ids --report-cross-pr` сейчас выводит no-op marker:
+cross-PR обход не реализован.
 
 ---
 
@@ -152,29 +189,32 @@ Cross-PR refs к Bob's оригинальному `prd-auth` (если кто-т
 # MCP call
 result = forgeplan_new(kind="prd", title="Auth System")
 # result:
+# Текущий creator обычно возвращает assigned_number сразу; staged-пример
+# с null приведён ниже только для различения форм.
 # {
 #   "slug": "prd-auth-system",
 #   "predicted_number": 74,
 #   "assigned_number": null,
 #   "id_canonical": "prd-auth-system",
 #   "id_display": "PRD-74?",
-#   "_next_action": "forgeplan validate prd-auth-system",
-#   "hint": "Use slug 'prd-auth-system' in commit Refs: until merged."
+#   "_next_action": "forgeplan validate prd-auth-system"
 # }
 ```
 
-**Используй `result.slug` в commit refs.** Не используй `id_display` (содержит `?`) и не используй `predicted_number` (ещё не финален).
+**Используй фактический `assigned_number`/возвращённый ID.** Пока номер
+не назначен, `id_display` с `?` не является lookup-командой, а
+`predicted_number` не доказывает финальность номера.
 
 ### Поиск артефакта
 
 ```python
-# Оба варианта работают post-merge:
-forgeplan_get(id="PRD-074")              # by display number
-forgeplan_get(id="prd-auth-system")      # by slug
+# Для существующей assigned записи:
+forgeplan_get(id="PRD-074")              # assigned display number
+forgeplan_get(id="prd-auth-system")      # slot lookup
 
-# Pre-merge — только по slug:
-forgeplan_get(id="prd-auth-system")      # ✅
-forgeplan_get(id="PRD-74?")              # ❌ вопросительный знак не валиден в lookup
+# Пока assigned_number не назначен, используй slug, а не display с '?':
+forgeplan_get(id="prd-auth-system")
+forgeplan_get(id="PRD-74?")              # '?' не является lookup-командой
 ```
 
 ### Multi-agent dispatch (`forgeplan_dispatch`) 🟡 Phase 2+
@@ -192,13 +232,18 @@ plan = [
 ]
 ```
 
-Подзадачные агенты **не выбирают slug сами** — получают готовый. Это устраняет slug collision by construction.
+Подзадачные агенты в staged end-state получают готовый slot. Это устраняет
+случайные title-derived collisions внутри одного плана, но не доказывает
+глобальную уникальность и не является текущим гарантированным dispatch API.
 
 ### ADI / reasoning prompts
 
-Если в prompt видишь `PRD-074` — это post-merge canonical reference, ищи через `forgeplan_get`.
-Если видишь `PRD-74?` — это pre-merge draft, ищи только если у тебя локальный access к workspace.
-Если видишь `prd-auth-system` — slug, всегда работает в lookup.
+Если в prompt видишь `PRD-074` — это assigned display reference; ищи через
+`forgeplan_get` и сверь фактический frontmatter.
+Если видишь `PRD-74?` — запись с нефинализированным номером; ищи только
+по доступному slug, если у тебя есть локальный доступ к workspace.
+Если видишь `prd-auth-system` — используй slug lookup, но помни, что
+уникальность slot не гарантирована глобально.
 
 ### Запрещённые операции
 
@@ -216,20 +261,24 @@ AI-agent **не должен**:
 ### CLI
 
 ```bash
-forgeplan get prd-auth-system    # ✅ slug — всегда работает
-forgeplan get PRD-074            # ✅ post-merge — работает
-forgeplan get prd-074            # ✅ case-insensitive — работает
-forgeplan search "auth"          # ✅ ищет по slug + title
-forgeplan search "PRD-074"       # ✅ ищет по assigned_number
+forgeplan get prd-auth-system    # slug lookup, если запись существует
+forgeplan get PRD-074            # assigned display lookup
+forgeplan search "auth"          # keyword/smart search по доступному workspace
+forgeplan search "PRD-074"       # ищет по доступным идентификаторам
 
-forgeplan list --kind prd        # output:
+forgeplan list --type prd        # иллюстрация end-state-контракта, не текущий transcript:
 #   PRD-074  prd-auth-system  active   Auth System
 #   PRD-75?  prd-rate-limiter draft   Rate Limiter   ← ? marker для draft
 ```
 
+Не используй этот блок как доказательство поддержки lowercase numeric
+lookup или глобальной уникальности slug; эти свойства здесь не проверялись.
+
 ### MCP
 
-`forgeplan_get(id=...)` принимает любой формат идентификатора и возвращает canonical артефакт. Поле `slug` в response — единственное гарантированно стабильное.
+`forgeplan_get(id=...)` принимает поддерживаемые текущим resolver slug и
+display ID и возвращает найденный артефакт. Для legacy `slug` может быть
+`null`/omitted; не называй его единственным гарантированно стабильным полем.
 
 ### Web
 
@@ -295,17 +344,18 @@ frontmatter). PR #268 dev-sync CI прогон показал, что 8 PROB-060
 
 #### 1. Resolver — `crates/forgeplan-core/src/artifact/store.rs`
 
-При вызове `forgeplan get <id>` (или MCP `forgeplan_get`):
-- Если `id` валидный slug (`prd-auth-system`) — lookup идёт через `slug` field в
-  index.
-- Если `id` — display number (`PRD-074`) — lookup идёт через `assigned_number`.
-- Для legacy артефакта без `slug` поля: `assigned_number` всегда set (это
-  immutable existing number из filename), display id lookup работает напрямую.
-- Если `slug` field отсутствует у артефакта (legacy), resolver не падает — просто
-  не использует slug path.
+При вызове `forgeplan get <id>` (или MCP `forgeplan_get`) текущий
+file-first resolver сопоставляет filename, `id` и доступный slug:
+- slug (`prd-auth-system`) и display ID (`PRD-074`) поддерживаются для
+  записей, у которых есть соответствующие поля/имя файла;
+- legacy записи без slug остаются first-class: E2E `legacy_compat_e2e.rs`
+  проверяет display-ID lookup и omitted `slug` в JSON;
+- прежнее утверждение, что `assigned_number` «всегда set» у всех legacy,
+  здесь не воспроизводится проверкой.
 
-Иными словами: **slug — optional secondary key**, не required primary key.
-Primary key — display id (`assigned_number`), который у всех legacy всегда set.
+Иными словами: slug — optional lookup alias; не назначай его единственным
+стабильным идентификатором и не описывай прежний display-ID primary key как
+текущий универсальный индексный контракт.
 
 #### 2. MCP DTOs — `crates/forgeplan-mcp/src/types.rs`
 
@@ -325,16 +375,15 @@ pub struct ArtifactDto {
 ```
 
 Для legacy артефакта `slug = None` — поле не сериализуется в JSON. Agent видит
-только `id` (canonical display) и работает с ним. Никаких errors, никакого
-silent failure.
+`id` и работает с ним; отсутствие slug не является ошибкой, но не даёт
+дополнительного alias для lookup.
 
 #### 3. `refs_form_from_body` — fallback к display id
 
-Функция извлекающая `Refs:` из commit body / artifact body имеет fallback:
-- Если строка парсится как slug → возвращается slug.
-- Если парсинг slug fails (например, legacy `Refs: PRD-018`) → возвращается
-  canonical display id (`PRD-018`).
-- Resolver принимает оба формата (см. §1) — lookup работает.
+`refs_form_from_body` разбирает **frontmatter артефакта**, не commit `Refs:`.
+Она вызывает `refs_form`: при отсутствии assigned_number возвращает валидный
+slug, если он есть; иначе переданный fallback ID. Ошибка разбора тоже даёт
+fallback. Поиск commit refs — отдельная задача, не гарантия этого helper.
 
 #### 4. E2E coverage
 
@@ -359,9 +408,10 @@ working legacy**.
 
 ### Что НЕ делать
 
-- **Не редактировать legacy frontmatter вручную** через `Edit`/`Write` (red-line #11) —
-  если хочется добавить slug, делать через `forgeplan_update id=PRD-018 body=...`
-  через MCP, иначе LanceDB index десинхронизируется.
+- **Не редактировать legacy frontmatter вручную** через `Edit`/`Write` (red-line #11).
+  MCP `forgeplan_update.body` меняет prose body, не является setter для внешних
+  identity fields. Добавление slug требует поддержанного identity/migration
+  workflow, не вставки frontmatter в body ради обхода API.
 - **Не считать missing slug ошибкой** в reasoning prompts — это expected state для
   legacy.
 - **Не добавлять slug в legacy при routine operations** (например, при `forgeplan
@@ -392,15 +442,23 @@ A: Запрещено. `assigned_number` write-once by CI bot. Reservation API �
 
 A: Нет (invariant I-1). Если действительно нужно — `supersede` старый артефакт новым (с правильным slug). См. CLAUDE.md `forgeplan supersede`.
 
-### Q: Что если CI бот упал? 🟡 Phase 2+
+### Q: Что если CI prototype упал?
 
-A: Merge блокируется до починки. Это **намеренная** trade-off — лучше задержать merge на час, чем получить ID коллизию в production. Manual fallback: maintainer запускает `forgeplan ci-assign-id --pr <N>` локально и пушит результат.
+A: Сначала прочитай failed workflow/logs. `forgeplan ci-assign-id` можно
+запустить вручную с `--dry-run`, а затем в write-режиме; workflow сейчас
+prototype, и его merge-blocking/collision guarantees здесь не доказаны.
+Историческая Phase 1.x заметка ниже сохранена как датированный дизайн.
 
-> Команда `forgeplan ci-assign-id` **не реализована в Phase 1.x** — Phase 2.4. До Phase 2 этот сценарий неприменим (CI бота ещё нет).
+> Исторический Phase 1.x дизайн: команда `forgeplan ci-assign-id` ещё не
+> была реализована, поэтому сценарий считался неприменимым до Phase 2.
 
 ### Q: Multi-agent dispatch с 20+ агентами — будет ли работать?
 
-A: До 10 — точно (тестируется в EVID-B). 20+ — теоретически, но slug pre-allocation в диспетчере становится bottleneck. На этот случай в Growth Vision (PRD-076) предусмотрен redesign.
+A: Текущий core ограничивает `--agents` диапазоном 1–64; это hard bound,
+не гарантия отсутствия конфликтов. Он не доказывает работоспособность
+конкретного dispatch в 10 или 20 агентов. Историческое «До 10 — точно»
+и ссылка на EVID-B здесь не подтверждены и не должны использоваться как
+гарантия.
 
 ### Q: Как искать предсказанный артефакт коллеги?
 
@@ -408,7 +466,11 @@ A: Если коллега ещё не запушил — никак (он то�
 
 ### Q: Что с external forks?
 
-A: Migration script работает на любом workspace без обращения к origin. Fork получает свои `assigned_number` независимо от upstream — потенциальный divergence на merge upstream'а в fork.
+A: Исторический migration script был описан как локальный и не требующий
+origin. В captured CLI help сейчас нет `migrate-legacy-ids`; доступность
+отдельного script проверяй в своём checkout. Fork может иметь собственные
+numbers/slugs, поэтому после merge проверяй фактический frontmatter и
+resolver, а не полагайся на этот исторический ответ.
 
 ### Q: У меня legacy артефакт без slug — это сломанный?
 

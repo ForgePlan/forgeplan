@@ -2,7 +2,7 @@
 
 ## Overview
 
-Forgeplan enforces a requirement that every artifact (PRD, RFC, ADR, EPIC, SPEC, PROB) mentioned in a pull request must have linked **evidence** before the PR is created. This ensures that architectural and feature decisions are backed by proof: tests, benchmarks, audits, or measurements.
+The project's evidence-before-PR convention asks for linked **evidence** for decisions. The repository's Claude Code hook enforces a limited check when wired into that host; it is not a universal GitHub branch-protection rule and does not verify the quality or truth of the evidence.
 
 **Evidence** is represented as an `EVID` (EvidencePack) artifact with a typed `informs` or `based_on` link to the artifact being evidenced.
 
@@ -23,22 +23,22 @@ With evidence enforced:
 ## The 3-Layer Evidence Enforcement Stack
 
 ### Layer 1: Agent Skills (Wave 2 W5+W6)
-The marketplace plugin `fpl-skills` v1.5.0+ includes upgraded `/audit`, `/sprint`, `/build` skills that **autopublish EVID** after agent work. These skills:
+Wave 2 described marketplace `fpl-skills` v1.5.0+ `/audit`, `/sprint`, `/build` evidence autopublishing. The intended integration is:
 - Capture test output, audit findings, benchmark results
 - Auto-create `EVID` artifact with structured fields
 - Auto-link to the affected PRD/RFC/ADR with `informs` relation
 - Emit `_next_action: forgeplan activate <ID>` hint
 
-This layer catches agent-spawned workflows and ensures evidence is created during work, not afterwards.
+This is an agent integration contract, not a guarantee for every installed host or skill version; inspect its actual result and linked artifact.
 
 ### Layer 2: Pre-PR Hook (FR-014, this document)
-Before `gh pr create` succeeds, `.claude/hooks/pre-pr-evidence-check.sh` runs:
+When wired into Claude Code PreToolUse, `.claude/hooks/pre-pr-evidence-check.sh` inspects a proposed `gh pr create` command:
 1. Parses branch name and last 20 commits for artifact IDs (PRD-NNN, RFC-NNN, etc.)
-2. For each non-EVID artifact found, queries forgeplan graph for `informs` or `based_on` evidence links
+2. For each detected artifact except EVID and NOTE, queries graph evidence edges, with a heuristic Related/Links/Relations body fallback
 3. **Blocks PR creation** (exit code 2) if evidence is missing
 4. Provides clear bypass instructions for legitimate exceptions
 
-This layer is a hard gate at the human PR boundary — you cannot push past this without evidence or explicit bypass.
+This gate is host-local. It does not inspect the PR body, admits documented branch/environment bypasses and exits 0 when no usable binary is found. A linked record alone does not prove its claims.
 
 ### Layer 3: Health Verdict (post-hoc reporting)
 `forgeplan health` detects `blind_spots` — active artifacts without any linked evidence. This is reported in:
@@ -107,11 +107,11 @@ If you merged code without creating EVID first, you can capture evidence retroac
 
 ### Step 1: Create the EVID artifact
 ```bash
-forgeplan new evidence "Feature X: test coverage 92%, p95 latency 180ms"
+forgeplan new evidence "Feature X: measured verification results"
 ```
 
 ### Step 2: Fill structured fields
-Edit `.forgeplan/evidence/EVID-NNN-*.md` and add:
+Prepare the complete prose body in a temporary file, including actual observations and these fields, then apply it with `forgeplan update EVID-NNN --body @/tmp/evid-body.md`. Do not edit canonical `.forgeplan/` artifacts directly:
 ```markdown
 ## Structured Fields
 
@@ -145,8 +145,8 @@ gh pr create --title "[Evidence] Add EVID-NNN for PRD-MMM" \
 ## Git Provenance for Code-Claiming Evidence (PRD-082 / #360)
 
 An EvidencePack that claims code changed may declare three extra fields in the same
-`## Structured Fields` block. **All three or none** — a partial claim is rejected as
-`Incomplete`:
+`## Structured Fields` block. **All three or none** — a partial claim produces an
+`Incomplete` verdict; whether activation blocks depends on the configured gate:
 
 ```markdown
 base_sha: 92154e19                        # state BEFORE the change
@@ -191,12 +191,17 @@ Which packs feed `R_eff = min(evidence_scores)` depends on the pack's lifecycle 
 | Evidence status | Participates in min()? | Why |
 |---|---|---|
 | `draft` | **yes** | a fresh measurement awaiting activation — the score gate runs before activation in the standard flow |
-| `active` | **yes** | current testimony; an active `refutes` pack zeroes the score |
+| `active` | **yes** | current testimony; an unexpired `refutes` pack contributes zero |
 | `stale` | **yes** | not terminal — flagged for re-evaluation but not displaced; an expired `valid_until` separately decays the pack's score to 0.1 |
 | `superseded` | **no** | displaced by a successor (`supersede <old> --by <new>`) — history stays in the graph, but it no longer speaks for present reliability |
 | `deprecated` | **no** | retired (e.g. a duplicate deprecated with `--reason "superseded by EVID-y"`) |
 
 Every exclusion is logged in `forgeplan score` factors (`Skipped EVID-x (status: superseded)`) and marked in the breakdown (`excluded from min`) — displacement is auditable, never silent. If ALL linked packs are terminal, the artifact degrades to **no active evidence** (R_eff 0.0): recovery requires the replacement pack to be *linked* to the artifact, not just to exist.
+
+The explicit recursive score additionally includes eligible dependency contributions
+and evidence-type modifiers (test/measurement 0, benchmark 0.1, audit 0.2).
+Flat captured scores omit those modifiers and recursion; do not equate all score
+surfaces. Expiry returns 0.1 even for refuting evidence, before verdict arithmetic.
 
 The honest way to clear a stale weak pack is displacement — link the re-verification evidence, then supersede the old pack. Editing a pack's verdict to raise a score is history falsification; the graph keeps the original pack precisely so you never have to.
 
@@ -267,16 +272,16 @@ This helps the team identify decisions that need evidence capture, either retroa
 A: Use `FORGEPLAN_SKIP_EVIDENCE=1 gh pr create`. But document in the PR body why you're skipping. Retroactively attach EVID in a follow-up PR if the bypass reason justifies it.
 
 **Q: Does documentation-only PRs need evidence?**
-A: No — `docs/*` branches auto-bypass. Branch protection assumes docs changes don't need architectural evidence.
+A: The local hook auto-bypasses `docs/*`; that is a branch-name check, not a determination that the diff is documentation-only or a universal branch-protection exemption.
 
 **Q: What if the forgeplan binary is not installed?**
 A: The hook soft-fails (exits 0) rather than blocking. You can still create PRs, but you lose the gate. This is intentional for fresh clones without binaries built.
 
 **Q: Can I wire the hook to Git instead of Claude Code?**
-A: Yes — copy `.claude/hooks/pre-pr-evidence-check.sh` to `.git/hooks/pre-push` (or custom hook) and rename to `pre-push`. Make sure your hook invokes it before `git push`.
+A: Not by renaming it. This script expects Claude Code JSON on stdin; Git pre-push supplies another protocol and does not intercept `gh pr create`. A separately reviewed adapter would be needed.
 
 **Q: What if my artifact is really ad-hoc and doesn't need evidence?**
-A: File a PROB or decision note explaining why, then decide: (1) reclassify as `NOTE` (ephemeral, auto-expires), (2) retroactively create minimal EVID, or (3) use bypass + document.
+A: Record the rationale, then decide whether a lightweight NOTE, real EVID or an explicitly justified bypass is appropriate. NOTE creation does not automatically assign a 90-day expiry.
 
 ## Reference
 

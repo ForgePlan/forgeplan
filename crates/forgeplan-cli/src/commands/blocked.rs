@@ -5,11 +5,20 @@ use crate::commands::common;
 
 /// `forgeplan blocked [id] [--json]` — show blocked artifacts and their dependencies.
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let all_relations = store.get_all_relations().await?;
-
-    let all_records = store.list_records(None).await?;
-    let resolved_ids = common::resolved_ids(&all_records);
+    let (_, source) = common::open_read_source().await?;
+    let all_relations = match &source {
+        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Captured(read) => read.get_all_relations(),
+    };
+    let legacy_records;
+    let all_records = match &source {
+        common::ReadSource::Legacy(store) => {
+            legacy_records = store.list_records(None).await?;
+            legacy_records.as_slice()
+        }
+        common::ReadSource::Captured(read) => read.records(),
+    };
+    let resolved_ids = common::resolved_ids(all_records);
 
     if let Some(artifact_id) = id {
         let blocked_by = topological::get_blocked_by(artifact_id, &all_relations, &resolved_ids);

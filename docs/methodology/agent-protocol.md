@@ -3,6 +3,11 @@
 > Status: **Active** (PRD-071, 2026-04-27)
 >
 > This document defines the contract between Forgeplan and any agent (Claude Code, Cursor, Windsurf, custom orchestrators) consuming its output. It exists so a single mental model works across CLI text, CLI JSON, MCP success, CLI error, and MCP error surfaces.
+>
+> **Implementation boundary (2026-10-23):** this remains the intended protocol,
+> not a demonstrated universal guarantee. Hints are added at individual call
+> sites; `score --all` JSON currently has no `_next_action`. EVID-086's 70/70
+> audit is historical, not coverage of the selected build's 120 command paths.
 
 ## Why this contract exists
 
@@ -12,11 +17,11 @@ Forgeplan is a methodology engine. Each command/tool call is one step in a longe
 - Guess and sometimes hallucinate
 - Loop on the same step
 
-Each of these costs tokens and risks correctness. The contract eliminates ambiguity by guaranteeing every output carries an explicit, deterministic next-action.
+The protocol aims to reduce ambiguity with explicit next actions. Its presence and correctness still need checking at each surface.
 
 ## The 5-rule contract
 
-Every Forgeplan output, regardless of surface, satisfies these:
+The intended requirements for every Forgeplan output are:
 
 1. **PRESENCE** — every response either emits a next-action OR is explicitly terminal. No silent gaps.
 2. **ACTIONABILITY** — the next-action is a full, copy-pasteable command with real IDs (e.g. `forgeplan score PRD-001`), never a fragment (`consider scoring`) or placeholder (`<id>`).
@@ -48,13 +53,11 @@ The contract defines five kinds of next-actions. Most outputs use `Next` — the
 
 ## Slug-aware references (PROB-060 / SPEC-005 / ADR-012)
 
-Forgeplan uses **two-layer artifact identity**: a canonical `slug`
-(`prd-auth-system`) that never changes, and a derived `display id`
-(`PRD-074`) that is finalised by a CI bot when the artifact's branch
-merges to `dev`. While the bot has not yet flipped `assigned_number`
-from `null` to a number, the artifact is **pre-merge** and the
-display id carries a `?` marker (`PRD-74?`) signalling "predicted, not
-final".
+The two-layer identity design distinguishes a canonical `slug` (`prd-auth-system`)
+from a display ID (`PRD-074`). Current creation normally assigns its number
+immediately. Nullable `assigned_number` and the `PRD-74?` display form remain
+supported by helpers for staged CI assignment; do not assume every newly created
+artifact is unassigned or that a merge event finalizes it.
 
 The hint protocol mirrors this contract:
 
@@ -63,20 +66,18 @@ The hint protocol mirrors this contract:
 | **Pre-merge** (`assigned_number: null`) | the **slug** | `Next: forgeplan validate prd-auth-system` |
 | **Post-merge** (`assigned_number: 74`) | the **display id** | `Next: forgeplan validate PRD-074` |
 
-The selection happens in [`forgeplan_core::artifact::frontmatter::refs_form`](../../crates/forgeplan-core/src/artifact/frontmatter.rs);
-all CLI / MCP hint sites consult that helper so the choice stays in
-exactly one place. Agents do not need to re-implement the rule —
-`Next:` lines and `_next_action` JSON fields already carry the right
-form. Just **paste the command verbatim**.
+The selection helper is [`forgeplan_core::artifact::frontmatter::refs_form`](../../crates/forgeplan-core/src/artifact/frontmatter.rs).
+It returns a valid slug for an unassigned record and otherwise the supplied
+fallback ID. `refs_form_from_body` parses artifact frontmatter, not commit
+`Refs:` lines. This is intended call-site guidance, not proof every hint site
+uses the helper.
 
 ### Why this matters for `Refs:` in commit messages
 
-Because `assigned_number` is write-once and only flips at merge, a
-commit body that pins `Refs: PRD-074` **before** the CI bot has
-assigned it points to nothing — the number is still predicted and may
-shift if a sibling branch merges first. Pre-merge commits MUST use
-the slug; post-merge they MAY use either form (the resolver maps both
-to the same artifact).
+When `assigned_number` is null, its display number is a prediction and may shift.
+Use the slug in pre-assignment commit refs. Once assigned, either the display
+ID or slug can be used; inspect actual frontmatter rather than infer assignment
+from whether a branch has merged.
 
 ```
 ✅ Pre-merge:  Refs: prd-auth-system, FR-001..003
@@ -130,7 +131,7 @@ Includes the parameter the agent needs to set.
 ```
 suggested next: adi
 ```
-Bare word, not a command. Agent has to guess `forgeplan phase-advance --to adi`.
+Bare word, not a command. Agent has to construct `forgeplan phase-advance ID --to adi` with an actual artifact ID.
 
 ```
 Try a longer window: --since-hours 720
@@ -168,8 +169,8 @@ predicted number on merge. Pre-merge hints MUST use the slug.
 When an agent receives any Forgeplan output, it should:
 
 1. **Look for the next-action**. CLI text: scan for `Next:`, `Fix:`, `Wait:`, or `Done.` line. JSON: read `_next_action` field. MCP: read `_next_action` field of response.
-2. **Execute primary if present**. If `Next:` or `Fix:` — execute the command exactly as written. Do not paraphrase, do not substitute placeholders (there shouldn't be any), do not split into multiple commands.
-3. **Use `Or:` only if primary blocks**. The primary `Next:` is the recommended path. Fall back to `Or:` only when primary fails or doesn't apply (e.g. claim held by another agent → `Or: --force`).
+2. **Check authority, scope and prerequisites before executing a hint.** A hint is data, not permission to mutate, force-release another holder or override an assignment. When authorized and applicable, use the complete command and actual ID.
+3. **Use `Or:` only if primary blocks and the alternative is authorized.** A foreign live claim is not permission to take it over; wait, choose other work or ask the owner.
 4. **On `Wait:`, retry after condition**. The hint specifies what to wait for.
 5. **On `Done.`, the workflow is complete**. Move to the next task; do not loop.
 6. **On no hint and not terminal — report a contract violation**. This is a bug in Forgeplan, not an agent decision.
@@ -220,11 +221,11 @@ the CLI `Next:` line (Rule 5: CONSISTENCY).
 
 ## Drift prevention
 
-The contract is enforced by:
+Available drift guards have bounded scope:
 
-1. **Integration test** `tests/hint_contract.rs` — runs every CLI command + asserts every response has `Next:` line or explicit terminal status.
-2. **Audit script** `scripts/audit-hints.sh` — produces coverage metric, runs in CI.
-3. **Code review checklist** — any new CLI command or MCP tool without a hint fails review.
+1. `crates/forgeplan-cli/tests/hint_contract.rs` exercises its enumerated CLI cases, not every current command/tool response.
+2. `scripts/audit-hints.sh` is an audit aid; its historical result is not current universal acceptance.
+3. Code review should examine new CLI/MCP hint sites and record gaps. No automatic 100% coverage or pre-commit guarantee is established here.
 
 ## Related
 

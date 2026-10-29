@@ -2,6 +2,11 @@
 
 # Artifact Model — PRD Process Engine
 
+Иерархия, кратности и поля содержания ниже — конвенции авторинга, не ограничения
+базы данных. Sprint — понятие исполнения, не тип артефакта. Типизированные связи:
+`informs`, `based_on`, `supersedes`, `contradicts`, `refines`; для Epic есть также
+`parent_epic`. Стрелка в прозе сама по себе связь не создаёт.
+
 ## Иерархия артефактов
 
 ```
@@ -40,7 +45,7 @@
 |------|----------|
 | ID | Epic-NNN (sequential) |
 | Name | Краткое название инициативы |
-| Status | Draft → Active → Done → Archived |
+| Status | `draft`, `active`, `superseded`, `deprecated`, `stale` — см. lifecycle ниже |
 | Outcomes | Измеримые результаты |
 | Children | PRD[], RFC[], ADR[] |
 | Progress | Агрегированный из children |
@@ -56,7 +61,7 @@
 |------|----------|
 | ID | PRD-NNN |
 | Epic | Parent Epic (optional) |
-| Status | Draft → Review → Approved → Implemented → Closed |
+| Status | Общий сохраняемый lifecycle всех типов; см. ниже |
 | Problem | Какую проблему решаем |
 | Goals | Что хотим достичь (measurable) |
 | Non-Goals | Что НЕ делаем (scope) |
@@ -75,7 +80,7 @@
 | ID | SPEC-NNN |
 | PRD | Parent PRD |
 | Type | API | Data Model | Protocol | UI Spec |
-| Status | Draft → Approved → Implemented |
+| Status | Общий сохраняемый lifecycle всех типов; см. ниже |
 | Contracts | API endpoints, schemas, interfaces |
 | Data Models | Entity definitions, relationships |
 | Constraints | Validation rules, limits |
@@ -90,7 +95,7 @@
 |------|----------|
 | ID | RFC-NNN |
 | PRD/SPEC | Parent (optional) |
-| Status | Draft → Discussion → Accepted → Implemented → Superseded |
+| Status | Общий сохраняемый lifecycle; implementation phases учитываются отдельно |
 | Summary | Что предлагается |
 | Motivation | Зачем нужно изменение |
 | Design | Архитектура, компоненты |
@@ -111,7 +116,7 @@
 | Rationale | Почему именно так |
 | Alternatives | Что ещё рассматривали |
 | Consequences | Плюсы и минусы решения |
-| Status | Proposed → Accepted → Deprecated → Superseded |
+| Status | Общий сохраняемый lifecycle; acceptance — решение процесса |
 
 **Когда создавать**: При выборе технологии, архитектурном trade-off, значимом решении.
 
@@ -140,17 +145,25 @@ Decision needed at any point?
   └─→ ADR (captures context + decision + rationale)
 ```
 
-## Status Values (unified)
+## Сохраняемый status и этапы процесса
 
-| Status | PRD | SPEC | RFC | ADR | Epic |
-|--------|-----|------|-----|-----|------|
-| Draft | Requirements gathering | Designing contracts | Writing proposal | Collecting context | Scoping |
-| Review/Discussion | Stakeholder review | Technical review | Team discussion | — | — |
-| Approved/Accepted | Ready to implement | Contract locked | Approved to build | Decision final | Active work |
-| Implemented | Feature shipped | API deployed | Code complete | — | — |
-| Done/Closed | Verified in prod | — | All phases done | — | All PRDs done |
-| Superseded | Replaced by PRD-N | — | Replaced by RFC-N | Replaced by ADR-N | — |
-| Deprecated | — | — | — | No longer valid | Cancelled |
+Core lifecycle kinds используют `draft`, `active`, `superseded`, `deprecated`,
+`stale`; у других типов lifecycle может отличаться или отсутствовать.
+
+```text
+draft --activate--> active
+active --> superseded | deprecated | stale
+stale --renew--> active
+stale --reopen--> deprecated + new draft
+stale --deprecate--> deprecated
+```
+
+`superseded` и `deprecated` — terminal. `review` показывает проверки и не создаёт
+status. Approved, Accepted, Implementing, Implemented, Done, Closed, Archived
+и Cancelled могут описывать процесс команды в прозе, но не значения сохраняемого
+`status`. Session phases и маркеры lifecycle phase артефакта тоже отделены от
+status; завершение кода или тестов автоматически артефакт не активирует.
+Валидация и activation gates — разные проверки.
 
 ## Numbering Convention
 
@@ -162,7 +175,10 @@ Decision needed at any point?
 | RFC | `RFC-NNN` | RFC-128 |
 | ADR | `ADR-NNN` | ADR-007 |
 
-Numbers are sequential per artifact type, project-scoped, never reused.
+Display numbers выделяются по типу артефакта внутри проекта. Сохранение уже
+назначенных номеров — конвенция; локальное выделение не гарантирует уникальность
+между ветками. Slug identity и датированное предложение CI-assignment разделены
+в [ID-ASSIGNMENT.ru.md](ID-ASSIGNMENT.ru.md).
 
 ## Связанные документы
 

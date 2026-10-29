@@ -17,33 +17,38 @@ description: "Считывает полный артефакт по ID. Возв
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `id` | `string` | yes | ID артефакта для чтения (например, `PRD-042`, без учёта регистра). |
+| `id` | `string` | yes | Display ID (`PRD-042`) или канонический slug (`prd-authentication-system`). |
+| `workspace` | `string?` | no | Абсолютный путь или `~/`. Приоритет: запрос → `FORGEPLAN_WORKSPACE` → default сервера → поиск от CWD по родителям. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GetParams`_
 
 ## Возвращает
 
-Артефакт в виде объекта JSON: все поля фронтматтера (kind, status, depth, tags, dates, valid_until) плюс тело в формате Markdown в виде строки. Если ID не существует, возвращает ошибку, чтобы агент мог восстановиться (часто путём вызова `forgeplan_search` для поиска правильного ID).
+MCP `CallToolResult` содержит JSON-текст в `content[]`; разбирайте текстовый
+payload. Успех - `ArtifactRecordDto` с `_next_action`, не envelope `artifact`:
 
-Пример структуры ответа:
+| Поля | Форма |
+|---|---|
+| `id`, `kind`, `status`, `title`, `body`, `depth` | Строки |
+| `author`, `parent_epic`, `valid_until` | Строки или null |
+| `created_at`, `updated_at` | Строки; могут быть пустыми, если в захваченных метаданных нет даты |
+| `r_eff_score` | Число |
+| `slug`, `predicted_number`, `assigned_number` | Необязательные identity-поля |
+| `id_canonical`, `id_display` | Строки канонической/display ссылки |
+| `links` | `outbound` (`target`, `relation`) и `inbound` (`source`, `relation`); массивы могут быть пустыми |
+| `_next_action` | Подсказка workflow |
 
-```json
-{
-  "id": "PRD-042",
-  "kind": "prd",
-  "status": "active",
-  "depth": "standard",
-  "title": "Authentication system",
-  "tags": ["auth", "security"],
-  "updated_at": "2026-04-11T09:31:00Z",
-  "body": "# PRD-042: Authentication system\n\n## Problem\nUsers currently..."
-}
-```
+Поля `tags` в DTO нет. Отсутствующий ID возвращает tool error.
+Для мигрированных workspace локальной `0.39.0+constellation.s1.1` `body` -
+полный канонический Markdown с frontmatter. Это отличается от full MCP
+`forgeplan_constellation_get` (`key`, pinned `artifact.body` только с прозой)
+и read-profile `constellation_get` (`id` и handle).
+См. [справочник Constellation](/ru/docs/reference/constellation/).
 
 ## Пример вызова
 
 ```json
-{ "id": "PRD-001" }
+{ "id": "PRD-001", "workspace": "/path/to/project" }
 ```
 
 С типичным контекстом агента:
@@ -60,7 +65,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GetParams`_
 
 ## Эквивалент в CLI
 
-- [`forgeplan show`](/ru/docs/cli/get/) - человекочитаемый вывод в терминале
+- [`forgeplan get`](/ru/docs/cli/get/) - чтение в терминале, `--json` для машинного вывода
 
 ## См. также
 
@@ -68,3 +73,48 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GetParams`_
 - [`forgeplan_list`](/ru/docs/mcp/forgeplan_list/) - сначала найдите ID
 - [`forgeplan_update`](/ru/docs/mcp/forgeplan_update/) - редактирование после чтения
 - [`forgeplan_search`](/ru/docs/mcp/forgeplan_search/) - обнаружение на уровне содержимого
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Read a full artifact by ID. Returns all metadata and body content.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `id` | да | string | Artifact ID to read |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "Artifact ID to read",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "GetParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

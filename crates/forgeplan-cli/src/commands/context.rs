@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use chrono::{NaiveDate, Utc};
@@ -5,7 +6,7 @@ use console::style;
 
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
-use forgeplan_core::db::store::ArtifactFilter;
+use forgeplan_core::db::store::{ArtifactFilter, ArtifactRecord, frontmatter_map_with_links_from};
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::scoring::fgr;
 use forgeplan_core::scoring::reff;
@@ -16,13 +17,20 @@ use crate::commands::common;
 use crate::ui;
 
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
+    let (_, source) = common::open_read_source().await?;
 
-    // 1. Fetch artifact
-    let record = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+    // Resolve against the same source used for every part of this report.
+    let canonical = match &source {
+        common::ReadSource::Legacy(store) => store.resolve_id(id).await?,
+        common::ReadSource::Captured(read) => read.resolve_id(id),
+    }
+    .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+    let id = canonical.as_str();
+    let record: Cow<'_, ArtifactRecord> = match &source {
+        common::ReadSource::Legacy(store) => store.get_record(id).await?.map(Cow::Owned),
+        common::ReadSource::Captured(read) => read.get_record(id).map(Cow::Borrowed),
+    }
+    .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
 
     // 2. Parse kind and depth
     let kind: ArtifactKind = record.kind.parse().unwrap_or_else(|_| {
@@ -41,8 +49,15 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     });
 
     // 3. Relations — outgoing and incoming
-    let outgoing = store.get_relations(id).await?;
-    let incoming = store.get_incoming_relations(id).await?;
+    let (outgoing, incoming) = match &source {
+        common::ReadSource::Legacy(store) => (
+            store.get_relations(id).await?,
+            store.get_incoming_relations(id).await?,
+        ),
+        common::ReadSource::Captured(read) => {
+            (read.get_relations(id), read.get_incoming_relations(id))
+        }
+    };
 
     // Categorize relations into graph structure
     let parent = record.parent_epic.clone().filter(|s| !s.is_empty());
@@ -57,15 +72,23 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         kind: Some("evidence".to_string()),
         status: None,
     };
-    let all_evidence = store.list_records(Some(&evidence_filter)).await?;
-    let evidence_id_set: HashSet<String> =
-        all_evidence.iter().map(|r| r.id.to_uppercase()).collect();
+    let all_records: Cow<'_, [ArtifactRecord]> = match &source {
+        common::ReadSource::Legacy(store) => {
+            Cow::Owned(store.list_records(Some(&evidence_filter)).await?)
+        }
+        common::ReadSource::Captured(read) => Cow::Borrowed(read.records()),
+    };
+    let all_evidence = || {
+        all_records
+            .iter()
+            .filter(|record| record.kind.eq_ignore_ascii_case("evidence"))
+    };
+    let evidence_id_set: HashSet<String> = all_evidence().map(|r| r.id.to_uppercase()).collect();
     // ADR-020: displayed links keep ALL packs (context is a history view),
     // but `has_evidence` below reasons over non-terminal packs only — an
     // all-displaced artifact needs "link a live successor", not
     // "review evidence quality".
-    let eligible_evidence_id_set: HashSet<String> = all_evidence
-        .iter()
+    let eligible_evidence_id_set: HashSet<String> = all_evidence()
         .filter(|r| !forgeplan_core::lifecycle::transitions::is_terminal(&r.status))
         .map(|r| r.id.to_uppercase())
         .collect();
@@ -95,10 +118,15 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
 
     // 4. R_eff via recursive scoring
     let mut visited = HashSet::new();
-    let report = reff::r_eff_recursive(id, &store, &mut visited).await?;
+    let report = match &source {
+        common::ReadSource::Legacy(store) => reff::r_eff_recursive(id, store, &mut visited).await?,
+        common::ReadSource::Captured(read) => {
+            reff::r_eff_recursive_captured(id, read, &mut visited).await?
+        }
+    };
 
     // 5. Validation (catch errors, don't propagate)
-    let fm = record.frontmatter_map();
+    let fm = frontmatter_map_with_links_from(&record, &outgoing);
     let val_result = validation::validate(&record.id, &record.body, &fm, &kind, &depth);
     let must_errors = val_result.error_count();
     let should_warnings = val_result.warning_count();
@@ -119,7 +147,10 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         .map(|d| Utc::now().date_naive() > d)
         .unwrap_or(false);
 
-    let all_relations = store.get_all_relations().await?;
+    let all_relations = match &source {
+        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Captured(read) => read.get_all_relations(),
+    };
     let link_count = all_relations
         .iter()
         .filter(|(src, tgt, _)| src.eq_ignore_ascii_case(id) || tgt.eq_ignore_ascii_case(id))

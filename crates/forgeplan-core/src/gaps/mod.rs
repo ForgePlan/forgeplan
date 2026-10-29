@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 
 use chrono::{NaiveDateTime, Utc};
 
-use crate::db::store::{ArtifactFilter, ArtifactRecord, LanceStore};
+use crate::constellation::workspace_read::WorkspaceRead;
+use crate::db::store::{ArtifactRecord, LanceStore};
 use crate::scoring::evidence::parse_evidence_from_record;
 use crate::scoring::reff;
 
@@ -47,22 +48,29 @@ type RelationIndex = BTreeMap<String, Vec<(String, String)>>;
 pub async fn find_gaps(store: &LanceStore) -> anyhow::Result<Vec<Gap>> {
     let all = store.list_records(None).await?;
     let all_relations = store.get_all_relations().await?;
+    Ok(find_gaps_in_records(&all, &all_relations))
+}
 
-    let evidence_filter = ArtifactFilter {
-        kind: Some("evidence".to_string()),
-        status: None,
-    };
-    let evidence_records = store.list_records(Some(&evidence_filter)).await?;
+/// Find the same pipeline gaps in one captured workspace without opening a store.
+pub fn find_gaps_captured(read: &WorkspaceRead) -> Vec<Gap> {
+    find_gaps_in_records(read.records(), &read.get_all_relations())
+}
+
+fn find_gaps_in_records(
+    all: &[ArtifactRecord],
+    all_relations: &[(String, String, String)],
+) -> Vec<Gap> {
+    let evidence_records: Vec<_> = all.iter().filter(|r| r.kind == "evidence").collect();
 
     // Build relation indices
-    let (outgoing, incoming) = build_relation_index(&all_relations);
+    let (outgoing, incoming) = build_relation_index(all_relations);
 
     // Collect linked kinds per artifact
-    let linked_kinds = build_linked_kinds_map(&all, &outgoing, &incoming);
+    let linked_kinds = build_linked_kinds_map(all, &outgoing, &incoming);
 
     let mut gaps = Vec::new();
 
-    for record in &all {
+    for record in all {
         // Skip evidence and refresh — they are support artifacts
         if record.kind == "evidence" || record.kind == "refresh" {
             continue;
@@ -81,7 +89,7 @@ pub async fn find_gaps(store: &LanceStore) -> anyhow::Result<Vec<Gap>> {
         GapSeverity::Could => 2,
     });
 
-    Ok(gaps)
+    gaps
 }
 
 fn build_relation_index(relations: &[(String, String, String)]) -> (RelationIndex, RelationIndex) {
@@ -240,7 +248,7 @@ fn check_depth_compliance(
 /// Check active artifacts without evidence (R_eff = 0).
 fn check_active_without_evidence(
     record: &ArtifactRecord,
-    evidence_records: &[ArtifactRecord],
+    evidence_records: &[&ArtifactRecord],
     outgoing: &RelationIndex,
     gaps: &mut Vec<Gap>,
 ) {
@@ -394,6 +402,129 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn captured_gaps_keep_depth_evidence_terminal_and_orphan_rules() {
+        use crate::constellation::capture::{CaptureLimits, CaptureRequest, capture_source};
+        use crate::constellation::view::ReadView;
+        use std::sync::Arc;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        for (dir, id, kind, status, depth, extra, body) in [
+            (
+                "prds",
+                "PRD-001",
+                "prd",
+                "active",
+                "deep",
+                "",
+                "Missing pipeline.",
+            ),
+            (
+                "rfcs",
+                "RFC-002",
+                "rfc",
+                "active",
+                "standard",
+                "links:\n  - target: EVID-002\n    relation: based_on\n",
+                "Refuted direction.",
+            ),
+            (
+                "evidence",
+                "EVID-002",
+                "evidence",
+                "active",
+                "standard",
+                "",
+                "verdict: refutes\ncongruence_level: 3\nevidence_type: test\n",
+            ),
+            (
+                "rfcs",
+                "RFC-003",
+                "rfc",
+                "active",
+                "standard",
+                "",
+                "Only terminal evidence.",
+            ),
+            (
+                "evidence",
+                "EVID-003",
+                "evidence",
+                "superseded",
+                "standard",
+                "links:\n  - target: RFC-003\n    relation: informs\n",
+                "verdict: supports\ncongruence_level: 3\nevidence_type: test\n",
+            ),
+        ] {
+            let dir = tmp.path().join(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join(format!("{id}.md")),
+                format!(
+                    "---\nid: {id}\nkind: {kind}\nstatus: {status}\ntitle: Test {id}\n\
+                     depth: {depth}\ncreated_at: 2000-01-01T00:00:00Z\n{extra}---\n\n{body}\n"
+                ),
+            )
+            .unwrap();
+        }
+        let captured = Arc::new(
+            capture_source(&CaptureRequest::new(tmp.path()), CaptureLimits::default())
+                .await
+                .unwrap(),
+        );
+        let read = WorkspaceRead::from_parts(
+            tmp.path(),
+            ReadView::from_capture(Arc::clone(&captured)),
+            captured,
+        );
+        let gaps = find_gaps_captured(&read);
+        let observed: Vec<_> = gaps
+            .iter()
+            .map(|g| (g.artifact_id.as_str(), g.severity, g.message.as_str()))
+            .collect();
+        assert_eq!(
+            observed,
+            vec![
+                (
+                    "PRD-001",
+                    GapSeverity::Must,
+                    "PRD-001 Deep depth but no linked RFC"
+                ),
+                (
+                    "PRD-001",
+                    GapSeverity::Must,
+                    "PRD-001 active but R_eff=0 (no evidence)"
+                ),
+                (
+                    "RFC-003",
+                    GapSeverity::Must,
+                    "RFC-003 active but R_eff=0 (no evidence)"
+                ),
+                (
+                    "PRD-001",
+                    GapSeverity::Should,
+                    "PRD-001 Deep depth but no linked Spec"
+                ),
+                (
+                    "PRD-001",
+                    GapSeverity::Should,
+                    "PRD-001 Deep depth but no linked ADR"
+                ),
+                (
+                    "RFC-002",
+                    GapSeverity::Should,
+                    "RFC-002 active but R_eff=0.00 (weak evidence)"
+                ),
+                (
+                    "PRD-001",
+                    GapSeverity::Could,
+                    "PRD-001 has no links (orphan)"
+                ),
+            ]
+        );
+        assert!(!tmp.path().join("lance").exists());
+    }
+
     #[test]
     fn test_find_gaps_missing_rfc() {
         let record = make_record("PRD-020", "prd", "draft", "standard");
@@ -437,7 +568,7 @@ mod tests {
     #[test]
     fn test_find_gaps_no_evidence() {
         let record = make_record("PRD-020", "prd", "active", "standard");
-        let evidence: Vec<ArtifactRecord> = vec![];
+        let evidence: Vec<&ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
         let mut gaps = Vec::new();
 
@@ -451,7 +582,7 @@ mod tests {
     #[test]
     fn test_draft_not_checked_for_evidence() {
         let record = make_record("PRD-020", "prd", "draft", "standard");
-        let evidence: Vec<ArtifactRecord> = vec![];
+        let evidence: Vec<&ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
         let mut gaps = Vec::new();
 
@@ -543,7 +674,7 @@ mod tests {
     #[test]
     fn test_note_not_checked_for_evidence() {
         let record = make_record("NOTE-001", "note", "active", "tactical");
-        let evidence: Vec<ArtifactRecord> = vec![];
+        let evidence: Vec<&ArtifactRecord> = vec![];
         let outgoing: RelationIndex = BTreeMap::new();
         let mut gaps = Vec::new();
 

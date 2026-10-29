@@ -56,6 +56,10 @@ use super::{
     SourceDiagnostic, checked_increment, rfc3339_now, sha256_hex,
 };
 
+// Interpreting nested legacy metadata changes edges even when source bytes
+// and canonical keys do not change. Bind that interpretation to the capture.
+const METADATA_PARSER_REVISION: &str = "legacy-projection-frontmatter-v1";
+
 /// Default attempt count before a moving source is reported as `source_busy`.
 pub const DEFAULT_CAPTURE_ATTEMPTS: u32 = 2;
 
@@ -276,6 +280,13 @@ fn section_windows(
         })
 }
 
+struct SectionInput<'a> {
+    heading: Option<&'a str>,
+    level: Option<u8>,
+    content: &'a str,
+    content_base: usize,
+}
+
 /// Emit one row per window of `content`, continuing the shared ordinal.
 ///
 /// The heading and level repeat on every window so a hit deep inside a long
@@ -296,10 +307,12 @@ fn push_section_rows(
     out: &mut Vec<CapturedSection>,
     ordinal: &mut u32,
     artifact: &ParsedArtifact,
-    heading: Option<String>,
-    level: Option<u8>,
-    content: &str,
-    content_base: usize,
+    SectionInput {
+        heading,
+        level,
+        content,
+        content_base,
+    }: SectionInput<'_>,
     tokenizer: &crate::embed::tokenizer::MetadataTokenizer,
     budgets: &crate::embed::tokenizer::TokenBudgets,
 ) -> Result<(), super::ConstellationError> {
@@ -307,21 +320,21 @@ fn push_section_rows(
         // A range is a byte range into `content`; a tokenizer reporting a
         // non-boundary would make this `None`, and silently skipping the row
         // would leave part of the body uncovered.
-        let window = content.get(range.clone()).ok_or_else(|| {
-            super::ConstellationError::Io {
+        let window = content
+            .get(range.clone())
+            .ok_or_else(|| super::ConstellationError::Io {
                 detail: format!(
                     "section window {}..{} is not a UTF-8 boundary of the captured content",
                     range.start, range.end
                 ),
-            }
-        })?;
+            })?;
         out.push(CapturedSection {
             canonical_key: section_key(&artifact.canonical_key, *ordinal),
             parent_key: artifact.canonical_key.clone(),
             ordinal: *ordinal,
             byte_start: content_base + range.start,
             byte_end: content_base + range.end,
-            heading: heading.clone(),
+            heading: heading.map(str::to_owned),
             level,
             content: Arc::from(window),
             // Mapped, not converted by a blanket `From`. `section_input_digest`
@@ -333,7 +346,7 @@ fn push_section_rows(
                 tokenizer,
                 budgets,
                 &artifact.title,
-                heading.as_deref(),
+                heading,
                 window,
             )
             .map_err(|error| super::ConstellationError::Io {
@@ -394,10 +407,12 @@ pub fn sections_for(
             &mut sections,
             &mut ordinal,
             artifact,
-            None,
-            None,
-            &artifact.body,
-            0,
+            SectionInput {
+                heading: None,
+                level: None,
+                content: &artifact.body,
+                content_base: 0,
+            },
             tokenizer,
             budgets,
         )?;
@@ -416,17 +431,19 @@ pub fn sections_for(
             &mut sections,
             &mut ordinal,
             artifact,
-            None,
-            None,
-            &artifact.body[..start],
-            0,
+            SectionInput {
+                heading: None,
+                level: None,
+                content: &artifact.body[..start],
+                content_base: 0,
+            },
             tokenizer,
             budgets,
         )?;
     }
 
     for (index, section) in parsed.iter().enumerate() {
-        let heading = (!section.heading.is_empty()).then(|| section.heading.clone());
+        let heading = (!section.heading.is_empty()).then_some(section.heading.as_str());
         // With no preamble row of its own, the leading blank run belongs to
         // the first section: its published start is `0`, not the offset of its
         // `#`, so nothing falls between the previous window and this one.
@@ -439,10 +456,12 @@ pub fn sections_for(
             &mut sections,
             &mut ordinal,
             artifact,
-            heading,
-            Some(section.level),
-            &artifact.body[base..section.raw_range.end],
-            base,
+            SectionInput {
+                heading,
+                level: Some(section.level),
+                content: &artifact.body[base..section.raw_range.end],
+                content_base: base,
+            },
             tokenizer,
             budgets,
         )?;
@@ -715,7 +734,9 @@ impl CapturedSourceView {
     /// recovery all read the same numbers rather than each re-deriving them
     /// from the layout, which is how a window and the encoder could disagree
     /// about the limit.
-    pub fn token_budgets(&self) -> Result<crate::embed::tokenizer::TokenBudgets, ConstellationError> {
+    pub fn token_budgets(
+        &self,
+    ) -> Result<crate::embed::tokenizer::TokenBudgets, ConstellationError> {
         crate::embed::tokenizer::TokenBudgets::resolve(&self.layout).map_err(|e| {
             ConstellationError::Io {
                 detail: format!(
@@ -758,10 +779,7 @@ impl CapturedSourceView {
     /// reintroduce the second, unrelated budget this contract removes, and the
     /// mismatch between a capture-time budget and a later re-read of the config
     /// is the shape of bug that loses a tail silently.
-    pub fn section_input(
-        &self,
-        section: &CapturedSection,
-    ) -> Result<String, ConstellationError> {
+    pub fn section_input(&self, section: &CapturedSection) -> Result<String, ConstellationError> {
         let (tokenizer, budgets) = self.section_layout()?;
         let title = self
             .artifact(&section.parent_key)
@@ -977,14 +995,34 @@ pub fn parse_artifact_file(
     let author = string_field(&fm, "author");
     let parent_epic = string_field(&fm, "parent_epic");
     let valid_until = string_field(&fm, "valid_until");
-    let created_at = string_field(&fm, "created_at");
-    let updated_at = string_field(&fm, "updated_at");
+    // Old templates use `created` / `updated`, sometimes with date precision
+    // only. Keep that exact source value; explicit current fields (even null)
+    // win, and neither cache timestamps nor filesystem times fill gaps.
+    let created_at = string_field(
+        &fm,
+        if fm.contains_key("created_at") {
+            "created_at"
+        } else {
+            "created"
+        },
+    );
+    let updated_at = string_field(
+        &fm,
+        if fm.contains_key("updated_at") {
+            "updated_at"
+        } else {
+            "updated"
+        },
+    );
 
     let mut tags = frontmatter::tags_from_frontmatter(&fm);
     tags.sort();
     tags.dedup();
 
-    let (outgoing, link_diagnostics) = extract_outgoing(&fm, relative_path);
+    // A `links:` block that is not a sequence cannot be read as an edge set.
+    // The source is refused here, so it is excluded from the current set and
+    // leaves the capture incomplete - never published as "no relations".
+    let (outgoing, link_diagnostics) = extract_outgoing(&fm, relative_path)?;
     diagnostics.extend(link_diagnostics);
 
     let input_digest = embedding_input_digest(&title, &body, body_prefix_chars);
@@ -1031,23 +1069,29 @@ fn string_field(fm: &Frontmatter, key: &str) -> Option<String> {
 /// A malformed entry produces a diagnostic and is **not** silently dropped:
 /// the edges around it are kept and the source is reported, so a lost edge is
 /// never dressed up as "this artifact has no relations".
+///
+/// A `links:` block that is not a sequence is a different failure. There is
+/// no edge set to read at all, so there is nothing to keep: reporting an
+/// empty outgoing set would publish the artifact as if it had no relations
+/// and drop every relation the author wrote. That is an invalid source, not a
+/// warning, and it is refused here so the caller reports it instead of
+/// publishing a silent empty set.
 fn extract_outgoing(
     fm: &Frontmatter,
     relative_path: &str,
-) -> (BTreeSet<OutgoingEdge>, Vec<SourceDiagnostic>) {
+) -> Result<(BTreeSet<OutgoingEdge>, Vec<SourceDiagnostic>), SourceDiagnostic> {
     let mut edges = BTreeSet::new();
     let mut diagnostics = Vec::new();
 
     let Some(value) = fm.get("links") else {
-        return (edges, diagnostics);
+        return Ok((edges, diagnostics));
     };
     let serde_yaml::Value::Sequence(seq) = value else {
-        diagnostics.push(SourceDiagnostic::for_source(
+        return Err(SourceDiagnostic::for_source(
             DiagnosticCode::InvalidLinks,
             relative_path,
             "frontmatter `links:` is present but is not a sequence",
         ));
-        return (edges, diagnostics);
     };
 
     for (index, item) in seq.iter().enumerate() {
@@ -1094,7 +1138,7 @@ fn extract_outgoing(
         }
     }
 
-    (edges, diagnostics)
+    Ok((edges, diagnostics))
 }
 
 // ---------------------------------------------------------------------------
@@ -1354,8 +1398,9 @@ async fn run_pass(workspace: &Path, parse: bool) -> Result<Pass, ConstellationEr
 
             let source_digest = sha256_hex(&bytes);
             // The control pass still parses — for the diagnostic, not the
-            // parsed artifact. An invalid file produces `UnreadableSource` in
-            // the first pass; if the second pass skipped parsing it would
+            // parsed artifact. An invalid file produces its diagnostic
+            // (`UnreadableSource`, `InvalidLinks`) in the first pass; if the
+            // second pass skipped parsing it would
             // report `None` here, `agrees_with` would compare Some(_) to None,
             // and a perfectly stable broken file would exhaust the capture
             // budget as `source_busy`. Parse twice, keep the artifact once.
@@ -1406,12 +1451,10 @@ async fn run_pass(workspace: &Path, parse: bool) -> Result<Pass, ConstellationEr
 /// Read the workspace config and derive the config digest, the artifact-prefix
 /// budget, and the section layout.
 ///
-/// The digest is now over **three** things: the raw config bytes, the artifact
-/// directory list, and the domain-separated `section_layout_fingerprint`.
-/// Before, a tokenizer swap or a token-limit change produced the *same*
-/// `config_digest` and the same `source_set_digest` — so two captures that cut
-/// their windows differently agreed, and one capture's `#sN` keys could be
-/// compared against another's rows as if they meant the same thing.
+/// The digest binds raw config bytes, artifact directories, section layout,
+/// and the compiled metadata parser revision. A tokenizer/layout change or a
+/// newly recovered nested edge must not claim the old projection is current:
+/// identical bytes can have a different interpretation after an upgrade.
 ///
 /// The layout itself is resolved from the **process-wide model cache**, not
 /// from the workspace, so both passes see the same answer as long as the cache
@@ -1441,7 +1484,9 @@ async fn read_config(
         .field(&bytes)
         .field(ARTIFACT_DIRS.join("\u{1}").as_bytes())
         .field(b"section_layout")
-        .field(layout_fingerprint.as_bytes());
+        .field(layout_fingerprint.as_bytes())
+        .field(b"metadata_parser")
+        .field(METADATA_PARSER_REVISION.as_bytes());
     let config_digest = digest.finish_hex();
 
     let body_prefix_chars = if bytes.is_empty() {
@@ -1662,9 +1707,19 @@ fn build_view(
     let coverage = Coverage {
         expected: enumerated_paths.len(),
         read: entries.len(),
+        // A file that could not be read at all and a file whose `links:`
+        // block cannot be read as an edge set are the same outcome: the path
+        // was seen, but it cannot become a current row. Both keep the capture
+        // incomplete, so a read reports a named error instead of an empty
+        // success, and a reconcile refuses to publish.
         invalid: unusable
             .iter()
-            .filter(|u| u.code == DiagnosticCode::UnreadableSource)
+            .filter(|u| {
+                matches!(
+                    u.code,
+                    DiagnosticCode::UnreadableSource | DiagnosticCode::InvalidLinks
+                )
+            })
             .count(),
         unavailable: unusable
             .iter()
@@ -1767,6 +1822,100 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[tokio::test]
+    async fn recovered_edges_do_not_reuse_a_byte_identical_pre_upgrade_projection() {
+        let tmp = workspace();
+        let source = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Stable identity\nslug: note-stable\n---\n\n---\nlinks:\n  - target: NOTE-002\n    relation: informs\n---\n\nBody.\n";
+        write_artifact(tmp.path(), "notes", "NOTE-001-stable.md", source);
+        let current = capture_source(
+            &CaptureRequest::new(tmp.path()),
+            CaptureLimits {
+                budget: Duration::from_secs(120),
+                ..CaptureLimits::default()
+            },
+        )
+        .await
+        .unwrap();
+        let artifact = current.artifact("note-stable").unwrap();
+        assert_eq!(artifact.canonical_key, "note-stable");
+        assert!(
+            artifact
+                .outgoing
+                .contains(&OutgoingEdge::new("NOTE-002", "informs"))
+        );
+        assert_eq!(artifact.raw_bytes.as_ref(), source.as_bytes());
+
+        // The old format did not bind the metadata interpreter. Its bytes,
+        // paths and canonical key can all match while its edge table is old.
+        let mut old_config = DigestBuilder::new(SOURCE_SET_DOMAIN);
+        old_config
+            .field(b"config")
+            .field(b"")
+            .field(ARTIFACT_DIRS.join("\u{1}").as_bytes())
+            .field(b"section_layout")
+            .field(current.layout.fingerprint().as_bytes());
+        assert_ne!(current.config_digest, old_config.finish_hex());
+    }
+
+    #[test]
+    fn old_projection_captures_the_original_identity_and_source_dates() {
+        let content = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Compatibility source\n---\n\n---\nassigned_number: 1\ncreated: 2026-10-24\npredicted_number: 1\nslug: note-compatibility-source\nupdated: 2026-10-24\n---\n\nKeep NOTE-002.\n";
+        let raw: Arc<[u8]> = Arc::from(content.as_bytes());
+        let parsed = parse_artifact_file("notes/NOTE-001-source.md", raw, 512).unwrap();
+
+        assert_eq!(parsed.canonical_key, "note-compatibility-source");
+        assert_eq!(parsed.display_id, "NOTE-001");
+        assert_eq!(
+            parsed.identity.slug.as_deref(),
+            Some("note-compatibility-source")
+        );
+        assert_eq!(parsed.identity.assigned_number, Some(1));
+        assert_eq!(parsed.identity.predicted_number, Some(1));
+        assert_eq!(parsed.created_at.as_deref(), Some("2026-10-24"));
+        assert_eq!(parsed.updated_at.as_deref(), Some("2026-10-24"));
+        assert_eq!(parsed.raw_bytes.as_ref(), content.as_bytes());
+        assert!(parsed.body.ends_with("Keep NOTE-002.\n"));
+    }
+
+    #[test]
+    fn source_timestamp_aliases_keep_precision_and_do_not_invent_missing_values() {
+        let content = "---\nid: mem-original\nkind: memory\nstatus: active\ntitle: Convention\n---\n\n---\nid: mem-original\nkind: memory\ncreated: 2026-10-24T08:07:25.802334+00:00\n---\n\nRemember this convention.\n";
+        let parsed =
+            parse_artifact_file("memory/mem-original.md", Arc::from(content.as_bytes()), 512)
+                .unwrap();
+
+        assert_eq!(
+            parsed.created_at.as_deref(),
+            Some("2026-10-24T08:07:25.802334+00:00")
+        );
+        assert_eq!(parsed.updated_at, None);
+    }
+
+    #[test]
+    fn explicit_source_timestamps_and_nulls_take_precedence_over_legacy_aliases() {
+        for (fields, expected_created, expected_updated) in [
+            (
+                "created_at: 2026-10-01T12:34:56Z\nupdated_at: 2026-10-02T01:02:03Z\n",
+                Some("2026-10-01T12:34:56Z"),
+                Some("2026-10-02T01:02:03Z"),
+            ),
+            ("created_at: null\nupdated_at: null\n", None, None),
+        ] {
+            let content = format!(
+                "---\nid: NOTE-001\nkind: note\n{fields}created: 2026-10-24\nupdated: 2026-10-24\n---\n\nBody.\n"
+            );
+            let parsed = parse_artifact_file(
+                "notes/NOTE-001-original.md",
+                Arc::from(content.as_bytes()),
+                512,
+            )
+            .unwrap();
+
+            assert_eq!(parsed.created_at.as_deref(), expected_created);
+            assert_eq!(parsed.updated_at.as_deref(), expected_updated);
+        }
+    }
+
     const PRD: &str = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\n---\n\nBody A.\n";
 
     fn workspace() -> TempDir {
@@ -1834,7 +1983,10 @@ mod tests {
         let cache = TempDir::new().unwrap();
         let snapshot = cache
             .path()
-            .join(format!("models--{}", super::super::jobs::DEFAULT_MODEL_REPO.replace('/', "--")))
+            .join(format!(
+                "models--{}",
+                super::super::jobs::DEFAULT_MODEL_REPO.replace('/', "--")
+            ))
             .join("snapshots/rev-fixture");
         std::fs::create_dir_all(&snapshot).unwrap();
         crate::embed::tokenizer::testing::write_snapshot(&snapshot, limit).unwrap();
@@ -2250,14 +2402,7 @@ mod tests {
         let (tokenizer, budgets) = view.section_layout().unwrap();
         assert_eq!(
             section.input_digest,
-            section_input_digest(
-                tokenizer,
-                &budgets,
-                "Auth",
-                None,
-                &section.content,
-            )
-            .unwrap()
+            section_input_digest(tokenizer, &budgets, "Auth", None, &section.content,).unwrap()
         );
         assert_eq!(
             section.input_digest, section.parent_input_digest,

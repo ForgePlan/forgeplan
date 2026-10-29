@@ -419,9 +419,7 @@ async fn process_detected_file(
 
     // Canonical Markdown FIRST. Everything below this line is derived.
     let mut write_warnings = warnings;
-    if let Err(e) =
-        write_canonical_document(&ctx, &detection.kind, &artifact_id, &document).await
-    {
+    if let Err(e) = write_canonical_document(&ctx, &detection.kind, &artifact_id, &document).await {
         // Nothing was derived yet, so there is nothing to roll back — and the
         // document stays out of the workspace rather than half-imported.
         return ScanImportEntry {
@@ -515,26 +513,25 @@ async fn write_canonical_document(
     // normalises the known ones. `force_body = true` because this write IS the
     // body decision — a stale file must not win over the document being
     // imported right now.
-    crate::projection::render_projection_record_with_body(
-        ctx.workspace(),
-        &record,
-        &document.links,
-    )
-    .await
-    .map(|_| ())
+    crate::projection::render_projection_record_with_body(ctx.workspace(), &record, &document.links)
+        .await
+        .map(|_| ())
 }
 
 /// The canonical file path for `(kind, id, title)` — the same computation the
 /// projection renderer performs, so the seed write and the normalised write
 /// land on ONE file rather than two.
-fn canonical_path(workspace: &Path, kind: &ArtifactKind, artifact_id: &str, title: &str) -> PathBuf {
-    workspace
-        .join(kind.dir_name())
-        .join(format!(
-            "{}-{}.md",
-            artifact_id,
-            crate::projection::projection_slug(title)
-        ))
+fn canonical_path(
+    workspace: &Path,
+    kind: &ArtifactKind,
+    artifact_id: &str,
+    title: &str,
+) -> PathBuf {
+    workspace.join(kind.dir_name()).join(format!(
+        "{}-{}.md",
+        artifact_id,
+        crate::projection::projection_slug(title)
+    ))
 }
 
 /// Render the source document's frontmatter with the canonical keys
@@ -553,7 +550,8 @@ fn render_frontmatter_with_known_keys(
     fm.insert("status".to_string(), s(document.status.clone()));
     fm.insert(
         "depth".to_string(),
-        s(document.frontmatter
+        s(document
+            .frontmatter
             .get("depth")
             .and_then(|v| v.as_str())
             .unwrap_or("standard")
@@ -565,13 +563,7 @@ fn render_frontmatter_with_known_keys(
     } else {
         fm.insert(
             "tags".to_string(),
-            serde_yaml::Value::Sequence(
-                document
-                    .tags
-                    .iter()
-                    .map(|t| s(t.clone()))
-                    .collect(),
-            ),
+            serde_yaml::Value::Sequence(document.tags.iter().map(|t| s(t.clone())).collect()),
         );
     }
     if document.links.is_empty() {
@@ -690,21 +682,14 @@ async fn allocate_artifact_id(
 ///
 /// A dry-run that took the allocation lock would create a lock file, which is
 /// exactly the "dry-run creates nothing" contract it is supposed to honour.
-async fn preview_artifact_id(
-    detection: &DetectionResult,
-    legacy: Option<&LanceStore>,
-) -> String {
+async fn preview_artifact_id(detection: &DetectionResult, legacy: Option<&LanceStore>) -> String {
     if let Some(id) = &detection.suggested_id {
         let normalized = id.to_uppercase();
         if is_safe_artifact_id(&normalized) {
             return normalized;
         }
     }
-    let prefix = detection
-        .kind
-        .prefix()
-        .trim_end_matches('-')
-        .to_uppercase();
+    let prefix = detection.kind.prefix().trim_end_matches('-').to_uppercase();
     if let Some(store) = legacy {
         for n in 1..=999u32 {
             let candidate = format!("{prefix}-{n:03}");
@@ -758,7 +743,9 @@ mod tests {
     }
 
     async fn guard(ws: &Path) -> crate::workspace::lock::WorkspaceLock {
-        crate::workspace::lock::acquire_workspace_lock(ws).await.unwrap()
+        crate::workspace::lock::acquire_workspace_lock(ws)
+            .await
+            .unwrap()
     }
 
     fn source(tmp: &Path, rel: &str, body: &str) -> PathBuf {
@@ -834,7 +821,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.imported, 1, "dry run still previews what it would do");
+        assert_eq!(
+            result.imported, 1,
+            "dry run still previews what it would do"
+        );
         assert_eq!(
             inventory(&ws),
             before,
@@ -926,11 +916,7 @@ mod tests {
         .expect_err("a mutating run must not proceed without the lock");
 
         assert!(err.to_string().contains("lock"), "got: {err}");
-        assert_eq!(
-            inventory(&ws),
-            before,
-            "the refused run still wrote a file"
-        );
+        assert_eq!(inventory(&ws), before, "the refused run still wrote a file");
     }
 
     /// A failed batch is visible in the result, not flattened into the
@@ -1099,10 +1085,7 @@ mod tests {
         assert_eq!(fm.get("tags").unwrap().as_sequence().unwrap().len(), 1);
         let links = fm.get("links").unwrap().as_sequence().unwrap();
         assert_eq!(links.len(), 1);
-        assert_eq!(
-            links[0].get("target").unwrap().as_str(),
-            Some("RFC-002")
-        );
+        assert_eq!(links[0].get("target").unwrap().as_str(), Some("RFC-002"));
         assert_eq!(links[0].get("relation").unwrap().as_str(), Some("informs"));
         // Unknown keys survive the round trip verbatim.
         assert_eq!(
@@ -1120,7 +1103,11 @@ mod tests {
     #[tokio::test]
     async fn a_document_without_frontmatter_imports_as_a_body_only_artifact() {
         let (tmp, ws) = workspace().await;
-        source(tmp.path(), "docs/ADR-005-plain.md", "# Plain\n\nJust prose.\n");
+        source(
+            tmp.path(),
+            "docs/ADR-005-plain.md",
+            "# Plain\n\nJust prose.\n",
+        );
         let lock = guard(&ws).await;
 
         let result = scan_and_import_to_workspace(
@@ -1173,7 +1160,8 @@ mod tests {
     #[tokio::test]
     async fn a_repeat_run_skips_and_changes_nothing() {
         let (tmp, ws) = workspace().await;
-        let original = "---\nid: ADR-011\nkind: adr\ntitle: Repeatable\nstatus: accepted\n---\n# Once\n";
+        let original =
+            "---\nid: ADR-011\nkind: adr\ntitle: Repeatable\nstatus: accepted\n---\n# Once\n";
         let path = source(tmp.path(), "docs/ADR-011-repeat.md", original);
         let lock = guard(&ws).await;
 
@@ -1313,7 +1301,10 @@ mod tests {
         let record = store.get_record("PRD-007").await.unwrap().unwrap();
         assert_eq!(record.tags, vec!["source=code", "layer=auth"]);
         let (_, content) = imported_file(&ws, "prds", "PRD-007-").expect("canonical PRD written");
-        assert!(content.contains("layer=auth"), "tags must reach the file too");
+        assert!(
+            content.contains("layer=auth"),
+            "tags must reach the file too"
+        );
     }
 
     /// A legacy row whose canonical file is missing is healed from the source

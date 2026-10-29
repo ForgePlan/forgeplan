@@ -65,12 +65,11 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
     }
 
     common::log_change_field(
-        &store,
+        &ws,
+        Some(&store),
         id,
         "update",
-        "status",
-        Some(&old_status),
-        Some("superseded"),
+        ("status", Some(&old_status), Some("superseded")),
         "cli",
     )
     .await;
@@ -130,6 +129,10 @@ async fn run_file_first(
     let canonical = read
         .resolve_id(id)
         .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let old_status = read
+        .get_record(&canonical)
+        .map(|r| r.status.as_str())
+        .unwrap_or("active");
     // The `--by` target may not exist yet (forward-reference cross-PR), so an
     // unresolvable input is passed through verbatim — same as `link`.
     let by_canonical = read.resolve_id(by).unwrap_or_else(|| by.to_string());
@@ -147,6 +150,16 @@ async fn run_file_first(
         .await
         .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
     };
+
+    common::log_change_field(
+        &ws,
+        None,
+        &canonical,
+        "update",
+        ("status", Some(old_status), Some("superseded")),
+        "cli",
+    )
+    .await;
 
     common::note_constellation_owns_index();
     // Lock released before reconcile — see `common::reconcile_after_file_mutation`.

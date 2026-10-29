@@ -1,13 +1,18 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use forgeplan_core::db::store::ArtifactRecord;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::progress::{self, ArtifactProgress, CheckboxCount};
 
 use crate::commands::common;
 
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let records = store.list_records(None).await?;
+    let (_, source) = common::open_read_source().await?;
+    let records: Cow<'_, [ArtifactRecord]> = match &source {
+        common::ReadSource::Legacy(store) => Cow::Owned(store.list_records(None).await?),
+        common::ReadSource::Captured(read) => Cow::Borrowed(read.records()),
+    };
 
     if records.is_empty() {
         let hints_vec = vec![
@@ -70,7 +75,11 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     // payload on `id` presence: scoped-to-one when `Some`, all when `None`.
     let single: Option<(usize, &forgeplan_core::db::store::ArtifactRecord)> =
         if let Some(target_id) = id {
-            let canonical = store.resolve_id(target_id).await?.ok_or_else(|| {
+            let canonical = match &source {
+                common::ReadSource::Legacy(store) => store.resolve_id(target_id).await?,
+                common::ReadSource::Captured(read) => read.resolve_id(target_id),
+            }
+            .ok_or_else(|| {
                 anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", target_id)
             })?;
             let canonical_upper = canonical.to_uppercase();
@@ -191,7 +200,7 @@ Fix: forgeplan list",
         println!("No artifacts with checkboxes found.");
         let bootstrap = vec![
             Hint::suggestion("Add FR checkboxes to a PRD or RFC")
-                .with_action("forgeplan list --kind prd".to_string()),
+                .with_action("forgeplan list --type prd".to_string()),
         ];
         print!("{}", hints::render_next_action_line(&bootstrap));
         return Ok(());

@@ -635,9 +635,7 @@ fn stale_count_from_records(records: &[ArtifactRecord]) -> usize {
         .filter(|r| {
             r.valid_until.as_ref().is_some_and(|vu| {
                 chrono::NaiveDate::parse_from_str(vu, "%Y-%m-%d")
-                    .or_else(|_| {
-                        chrono::DateTime::parse_from_rfc3339(vu).map(|dt| dt.date_naive())
-                    })
+                    .or_else(|_| chrono::DateTime::parse_from_rfc3339(vu).map(|dt| dt.date_naive()))
                     .map(|date| date < today)
                     .unwrap_or(false)
             })
@@ -670,14 +668,8 @@ pub async fn health_report_with_phase(
     let evidence_records = evidence_records_from_store(store).await?;
     let stale_count = stale_count_from_store(store).await;
     let evidence: Vec<&ArtifactRecord> = evidence_records.iter().collect();
-    health_report_with_phase_from_records(
-        &all,
-        &evidence,
-        &all_relations,
-        stale_count,
-        workspace,
-    )
-    .await
+    health_report_with_phase_from_records(&all, &evidence, &all_relations, stale_count, workspace)
+        .await
 }
 
 /// PROB-051 L-H3 + P-H1 + P-H2, phase-aware, over one captured/pinned read
@@ -719,8 +711,7 @@ async fn health_report_with_phase_from_records(
     // scan. Pre-PROB-051 the MCP forgeplan_health handler called
     // health_report (one scan) and then store.list_records(None) again
     // for phase mismatches — pure waste on a 1000-artifact workspace.
-    let mut report =
-        build_health_report(all, evidence_records, all_relations, stale_count);
+    let mut report = build_health_report(all, evidence_records, all_relations, stale_count);
 
     // PROB-051 L-H3 closure: phase tracking is opt-in per workspace
     // config. When disabled the verdict matches health_report exactly
@@ -3650,18 +3641,28 @@ mod captured_read_tests {
          ## Verdict\n\nThe captured read run measured the same workspace the legacy \
          projection holds, and this pack is what it measured.\n";
 
-    fn write_artifact(
-        ws: &std::path::Path,
-        dir: &str,
-        id: &str,
-        kind: &str,
-        title: &str,
-        status: &str,
-        created_at: &str,
-        valid_until: Option<&str>,
-        links: &[(&str, &str)],
-        body: &str,
-    ) -> PathBuf {
+    struct ArtifactFixture<'a> {
+        id: &'a str,
+        kind: &'a str,
+        title: &'a str,
+        status: &'a str,
+        created_at: &'a str,
+        valid_until: Option<&'a str>,
+        links: &'a [(&'a str, &'a str)],
+        body: &'a str,
+    }
+
+    fn write_artifact(ws: &std::path::Path, dir: &str, fixture: ArtifactFixture<'_>) -> PathBuf {
+        let ArtifactFixture {
+            id,
+            kind,
+            title,
+            status,
+            created_at,
+            valid_until,
+            links,
+            body,
+        } = fixture;
         let mut fm = format!(
             "---\nid: {id}\ntitle: {title}\nkind: {kind}\nstatus: {status}\n\
              depth: standard\ncreated_at: {created_at}\n"
@@ -3675,9 +3676,10 @@ mod captured_read_tests {
                 fm.push_str(&format!("  - target: {target}\n    relation: {relation}\n"));
             }
         }
-        let path = ws
-            .join(dir)
-            .join(format!("{id}-{}.md", crate::artifact::types::slugify(title)));
+        let path = ws.join(dir).join(format!(
+            "{id}-{}.md",
+            crate::artifact::types::slugify(title)
+        ));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, format!("{fm}---\n\n{body}\n")).unwrap();
         path
@@ -3700,62 +3702,72 @@ mod captured_read_tests {
         write_artifact(
             &ws,
             "evidence",
-            "EVID-001",
-            "evidence",
-            "Supporting pack",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[("ADR-001", "informs")],
-            EVIDENCE_BODY,
+            ArtifactFixture {
+                id: "EVID-001",
+                kind: "evidence",
+                title: "Supporting pack",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("ADR-001", "informs")],
+                body: EVIDENCE_BODY,
+            },
         );
         write_artifact(
             &ws,
             "evidence",
-            "EVID-002",
-            "evidence",
-            "Stale draft pack",
-            "draft",
-            "2020-01-01T00:00:00Z",
-            None,
-            &[("ADR-001", "informs")],
-            EVIDENCE_BODY,
+            ArtifactFixture {
+                id: "EVID-002",
+                kind: "evidence",
+                title: "Stale draft pack",
+                status: "draft",
+                created_at: "2020-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("ADR-001", "informs")],
+                body: EVIDENCE_BODY,
+            },
         );
         write_artifact(
             &ws,
             "adrs",
-            "ADR-001",
-            "adr",
-            "Evidenced decision",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[],
-            "## Context\n\nThis decision is backed by a pack that informs it.\n",
+            ArtifactFixture {
+                id: "ADR-001",
+                kind: "adr",
+                title: "Evidenced decision",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[],
+                body: "## Context\n\nThis decision is backed by a pack that informs it.\n",
+            },
         );
         write_artifact(
             &ws,
             "problems",
-            "PROB-001",
-            "problem",
-            "Retired problem",
-            "deprecated",
-            "2019-01-01T00:00:00Z",
-            Some("2020-01-01"),
-            &[],
-            "## Context\n\nThis problem was retired and its evidence expired.\n",
+            ArtifactFixture {
+                id: "PROB-001",
+                kind: "problem",
+                title: "Retired problem",
+                status: "deprecated",
+                created_at: "2019-01-01T00:00:00Z",
+                valid_until: Some("2020-01-01"),
+                links: &[],
+                body: "## Context\n\nThis problem was retired and its evidence expired.\n",
+            },
         );
         write_artifact(
             &ws,
             "notes",
-            "NOTE-001",
-            "note",
-            "Unlinked note",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[],
-            "## Context\n\nThis note is linked to nothing at all.\n",
+            ArtifactFixture {
+                id: "NOTE-001",
+                kind: "note",
+                title: "Unlinked note",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[],
+                body: "## Context\n\nThis note is linked to nothing at all.\n",
+            },
         );
         (tmp, ws)
     }
@@ -3804,7 +3816,10 @@ mod captured_read_tests {
             store.replace_record(record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
-            store.add_relation(&source, &target, &relation).await.unwrap();
+            store
+                .add_relation(&source, &target, &relation)
+                .await
+                .unwrap();
         }
         store
     }
@@ -3841,11 +3856,7 @@ mod captured_read_tests {
         assert_eq!(report.orphans, vec!["NOTE-001", "PROB-001"]);
 
         // Evidence is attached, so no decision is trust-decayed.
-        assert!(
-            report.at_risk.is_empty(),
-            "at risk: {:?}",
-            report.at_risk
-        );
+        assert!(report.at_risk.is_empty(), "at risk: {:?}", report.at_risk);
         assert!(report.active_stubs.is_empty());
         assert!(report.possible_duplicates.is_empty());
 
@@ -3904,8 +3915,10 @@ mod captured_read_tests {
         // mismatches or 1 (or any count), and a zero-tolerance phase
         // threshold changes nothing.
         assert_eq!(report.verdict, Verdict::NeedsAttention);
-        let mut zero_tolerance = VerdictThresholds::default();
-        zero_tolerance.phase_mismatches = 0;
+        let zero_tolerance = VerdictThresholds {
+            phase_mismatches: 0,
+            ..VerdictThresholds::default()
+        };
         for folded in [0usize, mismatches.len(), 50] {
             assert_eq!(
                 report.compute_verdict_with(&zero_tolerance, folded),
@@ -3919,8 +3932,10 @@ mod captured_read_tests {
         // under a zero-tolerance read-error threshold the same report
         // promotes to Unhealthy. Asserting this separately is the point —
         // the two classes must not be conflated.
-        let mut zero_read_errors = VerdictThresholds::default();
-        zero_read_errors.phase_read_errors = 0;
+        let zero_read_errors = VerdictThresholds {
+            phase_read_errors: 0,
+            ..VerdictThresholds::default()
+        };
         assert_eq!(
             report.compute_verdict_with(&zero_read_errors, mismatches.len()),
             Verdict::Unhealthy,
@@ -3961,50 +3976,58 @@ mod captured_read_tests {
         write_artifact(
             &ws,
             "evidence",
-            "EVID-001",
-            "evidence",
-            "Pack for the clean decision",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[("ADR-001", "informs")],
-            EVIDENCE_BODY,
+            ArtifactFixture {
+                id: "EVID-001",
+                kind: "evidence",
+                title: "Pack for the clean decision",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("ADR-001", "informs")],
+                body: EVIDENCE_BODY,
+            },
         );
         write_artifact(
             &ws,
             "adrs",
-            "ADR-001",
-            "adr",
-            "Clean decision",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[],
-            "## Context\n\nA single evidenced decision keeps the workspace quiet.\n",
+            ArtifactFixture {
+                id: "ADR-001",
+                kind: "adr",
+                title: "Clean decision",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[],
+                body: "## Context\n\nA single evidenced decision keeps the workspace quiet.\n",
+            },
         );
         write_artifact(
             &ws,
             "evidence",
-            "EVID-002",
-            "evidence",
-            "Pack for the linked decision",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[("ADR-002", "informs")],
-            EVIDENCE_BODY,
+            ArtifactFixture {
+                id: "EVID-002",
+                kind: "evidence",
+                title: "Pack for the linked decision",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("ADR-002", "informs")],
+                body: EVIDENCE_BODY,
+            },
         );
         write_artifact(
             &ws,
             "adrs",
-            "ADR-002",
-            "adr",
-            "Linked decision",
-            "active",
-            "2026-01-01T00:00:00Z",
-            None,
-            &[("ADR-001", "based_on")],
-            "## Context\n\nThis decision refines the other one.\n",
+            ArtifactFixture {
+                id: "ADR-002",
+                kind: "adr",
+                title: "Linked decision",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                valid_until: None,
+                links: &[("ADR-001", "based_on")],
+                body: "## Context\n\nThis decision refines the other one.\n",
+            },
         );
         // A machine-local table the canonical .gitignore section excludes,
         // committed by mistake: drift must surface it…
@@ -4034,9 +4057,7 @@ mod captured_read_tests {
             .map(|d| d.path.as_str())
             .collect();
         assert!(
-            paths
-                .iter()
-                .any(|p| p.starts_with(".forgeplan/lance/")),
+            paths.iter().any(|p| p.starts_with(".forgeplan/lance/")),
             "the leaked table must be reported: {paths:?}"
         );
         assert!(

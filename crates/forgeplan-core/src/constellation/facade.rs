@@ -158,8 +158,8 @@ pub async fn capture_for_read(
 /// owner. It is **not** reconcile persistence: matching digests only decide
 /// *which kind* of view the caller gets, never whether to publish one.
 ///
-/// * No pointer at all → ephemeral. A first run must answer, and answering
-///   must not create anything.
+/// * No pointer and no published/orphaned managed state → ephemeral. A first
+///   run or an unpublished bootstrap must answer without creating anything.
 /// * Pointer present, but the captured bytes or config moved → ephemeral.
 ///   The published generation describes a different source set, so serving it
 ///   would be stale and persisting the new one from a read would be a write.
@@ -181,44 +181,233 @@ pub async fn capture_for_read(
 ///
 /// # Errors
 ///
-/// [`ConstellationError::IndexGenerationUnavailable`] when a pointer exists
-/// but its manifest is missing, its checksum disagrees, or the generation
-/// cannot be locked. That is never downgraded to an ephemeral view: "I could
-/// not read what was published" and "nothing has been published" are
-/// different facts, and only one of them should be answered with fresh bytes.
+/// [`ConstellationError::IndexGenerationUnavailable`] when a published pointer
+/// is missing or cannot be resolved, or any of its three physical table pins
+/// cannot be read with the expected schema and membership. Corruption is never
+/// downgraded to an ephemeral view, even when the canonical source has moved.
 pub async fn ensure_read_view(
     workspace: &Path,
     captured: Arc<CapturedSourceView>,
 ) -> Result<ReadView, ConstellationError> {
     let index_root = workspace.join("lance");
+    let protocol = storage::read_marker(&index_root)?;
     let descriptor = storage::read_current(&index_root)?;
 
     let Some(descriptor) = descriptor else {
+        // Initializing/staged-initial markers can precede the first pointer,
+        // including a staged immutable manifest. Published state cannot.
+        let missing_publication = match protocol {
+            IndexProtocolState::Active(_) => true,
+            IndexProtocolState::Initializing(marker) => {
+                marker.state == super::manifest::BootstrapState::Published
+                    || physical_path_exists(&index_root.join(storage::CURRENT_FILE_NAME))?
+            }
+            IndexProtocolState::Uninitialized => has_managed_index_state(&index_root)?,
+        };
+        if missing_publication {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!(
+                    "{} is missing from an index with managed Constellation state",
+                    index_root.join(storage::CURRENT_FILE_NAME).display()
+                ),
+            });
+        }
         return Ok(ReadView::from_capture(captured));
     };
 
-    // One open, one checksum, one shared lock. `pin_generation_read` refuses
-    // an unreadable, replaced or checksum-disagreeing manifest, so there is no
-    // second read of the same file that could see different bytes.
+    // One manifest open, one checksum, one shared lock. Validate even a cache
+    // retained for moved sources: an unreadable published pin is not absence.
     let pin = Arc::new(storage::pin_generation_read(&index_root, &descriptor)?);
     let manifest = pin.manifest_arc();
-    if manifest.source_set_digest != descriptor.source_set_digest {
-        return Err(ConstellationError::IndexGenerationUnavailable {
-            detail: format!(
-                "manifest {} disagrees with CURRENT about the source set",
-                descriptor.manifest_path
-            ),
-        });
-    }
-    if descriptor.source_set_digest != captured.source_set_digest
-        || descriptor.config_digest != captured.config_digest
+    let persisted = ReadView::from_manifest(Arc::clone(&manifest), descriptor, Arc::clone(&pin))?;
+    validate_physical_read_pins(&index_root, pin.descriptor(), &manifest, &captured).await?;
+    if manifest.source_set_digest != captured.source_set_digest
+        || manifest.config_digest != captured.config_digest
     {
         return Ok(ReadView::Ephemeral {
             captured,
             vector_cache: Some(pin),
         });
     }
-    ReadView::from_manifest(manifest, descriptor, pin)
+    Ok(persisted)
+}
+
+/// Inspect names, not their contents: even a dangling pointer or an interrupted
+/// legacy backup claims this index and must not admit the legacy writer.
+fn physical_path_exists(path: &Path) -> Result<bool, ConstellationError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!("cannot inspect {}: {error}", path.display()),
+        }),
+    }
+}
+
+fn has_generation_manifest(index_root: &Path) -> Result<bool, ConstellationError> {
+    let path = index_root.join(storage::GENERATIONS_DIR);
+    let entries = match std::fs::read_dir(&path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!("cannot inspect {}: {error}", path.display()),
+            });
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| ConstellationError::IndexGenerationUnavailable {
+            detail: format!("cannot inspect {}: {error}", path.display()),
+        })?;
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn has_managed_index_state(index_root: &Path) -> Result<bool, ConstellationError> {
+    for relative in [storage::CURRENT_FILE_NAME, storage::PROTOCOL_RELATIVE_PATH] {
+        if physical_path_exists(&index_root.join(relative))? {
+            return Ok(true);
+        }
+    }
+    let entries = match std::fs::read_dir(index_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!("cannot inspect {}: {error}", index_root.display()),
+            });
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| ConstellationError::IndexGenerationUnavailable {
+            detail: format!("cannot inspect {}: {error}", index_root.display()),
+        })?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(".legacy-backup.lance")
+            || name.ends_with(".legacy-backup")
+            || name.strip_suffix(".lance").is_some_and(|name| {
+                name == super::manifest::TABLE_SECTIONS_V1
+                    || storage::ACTIVE_TABLES
+                        .iter()
+                        .any(|(_, table)| *table == name)
+            })
+        {
+            return Ok(true);
+        }
+    }
+    has_generation_manifest(index_root)
+}
+
+/// Reuse the publisher's independent exact-version read-back, rather than
+/// accepting canonical records as proof that the published tables still exist.
+async fn validate_physical_read_pins(
+    index_root: &Path,
+    descriptor: &CurrentDescriptor,
+    manifest: &GenerationManifest,
+    captured: &CapturedSourceView,
+) -> Result<(), ConstellationError> {
+    let marker = marker_for(manifest);
+    let same_source = descriptor.source_set_digest == captured.source_set_digest
+        && descriptor.config_digest == captured.config_digest;
+    let mut expected_edges: usize = captured
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.outgoing.len())
+        .sum();
+    for (role, version) in [
+        (
+            "artifacts",
+            descriptor.effective_artifacts_version(manifest)?,
+        ),
+        (
+            "relations",
+            descriptor.effective_relations_version(manifest)?,
+        ),
+        ("sections", descriptor.effective_sections_version(manifest)?),
+    ] {
+        let reader =
+            super::lance_tables::open_table_at_version(index_root, &marker, role, version).await?;
+        let schema = reader.schema().await.map_err(|error| {
+            ConstellationError::IndexGenerationUnavailable {
+                detail: format!("cannot read the {role} schema at version {version}: {error}"),
+            }
+        })?;
+        let expected_schema = super::lance_tables::schema_for_role(role)?;
+        if schema.fields() != expected_schema.fields() {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: format!("the {role} schema at version {version} is not the active schema"),
+            });
+        }
+        if role == "relations" && !same_source {
+            // A moved capture cannot prescribe the old generation's edge
+            // count. Still read all pinned data in verify_staged below; its
+            // artifact/section expectations always come from the manifest.
+            expected_edges = reader.count_rows_where("true").await.map_err(|error| {
+                ConstellationError::IndexGenerationUnavailable {
+                    detail: format!("cannot count the pinned relations table: {error}"),
+                }
+            })?;
+        }
+    }
+
+    let expected: BTreeMap<String, String> = manifest
+        .source_entries
+        .iter()
+        .map(|entry| (entry.canonical_key.clone(), entry.source_digest.clone()))
+        .collect();
+    if expected.len() != manifest.source_entries.len()
+        || (same_source
+            && (captured.entries.len() != manifest.source_entries.len()
+                // Both source-entry lists are in canonical relative-path order.
+                || captured.entries.iter().zip(&manifest.source_entries).any(
+                    |(entry, published)| {
+                        published.canonical_key != entry.canonical_key
+                            || published.relative_path != entry.relative_path
+                            || published.source_digest != entry.source_digest
+                    },
+                )))
+    {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: "the generation's source membership disagrees with its confirmed capture"
+                .to_string(),
+        });
+    }
+    let section_digests = manifest
+        .section_bindings
+        .iter()
+        .map(|section| {
+            // validate_section_membership already proved every parent exists.
+            (
+                section.section_key.clone(),
+                expected[&section.parent_key].clone(),
+            )
+        })
+        .collect();
+    super::publisher::verify_staged(
+        index_root,
+        &marker,
+        manifest.table_versions.artifacts,
+        &expected,
+        manifest.table_versions.relations,
+        expected_edges,
+        &super::publisher::SectionsExpectation {
+            version: manifest.table_versions.sections,
+            digests: section_digests,
+        },
+    )
+    .await
+    .map_err(|error| ConstellationError::IndexGenerationUnavailable {
+        detail: format!("the published generation's physical pins failed verification: {error}"),
+    })?;
+    Ok(())
 }
 
 /// One call that produces both halves of a read view.
@@ -272,8 +461,8 @@ pub async fn open_workspace_read(
 /// Whether this workspace's index has been cut over to Constellation.
 ///
 /// This is the branch a read path takes **before** it decides whether opening a
-/// legacy `LanceStore` is legitimate. Reading `CURRENT`/`PROTOCOL.json` is
-/// two small file reads; opening a legacy store is a migration run.
+/// legacy `LanceStore` is legitimate. It inspects only protocol paths and
+/// managed dataset/backup names; opening a legacy store is a migration run.
 ///
 /// # What counts as migrated
 ///
@@ -281,8 +470,10 @@ pub async fn open_workspace_read(
 ///   `Initializing` (bootstrap in flight). Both own the index; a bootstrap that
 ///   was interrupted is still a Constellation index, and treating it as legacy
 ///   is exactly how a half-built index gets a second set of tables beside it.
-/// * A `CURRENT` pointer, which is the visibility point and therefore proof
-///   something was published even if the marker is gone.
+/// * Physical `CURRENT`, active dataset or generation-manifest names, even if
+///   the pointer is damaged or its marker was lost.
+/// * A `*.legacy-backup.lance` left by interrupted bootstrap, which cannot
+///   safely be reopened through the legacy store.
 ///
 /// # What happens on a damaged marker
 ///
@@ -295,7 +486,7 @@ pub fn workspace_is_migrated(workspace: &Path) -> bool {
     let index_root = workspace.join(MaintainCapability::INDEX_DIR);
     match super::storage::read_marker(&index_root) {
         Ok(IndexProtocolState::Uninitialized) => {
-            matches!(super::storage::read_current(&index_root), Ok(Some(_)))
+            has_managed_index_state(&index_root).unwrap_or(true)
         }
         // Any marker state, or a marker that does not parse: the index claims
         // Constellation either way.
@@ -690,6 +881,7 @@ fn published_baseline(
 async fn restore_diverged_heads(
     tables: &super::lance_tables::IndexTables,
     baseline: &GenerationManifest,
+    workspace: &Path,
 ) -> Result<super::manifest::TableVersions, ConstellationError> {
     use super::publisher::{HeadComparison, compare_heads};
 
@@ -707,17 +899,17 @@ async fn restore_diverged_heads(
         } => {
             if artifacts_diverged {
                 tables
-                    .restore_artifacts_to(baseline.table_versions.artifacts)
+                    .restore_artifacts_to(baseline.table_versions.artifacts, workspace)
                     .await?;
             }
             if relations_diverged {
                 tables
-                    .restore_relations_to(baseline.table_versions.relations)
+                    .restore_relations_to(baseline.table_versions.relations, workspace)
                     .await?;
             }
             if sections_diverged {
                 tables
-                    .restore_sections_to(baseline.table_versions.sections)
+                    .restore_sections_to(baseline.table_versions.sections, workspace)
                     .await?;
             }
         }
@@ -825,10 +1017,11 @@ pub async fn maintain_index(
         &index_root,
         &marker,
         std::sync::Arc::clone(publisher.tracking_store()),
+        capability.workspace(),
     )
     .await?;
 
-    let head_versions = restore_diverged_heads(&tables, &baseline).await?;
+    let head_versions = restore_diverged_heads(&tables, &baseline, capability.workspace()).await?;
 
     // Capture under the workspace lock, released before the first commit.
     //
@@ -844,6 +1037,14 @@ pub async fn maintain_index(
         Some(std::sync::Arc::clone(&published)),
     )
     .await?;
+    if !captured.coverage.is_complete() {
+        return Err(ConstellationError::SourceUnavailable {
+            detail: format!(
+                "canonical source capture is incomplete: {:?}",
+                captured.diagnostics
+            ),
+        });
+    }
     let reconcile = super::reconciler::plan_reconcile(&captured, Some(&published));
     let commits_plan = plan_commits(&reconcile);
     // Tombstones name artifacts a complete capture proved absent — their
@@ -1194,6 +1395,14 @@ pub async fn maintain_index(
         Some(std::sync::Arc::clone(&published)),
     )
     .await?;
+    if !recheck.coverage.is_complete() {
+        return Err(ConstellationError::SourceUnavailable {
+            detail: format!(
+                "canonical source capture is incomplete before publication: {:?}",
+                recheck.diagnostics
+            ),
+        });
+    }
     super::publisher::candidate_is_current(
         Some(published.generation_id.as_str()),
         Some(descriptor.generation_id.as_str()),
@@ -1434,13 +1643,12 @@ pub struct EmbeddingQueueOutcome {
     pub after: super::jobs::EligibilityReport,
 }
 
-/// Largest number of inputs one [`prepare_embedding_batch`] call returns.
+/// Largest number of inputs one [`prepare_embedding_batch`] call admits.
 ///
-/// **A chosen bound, not a measurement.** The durable pending set is not
-/// capped by this — every eligible key gets a job in the manifest, O(rows) —
-/// so exceeding this defers work to the next pass rather than dropping it.
-/// It bounds what one compute phase holds in memory at once, and it is the
-/// same number the runtime's ready queue admits.
+/// The bound applies before materializing input text or writing pending state,
+/// not just to the returned vector. Unselected rows stay eligible for the next
+/// admission. Existing durable pending jobs are retained even when there are
+/// more than one batch of them.
 pub const MAX_PREPARED_BATCH: usize = 64;
 
 /// The width of this index's embedding column, in the type a profile declares.
@@ -1758,15 +1966,20 @@ pub async fn prepare_embedding_batch(
     }
 
     let marker = marker_for(&published);
-    let tables =
-        open_active_tables(&index_root, &marker, Arc::clone(publisher.tracking_store())).await?;
+    let tables = open_active_tables(
+        &index_root,
+        &marker,
+        Arc::clone(publisher.tracking_store()),
+        capability.workspace(),
+    )
+    .await?;
 
     // Recover the baseline before anything reads the tables for a decision,
     // exactly as `maintain_index` does: a head an abandoned pass left behind is
     // not the published state, and an admission that read it would record a
     // job for bytes this index does not serve.
     let baseline = published_baseline(&descriptor, &published)?;
-    restore_diverged_heads(&tables, &baseline).await?;
+    restore_diverged_heads(&tables, &baseline, capability.workspace()).await?;
 
     // Capture under the workspace lock; the lock is released before any write,
     // exactly as the merge stage does it.
@@ -1867,6 +2080,9 @@ pub async fn prepare_embedding_batch(
     }
 
     for key in eligibility.eligible_keys() {
+        if inputs.len() == MAX_PREPARED_BATCH {
+            break;
+        }
         let Some((binding, input_text)) =
             admitted_binding_and_input(&captured, key, &profile_id, body_prefix_chars)
         else {
@@ -1924,15 +2140,10 @@ pub async fn prepare_embedding_batch(
         // took the write, so a row that moved between the scan and the write
         // names no job.
         jobs.insert(key.to_string(), job.clone());
-        // Beyond the batch bound the job is still admitted and still durable;
-        // only the *text* is deferred, so the next prepare hands it over. A
-        // deferred job is not a dropped one.
-        if inputs.len() < MAX_PREPARED_BATCH {
-            inputs.push(PreparedEmbeddingInput {
-                job,
-                input_text: std::sync::Arc::from(input_text),
-            });
-        }
+        inputs.push(PreparedEmbeddingInput {
+            job,
+            input_text: std::sync::Arc::from(input_text),
+        });
     }
 
     // Publish the new pending set as an immutable manifest **before** the
@@ -2224,8 +2435,13 @@ pub async fn complete_embedding_batch(
     }
 
     let marker = marker_for(&published);
-    let tables =
-        open_active_tables(&index_root, &marker, Arc::clone(publisher.tracking_store())).await?;
+    let tables = open_active_tables(
+        &index_root,
+        &marker,
+        Arc::clone(publisher.tracking_store()),
+        capability.workspace(),
+    )
+    .await?;
 
     // Recover the published baseline before the tables are read for a decision
     // or written to. A completion publishes a vector **and** a manifest, so it
@@ -2233,7 +2449,7 @@ pub async fn complete_embedding_batch(
     // must be the published state first, or the vectors land on top of rows an
     // abandoned pass wrote and the manifest records heads that include them.
     let baseline = published_baseline(&descriptor, &published)?;
-    restore_diverged_heads(&tables, &baseline).await?;
+    restore_diverged_heads(&tables, &baseline, capability.workspace()).await?;
 
     // The same baseline admission used, for the same reason: the check below
     // compares this capture's binding against the job's, and the guarded
@@ -2581,9 +2797,14 @@ pub async fn fail_embedding_batch(
 
     let baseline = published_baseline(&descriptor, &published)?;
     let marker = marker_for(&published);
-    let tables =
-        open_active_tables(&index_root, &marker, Arc::clone(publisher.tracking_store())).await?;
-    restore_diverged_heads(&tables, &baseline).await?;
+    let tables = open_active_tables(
+        &index_root,
+        &marker,
+        Arc::clone(publisher.tracking_store()),
+        capability.workspace(),
+    )
+    .await?;
+    restore_diverged_heads(&tables, &baseline, capability.workspace()).await?;
 
     let now = chrono::Utc::now();
     let mut remaining = published.pending_jobs.clone();
@@ -3100,7 +3321,7 @@ fn current_generation_id(capability: &MaintainCapability) -> Result<String, Cons
 /// completion's own report was read before the pointer moved, and this is
 /// what a caller asking "is the queue empty now?" needs answered.
 #[cfg(feature = "semantic-search")]
-async fn tables_eligibility_report(
+pub(super) async fn tables_eligibility_report(
     capability: &MaintainCapability,
     profile_id: &str,
 ) -> Result<super::jobs::EligibilityReport, ConstellationError> {
@@ -3120,6 +3341,7 @@ async fn tables_eligibility_report(
         &index_root,
         &marker_for(&published),
         Arc::clone(publisher.tracking_store()),
+        capability.workspace(),
     )
     .await?;
     // Same baseline as every other production capture, because this report is a
@@ -3820,11 +4042,7 @@ pub async fn search_semantic_in_view(
         });
     }
     let (descriptor, manifest, captured) = match view {
-        ReadView::Persisted {
-            descriptor,
-            manifest,
-            ..
-        } => (descriptor, &**manifest, None),
+        ReadView::Persisted { pin } => (pin.descriptor(), pin.manifest(), None),
         ReadView::Ephemeral { captured, .. } => {
             let Some(pin) = view.vector_cache() else {
                 return Err(ConstellationError::IndexGenerationUnavailable {
@@ -3946,11 +4164,7 @@ pub async fn count_eligible_semantic(
     profile_id: &str,
 ) -> Result<usize, ConstellationError> {
     let (descriptor, manifest, captured) = match view {
-        ReadView::Persisted {
-            descriptor,
-            manifest,
-            ..
-        } => (descriptor, &**manifest, None),
+        ReadView::Persisted { pin } => (pin.descriptor(), pin.manifest(), None),
         ReadView::Ephemeral { captured, .. } => match view.vector_cache() {
             Some(pin) => (pin.descriptor(), pin.manifest(), Some(captured.as_ref())),
             None => return Ok(0),
@@ -3986,9 +4200,13 @@ pub async fn count_eligible_semantic(
     // counting against it costs one query and returns zero — which is the
     // honest answer rather than a skipped half of the eligible set.
     let sections_version = descriptor.effective_sections_version(manifest)?;
-    let sections =
-        super::lance_tables::open_table_at_version(index_root, &marker, "sections", sections_version)
-            .await?;
+    let sections = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "sections",
+        sections_version,
+    )
+    .await?;
     let predicate = section_predicate.unwrap_or_else(|| ready.clone());
     count += sections.count_rows_where(&predicate).await?;
     Ok(count)
@@ -4033,9 +4251,13 @@ async fn search_semantic_at(
     // skipping a table it could have read. `None` no longer exists here, and
     // there is no "open latest" path.
     let sections_version = descriptor.effective_sections_version(manifest)?;
-    let sections_table =
-        super::lance_tables::open_table_at_version(index_root, &marker, "sections", sections_version)
-            .await?;
+    let sections_table = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker,
+        "sections",
+        sections_version,
+    )
+    .await?;
 
     // `escape_predicate_literal` already returns a delimited literal —
     // wrapping it in quotes again would produce `''x''`, which parses as an
@@ -4223,6 +4445,100 @@ pub struct PinnedArtifact {
     pub semantic_state: Option<String>,
 }
 
+fn pinned_artifact_string(
+    batch: &arrow_array::RecordBatch,
+    column: &str,
+    row: usize,
+) -> Option<String> {
+    use arrow_array::Array;
+    let column = batch.column_by_name(column)?;
+    if row >= column.len() || column.is_null(row) {
+        return None;
+    }
+    // `body` is LargeUtf8, the remaining artifact fields are Utf8.
+    if let Some(array) = column.as_any().downcast_ref::<arrow_array::StringArray>() {
+        return Some(array.value(row).to_string());
+    }
+    column
+        .as_any()
+        .downcast_ref::<arrow_array::LargeStringArray>()
+        .map(|array| array.value(row).to_string())
+}
+
+fn pinned_artifact_from_row(
+    batch: &arrow_array::RecordBatch,
+    row: usize,
+    canonical_key: String,
+    display_id: Option<String>,
+) -> PinnedArtifact {
+    PinnedArtifact {
+        canonical_key,
+        display_id,
+        title: pinned_artifact_string(batch, "title", row).unwrap_or_default(),
+        kind: pinned_artifact_string(batch, "kind", row),
+        status: pinned_artifact_string(batch, "status", row),
+        body: pinned_artifact_string(batch, "body", row),
+        source_path: pinned_artifact_string(batch, "relative_path", row),
+        source_digest: pinned_artifact_string(batch, "source_digest", row),
+        semantic_state: pinned_artifact_string(batch, "semantic_state", row),
+    }
+}
+
+/// Read every artifact from one exact published descriptor with one native
+/// column scan. The manifest remains pinned until all rows are materialized.
+///
+/// This does not consult or advance CURRENT, open a writer, or fall back to
+/// latest. Missing manifest/table versions remain unavailable errors.
+pub async fn read_pinned_artifacts(
+    index_root: &Path,
+    descriptor: &CurrentDescriptor,
+) -> Result<Vec<PinnedArtifact>, ConstellationError> {
+    let pinned = super::storage::pin_generation_read(index_root, descriptor)?;
+    let manifest = pinned.manifest();
+    let artifacts_version = descriptor.effective_artifacts_version(manifest)?;
+    let table = super::lance_tables::open_table_at_version(
+        index_root,
+        &marker_for(manifest),
+        "artifacts",
+        artifacts_version,
+    )
+    .await?;
+    let opened_version = table.version().await?;
+    if opened_version != artifacts_version {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: format!(
+                "pinned artifacts reader opened version {opened_version}, expected {artifacts_version}"
+            ),
+        });
+    }
+    let batches = table
+        .select_columns(&[
+            "canonical_key",
+            "id",
+            "title",
+            "kind",
+            "status",
+            "body",
+            "relative_path",
+            "source_digest",
+            "semantic_state",
+        ])
+        .await?;
+    let mut artifacts = Vec::with_capacity(batches.iter().map(|batch| batch.num_rows()).sum());
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            let key = pinned_artifact_string(&batch, "canonical_key", row)
+                .filter(|key| !key.is_empty())
+                .ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+                    detail: format!("published artifact row {row} has no canonical key"),
+                })?;
+            let display = pinned_artifact_string(&batch, "id", row);
+            artifacts.push(pinned_artifact_from_row(&batch, row, key, display));
+        }
+    }
+    Ok(artifacts)
+}
+
 /// Exact read at the pinned generation: one row by `canonical_key`, or by
 /// `display_id` when the caller hands over the human-facing id (`SPEC-001`).
 ///
@@ -4267,44 +4583,18 @@ pub async fn get_pinned_artifact(
     .await?;
     let batches = table.query_batches().await?;
 
-    let read_str = |batch: &arrow_array::RecordBatch, col: &str, row: usize| -> Option<String> {
-        use arrow_array::Array;
-        let column = batch.column_by_name(col)?;
-        if row >= column.len() || column.is_null(row) {
-            return None;
-        }
-        // `body` is LargeUtf8, the rest are Utf8 — read both.
-        if let Some(a) = column.as_any().downcast_ref::<arrow_array::StringArray>() {
-            return Some(a.value(row).to_string());
-        }
-        column
-            .as_any()
-            .downcast_ref::<arrow_array::LargeStringArray>()
-            .map(|a| a.value(row).to_string())
-    };
-
     let wanted = key_or_id.to_lowercase();
     for batch in &batches {
         for row in 0..batch.num_rows() {
-            let key = read_str(batch, "canonical_key", row).unwrap_or_default();
-            let display = read_str(batch, "id", row);
+            let key = pinned_artifact_string(batch, "canonical_key", row).unwrap_or_default();
+            let display = pinned_artifact_string(batch, "id", row);
             if key.to_lowercase() != wanted
                 && display.as_deref().map(str::to_lowercase).as_deref() != Some(wanted.as_str())
             {
                 continue;
             }
             return Ok(Some((
-                PinnedArtifact {
-                    canonical_key: key,
-                    display_id: display,
-                    title: read_str(batch, "title", row).unwrap_or_default(),
-                    kind: read_str(batch, "kind", row),
-                    status: read_str(batch, "status", row),
-                    body: read_str(batch, "body", row),
-                    source_path: read_str(batch, "relative_path", row),
-                    source_digest: read_str(batch, "source_digest", row),
-                    semantic_state: read_str(batch, "semantic_state", row),
-                },
+                pinned_artifact_from_row(batch, row, key, display),
                 manifest.generation_id.clone(),
                 artifacts_version,
             )));
@@ -4409,6 +4699,22 @@ mod tests {
 
     fn manifest_for(captured: &CapturedSourceView, generation_id: &str) -> GenerationManifest {
         GenerationManifest::from_capture(captured, generation_id, TableVersions::new(1, 1, 1))
+    }
+
+    async fn published_read_fixture(
+        tmp: &TempDir,
+    ) -> (Arc<CapturedSourceView>, Arc<GenerationManifest>) {
+        resume_admission();
+        let capability =
+            MaintainCapability::for_strict_maintenance(tmp.path().canonicalize().unwrap());
+        let (published, _) = maintain_index(
+            &capability,
+            CaptureLimits::default(),
+            std::time::Instant::now() + std::time::Duration::from_secs(120),
+        )
+        .await
+        .unwrap();
+        (capture(tmp.path()).await, published.manifest)
     }
 
     #[tokio::test]
@@ -4533,22 +4839,13 @@ mod tests {
     #[tokio::test]
     async fn a_matching_pointer_yields_the_persisted_generation() {
         let tmp = workspace();
-        let root = index_root(&tmp);
-        let captured = capture(tmp.path()).await;
-        let barrier = barrier_for(&root);
-
-        let manifest = manifest_for(&captured, "gen-1");
-        let sha =
-            super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
-                .unwrap();
-        let descriptor = super::super::storage::descriptor_for(&manifest, 7, &sha, None);
-        super::super::storage::publish_current(&root, &descriptor, barrier.as_ref()).unwrap();
+        let (captured, manifest) = published_read_fixture(&tmp).await;
 
         let view = ensure_read_view(tmp.path(), Arc::clone(&captured))
             .await
             .unwrap();
         assert!(view.is_persisted());
-        assert_eq!(view.snapshot_id(), "gen-1");
+        assert_eq!(view.snapshot_id(), manifest.generation_id);
         assert_eq!(view.coverage().read, captured.entries.len());
     }
 
@@ -4556,22 +4853,18 @@ mod tests {
     async fn a_persisted_view_holds_its_generation_against_gc_until_it_is_dropped() {
         let tmp = workspace();
         let root = index_root(&tmp);
-        let barrier = barrier_for(&root);
-        let captured = capture(tmp.path()).await;
-
-        let manifest = manifest_for(&captured, "gen-1");
-        let sha =
-            super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
-                .unwrap();
-        let descriptor = super::super::storage::descriptor_for(&manifest, 7, &sha, None);
-        super::super::storage::publish_current(&root, &descriptor, barrier.as_ref()).unwrap();
+        let (captured, manifest) = published_read_fixture(&tmp).await;
 
         let view = ensure_read_view(tmp.path(), Arc::clone(&captured))
             .await
             .unwrap();
         assert_eq!(
             view.pinned_versions(),
-            Some((1, 1, 1)),
+            Some((
+                manifest.table_versions.artifacts,
+                manifest.table_versions.relations,
+                manifest.table_versions.sections,
+            )),
             "the versions a reader serves are exactly the triple the manifest pinned; CURRENT \
              carries no second copy of them"
         );
@@ -4592,15 +4885,19 @@ mod tests {
             report
                 .protected
                 .iter()
-                .any(|(id, why)| { id == "gen-1" && why.starts_with("pinned:") }),
+                .any(|(id, why)| id == &manifest.generation_id && why.starts_with("pinned:")),
             "the protection must be the reader's, not merely `current`: {:?}",
             report.protected
         );
-        assert!(root.join("generations").join("gen-1.json").exists());
+        assert!(
+            root.join(CurrentDescriptor::manifest_relative_path(
+                &manifest.generation_id
+            ))
+            .exists()
+        );
 
-        // The pin is released with the view. `gen-1` is still `CURRENT`, so it
-        // stays — but it stays for that reason now, and nothing else: no TTL,
-        // no lease file, no time passing.
+        // The pin is released with the view. The generation is still CURRENT,
+        // so it stays for that reason now, with no lease or timeout involved.
         drop(view);
         let report = super::super::generations::gc_generations(&root, 0)
             .await
@@ -4609,27 +4906,23 @@ mod tests {
             !report
                 .protected
                 .iter()
-                .any(|(id, why)| { id == "gen-1" && why.starts_with("pinned:") }),
+                .any(|(id, why)| id == &manifest.generation_id && why.starts_with("pinned:")),
             "dropping the reader must release its pin, or a long-lived server would pin every \
              generation it ever read: {:?}",
             report.protected
         );
-        assert!(root.join("generations").join("gen-1.json").exists());
+        assert!(
+            root.join(CurrentDescriptor::manifest_relative_path(
+                &manifest.generation_id
+            ))
+            .exists()
+        );
     }
 
     #[tokio::test]
     async fn a_moved_source_yields_an_ephemeral_view_rather_than_a_stale_one() {
         let tmp = workspace();
-        let root = index_root(&tmp);
-        let barrier = barrier_for(&root);
-        let captured = capture(tmp.path()).await;
-
-        let manifest = manifest_for(&captured, "gen-1");
-        let sha =
-            super::super::storage::write_generation_manifest(&root, &manifest, barrier.as_ref())
-                .unwrap();
-        let descriptor = super::super::storage::descriptor_for(&manifest, 7, &sha, None);
-        super::super::storage::publish_current(&root, &descriptor, barrier.as_ref()).unwrap();
+        let _ = published_read_fixture(&tmp).await;
 
         // The canonical source moves after publication.
         std::fs::write(
@@ -5195,6 +5488,7 @@ mod tests {
                 capability.index_root(),
                 &marker_for(&before.manifest),
                 Arc::clone(publisher.tracking_store()),
+                capability.workspace(),
             )
             .await
             .unwrap();
@@ -5315,6 +5609,52 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn incomplete_maintenance_preserves_the_published_generation_and_readable_rows() {
+        resume_admission();
+        let tmp = linked_workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root.clone());
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let current_path = capability.index_root().join(storage::CURRENT_FILE_NAME);
+        let current = std::fs::read(&current_path).unwrap();
+        let source_path = root.join("prds/PRD-001-auth.md");
+        let original = std::fs::read(&source_path).unwrap();
+        let invalid = b"\xff\xfe";
+        std::fs::write(&source_path, invalid).unwrap();
+
+        let error = maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ConstellationError::SourceUnavailable { .. }
+        ));
+        assert_eq!(std::fs::read(&current_path).unwrap(), current);
+        assert_eq!(std::fs::read(&source_path).unwrap(), invalid);
+        let found = search_pinned_lexical(capability.index_root(), "Auth", 10, &NO_FILTER)
+            .await
+            .unwrap();
+        assert_eq!(
+            found
+                .hits
+                .iter()
+                .map(|hit| hit.canonical_key.as_str())
+                .collect::<Vec<_>>(),
+            ["PRD-001"]
+        );
+
+        std::fs::write(&source_path, original).unwrap();
+        let read = open_workspace_read(&root, None, CaptureLimits::default())
+            .await
+            .unwrap();
+        assert!(read.is_persisted());
+        assert_eq!(std::fs::read(&current_path).unwrap(), current);
+    }
+
     #[cfg(feature = "semantic-search")]
     #[tokio::test]
     async fn an_ephemeral_capture_reuses_only_vectors_for_its_exact_current_inputs() {
@@ -5397,6 +5737,110 @@ mod tests {
             "a moved path cannot reuse its previous incarnation"
         );
         assert!(excluded.hits.is_empty());
+        assert_eq!(
+            std::fs::read(capability.index_root().join("CURRENT.json")).unwrap(),
+            pointer
+        );
+    }
+
+    #[tokio::test]
+    async fn bulk_artifacts_match_single_get_and_keep_the_supplied_native_snapshot() {
+        fn assert_same_fields(expected: &PinnedArtifact, actual: &PinnedArtifact) {
+            assert_eq!(actual.canonical_key, expected.canonical_key);
+            assert_eq!(actual.display_id, expected.display_id);
+            assert_eq!(actual.title, expected.title);
+            assert_eq!(actual.kind, expected.kind);
+            assert_eq!(actual.status, expected.status);
+            assert_eq!(actual.body, expected.body);
+            assert_eq!(actual.source_path, expected.source_path);
+            assert_eq!(actual.source_digest, expected.source_digest);
+            assert_eq!(actual.semantic_state, expected.semantic_state);
+        }
+
+        resume_admission();
+        let tmp = linked_workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root.clone());
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let (first, _) = maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let initial = read_pinned_artifacts(capability.index_root(), &first.descriptor)
+            .await
+            .unwrap();
+        assert_eq!(initial.len(), 2);
+        for row in &initial {
+            let (single, generation, version) =
+                get_pinned_artifact(capability.index_root(), &row.canonical_key.to_lowercase())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(generation, first.descriptor.generation_id);
+            assert_eq!(version, first.manifest.table_versions.artifacts);
+            assert_same_fields(&single, row);
+        }
+
+        let new_source = "---\nid: ADR-002\nkind: adr\nstatus: active\ntitle: New storage\n---\n\nNew body é.\n\n  ";
+        std::fs::write(root.join("adrs/ADR-002-storage.md"), new_source).unwrap();
+        std::fs::remove_file(root.join("prds/PRD-001-auth.md")).unwrap();
+        let (second, _) = maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        assert_ne!(
+            first.descriptor.generation_id,
+            second.descriptor.generation_id
+        );
+        assert_ne!(
+            first.manifest.table_versions.artifacts,
+            second.manifest.table_versions.artifacts
+        );
+        let pointer = std::fs::read(capability.index_root().join("CURRENT.json")).unwrap();
+
+        let old = read_pinned_artifacts(capability.index_root(), &first.descriptor)
+            .await
+            .unwrap();
+        assert_eq!(
+            old.len(),
+            initial.len(),
+            "the deleted row still belongs to the old snapshot"
+        );
+        for expected in &initial {
+            let actual = old
+                .iter()
+                .find(|row| row.canonical_key == expected.canonical_key)
+                .unwrap();
+            assert_same_fields(expected, actual);
+        }
+        let current = read_pinned_artifacts(capability.index_root(), &second.descriptor)
+            .await
+            .unwrap();
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].canonical_key, "ADR-002");
+        assert_eq!(current[0].title, "New storage");
+        let (_, expected_body) =
+            crate::artifact::frontmatter::parse_frontmatter(new_source).unwrap();
+        assert_eq!(current[0].body.as_deref(), Some(expected_body.as_str()));
+
+        // A checksummed manifest naming a missing native version must fail,
+        // not silently read the current physical table head.
+        let mut missing_manifest = (*first.manifest).clone();
+        missing_manifest.table_versions.artifacts = u64::MAX;
+        let bytes = serde_json::to_vec(&missing_manifest).unwrap();
+        let missing_path = "bulk-unavailable-version.json";
+        std::fs::write(capability.index_root().join(missing_path), &bytes).unwrap();
+        let mut missing_descriptor = first.descriptor.clone();
+        missing_descriptor.manifest_path = missing_path.to_string();
+        missing_descriptor.manifest_sha256 = super::super::sha256_hex(&bytes);
+        assert!(matches!(
+            read_pinned_artifacts(capability.index_root(), &missing_descriptor).await,
+            Err(ConstellationError::IndexGenerationUnavailable { .. })
+        ));
+        let mut corrupt_descriptor = first.descriptor.clone();
+        corrupt_descriptor.manifest_sha256 = "00".repeat(32);
+        assert!(matches!(
+            read_pinned_artifacts(capability.index_root(), &corrupt_descriptor).await,
+            Err(ConstellationError::IndexGenerationUnavailable { .. })
+        ));
         assert_eq!(
             std::fs::read(capability.index_root().join("CURRENT.json")).unwrap(),
             pointer

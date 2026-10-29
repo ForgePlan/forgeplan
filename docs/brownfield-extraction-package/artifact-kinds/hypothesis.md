@@ -2,6 +2,8 @@
 
 > A first-class, lifecycle-tracked proposition about the meaning of code. Has its own state machine from `drafted` → `verified` / `refuted` / `parked`.
 
+> Original proposed schema, not the current native state machine. The target uses `hypothesis_state` and only `parked`, `inferred`, `strong-inferred`, `verified`, `refuted`, with linear forward promotion. No direct `parked → verified` promotion is accepted. Candidate numbers, dates, `abc123` and EVID references below are illustrative, not calibrated probabilities or supplied evidence. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Purpose
 
 Hypotheses separate **claims being tested** from **established facts**. In brownfield reverse-engineering, every intent-statement starts as a hypothesis. Without this separation, speculation leaks into documentation and gets mistaken for truth.

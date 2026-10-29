@@ -2,6 +2,11 @@
 
 # Artifact Model — PRD Process Engine
 
+The hierarchy, cardinalities and content fields below are authoring conventions,
+not database constraints. Sprint is an execution concept, not an artifact kind.
+Typed links are `informs`, `based_on`, `supersedes`, `contradicts`, `refines`;
+Epic membership also has `parent_epic`. A prose arrow does not create a link.
+
 ## Artifact Hierarchy
 
 ```
@@ -40,7 +45,7 @@
 |-------|-------------|
 | ID | Epic-NNN (sequential) |
 | Name | Short initiative name |
-| Status | Draft → Active → Done → Archived |
+| Status | `draft`, `active`, `superseded`, `deprecated`, `stale` — see lifecycle below |
 | Outcomes | Measurable results |
 | Children | PRD[], RFC[], ADR[] |
 | Progress | Aggregated from children |
@@ -56,7 +61,7 @@
 |-------|-------------|
 | ID | PRD-NNN |
 | Epic | Parent Epic (optional) |
-| Status | Draft → Review → Approved → Implemented → Closed |
+| Status | Same persisted lifecycle as all artifact kinds; see below |
 | Problem | What problem we are solving |
 | Goals | What we want to achieve (measurable) |
 | Non-Goals | What we are NOT doing (scope) |
@@ -75,7 +80,7 @@
 | ID | SPEC-NNN |
 | PRD | Parent PRD |
 | Type | API | Data Model | Protocol | UI Spec |
-| Status | Draft → Approved → Implemented |
+| Status | Same persisted lifecycle as all artifact kinds; see below |
 | Contracts | API endpoints, schemas, interfaces |
 | Data Models | Entity definitions, relationships |
 | Constraints | Validation rules, limits |
@@ -90,7 +95,7 @@
 |-------|-------------|
 | ID | RFC-NNN |
 | PRD/SPEC | Parent (optional) |
-| Status | Draft → Discussion → Accepted → Implemented → Superseded |
+| Status | Same persisted lifecycle as all artifact kinds; implementation phases are separate |
 | Summary | What is proposed |
 | Motivation | Why the change is needed |
 | Design | Architecture, components |
@@ -111,7 +116,7 @@
 | Rationale | Why this particular choice |
 | Alternatives | What else was considered |
 | Consequences | Pros and cons of the decision |
-| Status | Proposed → Accepted → Deprecated → Superseded |
+| Status | Same persisted lifecycle as all artifact kinds; acceptance is a process decision |
 
 **When to create**: Technology choice, architectural trade-off, significant decision.
 
@@ -140,17 +145,25 @@ Decision needed at any point?
   └─→ ADR (captures context + decision + rationale)
 ```
 
-## Status Values (unified)
+## Persisted Status and Process Phases
 
-| Status | PRD | SPEC | RFC | ADR | Epic |
-|--------|-----|------|-----|-----|------|
-| Draft | Requirements gathering | Designing contracts | Writing proposal | Collecting context | Scoping |
-| Review/Discussion | Stakeholder review | Technical review | Team discussion | — | — |
-| Approved/Accepted | Ready to implement | Contract locked | Approved to build | Decision final | Active work |
-| Implemented | Feature shipped | API deployed | Code complete | — | — |
-| Done/Closed | Verified in prod | — | All phases done | — | All PRDs done |
-| Superseded | Replaced by PRD-N | — | Replaced by RFC-N | Replaced by ADR-N | — |
-| Deprecated | — | — | — | No longer valid | Cancelled |
+Core lifecycle kinds use `draft`, `active`, `superseded`, `deprecated`, `stale`;
+other kinds may have different or no stored lifecycle.
+
+```text
+draft --activate--> active
+active --> superseded | deprecated | stale
+stale --renew--> active
+stale --reopen--> deprecated + new draft
+stale --deprecate--> deprecated
+```
+
+`superseded` and `deprecated` are terminal. `review` reports checks and does not
+create a status. Approved, Accepted, Implementing, Implemented, Done, Closed,
+Archived and Cancelled may describe a team's process in prose, not persisted
+`status` values. Session phases and artifact lifecycle phase markers are also
+separate from status; completing code or tests does not automatically activate
+an artifact. Validation checks and activation gates are distinct.
 
 ## Numbering Convention
 
@@ -162,7 +175,10 @@ Decision needed at any point?
 | RFC | `RFC-NNN` | RFC-128 |
 | ADR | `ADR-NNN` | ADR-007 |
 
-Numbers are sequential per artifact type, project-scoped, never reused.
+Display numbers are allocated per artifact kind within a project. Preserve
+assigned numbers as a convention; local allocation is not a cross-branch
+uniqueness guarantee. Canonical slug identity and the dated CI-assignment
+proposal are distinguished in [ID-ASSIGNMENT.ru.md](ID-ASSIGNMENT.ru.md).
 
 ## Related Documents
 

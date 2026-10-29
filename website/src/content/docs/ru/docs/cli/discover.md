@@ -3,13 +3,13 @@ title: forgeplan discover
 description: "Механизм обнаружения для brownfield-проектов - запускает сессию, управляемую протоколом, превращающую существующую кодовую базу в артефакты Forgeplan"
 ---
 
-`forgeplan discover` - это родительская команда для **механизма обнаружения для brownfield-проектов** Forgeplan (PRD-035, NOTE-041, PROB-022). Она организует сессии, управляемые протоколом, в ходе которых ИИ-агент считывает существующую кодовую базу, историю Git, тесты и документацию - именно в таком порядке приоритета - и сообщает о находках через MCP. В конце Forgeplan предлагает конкретные артефакты (ProblemCard, PRD, ADR, Note) для создания, чтобы проект мог начать использовать методологию без ручного создания бэклога.
+`forgeplan discover` управляет сессиями brownfield-исследования (PRD-035, NOTE-041, PROB-022). `start` сохраняет сессию и печатает протокол из семи фаз для ИИ-агента. Агент читает код, историю, тесты и документацию и сообщает находки через MCP; CLI не проводит исследование за него.
 
-Короче говоря: `discover` берёт проект, созданный до Forgeplan, и создаёт для него первый черновик артефактов.
+Находки могут обосновать Problem, PRD, ADR и Note. CLI `complete` только сохраняет завершение и рекомендует проверку состояния; артефакты и список предложений она не генерирует.
 
 ## Когда использовать
 
-- **Внедрение Forgeplan в существующий репозиторий** - запустите `discover start` как один из первых шагов после `forgeplan init -y`.
+- **Внедрение в существующий репозиторий** — `discover start <project-name>` после `forgeplan init -y`.
 - **После долгого спринта без инструментов** - наверстайте упущенное по недокументированным решениям, пока они не стёрлись из памяти.
 - **При присоединении к проекту новой команды** - позвольте агенту построить структурированную карту существующего, затем используйте её для планирования.
 - **Перед аудитом или рефакторингом** - создайте начальные артефакты, чтобы рефакторинг имел базовую линию для замещения.
@@ -18,7 +18,7 @@ description: "Механизм обнаружения для brownfield-прое
 
 - Для текущей работы над greenfield-проектами - предпочтительнее использовать `forgeplan route` + `forgeplan new` напрямую.
 - Для одной задачи - сессии `discover` создают общие обзоры, а не планы на уровне задач.
-- Без ИИ-агента, способного следовать протоколу MCP - `discover start` выводит инструкции, но кто-то должен их выполнить.
+- Нет агента или человека, который выполнит протокол — `discover start <project-name>` лишь печатает инструкции.
 
 ## Использование
 
@@ -48,21 +48,21 @@ forgeplan discover <COMMAND>
 ```bash
 # Типичный процесс внедрения для brownfield-проектов
 forgeplan init -y
-forgeplan discover start
+forgeplan discover start "Пример проекта"
 # → агент читает код/git/тесты/документацию, добавляет находки через MCP
 forgeplan discover show <session-id>
 forgeplan discover complete <session-id>
-# → Forgeplan предлагает создать ProblemCard / PRD / Note
+# → сессия завершена; изучите находки и решите, какие артефакты нужны
 forgeplan discover list
 ```
 
 ## Протокол в одном абзаце
 
-`discover start` создаёт запись сессии и выводит **протокол**, которому должен следовать агент. Агент проходит по многоуровневым источникам - **код > история Git > тесты > документация** - и для каждой значимой находки вызывает инструмент `discover_finding` MCP (только MCP; эквивалента в CLI нет, чтобы цикл оставался управляемым агентом). `discover show` отображает накопленные находки; `discover complete` завершает сессию и выдаёт рекомендации для команд `forgeplan new`.
+`discover start <project-name>` создаёт файл сессии и печатает протокол. Агент проходит фазы и вызывает MCP `forgeplan_discover_finding`; подкоманды CLI для находок нет. `discover show` показывает результаты. CLI `discover complete` сохраняет завершение и подсказку `health`, а не запускает генератор рекомендаций.
 
 ## Приоритет многоуровневых источников (важно)
 
-Код - это **основная истина**; всё остальное может лгать. Протокол обеспечивает следующий порядок:
+Для поведенческих утверждений протокол отдаёт приоритет исполняемым источникам перед документацией. Код тоже может содержать дефекты; различайте наблюдаемое поведение и требования:
 
 1.  **Код** - фактическое поведение, текущие инварианты.
 2.  **История Git** - кто что изменил, когда и почему (сообщения коммитов, ссылки на PR).
@@ -75,15 +75,43 @@ forgeplan discover list
 
 `discover` закрывает пробел, выявленный в PROB-022 (пробел во внедрении brownfield-проектов). Он интегрируется с:
 
--   **`forgeplan new`** - рекомендации при `discover complete` соответствуют вызовам создания артефактов 1:1.
--   **`forgeplan health`** - состояние после `discover` должно показывать меньше сирот (артефактов без связей) и слепых пятен.
+- **`forgeplan new`** — создавайте артефакты, которые оправданы находками.
+- **`forgeplan health`** — проверяйте результат; исследование не гарантирует уменьшение сирот или слепых пятен.
 -   **`forgeplan fpf check`** - как только артефакты существуют, правила FPF могут их оценивать.
 
 ## См. также
 
--   [`forgeplan discover start`](/docs/cli/discover-start/) - начать сессию + вывести протокол
--   [`forgeplan discover list`](/docs/cli/discover-list/) - все сессии в рабочем пространстве
--   [`forgeplan discover show`](/docs/cli/discover-show/) - проверить находки сессии
--   [`forgeplan discover complete`](/docs/cli/discover-complete/) - завершить + выдать рекомендации
--   [Руководство по методологии](/docs/methodology/overview/)
--   [`forgeplan health`](/docs/cli/health/) - сравнение до/после
+- [`forgeplan discover start`](/ru/docs/cli/discover-start/) - сессия и протокол
+- [`forgeplan discover list`](/ru/docs/cli/discover-list/) - список сессий
+- [`forgeplan discover show`](/ru/docs/cli/discover-show/) - изучение находок
+- [`forgeplan discover complete`](/ru/docs/cli/discover-complete/) - отметка завершения
+- [Методология](/ru/docs/methodology/overview/)
+- [`forgeplan health`](/ru/docs/cli/health/) - сравнение состояния до и после
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan discover --help`.
+
+```text
+Start brownfield discovery — creates session, prints protocol for agent
+
+Usage: forgeplan discover <COMMAND>
+
+Commands:
+  start     Start a new discovery session — prints protocol for AI agent
+  list      List all discovery sessions in the workspace
+  show      Show status of a discovery session
+  complete  Mark a discovery session as completed
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+- [`forgeplan discover start`](/ru/docs/cli/discover-start/)
+- [`forgeplan discover list`](/ru/docs/cli/discover-list/)
+- [`forgeplan discover show`](/ru/docs/cli/discover-show/)
+- [`forgeplan discover complete`](/ru/docs/cli/discover-complete/)
+<!-- forgeplan-runtime:end -->

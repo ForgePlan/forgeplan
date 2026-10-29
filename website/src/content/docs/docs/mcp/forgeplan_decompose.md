@@ -3,7 +3,7 @@ title: forgeplan_decompose
 description: "Decompose a PRD into RFC tasks using AI. Analyzes functional requirements and suggests 3-7 RFCs with titles, descriptions, scope, and dependencies. Requires LLM provider."
 ---
 
-Takes a validated PRD and produces a breakdown into 3–7 RFCs, each with title, scope, FR mapping, and dependencies. The agent calls this when a PRD is too big to implement in one sprint and needs to be split - decompose returns a draft RFC DAG the agent can then materialize via `forgeplan_new` + `forgeplan_update` + `forgeplan_link`.
+Asks the configured LLM to propose RFC tasks for a PRD. The prompt aims for 3–7 proposals with titles, descriptions, scope, dependencies, and estimated depth, but the response is free-form Markdown, not a validated RFC DAG. Validate the PRD before requesting decomposition and review the generated text before creating artifacts.
 
 **Category**: Reasoning & AI
 
@@ -23,27 +23,15 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::DecomposeParams`_
 
 ## Returns
 
-A list of proposed RFCs with titles, scope summaries, covered FR IDs, and a dependency DAG expressed as `depends_on` arrays. The response is a **draft** - nothing is persisted until the agent explicitly creates artifacts via `forgeplan_new`.
+The handler returns `prd_id`, `prd_title`, `tasks` (a Markdown **string**), `provider`, and `model`, with workspace trace and a next-action hint. It does not persist the proposed RFCs. The task count and dependency structure are not enforced by a response schema.
 
-Example response shape:
+Illustrative response excerpt:
 
 ```json
 {
-  "source": "PRD-042",
-  "rfcs": [
-    {
-      "title": "Token issuer service",
-      "scope": "Signs JWTs, rotates keys, exposes /token endpoint.",
-      "covers": ["FR-001", "FR-002"],
-      "depends_on": []
-    },
-    {
-      "title": "Session blacklist store",
-      "scope": "Redis-backed revocation list with TTL.",
-      "covers": ["FR-003"],
-      "depends_on": ["Token issuer service"]
-    }
-  ]
+  "prd_id": "PRD-042",
+  "prd_title": "Authentication system",
+  "tasks": "1. Token issuer service — cover FR-001 and FR-002.\n2. Session revocation — cover FR-003; depends on the issuer design."
 }
 ```
 
@@ -75,3 +63,48 @@ With typical agent context:
 - [`forgeplan_reason`](/docs/mcp/forgeplan_reason/) - upstream reasoning step
 - [`forgeplan_new`](/docs/mcp/forgeplan_new/) - materialize the decomposition
 - [`forgeplan_link`](/docs/mcp/forgeplan_link/) - connect children to parent PRD
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Decompose a PRD into RFC tasks using AI. Analyzes functional requirements and suggests 3-7 RFCs with titles, descriptions, scope, and dependencies. Requires LLM provider.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `id` | yes | string | PRD artifact ID to decompose into RFC tasks |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "PRD artifact ID to decompose into RFC tasks",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "DecomposeParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

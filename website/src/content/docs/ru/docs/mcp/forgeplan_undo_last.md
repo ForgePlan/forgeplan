@@ -24,11 +24,13 @@ description: "Reverse the most recent destructive operation (delete / supersede 
 
 | Имя | Тип | Обязательно | Описание |
 |---|---|---|---|
-| `within_hours` | `number` | no (default 24, max 720) | Временное окно для поиска последней деструктивной операции. Расширьте до 720 (30 дней) при сомнениях. |
+| `within_hours` | `integer` или `null` | no (по умолчанию 24) | Без параметра или при null — 24 часа. Обработчик ограничивает переданное целое диапазоном 1–720; схема показывает minimum 0, но не это ограничение или верхнюю границу. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::UndoLastParams`_
 
 ## Возвращает
+
+Учебные фрагменты, не запись выполненного здесь восстановления. Успешный ответ может также содержать трассировку workspace и поля согласования индекса.
 
 ```json
 {
@@ -45,12 +47,12 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::UndoLastParam
 
 Когда в окне нечего откатывать:
 
-```json
-{
-  "ok": false,
-  "error": "No non-consumed destructive op in the last 24 hour(s).",
-  "_next_action": "Expand the window: `forgeplan_undo_last within_hours=720`. Or inspect the log: `forgeplan_activity --tool forgeplan_delete,forgeplan_supersede,forgeplan_deprecate --since 720h`."
-}
+Обработчик возвращает ошибочный MCP `CallToolResult` с текстом, а не JSON-объектом `ok: false`. Пример начала текста:
+
+```text
+No non-consumed destructive op in the last 24 hour(s).
+
+_next_action: Expand the window: `forgeplan_undo_last within_hours=720`.
 ```
 
 ## Пример вызова
@@ -78,7 +80,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::UndoLastParam
 
 ## CLI эквивалент
 
-[`forgeplan undo`](/ru/docs/cli/) - та же логика обхода trash.
+[`forgeplan undo-last`](/ru/docs/cli/) — та же операция выбора записи восстановления. Команда `forgeplan undo` в выбранном CLI не зарегистрирована.
 
 ## См. также
 
@@ -86,3 +88,51 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::UndoLastParam
 - [`forgeplan_activity`](/ru/docs/mcp/forgeplan_activity/) - изучить таймлайн деструктивных операций
 - [`forgeplan_delete`](/ru/docs/mcp/forgeplan_delete/) - мягкое удаление, которое это откатывает
 - [Обзор MCP](/ru/docs/mcp/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Reverse the most recent destructive operation (delete, supersede, or deprecate) by reading the soft-delete trash and applying forgeplan_restore to the most recently written non-consumed receipt. Params: within_hours (default 24, max 720). If no matching receipt is found, returns an error with guidance; the tool never guesses.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `within_hours` | нет | integer \| null | Time window (hours) to search for the last destructive op.<br>Default 24, max 720 (30 days). |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "within_hours": {
+      "default": null,
+      "description": "Time window (hours) to search for the last destructive op.\nDefault 24, max 720 (30 days).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "UndoLastParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

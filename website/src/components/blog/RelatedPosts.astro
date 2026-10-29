@@ -1,7 +1,7 @@
 ---
-// RelatedPosts — 3 cards below article body.
-// Ranking: same topic > same series > most recent published date.
-// Excludes current post and drafts.
+// RelatedPosts — up to 3 cards below the article body.
+// Ranking: same series (series order), then same topic, then remaining posts;
+// publication date breaks ties outside the same-series group. Excludes this post and drafts.
 import { getCollection } from 'astro:content';
 
 interface Props {

@@ -7,6 +7,12 @@ description: Complete cycle from idea to production - Observe → Route → Shap
 
 Every non-trivial task follows this lifecycle:
 
+Commands, IDs, timing and output below are illustrative workflow examples,
+not recorded measurements. `memory_recall`/`memory_retain` are host MCP tools,
+not shell commands; slash commands belong to installed client plugins.
+For recorded CLI/full-MCP compatibility coverage and remaining limits, see
+[Constellation](/docs/reference/constellation/).
+
 ```
 OBSERVE → ROUTE → SHAPE → BUILD → PROVE → SHIP
 ```
@@ -34,7 +40,7 @@ Before doing anything - understand what's happening:
 
 ```bash
 # 1. Restore context from memory
-memory_recall("project name")
+# Call memory_recall in the agent client with the project question
 
 # 2. Check project health
 forgeplan health
@@ -75,8 +81,9 @@ Create the right artifacts and fill them:
 # Create artifact
 forgeplan new prd "Payment Processing"
 
-# Fill MUST sections: Problem, Goals, Non-Goals, Target Users, FR
+# Prepare prd-body.md outside .forgeplan/: Problem, Goals, Non-Goals, Target Users, FR, Related Artifacts
 # Each FR: "[Actor] can [capability]" - no tech names
+forgeplan update PRD-001 --body @prd-body.md
 
 # Validate
 forgeplan validate PRD-001
@@ -88,14 +95,15 @@ forgeplan validate PRD-001
 Before coding - reason through alternatives:
 
 ```bash
-forgeplan reason PRD-001
+forgeplan reason PRD-001 --save
 # → 3+ hypotheses
 # → Predictions for each
 # → Evidence check
 ```
 
-If all hypotheses converge → code with confidence.
-If competing approaches → discuss with team before coding.
+Compare genuine alternatives against the evidence; similar model answers do
+not establish high confidence. Discuss unresolved trade-offs with the team.
+The CLI requires a configured LLM; `--save` preserves the analysis as a linked Note.
 
 **Deep/Critical: ADI is MANDATORY.** Skipping it is a methodology violation.
 
@@ -135,16 +143,18 @@ pnpm test          # TypeScript
 
 ## Phase 4: Prove
 
-Create evidence that the solution works:
+Create evidence that records what you actually verified. Do not turn the
+example's test count or latency into a measurement without a real run:
 
 ```bash
 # Create evidence pack
 forgeplan new evidence "Payment: 15 tests pass, Stripe benchmark 200ms"
 
-# Add structured fields to body (REQUIRED):
+# Prepare evidence-body.md outside .forgeplan/ with results and REQUIRED fields:
 # verdict: supports
 # congruence_level: 3
 # evidence_type: test
+forgeplan update EVID-001 --body @evidence-body.md
 
 # Link to decision
 forgeplan link EVID-001 PRD-001 --relation informs
@@ -155,7 +165,10 @@ forgeplan score PRD-001
 ```
 
 :::caution
-Without structured fields (verdict, congruence_level, evidence_type), R_eff parser assigns CL0 = 0.9 penalty. **Always add them.**
+Always declare verdict, congruence_level and evidence_type. Missing or
+unrecognised verdict/CL declarations fail closed to CL0 (0.9 penalty);
+evidence_type separately affects recursive scoring. Code-claiming evidence
+must also carry real provenance required by the project's gate.
 :::
 
 ## Phase 5: Ship
@@ -175,7 +188,7 @@ gh pr create --base dev --title "[PRD-001] Payment Processing"
 git checkout dev && git pull origin dev
 
 # 4. Save to memory
-memory_retain("Payment processing: implemented, 15 tests, R_eff=1.00")
+# In the agent client, retain only the actual verified result and its evidence reference
 
 # 5. Update progress
 # - RFC checkboxes: [x]
@@ -216,7 +229,10 @@ Choose pipeline **by context**, not by project.
 
 ## Forge-Cycle Command
 
-The `/forge-cycle` command runs all phases automatically:
+The `/forge-cycle` template guides the orchestrator through the phases.
+Its slash-command markers describe equivalent operations, not automatic
+inline invocation of other skills. The following is a conceptual phase map,
+not the current template's complete numbered step list:
 
 ```
 /forge-cycle PRD-001

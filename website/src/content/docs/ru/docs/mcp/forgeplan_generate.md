@@ -3,7 +3,7 @@ title: forgeplan_generate
 description: "Генерирует полный текст артефакта из описания на естественном языке, используя настроенный провайдер LLM."
 ---
 
-Создает новый артефакт **с полностью сгенерированным текстом** из описания на естественном языке. В отличие от `forgeplan_new` (который создает пустой шаблон-заглушку), `generate` использует настроенный LLM (OpenAI / Claude / Gemini / Ollama / любую совместимую с OpenAI конечную точку) для создания всех необходимых разделов за один вызов. Агент все равно должен запустить `forgeplan_validate` после этого, поскольку LLM может пропустить обязательные правила (MUST rules).
+Создаёт новый черновик с телом от LLM по описанию на естественном языке через настроенный HTTP- или поддержанный локальный CLI-провайдер. Записывает канонический Markdown; генерация не доказывает полноту и правильность обязательных разделов. Прочитайте результат через `forgeplan_get`, проверьте и отредактируйте его, затем выполните валидацию.
 
 **Категория**: Создание артефактов
 
@@ -17,27 +17,20 @@ description: "Генерирует полный текст артефакта и
 
 | Имя | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `kind` | `string` | yes | Тип артефакта: `prd`, `epic`, `spec`, `rfc`, `adr`, `problem`, `solution`, `evidence`. |
+| `kind` | `string` | yes | Тип артефакта: `prd`, `epic`, `spec`, `rfc`, `adr`, `problem`, `solution`, `evidence`, `note`, `refresh`. |
 | `description` | `string` | yes | Описание на естественном языке того, что нужно сгенерировать. |
+| `workspace` | `string \| null` | no | Явный абсолютный путь workspace или путь с `~/`. |
 
 _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GenerateParams`_
 
 ## Возвращает
 
-Идентификатор нового артефакта плюс сгенерированный текст. В отличие от `forgeplan_new`, агент обычно может сразу перейти к `forgeplan_validate` без промежуточного `forgeplan_update` - текст уже заполнен.
-
-Пример структуры ответа:
-
-```json
-{
-  "id": "PRD-043",
-  "kind": "prd",
-  "status": "draft",
-  "path": ".forgeplan/prds/prd-043-oauth2-login.md",
-  "body": "# PRD-043: OAuth2 login flow\n\n## Problem\n...",
-  "llm": { "provider": "gemini", "model": "gemini-3-flash-preview", "tokens": 1847 }
-}
-```
+Разобранный MCP payload содержит `id`, `kind`, `title`, `filepath`,
+`provider`, `model`, `_next_action`, а также поля выбора workspace
+и публикации индекса. Полей `body`, `status`, вложенного объекта `llm`
+и измерений расхода токенов нет. Получите созданное тело через
+`forgeplan_get`. В мигрированном workspace проверяйте `index_pending`,
+не предполагая одновременность канонической записи и производной публикации.
 
 ## Пример вызова
 
@@ -55,7 +48,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GenerateParam
 
 ## Типичная последовательность
 
-`forgeplan_route` (подтверждение глубины) → `forgeplan_search` (проверка на дубликаты) → `forgeplan_generate` → `forgeplan_validate` → (устранение пробелов через `forgeplan_update`) → `forgeplan_reason` (для Standard+) → `forgeplan_activate`.
+`forgeplan_route` → `forgeplan_search` (проверка дубликатов) → `forgeplan_generate` → `forgeplan_get` → review/правка → `forgeplan_validate` → reasoning по выбранной глубине → реализация и evidence → review → `forgeplan_activate`. Генерация сама по себе не заменяет условия активации.
 
 ## Эквивалент CLI
 
@@ -67,3 +60,71 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::GenerateParam
 - [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) - альтернатива с пустой заглушкой
 - [`forgeplan_capture`](/ru/docs/mcp/forgeplan_capture/) - захват решений из беседы
 - [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) - всегда валидировать сгенерированный вывод
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Generate an artifact using AI from a natural language description. Requires an LLM provider in .forgeplan/config.yaml. Supports OpenAI-compatible HTTP providers, Claude, Gemini, Ollama, and explicit subscription-authenticated local CLI providers.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `description` | да | string | Natural language description of what to generate |
+| `kind` | да | ArtifactKindArg | Artifact kind to generate via LLM |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$defs": {
+    "ArtifactKindArg": {
+      "enum": [
+        "prd",
+        "epic",
+        "spec",
+        "rfc",
+        "adr",
+        "problem",
+        "solution",
+        "evidence",
+        "note",
+        "refresh"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "description": {
+      "description": "Natural language description of what to generate",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/ArtifactKindArg",
+      "description": "Artifact kind to generate via LLM"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "description"
+  ],
+  "title": "GenerateParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

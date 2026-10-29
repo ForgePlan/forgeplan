@@ -3,7 +3,7 @@ title: forgeplan promote
 description: "Promote a saved memory into a full artifact (PRD, RFC, ADR, etc.)"
 ---
 
-Turns a **saved memory** (created earlier via `forgeplan remember`) into a first-class artifact - PRD, RFC, ADR, ProblemCard, or Note. Use `promote` when an observation you jotted down days or weeks ago turns out to be important enough to deserve structured reasoning, evidence, and a lifecycle. It's the bridge between "I noticed something" and "this is a decision we're tracking".
+Turns a project-local memory created by `forgeplan remember` into a draft artifact. This command does not promote a Hindsight bank memory. It copies the memory body and provenance into a new artifact, preserves author/tags, then deletes the original local memory after creation. Keep a separate copy first if you need the original record.
 
 ## When to use
 
@@ -11,11 +11,11 @@ Turns a **saved memory** (created earlier via `forgeplan remember`) into a first
 - A memory item keeps showing up in `forgeplan recall` searches - a signal that it's load-bearing.
 - You want to upgrade an informal observation into a ProblemCard or PRD with proper links and scoring.
 - Post-mortem: several memories from a completed sprint deserve to become ADRs for the decision log.
-- Hindsight notification: a memory that was tactical at the time has now accumulated enough context to be formalised.
+- A project-local memory has enough context to enter the formal artifact lifecycle.
 
 ## When NOT to use
 
-- The memory is ephemeral and will be stale in a week - leave it as a memory, it'll auto-fade.
+- The observation is temporary: review or explicitly remove it when obsolete. Local memories have no automatic validity deadline or auto-fade.
 - You want to create an artifact from scratch - use [`forgeplan new`](/docs/cli/new/) or [`forgeplan generate`](/docs/cli/generate/).
 - You're capturing a live decision right now - use [`forgeplan capture`](/docs/cli/capture/).
 - The memory doesn't have enough content to fill MUST sections - expand it with more context first, or start from [`forgeplan generate`](/docs/cli/generate/).
@@ -40,7 +40,7 @@ forgeplan promote --kind <KIND> <MEMORY_ID>
   -V, --version      Print version
 ```
 
-Run `forgeplan recall` first to list existing memories and copy the correct ID. Promotion creates a new artifact with the memory's body as the starting content - you still need to fill any missing MUST sections and run `validate` before `activate`.
+Use `forgeplan recall` to copy an actual local memory ID. Promotion creates a draft with a title, `## Content`, the original body and a promotion provenance line; it does not infer required kind-specific sections. Fill missing MUST sections, validate and satisfy applicable gates before activation.
 
 ## Examples
 
@@ -52,7 +52,7 @@ forgeplan recall "search stale"
 forgeplan promote mem-042 --kind problem
 ```
 
-Creates PROB-NNN seeded with the memory's content as Signal and Context. Open the resulting ProblemCard, add Goals and Anti-Goodhart indicators, link any related Evidence, and activate.
+Creates a Problem draft using that Content wrapper, not generated Signal/Context/Goals sections. Add the required Problem sections, constraints and real evidence; validate and complete the applicable lifecycle before activation.
 
 ### Example 2: Promote a memory to a PRD
 
@@ -60,7 +60,7 @@ Creates PROB-NNN seeded with the memory's content as Signal and Context. Open th
 forgeplan promote mem-auth-decisions --kind prd
 ```
 
-Turns a running memory about an authentication discussion into a proper PRD. The command fills what it can (title, rough Problem statement) and leaves the rest as template placeholders - treat it like the output of [`forgeplan new`](/docs/cli/new/): fill the remaining MUST sections, then `validate`.
+Creates a PRD draft with the memory content. It does not synthesize a Problem statement or generate template placeholders. Add the required PRD sections yourself and run `validate`.
 
 ### Example 3: Promote a decision memory to an ADR
 
@@ -87,3 +87,23 @@ Useful when a memory captures a decision rationale that deserves to enter the pe
 - [`forgeplan capture`](/docs/cli/capture/) - log a live decision without a memory round-trip
 - [`forgeplan validate`](/docs/cli/validate/) - required before activating the promoted artifact
 - [Methodology: artifact model](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan promote --help`.
+
+```text
+Promote a memory to a full artifact (e.g., forgeplan promote mem-xxx --kind prd)
+
+Usage: forgeplan promote --kind <KIND> <MEMORY_ID>
+
+Arguments:
+  <MEMORY_ID>  Memory ID to promote (e.g., mem-auth-decisions)
+
+Options:
+      --kind <KIND>  Target artifact kind: prd, rfc, adr, note, problem, etc
+  -h, --help         Print help
+  -V, --version      Print version
+```
+<!-- forgeplan-runtime:end -->

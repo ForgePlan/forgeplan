@@ -3,7 +3,7 @@ title: forgeplan generate
 description: "Генерирует артефакт с помощью ИИ из описания на естественном языке"
 ---
 
-Генерирует **полностью подготовленный черновик артефакта** из описания на естественном языке с использованием LLM (Gemini / OpenAI / Anthropic, настроенных в `.forgeplan/config.yaml`). В отличие от [`forgeplan new`](/docs/cli/new/), который создает пустой шаблон, заполняемый вручную, `generate` просит модель написать разделы Problem, Goals, Non-Goals, Functional Requirements и остальные ОБЯЗАТЕЛЬНЫЕ разделы за один проход. В результате получается черновик, который вы все равно просматриваете - но 30-минутный «холодный старт» с пустым шаблоном исчезает.
+Генерирует **черновик артефакта с помощью LLM** из описания на естественном языке, используя провайдера из `.forgeplan/config.yaml`. В отличие от [`forgeplan new`](/ru/docs/cli/new/), просит модель заполнить разделы шаблона. Полнота, точность и экономия времени не гарантированы: результат нужно проверить и валидировать.
 
 ## Когда использовать
 
@@ -15,11 +15,11 @@ description: "Генерирует артефакт с помощью ИИ из 
 
 ## Когда НЕ использовать
 
-- У вас не настроены учетные данные LLM - сначала запустите `forgeplan config set llm.provider ...`, или вернитесь к [`forgeplan new`](/docs/cli/new/).
+- Провайдер LLM не настроен - используйте [руководство конфигурации](/ru/docs/getting-started/configuration/) или [`forgeplan new`](/ru/docs/cli/new/). Команды `forgeplan config set` нет.
 - Решение является тактической и вообще не требует артефакта - просто закоммитьте.
-- Вы хотите полностью контролировать формулировки вручную - используйте [`forgeplan new`](/docs/cli/new/) и заполняйте разделы самостоятельно.
-- Вы фиксируете решение из разговора - используйте [`forgeplan capture`](/docs/cli/capture/).
-- Содержимое уже существует в сохраненной памяти - используйте [`forgeplan promote`](/docs/cli/promote/).
+- Нужен полный ручной контроль - используйте [`forgeplan new`](/ru/docs/cli/new/).
+- Фиксируете решение из разговора - используйте [`forgeplan capture`](/ru/docs/cli/capture/).
+- Есть сохранённая запись - используйте [`forgeplan promote`](/ru/docs/cli/promote/).
 
 ## Использование
 
@@ -41,7 +41,7 @@ forgeplan generate <KIND> <DESCRIPTION>
   -V, --version  Вывести версию
 ```
 
-`generate` считывает вашего активного провайдера LLM из `.forgeplan/config.yaml`. Если провайдер не установлен или отсутствует ключ API, команда завершится с ошибкой на ранней стадии с подсказкой по конфигурации, вместо того чтобы вернуться к пустому шаблону.
+`generate` читает проектную секцию `llm`. HTTP-провайдерам нужна указанная переменная окружения с API-ключом; явно выбранные локальные subscription-провайдеры используют существующий вход в CLI вендора. Отсутствие конфигурации или ошибка провайдера - ошибка команды, а не успешный пустой черновик.
 
 ## Примеры
 
@@ -51,15 +51,15 @@ forgeplan generate <KIND> <DESCRIPTION>
 forgeplan generate prd "add rate limiting to /api/v1/ endpoints"
 ```
 
-Создает `.forgeplan/prds/prd-NNN-add-rate-limiting.md` с разделами Problem («публичные конечные точки подвержены злоупотреблениям...»), Goals, Non-Goals, Target Users и списком функциональных требований (FR), составленным моделью. Откройте файл, критически прочитайте, уточните формулировки, затем запустите `forgeplan validate PRD-NNN`, чтобы убедиться, что ОБЯЗАТЕЛЬНЫЕ правила пройдены.
+Команда сообщает созданный путь и ID. Модель получает задание заполнить разделы PRD, но фактическое содержимое нужно проверить. После ревью запустите `forgeplan validate` с возвращённым ID; не выводите имя файла или ID из этой иллюстрации.
 
 ### Пример 2: Реконструировать RFC для существующей подсистемы
 
 ```bash
-forgeplan generate rfc "current embedding pipeline: fastembed BGE-M3, 1024 dims, batch 32, cached in .forgeplan/.fastembed_cache/"
+forgeplan generate rfc "selected Constellation embedding pipeline: tract BGE-M3, 1024 dimensions, model cache root resolved from FORGEPLAN_MODEL_CACHE or ~/.forgeplan/models"
 ```
 
-Подходит для документации по существующим системам (brown-field) - LLM составляет черновик RFC, описывающий архитектуру «как есть», с уже отмеченными этапами реализации (Implementation Phases). Используйте это как отправную точку, затем исправьте любые «галлюцинации» в деталях, сверяясь с реальным кодом.
+Это промпт для документации существующей системы, не результат анализа кода. Сверьте архитектуру с целевым исходником и отмечайте этапы реализации выполненными только при наличии реальных доказательств.
 
 ### Пример 3: Составить черновик ProblemCard для нового сигнала
 
@@ -67,7 +67,7 @@ forgeplan generate rfc "current embedding pipeline: fastembed BGE-M3, 1024 dims,
 forgeplan generate problem "users report search returns stale results after renaming artifacts"
 ```
 
-Генерирует разделы Signal / Context / Goals / Anti-Goodhart indicators. ProblemCard не требуют гейта валидации, поэтому вы можете `activate` их, как только карточка станет связной, и связать последующие Evidence или Solutions.
+Модель получает задание заполнить шаблон ProblemCard. Проверьте Signal, Context, Goals и Anti-Goodhart, свяжите реальные Evidence или Solutions по необходимости и выполните валидацию и lifecycle-гейты перед активацией.
 
 ## Как это вписывается в рабочий процесс
 
@@ -79,8 +79,28 @@ route  →  generate  →  (review + edit)  →  validate  →  reason  →  cod
 
 ## Смотрите также
 
-- [`forgeplan new`](/docs/cli/new/) - ручной шаблон-заглушка, полный контроль над формулировками
-- [`forgeplan validate`](/docs/cli/validate/) - требуется после редактирования черновика
-- [`forgeplan reason`](/docs/cli/reason/) - цикл ADI для проверки гипотез перед кодированием
-- [`forgeplan capture`](/docs/cli/capture/) - фиксировать решения из живого разговора
-- [Методология: модель артефакта](/docs/methodology/overview/)
+- [`forgeplan new`](/ru/docs/cli/new/) - ручной шаблон
+- [`forgeplan validate`](/ru/docs/cli/validate/) - проверка черновика
+- [`forgeplan reason`](/ru/docs/cli/reason/) - ADI
+- [`forgeplan capture`](/ru/docs/cli/capture/) - решение из разговора
+- [Модель артефактов](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan generate --help`.
+
+```text
+Generate an artifact using AI from a natural language description
+
+Usage: forgeplan generate <KIND> <DESCRIPTION>
+
+Arguments:
+  <KIND>         Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence
+  <DESCRIPTION>  Description of what to generate
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

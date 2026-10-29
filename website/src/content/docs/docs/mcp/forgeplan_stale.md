@@ -14,7 +14,7 @@ Detect artifacts whose `valid_until` date has passed. These are "stale" - the de
 - **Session start** - complements `forgeplan_health` by showing per-item expiry.
 - **After a long absence** - many artifacts may have drifted past `valid_until` while you were away.
 
-Stale ≠ invalid - the artifact still exists, but its R_eff contribution is penalised (CL0, weight 0.1 in the scoring formula) until it's renewed.
+Stale does not mean invalid. Expired eligible evidence contributes 0.1 to scoring without rewriting its stored congruence level; terminal packs remain excluded. A decision's own expiry is not the same as evidence decay.
 
 ## Input parameters
 
@@ -22,24 +22,25 @@ _No input parameters. Call this tool with an empty object `{}`._
 
 ## Returns
 
+Illustrative response excerpt for 2026-04-11, not a live expiry report.
+
 ```json
 {
   "stale": [
     {
       "id": "EVID-047",
-      "kind": "evidence",
+      "title": "Authentication measurement",
       "valid_until": "2026-03-30",
-      "days_expired": 12,
-      "linked_to": ["PRD-039", "RFC-006"]
+      "days_expired": 12
     },
     {
       "id": "ADR-003",
-      "kind": "adr",
+      "title": "Architecture decision",
       "valid_until": "2026-04-01",
       "days_expired": 10
     }
   ],
-  "total_stale": 2
+  "total": 2
 }
 ```
 
@@ -53,9 +54,11 @@ _No input parameters. Call this tool with an empty object `{}`._
 
 1. `forgeplan_stale` - list expired artifacts.
 2. For each: decide renew vs reopen vs deprecate.
-3. `forgeplan_renew` to extend `valid_until` (if the decision is still sound).
-4. `forgeplan_reopen` to create a new draft while deprecating the stale one.
+3. If still supported, use CLI `forgeplan renew <ID> --reason <REASON> --until <YYYY-MM-DD>` to extend validity.
+4. For a new draft with retirement of the old artifact, use CLI `forgeplan reopen <ID> --reason <REASON>`. Neither `forgeplan_renew` nor `forgeplan_reopen` is registered as an MCP tool.
 5. `forgeplan_decay` - see R_eff impact from remaining stale evidence.
+
+Expiry detection does not rewrite persisted lifecycle status. `renew` checks that stored status and its allowed transition; an expired record still stored as `active` is not automatically eligible for an `active` → `active` renewal.
 
 ## CLI equivalent
 
@@ -66,6 +69,32 @@ forgeplan stale
 ## See also
 
 - [`forgeplan_decay`](/docs/mcp/forgeplan_decay/) - quantify R_eff loss from aged evidence.
-- [`forgeplan_renew`](/docs/cli/renew/) - extend `valid_until`.
-- [`forgeplan_reopen`](/docs/cli/reopen/) - create a lineage-linked new draft.
+- [`forgeplan renew`](/docs/cli/renew/) - extend `valid_until`.
+- [`forgeplan reopen`](/docs/cli/reopen/) - create a lineage-linked new draft.
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Detect stale artifacts with expired valid_until dates. Returns the list of expired artifacts with days since expiry.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| — | — | — | No parameters. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "properties": {},
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

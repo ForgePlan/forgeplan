@@ -163,7 +163,7 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
     // SEC-H1 (CWE-117 / CWE-150): title came from the source memory artifact's
     // frontmatter (attacker-controllable for adversarial imports); sanitize
     // before TTY emission to neutralise ANSI/bidi/control bytes.
-    println!("  Title: \"{}\"", sanitize_for_hint(&title));
+    println!("  Title: \"{}\"", sanitize_for_hint(title));
     println!(
         "  Status: draft — fill required sections, then: forgeplan validate {}",
         new_id

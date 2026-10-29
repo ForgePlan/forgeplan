@@ -12,13 +12,24 @@ pub async fn run(
     limit: usize,
     json: bool,
 ) -> Result<()> {
-    let store = common::store().await?;
+    let (_workspace, source) = common::open_read_source().await?;
 
     let filter = ArtifactFilter {
         kind: Some("memory".to_string()),
         status: None,
     };
-    let mut records = store.list_records(Some(&filter)).await?;
+    let stored;
+    let mut records: Vec<_> = match &source {
+        common::ReadSource::Legacy(store) => {
+            stored = store.list_records(Some(&filter)).await?;
+            stored.iter().collect()
+        }
+        common::ReadSource::Captured(read) => read
+            .records()
+            .iter()
+            .filter(|record| record.kind == "memory")
+            .collect(),
+    };
 
     // Filter by query (case-insensitive substring in title or body)
     if let Some(q) = query {
@@ -38,7 +49,9 @@ pub async fn run(
         });
     }
 
-    // Sort by created_at descending (newest first)
+    // Sort by created_at descending (newest first). Captured records retain
+    // an empty timestamp when it is absent from the source; never substitute
+    // the capture time for an unknown legacy-index creation time.
     records.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     // Limit

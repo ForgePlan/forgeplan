@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use console::style;
 use forgeplan_core::db::auxiliary::AuxiliaryStore;
-use forgeplan_core::db::store::{FpfChunk, LanceStore};
+use forgeplan_core::db::store::FpfChunk;
 use forgeplan_core::fpf;
 use forgeplan_core::fpf::ext::rules::Rule;
 use forgeplan_core::fpf::knowledge;
@@ -12,16 +12,17 @@ use forgeplan_core::workspace;
 
 use crate::ui;
 
+use super::common::{self, ReadSource};
+
 /// FPF Dashboard (original command, now `forgeplan fpf dashboard`)
 pub async fn run_dashboard() -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
-    let store = LanceStore::open(&ws).await?;
+    let (ws, source) = common::open_read_source().await?;
     let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
     let fpf_config = config.fpf.as_ref();
-    let dashboard = fpf::dashboard(&store, fpf_config).await?;
+    let dashboard = match &source {
+        ReadSource::Legacy(store) => fpf::dashboard(store, fpf_config).await?,
+        ReadSource::Captured(read) => fpf::dashboard_captured(read, fpf_config).await?,
+    };
     print!("{dashboard}");
 
     // PRD-071 contract: dashboard view → likely next is to drill into rules
@@ -432,8 +433,12 @@ pub async fn run_list() -> anyhow::Result<()> {
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    let store = LanceStore::open(&ws).await?;
-    let sections = store.list_fpf_sections().await?;
+    let store = AuxiliaryStore::open_existing(&ws).await?;
+    let sections = if store.has_fpf() {
+        store.list_fpf_sections().await?
+    } else {
+        Vec::new()
+    };
 
     if sections.is_empty() {
         println!("  No FPF sections loaded. Run `forgeplan fpf ingest` first.");
@@ -478,14 +483,12 @@ fn style_action(action: &str) -> String {
 
 /// `forgeplan fpf rules [--flat] [--json]`
 pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let (ws, read_source) = common::open_read_source().await?;
     let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
     let fpf_config = config.fpf.as_ref();
 
-    let (rules, source) = fpf::active_rules(fpf_config);
-    let source_label = match source {
+    let (rules, rule_source) = fpf::active_rules(fpf_config);
+    let source_label = match rule_source {
         fpf::RuleSource::Config => "Config",
         fpf::RuleSource::Default => "Default",
     };
@@ -494,7 +497,7 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
     // the `<id>` placeholder. Pick the first PRD / RFC / ADR available so the
     // suggested command is runnable verbatim. Empty workspace falls back to
     // the conventional `PRD-NNN` value-to-fill placeholder used elsewhere.
-    let example_id = pick_example_artifact_id(&ws).await;
+    let example_id = pick_example_artifact_id(&read_source).await;
 
     let hints_vec = vec![
         Hint::info("Test rules against an artifact")
@@ -624,20 +627,29 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
 /// most often want to check rules against. Falls back to `PRD-NNN`
 /// (value-to-fill placeholder, allowed by the contract) when the workspace
 /// is empty so the hint stays runnable-shape.
-async fn pick_example_artifact_id(ws: &std::path::Path) -> String {
-    let store = match LanceStore::open(ws).await {
-        Ok(s) => s,
-        Err(_) => return "PRD-NNN".to_string(),
-    };
+async fn pick_example_artifact_id(source: &ReadSource) -> String {
     for kind in ["prd", "rfc", "adr"] {
-        let filter = forgeplan_core::db::store::ListFilter {
-            kind: Some(kind.to_string()),
-            status: None,
+        let id = match source {
+            ReadSource::Legacy(store) => {
+                let filter = forgeplan_core::db::store::ListFilter {
+                    kind: Some(kind.to_string()),
+                    status: None,
+                };
+                store
+                    .list_records(Some(&filter))
+                    .await
+                    .ok()
+                    .and_then(|records| records.into_iter().next())
+                    .map(|record| record.id)
+            }
+            ReadSource::Captured(read) => read
+                .records()
+                .iter()
+                .find(|record| record.kind == kind)
+                .map(|record| record.id.clone()),
         };
-        if let Ok(records) = store.list_records(Some(&filter)).await
-            && let Some(first) = records.first()
-        {
-            return first.id.clone();
+        if let Some(id) = id {
+            return id;
         }
     }
     "PRD-NNN".to_string()
@@ -658,19 +670,21 @@ fn truncate(s: &str, max: usize) -> String {
 
 /// `forgeplan fpf check <id> [--verbose] [--json]`
 pub async fn run_check(id: &str, verbose: bool, json: bool) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-    let store = LanceStore::open(&ws).await?;
+    let (ws, source) = common::open_read_source().await?;
     let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
     let fpf_config = config.fpf.as_ref();
-
-    let result = match fpf::check_artifact_against_rules(&store, id, fpf_config).await {
+    let checked = match &source {
+        ReadSource::Legacy(store) => fpf::check_artifact_against_rules(store, id, fpf_config).await,
+        ReadSource::Captured(read) => {
+            fpf::check_artifact_against_rules_captured(read, id, fpf_config).await
+        }
+    };
+    let result = match checked {
         Ok(Some(r)) => r,
         Ok(None) => {
             ui::error_hint(
                 &format!("Artifact '{id}' not found"),
-                "forgeplan list --kind prd",
+                "forgeplan list --type prd",
             );
             std::process::exit(1);
         }

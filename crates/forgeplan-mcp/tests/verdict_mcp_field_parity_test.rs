@@ -29,6 +29,7 @@ async fn seed_dup_and_stub_fixture(store: std::sync::Arc<forgeplan_core::db::sto
     // Two duplicate PRDs.
     store
         .create_artifact_for_test(&NewArtifact {
+            canonical_key: "PRD-DUP-A".to_string(),
             id: "PRD-DUP-A".to_string(),
             kind: "prd".to_string(),
             status: "active".to_string(),
@@ -44,6 +45,7 @@ async fn seed_dup_and_stub_fixture(store: std::sync::Arc<forgeplan_core::db::sto
         .expect("seed PRD-DUP-A");
     store
         .create_artifact_for_test(&NewArtifact {
+            canonical_key: "PRD-DUP-B".to_string(),
             id: "PRD-DUP-B".to_string(),
             kind: "prd".to_string(),
             status: "active".to_string(),
@@ -65,6 +67,7 @@ async fn seed_dup_and_stub_fixture(store: std::sync::Arc<forgeplan_core::db::sto
     // to exceed the threshold.
     store
         .create_artifact_for_test(&NewArtifact {
+            canonical_key: "PRD-STUB".to_string(),
             id: "PRD-STUB".to_string(),
             kind: "prd".to_string(),
             status: "active".to_string(),

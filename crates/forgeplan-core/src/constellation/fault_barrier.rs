@@ -133,7 +133,7 @@ fn fired() -> &'static Mutex<Vec<&'static str>> {
 fn already_fired(stage: &str) -> bool {
     fired()
         .lock()
-        .map(|stages| stages.iter().any(|done| *done == stage))
+        .map(|stages| stages.contains(&stage))
         .unwrap_or(false)
 }
 
@@ -162,7 +162,7 @@ fn mark_fired(stage: &'static str) -> bool {
     let Ok(mut stages) = fired().lock() else {
         return false;
     };
-    if stages.iter().any(|done| *done == stage) {
+    if stages.contains(&stage) {
         return false;
     }
     stages.push(stage);
@@ -231,11 +231,8 @@ pub fn barrier(stage: &str) {
         }
     };
 
-    let stream = match connect_with_timeout(
-        address,
-        selected.connect_timeout,
-        selected.ack_timeout,
-    ) {
+    let stream = match connect_with_timeout(address, selected.connect_timeout, selected.ack_timeout)
+    {
         Some(stream) => stream,
         None => {
             eprintln!(
@@ -278,7 +275,8 @@ pub fn barrier(stage: &str) {
 
     match serde_json::from_str::<serde_json::Value>(response.trim()) {
         Ok(value) => {
-            let token_ok = value.get("token").and_then(|v| v.as_str()) == Some(selected.token.as_str());
+            let token_ok =
+                value.get("token").and_then(|v| v.as_str()) == Some(selected.token.as_str());
             let stage_ok = value.get("stage").and_then(|v| v.as_str()) == Some(static_stage);
             let released = value.get("release").and_then(|v| v.as_bool()) == Some(true);
             if !(token_ok && stage_ok && released) {
@@ -442,7 +440,8 @@ mod tests {
     fn a_dial_to_a_dead_endpoint_fails_fast_instead_of_stalling() {
         // Port 1 on loopback: reserved, and nothing on a test machine listens
         // there, so the connect is refused rather than silently routed.
-        let address: std::net::SocketAddr = "127.0.0.1:1".parse().expect("a literal socket address");
+        let address: std::net::SocketAddr =
+            "127.0.0.1:1".parse().expect("a literal socket address");
         let timeout = Duration::from_millis(500);
 
         let started = std::time::Instant::now();

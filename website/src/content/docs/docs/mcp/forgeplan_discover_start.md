@@ -3,7 +3,7 @@ title: forgeplan_discover_start
 description: "Start a brownfield discovery session. Returns a structured protocol (7 phases: detect/structure/code/git/tests/docs/synthesize) that the AI agent follows to map an existing codebase."
 ---
 
-Starts a new **brownfield discovery session** - a structured protocol the agent follows when it's dropped into an existing codebase with no prior ForgePlan artifacts. Instead of the agent inventing its own exploration order, ForgePlan returns the seven-phase protocol (detect / structure / code / git / tests / docs / synthesize) with explicit source-tier priorities, and the agent then walks through it, calling `forgeplan_discover_finding` for each observation. On `forgeplan_discover_complete`, the collected findings are synthesised into proposed PROBs / PRDs / RFCs (printed, not auto-created).
+Starts a **brownfield discovery session** and returns a seven-phase protocol (detect / structure / code / git / tests / docs / synthesize). The agent reads sources and records observations with `forgeplan_discover_finding`. `forgeplan_discover_complete` marks the session completed and returns counts; health checks and synthesis of follow-up proposals remain separate agent work.
 
 **Category**: Brownfield Discovery
 
@@ -18,16 +18,15 @@ The discover protocol is intentionally **agent-driven**: ForgePlan never reads s
 
 ## Source tier priority
 
-The protocol enforces a strict priority order so findings are grounded in authoritative evidence, not documentation drift:
+The returned protocol instructs the agent to prioritize sources; it does not inspect the source content or enforce its truth:
 
-| Tier | Source | Why |
-|------|--------|-----|
-| **1** | Source code (`src/`, `lib/`, `app/`) | Ground truth - the code is what actually runs. |
-| **2** | Git history (`git log`, commits, tags, release notes) | Intent over time - reveals decisions, reverts, and trajectory. |
-| **3** | Tests (`tests/`, `spec/`) | Behavioural contracts - pins intended semantics. |
-| **4** | Docs (`README`, `docs/`, wikis) | Last because they are frequently stale vs. code. |
+| Tier | Sources | Role |
+|------|---------|------|
+| **1** | Code, Git history, package manifests | Implementation and recorded intent |
+| **2** | Tests, JSDoc comments, CI configuration | Behavioral expectations and supporting context |
+| **3** | Docs, README, wiki | Claims to reconcile against stronger evidence |
 
-Findings from a higher tier override findings from a lower tier when they conflict.
+Resolve conflicts with concrete evidence. A tier number is not proof that a statement is correct.
 
 ## Input parameters
 
@@ -39,22 +38,15 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::DiscoverStartParams`_
 
 ## Returns
 
-A session handle plus the full protocol payload:
+Returns `session_id`, `project_name`, `session_status`, `current_phase`, and a nested `protocol` containing `version`, `phases`, and `source_tier_rules`. Each phase has `phase`, `order`, `name`, and `instructions`. The legacy `status` field also refers to the session, not any artifact.
+
+For example, the returned protocol's source-tier rules are:
 
 ```json
 {
-  "session_id": "discover-legacy-billing-service-2026-04-11T10:15:00Z",
-  "project_name": "legacy-billing-service",
-  "phases": [
-    { "name": "detect",     "goal": "Detect tech stack, build system, languages", "tier_order": [1, 4] },
-    { "name": "structure",  "goal": "Map top-level modules and boundaries",        "tier_order": [1] },
-    { "name": "code",       "goal": "Read entry points and critical modules",      "tier_order": [1, 3] },
-    { "name": "git",        "goal": "Scan commit history for decisions / reverts", "tier_order": [2] },
-    { "name": "tests",      "goal": "Identify behavioural contracts and gaps",     "tier_order": [3, 1] },
-    { "name": "docs",       "goal": "Reconcile docs vs. code (flag drift)",        "tier_order": [4, 1] },
-    { "name": "synthesize", "goal": "Propose PROBs / PRDs / RFCs from findings",   "tier_order": [] }
-  ],
-  "instructions": "For each phase, walk files in the listed tier order, then call forgeplan_discover_finding for each observation. Close with forgeplan_discover_complete."
+  "t1": ["code", "git", "package manifests"],
+  "t2": ["tests", "JSDoc comments", "CI configs"],
+  "t3": ["docs/ directory", "README files", "wiki"]
 }
 ```
 
@@ -72,11 +64,11 @@ forgeplan_discover_start
 forgeplan_discover_finding (tier=1, phase=detect,    …)
 forgeplan_discover_finding (tier=1, phase=structure, …)
 forgeplan_discover_finding (tier=1, phase=code,      …)
-forgeplan_discover_finding (tier=2, phase=git,       …)
-forgeplan_discover_finding (tier=3, phase=tests,     …)
-forgeplan_discover_finding (tier=4, phase=docs,      …)
+forgeplan_discover_finding (tier=1, phase=git,       …)
+forgeplan_discover_finding (tier=2, phase=tests,     …)
+forgeplan_discover_finding (tier=3, phase=docs,      …)
 forgeplan_discover_complete (session_id)
-    ↓ prints proposed PROBs / PRDs / RFCs
+    ↓ agent reviews findings and prepares follow-up proposals separately
 ```
 
 The agent is expected to iterate per phase - it can emit many findings per phase before advancing.
@@ -89,5 +81,50 @@ The agent is expected to iterate per phase - it can emit many findings per phase
 
 - [MCP overview](/docs/mcp/)
 - [`forgeplan_discover_finding`](/docs/mcp/forgeplan_discover_finding/) - append a single observation
-- [`forgeplan_discover_complete`](/docs/mcp/forgeplan_discover_complete/) - finalise + synthesise artifacts
+- [`forgeplan_discover_complete`](/docs/mcp/forgeplan_discover_complete/) - complete the session and summarize stored findings
 - [`forgeplan_health`](/docs/mcp/forgeplan_health/) - post-discovery project state
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Start a brownfield discovery session. Returns a structured protocol (7 phases: detect/structure/code/git/tests/docs/synthesize) that the AI agent follows to map an existing codebase. ForgePlan provides the protocol; the agent parses code and reports findings via forgeplan_discover_finding.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `project_name` | yes | string | Project name for the discovery session |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "project_name": {
+      "description": "Project name for the discovery session",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "project_name"
+  ],
+  "title": "DiscoverStartParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

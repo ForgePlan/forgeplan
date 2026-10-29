@@ -7,10 +7,19 @@ use crate::commands::common;
 
 /// `forgeplan order` — show artifacts in topological order (dependency order).
 pub async fn run(json: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let all_relations = store.get_all_relations().await?;
-
-    let all_records = store.list_records(None).await?;
+    let (_, source) = common::open_read_source().await?;
+    let all_relations = match &source {
+        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Captured(read) => read.get_all_relations(),
+    };
+    let legacy_records;
+    let all_records = match &source {
+        common::ReadSource::Legacy(store) => {
+            legacy_records = store.list_records(None).await?;
+            legacy_records.as_slice()
+        }
+        common::ReadSource::Captured(read) => read.records(),
+    };
     // For display: which are active
     let active_ids: HashSet<String> = all_records
         .iter()
@@ -18,7 +27,7 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
         .map(|r| r.id.clone())
         .collect();
     // For blocking logic: resolved = active + deprecated + superseded
-    let resolved_ids = common::resolved_ids(&all_records);
+    let resolved_ids = common::resolved_ids(all_records);
 
     // Dogfood v0.32.1 MED bug: the per-line label hardcoded "draft" for every
     // non-active artifact, so a `deprecated`/`superseded`/`stale` artifact

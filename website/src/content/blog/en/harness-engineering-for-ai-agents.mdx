@@ -12,13 +12,15 @@ translations:
   ru: harness-engineering-for-ai-agents
 ---
 
+> **Historical scope, clarified 23 October 2026.** v0.30.0, test/workspace/plugin counts, binary size, stars and roadmap gaps below are dated author reports, not current acceptance evidence. MEMORY.md and Hindsight are separately configured host integrations. The session-amnesia analogy assumes no restored context. Claims are advisory intent markers, not filesystem locks. Creating a Note supplies no default 90-day TTL; expiry reporting requires an explicit `valid_until` and does not delete the record. The current repository's `CLAUDE.md` requires ADI for Standard+ work; document validation not enforcing the full workflow does not waive that obligation.
+
 If your AI agent ships a feature with the wrong logic and a green test suite, the failure isn't in the prompt. It's in the harness around the prompt: the rules the agent reads on startup, the state it persists between turns, the tools it can call, the checks it has to pass, and the environment those checks run in.
 
 That framing isn't mine. It comes from a small site called **walkinglabs** that has been writing the most precise material I've seen on what they call *harness engineering*:
 
 > "If it's not the model weights, it's the harness." - *walkinglabs, Lecture 02*
 
-OpenAI ("Harness engineering: leveraging Codex in an agent-first world", 2025) and Anthropic ("Effective harnesses for long-running agents", 2026) circle the same idea from different angles: the model is a fixed asset, and the variance in your output is dominated by what surrounds it.
+[OpenAI's essay is dated 11 February 2026](https://openai.com/index/harness-engineering/), and [Anthropic's "Effective harnesses for long-running agents" is dated 26 November 2025](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents). Both show ways to improve the environment around a model; neither proves that the harness universally dominates model choice.
 
 I'm going to walk through the five harness subsystems and show how I've implemented them in **ForgePlan** - an open-source Rust CLI + MCP server I've been dogfooding for six months. The code is at [github.com/ForgePlan/forgeplan](https://github.com/ForgePlan/forgeplan) if you want to read along.
 
@@ -41,7 +43,7 @@ The killer line from the same lecture: **"of the five subsystems, feedback usual
 
 The unfashionable opinion: a single well-structured `CLAUDE.md` (or `AGENTS.md`) can outperform a model upgrade. ForgePlan's project root has a CLAUDE.md with eleven explicit red lines and a *hint protocol* (PRD-071) that defines the next-action contract for every CLI and MCP response.
 
-Every output emits exactly one terminal hint:
+The intended hint contract uses these markers (separate examples, not one captured response):
 
 ```
 Next: forgeplan validate PRD-074
@@ -57,7 +59,7 @@ Done.
 Fix: forgeplan link evid-bench-p95 PRD-074 --relation informs
 ```
 
-The agent reads the marker and runs the next step. There's no "the agent freelances around the workflow" failure mode because the harness itself dictates the next step. Regression guard tests assert that every command path emits exactly one terminal hint.
+The agent can follow a marker, but a hint does not enforce ordering or prevent bypass. EVID-086's historical 70/70 command audit is not current proof that every CLI/MCP path emits exactly one correct next action.
 
 walkinglabs *Lecture 03* phrases the underlying principle: **"Information that's not in the repo doesn't exist for the agent."** If the contract isn't in the repo, the agent doesn't follow it.
 
@@ -77,10 +79,10 @@ A fresh agent runs:
 
 ```bash
 forgeplan health
-forgeplan list prd
+forgeplan list --type prd
 ```
 
-…and reconstructs the project state from structured artifacts. No hand-off note. *Lecture 03* again: **"Documentation that diverges from code is more dangerous than no documentation."** ForgePlan answers that with ADR-003: markdown is the source of truth, the LanceDB index is derived. A single `forgeplan scan-import` rebuilds the index from the markdown. The compiler enforces the invariant after the PROB-048 cleanup (32 violation sites, four audit rounds, 56 findings, ending with `pub(crate)` lockdown so direct LanceDB writes from command code don't compile).
+…and reads structured artifacts to reconstruct state. *Lecture 03*: **"Documentation that diverges from code is more dangerous than no documentation."** ADR-003 makes Markdown authoritative and LanceDB derived. Constellation rebuilds with `forgeplan index`; legacy workspaces use `forgeplan reindex`. `scan-import` imports external Markdown. The PROB-048 migration and `pub(crate)` boundary restrict direct mutating store calls across crates, not every possible file/index inconsistency.
 
 ### 3. Tools - typed, not free-form
 
@@ -93,7 +95,7 @@ ForgePlan ships 76 CLI commands and 73 MCP tools. The MCP server uses [rmcp](htt
   "arguments": { "id": "PRD-074" }
 }
 
-// Response (truncated)
+// Illustrative response, not a captured or complete current schema
 {
   "id": "PRD-074",
   "r_eff": 0.10,
@@ -102,7 +104,7 @@ ForgePlan ships 76 CLI commands and 73 MCP tools. The MCP server uses [rmcp](htt
 }
 ```
 
-The `_next_action` field is the same hint contract as the CLI's `Next:` line. The agent reads it and executes. No free-form tool surface, no "agent invents its own ordering of operations."
+`_next_action`, when present, carries workflow guidance structurally. It is not an enforcement boundary and can be absent or semantically wrong; check the actual response rather than assuming universal coverage.
 
 ### 4. Checks - externalised judgement
 
@@ -110,9 +112,11 @@ walkinglabs *Lecture 09*:
 
 > "Students can't grade their own exams."
 
-This is the core of the methodology. ForgePlan's red line #7 says an artifact cannot be activated without code and evidence; `R_eff` must be greater than zero. Two design calls make this real.
+The project's evidence-before-activation rule is a workflow obligation. Ordinary activation checks body length, evidence links, stubs and MUST findings, with separate caller-level provenance checks. It does not enforce an R_eff>0 threshold or prove the code works. Scoring supports the review:
 
 **Weakest-link, never average:**
+The snippet illustrates only the minimum of a **non-empty** list of already scored, eligible evidence. It is not production code: an empty iterator below yields infinity, whereas ordinary no-evidence production scoring returns zero; recursive production scoring also handles expiry, types, terminal status and dependencies.
+
 
 ```rust
 pub fn r_eff(scores: &[f64]) -> f64 {
@@ -133,34 +137,36 @@ If three pieces of evidence score 0.9, 0.6, 0.1 - your decision's `R_eff` is 0.1
 
 A blog post that says "library X is fast" doesn't get to count the same as a benchmark you ran in your own workload, even if both produce numbers.
 
-The dramatic bug story that taught me this matters: **PROB-034**. Six weeks into dogfooding, the same workspace returned `R_eff = 1.00` in one clone and `R_eff = 0.10` in another. HTML comments inside the EvidencePack template (`<!-- TODO: fill verdict -->`) were being parsed as actual structured-fields data. The trust-calculus tool was lying about its own honesty score, and the lie depended on which template version had touched the file last. Hotfix v0.17.2: the parser now refuses any EvidencePack missing concrete (non-commented) `verdict:`, `congruence_level:`, and `evidence_type:` lines.
+**PROB-034** records an A/B on one workspace using v0.17.1 and v0.17.2, not different clones under one binary. Multi-line HTML comment examples shadowed the real `congruence_level`, causing explicit CL0 to fall back to CL3: 1.00 before the fix, 0.10 after it. The fix skipped comment bodies. Current missing-verdict/CL fail-closed behavior is separate later work; `evidence_type` has a fallback.
 
 A harness has to be able to catch itself cheating, or it has no business grading anyone else.
 
 ### 5. Env - reproducible by construction
 
-BGE-M3 semantic search (1024d) runs entirely local - no API key, no egress. Single ~41 MB stripped binary (`brew install ForgePlan/tap/forgeplan` or `cargo install forgeplan-cli`). Every artifact is a markdown file the agent can read, write, and verify against the same parser the human reads it through.
+BGE-M3 inference (1024d) can run locally with a compatible build, configuration and complete model cache. That does not mean installation is air-gapped: dependencies and model weights may need downloading. The article's ~41 MB binary is a historical report, not the size of the weights. The Cargo package is `forgeplan`, not `forgeplan-cli`.
 
-A fresh clone is bootstrapped by:
+For an existing Constellation clone, a conceptual maintenance sequence is:
 
 ```bash
 git clone <repo>
-forgeplan init -y
-forgeplan scan-import   # rebuild LanceDB index from markdown
-forgeplan health        # Verdict: Healthy / NeedsAttention / Unhealthy
+cd <cloned-repo>
+forgeplan index         # publish from canonical Markdown
+forgeplan health        # inspect the actual verdict, not an expected PASS
 ```
 
-The state of the agent's environment is reproducible from git alone.
+Git preserves the committed source records, not the whole agent environment. Dependencies, configuration, host memory connections and model caches must be prepared separately. Use `reindex` for the legacy layout; `scan-import` is for importing foreign documents.
 
 ## What ForgePlan harness doesn't do yet
 
 I'm naming the gaps because *Lecture 12* has a relevant principle: **"'we'll clean it up later' equals 'never.'"** Public gap lists are how I keep myself honest.
 
 - **H1 - per-session task trace.** Process observability is solid (`forgeplan graph`, `forgeplan blindspots`, `forgeplan blocked`). Runtime observability is missing. No OpenTelemetry-style trace of "this agent, in this session, ran these tools, hit this gate." Reconstructing weird multi-agent runs from git history is not a sustainable answer.
-- **H2 - Sprint Contract artifact.** Spectrum today is Note (90-day TTL, light) → PRD (heavy, MUST sections, ADI required). No one-week scope-bound primitive with explicit acceptance criteria and a deadline. *Lecture 11* makes a strong case for this. Drafted, not implemented.
+- **H2 - Sprint Contract artifact.** In this dated roadmap sketch, the spectrum was Note (light, optionally given a review date) → PRD (heavy, MUST sections, ADI required for Standard+ work by repository policy). A Note's expiry is not assigned automatically. No dedicated one-week scope-bound primitive with explicit acceptance criteria and a deadline. *Lecture 11* makes a strong case for this. Drafted, not implemented.
 - **H9 - WIP=1 hard limit.** `forgeplan claim/release` is a soft TTL lock. Nothing prevents one agent from holding three claims at once. *Lecture 07*: **"Don't bite off more than you can chew' applies particularly well to AI agents."**
 
 ## Try it
+Use an isolated new project for the example below. `new` creates a template, not complete requirements: fill the body and fix validation findings before reasoning. `reason` needs a configured provider; `score` is not evidence generation and returns no support until real evidence is linked. Use the actual identifier printed by `new`.
+
 
 ```bash
 brew install ForgePlan/tap/forgeplan

@@ -60,8 +60,6 @@ pub struct WorkspaceRead {
     captured: Arc<CapturedSourceView>,
     /// Sorted by `id`, exactly as the store's `list_records` is.
     records: Vec<ArtifactRecord>,
-    /// `id` (display form) → index into `records`.
-    by_id: HashMap<String, usize>,
     /// Lower-cased ADR-012 slug → canonical display id.
     by_slug: HashMap<String, String>,
     /// Source display id → outgoing `(target, relation)`, sorted.
@@ -117,10 +115,6 @@ impl WorkspaceRead {
         }
         records.sort_by(|a, b| a.id.cmp(&b.id));
 
-        let mut by_id = HashMap::with_capacity(records.len());
-        for (index, record) in records.iter().enumerate() {
-            by_id.insert(record.id.clone(), index);
-        }
         let mut by_slug = HashMap::with_capacity(parsed.len());
         for artifact in &parsed {
             if let Some(slug) = &artifact.identity.slug {
@@ -134,7 +128,6 @@ impl WorkspaceRead {
             view,
             captured,
             records,
-            by_id,
             by_slug,
             outgoing,
             incoming,
@@ -187,7 +180,13 @@ impl WorkspaceRead {
     /// Byte-exact, like the store's `id = '…'` predicate: a normalized display
     /// id or a slug goes through [`Self::resolve_id`] first.
     pub fn get_record(&self, id: &str) -> Option<&ArtifactRecord> {
-        self.by_id.get(id).map(|index| &self.records[*index])
+        // Records are sorted; the final equal entry preserves the previous
+        // index's last-write-wins behavior even if display ids collide.
+        let index = self
+            .records
+            .partition_point(|record| record.id.as_str() <= id)
+            .checked_sub(1)?;
+        self.records.get(index).filter(|record| record.id == id)
     }
 
     /// Records matching a kind/status filter, sorted by id.
@@ -228,7 +227,7 @@ impl WorkspaceRead {
         if input.is_empty() {
             return None;
         }
-        if self.by_id.contains_key(input) {
+        if self.get_record(input).is_some() {
             return Some(input.to_string());
         }
 
@@ -242,10 +241,18 @@ impl WorkspaceRead {
                 .is_some()
         {
             let normalized = format!("{}-{number:03}", prefix.to_ascii_uppercase());
-            return self.by_id.contains_key(&normalized).then_some(normalized);
+            return self.get_record(&normalized).is_some().then_some(normalized);
         }
 
-        self.by_slug.get(&input.to_ascii_lowercase()).cloned()
+        if !input
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return None;
+        }
+        let (prefix, _) = input.split_once('-')?;
+        crate::artifact::types::ArtifactKind::from_slug_prefix(prefix)?;
+        self.by_slug.get(input).cloned()
     }
 
     /// Outgoing edges of one artifact: `(target, relation)`, sorted.
@@ -497,6 +504,23 @@ mod tests {
             record.embedding.is_none(),
             "a read must not invent a vector"
         );
+
+        assert_eq!(
+            read.get_record("EVID-001")
+                .map(|record| record.title.as_str()),
+            Some("Stress run")
+        );
+        assert_eq!(
+            read.get_record("RFC-002")
+                .map(|record| record.title.as_str()),
+            Some("Wire format")
+        );
+        for missing in ["A-000", "PRD-002", "ZZZ-999"] {
+            assert!(
+                read.get_record(missing).is_none(),
+                "unexpected record for {missing}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -508,11 +532,12 @@ mod tests {
         // Normalized display form: `prd-1` → `PRD-001`.
         assert_eq!(read.resolve_id("prd-1").as_deref(), Some("PRD-001"));
         assert_eq!(read.resolve_id("prd-001").as_deref(), Some("PRD-001"));
-        // ADR-012 slug, case-insensitively.
+        // ADR-012 slugs retain the legacy lowercase-only input shape.
         assert_eq!(
             read.resolve_id("prd-auth-system").as_deref(),
             Some("PRD-001")
         );
+        assert_eq!(read.resolve_id("PRD-AUTH-SYSTEM"), None);
         assert_eq!(
             read.resolve_id("  RFC-002  ").as_deref(),
             Some("RFC-002"),

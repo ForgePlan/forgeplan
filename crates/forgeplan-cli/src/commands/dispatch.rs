@@ -1,24 +1,22 @@
 //! `forgeplan dispatch` — compute a parallel-safe work plan for N
 //! sub-agents (PRD-057 Inc 4 + PRD-070 CLI parity).
 //!
-//! Mirrors `forgeplan_dispatch` MCP tool: pure read — does not mutate the
-//! workspace. Hydrates candidate frontmatter (`affected_files`, `domain`,
-//! `parent_epic`) from disk, drops candidates blocked by structural
-//! dependencies, skips already-claimed artifacts, and returns N buckets
-//! plus a serial queue of leftover work.
+//! Mirrors `forgeplan_dispatch` MCP tool: pure read, without workspace mutation.
+//! Hydrates candidate frontmatter (`affected_files`, `domain`,
+//! `parent_epic`) from the legacy projection or the confirmed source capture,
+//! drops candidates blocked by structural dependencies, skips already-claimed
+//! artifacts, and returns N buckets plus a serial queue of leftover work.
 
 use std::collections::HashSet;
 
 use forgeplan_core::artifact::types::{ArtifactKind, slugify};
 use forgeplan_core::claim::ClaimStore;
-use forgeplan_core::db::store::ArtifactFilter;
 use forgeplan_core::dispatch::{
     self, ArtifactCandidate, DEFAULT_OVERLAP_THRESHOLD, MAX_AFFECTED_FILE_LEN, MAX_AFFECTED_FILES,
     MAX_AGENTS, MAX_SKILLS_PER_AGENT,
 };
 use forgeplan_core::graph::topological;
 use forgeplan_core::hints::{self, Hint};
-use forgeplan_core::workspace;
 
 use crate::commands::common;
 
@@ -47,41 +45,44 @@ pub async fn run(
         anyhow::bail!("--overlap-threshold must be in [0.0, 1.0]");
     }
 
-    let cwd = std::env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-    let store = common::store().await?;
+    let (ws, source) = common::open_read_source().await?;
+    let legacy_records;
+    let records = match &source {
+        common::ReadSource::Legacy(store) => {
+            legacy_records = store.list_records(None).await?;
+            legacy_records.as_slice()
+        }
+        common::ReadSource::Captured(read) => read.records(),
+    };
 
     // Default status filter is `draft` — the dispatch-relevant set.
     // `--status any` opts into the full list.
     let status_filter = status.unwrap_or("draft");
-    let filter = ArtifactFilter {
-        kind: kind.map(|s| s.to_string()),
-        status: if status_filter == "any" {
-            None
-        } else {
-            Some(status_filter.to_string())
-        },
-    };
-    let summaries = store.list_artifacts(Some(&filter)).await?;
+    let summaries = records.iter().filter(|record| {
+        kind.is_none_or(|kind| record.kind == kind)
+            && (status_filter == "any" || record.status == status_filter)
+    });
 
     // Compute blocked set so dependency-blocked artifacts never land in a
     // parallel bucket (FR-003).
-    let relations = store.get_all_relations().await?;
-    let records = store.list_records(None).await?;
-    let resolved_ids: HashSet<String> = records
-        .iter()
-        .filter(|r| r.status == "active" || r.status == "deprecated" || r.status == "superseded")
-        .map(|r| r.id.clone())
-        .collect();
+    let relations = match &source {
+        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Captured(read) => read.get_all_relations(),
+    };
+    let resolved_ids = common::resolved_ids(records);
     let topo = topological::kahn_sort(&relations, &resolved_ids);
     let blocked_ids: HashSet<String> = topo.blocked.iter().map(|(id, _)| id.clone()).collect();
 
-    let mut candidates = Vec::with_capacity(summaries.len());
+    let mut candidates = Vec::new();
     let mut skipped_parse_errors = 0usize;
     let mut skipped_blocked = Vec::<String>::new();
-    for summary in &summaries {
-        let fields = read_dispatch_fm_fields(&ws, &summary.kind, &summary.id, &summary.title).await;
+    for summary in summaries {
+        let fields = match &source {
+            common::ReadSource::Legacy(_) => {
+                read_dispatch_fm_fields(&ws, &summary.kind, &summary.id, &summary.title).await
+            }
+            common::ReadSource::Captured(_) => parse_dispatch_fm_fields(&summary.body),
+        };
         if fields.parse_failed {
             skipped_parse_errors += 1;
             continue;
@@ -276,7 +277,12 @@ async fn read_dispatch_fm_fields(
             };
         }
     };
-    let (fm, body) = match forgeplan_core::artifact::frontmatter::parse_frontmatter(&content) {
+    parse_dispatch_fm_fields(&content)
+}
+
+/// Extract dispatch metadata from the same canonical bytes the read source saw.
+fn parse_dispatch_fm_fields(content: &str) -> DispatchFmFields {
+    let (fm, body) = match forgeplan_core::artifact::frontmatter::parse_frontmatter(content) {
         Ok((fm, body)) => (fm, body),
         Err(_) => {
             return DispatchFmFields {
@@ -320,3 +326,40 @@ async fn read_dispatch_fm_fields(
 // referenced through future `--agent-skills` flags. Re-export of the
 // invariant from the core crate keeps dead-code lint quiet.
 const _ASSERT_MAX_SKILLS: usize = MAX_SKILLS_PER_AGENT;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_metadata_preserves_frontmatter_files_domain_and_epic() {
+        let fields = parse_dispatch_fm_fields(
+            "---\naffected_files: src/alpha.rs, src/beta.rs\n\
+             domain: BackEnd\nparent_epic: EPIC-001\n---\n\n\
+             ## Affected Files\n- `src/not-selected.rs`\n",
+        );
+        assert!(!fields.parse_failed);
+        assert_eq!(fields.files, ["src/alpha.rs", "src/beta.rs"]);
+        assert_eq!(fields.domain.as_deref(), Some("backend"));
+        assert_eq!(fields.parent_epic.as_deref(), Some("EPIC-001"));
+    }
+
+    #[test]
+    fn dispatch_metadata_uses_affected_files_section_when_frontmatter_is_empty() {
+        let fields = parse_dispatch_fm_fields(
+            "---\naffected_files: []\ndomain: invalid/domain\n---\n\n\
+             ## Affected Files\n- `src/fallback.rs`\n",
+        );
+        assert!(!fields.parse_failed);
+        assert_eq!(fields.files, ["src/fallback.rs"]);
+        assert_eq!(fields.domain, None);
+        assert_eq!(fields.parent_epic, None);
+    }
+
+    #[test]
+    fn unreadable_dispatch_frontmatter_is_not_an_empty_candidate() {
+        for content in ["no frontmatter", "---\naffected_files: [\n---\n"] {
+            assert!(parse_dispatch_fm_fields(content).parse_failed);
+        }
+    }
+}

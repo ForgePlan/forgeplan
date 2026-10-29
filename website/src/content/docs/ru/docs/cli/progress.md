@@ -3,7 +3,7 @@ title: forgeplan progress
 description: "Трекер прогресса для артефактов на основе чекбоксов"
 ---
 
-Анализирует списки чекбоксов (`- [ ]` / `- [x]`) внутри тел артефактов и сообщает, сколько выполнено. По соглашению, каждое функциональное требование (FR) или фаза реализации в PRD/RFC является чекбоксом - таким образом, `progress` отвечает на вопрос «насколько реализован этот PRD?»
+Считает отмеченные и неотмеченные задачи в телах артефактов. Показывает отметки автора, а не доказательство реализации или приёмки требований.
 
 ## Когда использовать
 
@@ -13,8 +13,8 @@ description: "Трекер прогресса для артефактов на �
 
 ## Когда не использовать
 
--   Вам нужно _качество_ артефакта (а не завершённость) → используйте [`forgeplan score`](/docs/cli/score/)
--   Вам нужен сводный показатель _здоровья_ → используйте [`forgeplan health`](/docs/cli/health/)
+- Для оценки объявленных доказательств есть [`forgeplan score`](/ru/docs/cli/score/).
+- Для сводки задолженности есть [`forgeplan health`](/ru/docs/cli/health/).
 
 ## Использование
 
@@ -53,12 +53,12 @@ forgeplan progress PRD-001
 Машиночитаемый формат для дашборда:
 
 ```bash
-forgeplan progress --json | jq '.[] | {id, percent}'
+forgeplan progress --json | jq '.progress[] | {id, percent}'
 ```
 
 ## Интерпретация вывода
 
-Таблица по умолчанию:
+Иллюстрация таблицы, не записанный runtime-вывод:
 
 ```
 ID        KIND  PERCENT  BAR                  DONE / TOTAL
@@ -70,24 +70,38 @@ RFC-004   rfc    100%    [██████████████████
 | Столбец    | Значение                                             |
 |------------|------------------------------------------------------|
 | `PERCENT`  | `done / total` в виде целого процента                |
-| `BAR`      | 18-символьный ASCII-индикатор прогресса              |
+| `BAR`      | 24-позиционный индикатор из заполненных/пустых блоков |
 | `DONE`     | Количество чекбоксов `- [x]`                         |
 | `TOTAL`    | Количество чекбоксов `- [x]` + `- [ ]`               |
 
-Артефакты без чекбоксов опускаются в представлении по умолчанию (отслеживать нечего). `--json` включает их с `total: 0`.
+Артефакты без чекбоксов исключаются и из таблицы, и из JSON-массива `progress`.
 
 ## Как это вписывается
 
-`progress` отслеживает _выполнение_. Его родственный инструмент [`forgeplan score`](/docs/cli/score/) отслеживает _качество_ (R_eff + F-G-R). Здоровый PRD выполнен на 100% и имеет R_eff > 0.
-
-```
-progress  →  "мы закончили разработку?"
-score     →  "мы ему доверяем?"
-health    →  объединяет оба показателя
-```
+`progress` считает отмеченные задачи; [`score`](/ru/docs/cli/score/) оценивает объявленные доказательства, [`health`](/ru/docs/cli/health/) показывает задолженность. Ни один из них не доказывает завершение реализации. 100% чекбоксов и положительный R_eff сами по себе не являются приёмкой.
 
 ## См. также
 
--   [`forgeplan score`](/docs/cli/score/) - метрика качества R_eff
--   [`forgeplan health`](/docs/cli/health/) - сводный показатель проекта
--   [`forgeplan list`](/docs/cli/list/) - поиск подходящих ID
+- [`forgeplan score`](/ru/docs/cli/score/) - R_eff
+- [`forgeplan health`](/ru/docs/cli/health/) - задолженность
+- [`forgeplan list`](/ru/docs/cli/list/) - поиск ID
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan progress --help`.
+
+```text
+Show checkbox progress for artifacts
+
+Usage: forgeplan progress [OPTIONS] [ID]
+
+Arguments:
+  [ID]  Artifact ID (shows all if omitted)
+
+Options:
+      --json     Output as JSON for machine consumption
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

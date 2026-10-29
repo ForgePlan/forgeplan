@@ -175,15 +175,15 @@
   <p class="lead">
     Когда CLI или MCP-инструмент возвращает результат - что агенту делать дальше? Без явного
     маркера он перечитывает CLAUDE.md, гадает, иногда галлюцинирует и зацикливается. Каждое
-    угадывание - это токены и риск ошибки. <b class="k">Hint Contract</b> убирает двусмысленность:
-    каждый ответ Forgeplan несёт детерминированный next-action в одной из пяти форм.
+    угадывание - это токены и риск ошибки. <b class="k">Hint Contract</b> — локальный замысел
+    формата подсказок, который снижает двусмысленность там, где реализован, но не гарантирует отсутствие ошибок.
   </p>
 
   <!-- MINI-PIPELINE -->
   <div class="pipeline">
     <div class="pipe-box">
       <div class="step-tag">01 · 5-rule Contract</div>
-      <div class="step-title">Гарантии формата</div>
+      <div class="step-title">Целевые правила формата</div>
       <div class="step-desc">Presence · Actionability · Determinism · Conditionality · Consistency</div>
     </div>
     <div class="pipe-arrow">→</div>
@@ -233,24 +233,26 @@
         <div class="tax-tag">Решение · 5-rule contract</div>
         <div class="tax-title">Что делает агент с явным маркером</div>
         <ul class="tax-list">
-          <li>Читает <code>Next:</code> и выполняет команду как написано</li>
+          <li>Читает <code>Next:</code>, проверяет полномочия и предпосылки команды перед выполнением</li>
           <li>На <code>Wait:</code> ставит retry с условием</li>
           <li>На <code>Done.</code> переходит к следующей задаче, не зацикливается</li>
-          <li>На <code>Fix:</code> запускает remediation немедленно</li>
+          <li>На <code>Fix:</code> проверяет, устраняет ли действие ошибку и разрешено ли оно</li>
           <li>На <code>Or:</code> использует fallback только если primary блокирует</li>
         </ul>
-        <div class="tax-foot">детерминизм · без перечитывания · без галлюцинаций</div>
+        <div class="tax-foot">явный следующий шаг · меньше двусмысленности · не защита от галлюцинаций</div>
       </div>
     </div>
 
     <div class="insight">
       <div class="insight-tag">Это не «ещё одно правило» · это интерфейсный контракт</div>
       <p>
-        Hint Contract - это <b class="k">обещание формата</b>: любой output Forgeplan
-        (CLI text / CLI JSON / MCP success / MCP error) гарантированно содержит либо
-        next-action, либо явный terminal-сигнал. Никаких «silent gaps». Этого достаточно,
-        чтобы Claude Code / Cursor / Windsurf и любой кастомный orchestrator читали output
-        одинаково, без переоткрытия методологии каждый раз.
+        Hint Contract — <b class="k">задуманный локальный контракт формата</b> для CLI text,
+        CLI JSON, MCP success и MCP error. Его реализуют отдельные точки вывода,
+        а не универсальная обёртка движка. Например,
+        <code>forgeplan score --all --json</code> возвращает ответ без
+        <code>_next_action</code>. Клиент должен учитывать конкретную форму ответа:
+        наличие маркера помогает выбрать следующий шаг, но не доказывает его
+        достаточность, разрешённость или правильность.
       </p>
     </div>
   </div>
@@ -258,49 +260,49 @@
   <!-- CONCEPT 02 · 5-RULE CONTRACT -->
   <h2>02 · Пять правил контракта</h2>
   <div class="concept">
-    <div class="concept-tag">Концепция 02 · пять гарантий формата</div>
-    <h3 class="concept-h">Каждый output Forgeplan - независимо от поверхности - удовлетворяет этим правилам</h3>
+    <div class="concept-tag">Концепция 02 · пять целевых правил формата</div>
+    <h3 class="concept-h">Правила описывают замысел контракта, а не гарантию для каждого ответа</h3>
     <p class="analogy">
-      Каждое правило закрывает один конкретный класс ошибок, который возникал до v0.25.0 - когда
-      инструмент возвращал результат, а агент не знал, что с ним делать.
+      Эти локальные правила помогают автору подсказки сделать следующий шаг понятнее.
+      Их применение зависит от конкретного ответа; текущее универсальное покрытие не установлено.
     </p>
 
     <div class="rules-grid">
       <div class="rule-card">
         <div class="r-num">01</div>
         <div class="r-name">PRESENCE</div>
-        <div class="r-desc">Каждый ответ - либо next-action, либо явный terminal. <b class="k">Никаких</b> silent gaps.</div>
+        <div class="r-desc">Цель: next-action либо явный terminal. Есть исключения: <code>score --all --json</code> без <code>_next_action</code>.</div>
       </div>
       <div class="rule-card">
         <div class="r-num">02</div>
         <div class="r-name">ACTIONABILITY</div>
-        <div class="r-desc">Next-action - полная команда с реальными ID. Не фрагмент, не placeholder.</div>
+        <div class="r-desc">Цель: полная команда с реальными ID вместо фрагмента или placeholder. Предпосылки всё равно проверяют.</div>
       </div>
       <div class="rule-card">
         <div class="r-num">03</div>
         <div class="r-name">DETERMINISM</div>
-        <div class="r-desc">Один input state → одна hint-строка. Никакого randomness.</div>
+        <div class="r-desc">Цель: одинаковое состояние даёт одинаковую подсказку в конкретной точке вывода.</div>
       </div>
       <div class="rule-card">
         <div class="r-num">04</div>
         <div class="r-name">CONDITIONALITY</div>
-        <div class="r-desc">Hints только когда actionable. Terminal - <code>Done.</code>, не фейк «all done!».</div>
+        <div class="r-desc">Цель: actionable-подсказка или честный terminal <code>Done.</code>, а не обещание «всё готово».</div>
       </div>
       <div class="rule-card">
         <div class="r-num">05</div>
         <div class="r-name">CONSISTENCY</div>
-        <div class="r-desc">Text и JSON - одинаковый смысл. CLI зеркалит MCP-семантику.</div>
+        <div class="r-desc">Цель: одинаковый смысл в text, JSON и MCP; форму конкретного ответа проверяют отдельно.</div>
       </div>
     </div>
 
     <div class="insight">
       <div class="insight-tag">Где читать hint в зависимости от surface</div>
       <p>
-        CLI text · последние строки stdout (<code>Next:</code>, <code>Fix:</code>, <code>Wait:</code>, <code>Done.</code>). ·
-        CLI JSON · top-level поле <code>_next_action</code>. ·
-        MCP · top-level <code>_next_action</code> в response. ·
-        Спец-случай: <code>list --json</code> и <code>tree --json</code> сохраняют bare-array
-        (backward compat для <code>jq</code>) - hint уходит в stderr.
+        Там, где hint реализован: CLI text · последние строки stdout
+        (<code>Next:</code>, <code>Fix:</code>, <code>Wait:</code>, <code>Done.</code>); CLI JSON / MCP · поле <code>_next_action</code>.
+        <code>list --json</code> и <code>tree --json</code> сохраняют bare-array для
+        совместимости с <code>jq</code>, hint уходит в stderr.
+        <code>forgeplan score --all --json</code> не содержит <code>_next_action</code>; отсутствие поля само по себе не ошибка.
       </p>
     </div>
   </div>
@@ -309,12 +311,12 @@
   <h2>03 · Пять маркеров · язык next-action</h2>
   <div class="concept">
     <div class="concept-tag">Концепция 03 · 5 маркеров с фиксированной семантикой</div>
-    <h3 class="concept-h">Каждый маркер - однозначное действие для агента</h3>
+    <h3 class="concept-h">Как читать маркеры в рамках локального контракта</h3>
     <p class="analogy">
-      Маркеры не пересекаются по смыслу. Если в одном ответе есть <code>Next:</code> и
-      <code>Or:</code> - это primary action и fallback. Если есть <code>Error:</code> и
-      <code>Fix:</code> - это ошибка и команда восстановления. <code>Done.</code> никогда не
-      идёт вместе с другими маркерами - это терминальный сигнал.
+      В замысле контракта <code>Next:</code> обозначает primary action,
+      <code>Or:</code> — fallback, а <code>Error:</code> вместе с <code>Fix:</code> —
+      ошибку и предложенное исправление. <code>Done.</code> задуман как отдельный
+      терминальный сигнал, не как доказательство, что все проверки выполнены.
     </p>
 
     <div class="markers-table">
@@ -322,7 +324,7 @@
       <div class="mt-row">
         <div class="mt-marker next">Next:</div>
         <div class="mt-when">Primary action - рекомендованный следующий шаг. Полная команда с реальными ID.</div>
-        <div class="mt-action">execute as-is</div>
+        <div class="mt-action">проверить предпосылки</div>
       </div>
       <div class="mt-row">
         <div class="mt-marker or">Or:</div>
@@ -336,24 +338,24 @@
       </div>
       <div class="mt-row">
         <div class="mt-marker done">Done.</div>
-        <div class="mt-when">Workflow завершён. Не loop, не «всё хорошо!» - буквально точка.</div>
+        <div class="mt-when">Сигнал завершения данного шага по контракту; не доказательство прохождения всех проверок.</div>
         <div class="mt-action">move on</div>
       </div>
       <div class="mt-row">
         <div class="mt-marker fix">Fix:</div>
-        <div class="mt-when">Error remediation. Парная команда с <code>Error:</code>. Запустить немедленно.</div>
-        <div class="mt-action">run immediately</div>
+        <div class="mt-when">Предложенное исправление при <code>Error:</code>. Проверить, что оно устраняет причину и разрешено.</div>
+        <div class="mt-action">проверить исправление</div>
       </div>
     </div>
 
     <!-- Good vs Bad hints -->
-    <h3 style="margin: 28px 0 0; font-size: 16px;">Good vs Bad hints</h3>
+    <h3 style="margin: 28px 0 0; font-size: 16px;">Good vs Bad hints · иллюстрации, не журнал выполнения</h3>
     <div class="gvb">
       <div class="gvb-col good">
         <div class="gvb-tag">✓ Good · v0.25.0+</div>
         <div class="gvb-snip">
 <span class="m-next">Next:</span> forgeplan score PRD-001
-<span class="why">specific, full command, real ID, rationale включён</span>
+<span class="why">полная команда · пример ID, не результат этого урока</span>
         </div>
         <div class="gvb-snip">
 <span class="m-next">Next:</span> forgeplan dispatch --agents 3
@@ -363,7 +365,7 @@
         <div class="gvb-snip">
 <span class="m-fix">Error:</span> Direct status change to 'active' is not allowed.
 <span class="m-fix">Fix:</span> forgeplan activate PRD-001
-<span class="why">ошибка + executable remediation</span>
+<span class="why">правильный lifecycle-verb · перед активацией нужны evidence и все применимые проверки</span>
         </div>
       </div>
       <div class="gvb-col bad">
@@ -378,8 +380,8 @@ Try a longer window: --since-hours 720
         </div>
         <div class="gvb-snip">
 Either work on a different artifact, wait for TTL expiry,
-or ask the orchestrator to force-release.
-<span class="why">три опции, ни одна не primary · paradox of choice</span>
+or ask the orchestrator for a handoff.
+<span class="why">нет primary · force-release живого владельца не является штатной альтернативой</span>
         </div>
       </div>
     </div>
@@ -387,21 +389,24 @@ or ask the orchestrator to force-release.
     <div class="insight">
       <div class="insight-tag">Drift prevention</div>
       <p>
-        Контракт enforced двумя механизмами: integration test
-        <code>crates/forgeplan-cli/tests/hint_contract.rs</code> - десятки тестов, фейлится CI,
-        если команда не несёт маркер. Audit script <code>scripts/audit-hints.sh</code> -
-        coverage 100% всех команд. Это не «договорённость», это проверка на pre-commit.
+        Integration test <code>crates/forgeplan-cli/tests/hint_contract.rs</code> проверяет
+        выбранные случаи; <code>scripts/audit-hints.sh</code> собирает метрику покрытия.
+        EVID-086 фиксирует исторический прогон 70/70 команд, а не текущую приёмку
+        всех 120 путей команд или всех MCP-ответов. Здесь эти проверки не запускались.
+        Их наличие не превращает локальные правила в универсальную гарантию
+        маркера в каждом ответе.
       </p>
     </div>
   </div>
 
   <!-- WORKFLOW PATTERNS -->
-  <h2>Три паттерна порядка работы · как контракт работает в реальности</h2>
+  <h2>Три учебных паттерна порядка работы</h2>
+  <p>Ниже — авторские иллюстрации, не захваченные ответы и не выполненный сценарий. Записи <code>forgeplan_…(...)</code> — условная MCP-нотация, не готовый JSON; строки <code>forgeplan …</code> используют CLI-синтаксис. ID условные: в работе берите фактически возвращённые ID. Маркер не заменяет проверку полномочий и предпосылок.</p>
 
   <div class="pattern">
     <div class="p-tag">Паттерн A</div>
-    <div class="p-title">Shape → Validate → Activate</div>
-    <p>Типовой штатный путь. Каждый шаг возвращает <code>Next:</code> с конкретной командой следующего шага. Агент идёт по цепочке без переоткрытия методологии.</p>
+    <div class="p-title">Shape → Validate → Evidence → Score → Activate</div>
+    <p>PASS в validate не означает готовность к активации. Сначала исправляют содержимое, получают правдивые evidence и связывают их с решением; затем проверяют score и все применимые условия: объём, отсутствие заглушек, evidence-связи, MUST и provenance.</p>
     <div class="p-flow"><span class="fp-cmd">forgeplan_route("add OAuth login")</span>
   → <span class="m-next">Next:</span> forgeplan new prd "OAuth login support"
 
@@ -409,56 +414,65 @@ or ask the orchestrator to force-release.
   → <span class="m-next">Next:</span> forgeplan validate PRD-042
 
 <span class="fp-cmd">forgeplan_validate("PRD-042")</span>
-  → <span class="m-next">Next:</span> forgeplan activate PRD-042   <span class="fp-step">(если PASS)</span>
-  → <span class="m-fix">Fix:</span> forgeplan validate PRD-042    <span class="fp-step">(если errors)</span>
+  → <span class="m-next">Next:</span> получить, оформить и связать evidence (паттерн B), затем forgeplan score PRD-042
+  → <span class="m-fix">Fix:</span> исправить найденные ошибки содержимого, затем повторить forgeplan validate PRD-042
 
-<span class="fp-cmd">forgeplan_activate("PRD-042")</span>
-  → <span class="m-done">Done.</span></div>
+<span class="fp-cmd">forgeplan score PRD-042</span>
+  → проверить verdict, congruence, срок и допустимость evidence, вклады зависимостей и все условия активации
+
+<span class="fp-cmd">forgeplan_activate("PRD-042")</span> <span class="fp-step">(только когда все применимые условия выполнены)</span>
+  → <span class="m-done">Done.</span> <span class="fp-step">(только если активация действительно успешна; здесь не выполнялась)</span></div>
   </div>
 
   <div class="pattern">
     <div class="p-tag">Паттерн B</div>
     <div class="p-title">Восстановление после ошибки</div>
-    <p>Команда вернула ошибку - но не «вот текст ошибки, разбирайся», а <code>Error:</code> + <code>Fix:</code> с готовой командой восстановления.</p>
+    <p>Повторные validate и score без изменения evidence не исправят «No evidence linked». Сначала получите проверяемые данные, правдиво оформите запись с источником, verdict и congruence_level и свяжите её с решением. Поддержка не обязательна: результат может опровергать решение и требовать его пересмотра.</p>
     <div class="p-flow"><span class="fp-cmd">forgeplan_activate("PRD-042")</span>
   → <span class="m-fix">Error:</span> No evidence linked
-  → <span class="m-fix">Fix:</span> forgeplan validate PRD-042
+  → <span class="m-fix">Fix:</span> получить правдивые данные и создать evidence:
 
-<span class="fp-cmd">forgeplan_validate("PRD-042")</span>
-  → Result: PASS
-  → <span class="m-next">Next:</span> forgeplan score PRD-042</div>
+<span class="fp-cmd">forgeplan new evidence "OAuth login verification"</span>
+  → заполнить созданную запись фактическими данными; взять её реальный ID
+  → в этой иллюстрации предположим, что возвращён EVID-017:
+<span class="fp-cmd">forgeplan link EVID-017 PRD-042 --relation informs</span>
+<span class="fp-cmd">forgeplan validate PRD-042</span>
+<span class="fp-cmd">forgeplan score PRD-042</span>
+  → исправить оставшиеся проблемы; проверить все условия из паттерна A
+  → повторить activate только при выполнении всех применимых условий; успех здесь не заявлен</div>
   </div>
 
   <div class="pattern">
     <div class="p-tag">Паттерн C</div>
     <div class="p-title">Multi-agent dispatch с claim-конфликтом</div>
-    <p>Несколько агентов работают параллельно. Если claim занят другим - <code>Or:</code> предлагает альтернативу, не блокирует worker.</p>
-    <div class="p-flow"><span class="fp-cmd">forgeplan_dispatch(--agents 3)</span>
-  → <span class="m-next">Next:</span> forgeplan claim PRD-054 --agent worker-1 --ttl 30
+    <p>Чужой live claim — сигнал не брать ту же работу: выберите другую назначенную задачу либо дождитесь обычной передачи, освобождения владельцем или TTL expiry и перепроверьте claim. Это advisory-метка, не блокировка файлов. <code>--force</code> допустим только для явно разрешённого восстановления после подтверждения, что владелец больше не работает; не штатный ответ на live-конфликт.</p>
+    <div class="p-flow"><span class="fp-cmd">forgeplan dispatch --agents 3</span>
+  → <span class="m-next">Next:</span> forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30
   → <span class="m-or">Or:</span>   forgeplan list --status draft
 
-<span class="fp-cmd">forgeplan_claim("PRD-054")</span>
+<span class="fp-cmd">forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30</span>
   → <span class="m-fix">Error:</span> Already held by worker-2
-  → <span class="m-or">Or:</span> forgeplan release PRD-054 --force</div>
+  → <span class="m-wait">Wait:</span> обычная передача/освобождение или TTL expiry; затем перепроверить claim
+  → <span class="m-or">Or:</span> перейти к другой назначенной задаче, не снимать live claim worker-2</div>
   </div>
 
   <!-- QUICK REFERENCE CARD -->
   <h2>Краткий справочник</h2>
-  <p>Распечатать и держать рядом. Если в output Forgeplan нет маркера и состояние не terminal - это баг, а не «нужно подумать».</p>
+  <p>Справочник локального контракта, а не универсальная гарантия. Если маркера нет, проверьте конкретный ответ и документацию: <code>forgeplan score --all --json</code> — известное допустимое исключение. Не придумывайте следующий шаг и не считайте наличие маркера разрешением на действие.</p>
   <div class="refcard">
     <div class="refcard-head">
       <span>FORGEPLAN HINT CONTRACT</span>
       <span class="rc-ver">v0.25.0+</span>
     </div>
     <div class="refcard-body">
-      <div class="rc-line"><span class="m-next rc-marker">Next:</span><span>&lt;command&gt; · execute as-is</span></div>
+      <div class="rc-line"><span class="m-next rc-marker">Next:</span><span>&lt;command&gt; · проверить предпосылки и полномочия</span></div>
       <div class="rc-line"><span class="m-or rc-marker">Or:</span><span>&lt;command&gt; · fallback if primary blocks</span></div>
       <div class="rc-line"><span class="m-wait rc-marker">Wait:</span><span>&lt;condition&gt; · retry after condition</span></div>
-      <div class="rc-line"><span class="m-done rc-marker">Done.</span><span>workflow complete · move on</span></div>
-      <div class="rc-line"><span class="m-fix rc-marker">Fix:</span><span>&lt;command&gt; · error remediation (with Error:)</span></div>
+      <div class="rc-line"><span class="m-done rc-marker">Done.</span><span>терминальный сигнал · не подтверждение всех проверок</span></div>
+      <div class="rc-line"><span class="m-fix rc-marker">Fix:</span><span>&lt;command&gt; · проверить исправление причины (при Error:)</span></div>
     </div>
     <div class="refcard-foot">
-      Read from: stdout (text) · <code>_next_action</code> (JSON / MCP) · Special: <code>list/tree --json</code> → hint on stderr
+      Где реализовано: stdout (text) · <code>_next_action</code> (JSON / MCP) · <code>list/tree --json</code> → stderr · <code>score --all --json</code> → без <code>_next_action</code>
     </div>
   </div>
 

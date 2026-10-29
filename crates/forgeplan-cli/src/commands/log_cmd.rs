@@ -1,3 +1,4 @@
+use forgeplan_core::db::auxiliary::AuxiliaryStore;
 use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
@@ -8,7 +9,9 @@ pub async fn run(
     limit: usize,
     json: bool,
 ) -> anyhow::Result<()> {
-    let store = common::store().await?;
+    let ws = common::find_workspace_path()?;
+    let _config = forgeplan_core::workspace::load_config(&ws)?;
+    let store = AuxiliaryStore::open_history_existing(&ws).await?;
     let entries = store.get_change_log(artifact_id, source, limit).await?;
 
     // PRD-071 contract: pick the most recently changed artifact and suggest

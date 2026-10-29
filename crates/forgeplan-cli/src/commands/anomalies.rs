@@ -60,9 +60,7 @@ pub async fn run(
     // refusing — and it returns the journal it would have written without
     // writing it.
     let scan = match &store {
-        Some(store) => {
-            anomalies::detect_anomalies_with_journal(store, &ws, &filter).await?
-        }
+        Some(store) => anomalies::detect_anomalies_with_journal(store, &ws, &filter).await?,
         None => {
             let read = common::workspace_read(&ws).await?;
             anomalies::detect_anomalies_captured_with_journal(&read, &ws, &filter).await?

@@ -1,6 +1,8 @@
 # Product Boundary
 
-## Каноническое определение
+> Non-normative proposal из пакета 2026-08-01. Ниже описана целевая граница, а не уже принятый ownership или текущая гарантия исполнения. Действующие ADR не переопределяются этим текстом; статус и ограничения — в [README](../README.md).
+
+## Предлагаемое определение
 
 **ForgePlan is the repository-native engineering contract and verification layer for AI coding agents.**
 

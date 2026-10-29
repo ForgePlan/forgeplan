@@ -1,11 +1,9 @@
 ---
 title: forgeplan fpf search
-description: "Search the FPF knowledge base using the same BM25 + semantic pipeline as artifact search"
+description: "Search ingested FPF sections by keyword or cached BGE-M3 vectors."
 ---
 
-`forgeplan fpf search` queries the ingested **First Principles Framework** knowledge base using the same hybrid retrieval pipeline that powers artifact search - production BM25 (via the `bm25` crate v2.3.2) fused with BGE-M3 semantic vectors. It searches across all 204 FPF sections and returns ranked matches with section IDs and previews.
-
-Think of it as `forgeplan search` pointed at the FPF corpus instead of your own artifacts.
+`forgeplan fpf search` queries the ingested **First Principles Framework** knowledge base. Default search uses case-insensitive title/body keyword matching. `--semantic` selects BGE-M3 vector search; it is not fused with keyword results. The corpus size depends on the sections you ingested, not a fixed count of 204.
 
 ## When to use
 
@@ -45,13 +43,13 @@ forgeplan fpf search [OPTIONS] <QUERY>
 ## Examples
 
 ```bash
-# Default: BM25 keyword search, top 5 results
+# Default: keyword search, up to 5 results
 forgeplan fpf search "trust calculus"
 
 # Widen the result window
 forgeplan fpf search "explore exploit tradeoff" --limit 10
 
-# Semantic vector search (falls back to BM25 if semantic-search feature is off)
+# Vector search; warns and falls back to keyword if unavailable
 forgeplan fpf search "adversarial review" --semantic
 
 forgeplan fpf search "weakest link"
@@ -59,18 +57,17 @@ forgeplan fpf search "weakest link"
 
 ## How the pipeline works
 
-The FPF search uses the **same v0.18.0 production pipeline** as artifact search:
+The FPF retrieval paths differ from artifact BM25 search:
 
-- **BM25** (`bm25` crate v2.3.2) - tokenization with Russian morphology (Snowball stemmer) when `LanguageMode::Detect` triggers.
-- **Template noise stripping** - removes boilerplate headings before scoring, so queries match substantive content.
-- **Semantic fusion** - BGE-M3 cosine similarity layered on top when the `semantic-search` feature is enabled.
-- **O(N) batch search** - efficient across the 204-section corpus.
+- **Keyword** - substring matches in titles and bodies, with extra weight for title hits and full-query title matches.
+- **Semantic** - BGE-M3 vector lookup when explicitly requested, using a compatible semantic-search build, cached model, and ingested section vectors.
+- **Fallback** - a semantic initialization, encoding, or vector-query failure prints a warning and runs keyword search.
 
-Because the mechanics are identical, the same tuning and troubleshooting notes from the [search v2 guide](/docs/guides/search-v2/) apply here.
+This path does not apply artifact BM25 stemming, template stripping, or semantic fusion. The [search v2 guide](/docs/guides/search-v2/) describes the separate artifact pipeline.
 
 ## How it fits
 
-`fpf search` is the query surface of the FPF KB. It's consumed both by humans (CLI inspection) and by `forgeplan reason --fpf`, which retrieves top-k sections as context for the ADI prompt.
+`fpf search` is the KB inspection surface. `reason --fpf` has its own context-loading path and, in the selected build, omits legacy FPF enrichment on a migrated workspace rather than reopening retired tables.
 
 ```
 ingest → search → (human reads OR reason consumes) → better decisions
@@ -81,6 +78,27 @@ ingest → search → (human reads OR reason consumes) → better decisions
 - [`forgeplan fpf`](/docs/cli/fpf/) - parent command
 - [`forgeplan fpf section`](/docs/cli/fpf-section/) - read a specific result
 - [`forgeplan fpf list`](/docs/cli/fpf-list/) - browse all sections
-- [`forgeplan search`](/docs/cli/search/) - artifact search (same pipeline)
-- [Search v2 guide](/docs/guides/search-v2/) - how BM25 + semantic fusion work
+- [`forgeplan search`](/docs/cli/search/) - separate artifact retrieval pipeline
+- [Search v2 guide](/docs/guides/search-v2/) - artifact BM25 and semantic retrieval
 - [`forgeplan reason`](/docs/cli/reason/) - ADI with FPF context
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf search --help`.
+
+```text
+Search FPF knowledge base
+
+Usage: forgeplan fpf search [OPTIONS] <QUERY>
+
+Arguments:
+  <QUERY>  Search query
+
+Options:
+      --limit <LIMIT>  Max results [default: 5]
+      --semantic       Use semantic vector search (requires --features semantic-search; falls back to keyword otherwise)
+  -h, --help           Print help
+  -V, --version        Print version
+```
+<!-- forgeplan-runtime:end -->

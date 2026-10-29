@@ -1,7 +1,10 @@
+use std::borrow::Cow;
+
 use anyhow::Result;
 use console::style;
 
 use forgeplan_core::artifact::sanitize::sanitize_for_hint;
+use forgeplan_core::db::store::ArtifactRecord;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::search::filter::ArtifactFilter as QueryFilter;
 
@@ -14,7 +17,11 @@ pub async fn run(
     tag_filter: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let store = common::store().await?;
+    let (_, source) = common::open_read_source().await?;
+    let all: Cow<'_, [ArtifactRecord]> = match &source {
+        common::ReadSource::Legacy(store) => Cow::Owned(store.list_records(None).await?),
+        common::ReadSource::Captured(read) => Cow::Borrowed(read.records()),
+    };
 
     // Sprint 13.3 H1: compose all predicates through the search filter DSL
     // so kind+status+tag work together (previously tag forced bespoke
@@ -38,15 +45,12 @@ pub async fn run(
         Some(QueryFilter::And(clauses))
     };
 
-    let all = store.list_records(None).await?;
-    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — capture full records so
-    // hint emission can pick slug vs display id based on each artifact's
-    // pre/post-merge state. The summary projection is built afterwards.
-    let full_records: Vec<_> = all
-        .into_iter()
+    // Keep the full records borrowed so the Next: action can still inspect
+    // pre/post-merge identity without copying captured bodies or summaries.
+    let artifacts: Vec<_> = all
+        .iter()
         .filter(|r| composed.as_ref().map(|f| f.matches(r)).unwrap_or(true))
         .collect();
-    let artifacts: Vec<_> = full_records.iter().map(|r| r.to_summary()).collect();
 
     let mut hints_vec: Vec<Hint> = Vec::new();
 
@@ -77,7 +81,7 @@ pub async fn run(
     // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug for pre-merge
     // artifacts, display id otherwise, so the agent's next `forgeplan get`
     // call uses the canonical reference form (matters for commit `Refs:`).
-    let first_record = &full_records[0];
+    let first_record = artifacts[0];
     let first_ref = forgeplan_core::artifact::frontmatter::refs_form_from_body(
         &first_record.body,
         &first_record.id,

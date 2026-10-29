@@ -3,11 +3,12 @@ title: forgeplan_phase
 description: "Read advisory phase state for an artifact - current phase, history, workflow type."
 ---
 
-Returns the advisory methodology phase for an artifact (Shape, Validate, Adi, Code, Test,
-Audit, Evidence, Done) plus the full append-only transition history from
-`.forgeplan/state/<id>.yaml`. Phase tracking is **advisory** - no other tool blocks on it.
-If the state file does not exist (pre-PRD-056 artifact, or `phase.enabled: false` in
-config) the response is `current_phase: "unknown"` with an empty history; never an error.
+Returns the advisory artifact lifecycle phase (`shape`, `validate`, `adi`,
+`code`, `test`, `audit`, `evidence`, `done`) and transition history from
+`.forgeplan/state/<id>.yaml`. This is separate from session-phase enforcement.
+A missing file yields `current_phase: "unknown"` with empty history; malformed
+or unreadable state can return a tool error. Disabling tracking does not erase
+an existing state file.
 
 **Category**: Lifecycle (advisory)
 
@@ -24,25 +25,17 @@ config) the response is `current_phase: "unknown"` with an empty history; never 
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `id` | `string` | yes | Artifact ID whose phase state to read. |
+| `workspace` | `string \| null` | no | Explicit absolute or tilde-expanded workspace path. |
 
 _Schema source: `crates/forgeplan-mcp/src/server.rs::PhaseReadParams`_
 
 ## Returns
 
-```json
-{
-  "artifact_id": "PRD-057",
-  "current_phase": "code",
-  "workflow_type": "greenfield",
-  "advanced_at": "2026-04-26T09:30:00Z",
-  "history": [
-    { "phase": "shape", "ts": "2026-04-25T14:00:00Z", "reason": null },
-    { "phase": "validate", "ts": "2026-04-25T15:20:00Z", "reason": null },
-    { "phase": "code", "ts": "2026-04-26T09:30:00Z", "reason": "FRs implemented" }
-  ],
-  "_next_action": "`PRD-057` is on phase `code`. Suggested next: `test`. Manual override: `forgeplan_phase_advance PRD-057 --to <phase>`."
-}
-```
+Existing-state responses serialize `artifact_id`, `workflow_type`,
+`current_phase`, `advanced_at`, `history`, `schema_version`, plus
+`_next_action`. Each history entry uses `from` (optional), `to`, `at`,
+and optional `reason` — not `phase` and `ts`. Timestamps describe recorded
+transitions, not independent proof that the named work was completed.
 
 When no state file exists yet:
 
@@ -80,3 +73,48 @@ When no state file exists yet:
 - [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) - gate around the `validate` phase
 - [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) - the `done` terminal state of the methodology
 - [Methodology guide](/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Read advisory phase state for an artifact. Returns current_phase, workflow_type, timestamps, and the full append-only transition history from `.forgeplan/state/<id>.yaml`. If no state file exists yet (pre-PRD-056 artifact or phase tracking was disabled), returns `current_phase: unknown` — never an error. Phase tracking is advisory and never blocks other tools.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `id` | yes | string | Artifact ID whose phase state to read |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "Artifact ID whose phase state to read",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "PhaseReadParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

@@ -3,7 +3,7 @@ title: forgeplan log
 description: "Показать журнал изменений - аудиторский след мутаций артефактов"
 ---
 
-Показывает журнал изменений - дополняемый аудиторский след каждой мутации артефакта в рабочем пространстве. Каждая запись фиксирует, кто/что изменил какой артефакт, когда и через какой источник (команда CLI, редактирование файла, синхронизация Git или переиндексация).
+Читает сохранённые изменения артефактов: время, артефакт, действие, поля, источник и необязательный Git-хеш. Полнота всех мутаций не гарантируется.
 
 ## Когда использовать
 
@@ -14,9 +14,9 @@ description: "Показать журнал изменений - аудитор�
 
 ## Когда не использовать
 
-- Если нужны _только решения_ (а не все мутации) → используйте [`forgeplan journal`](/docs/cli/journal/)
-- Если нужен сводный отчёт о состоянии проекта → используйте [`forgeplan health`](/docs/cli/health/)
-- Если нужно искать _содержимое_ → используйте [`forgeplan search`](/docs/cli/search/)
+- Для хронологии решений используйте [`forgeplan journal`](/ru/docs/cli/journal/).
+- Для состояния проекта используйте [`forgeplan health`](/ru/docs/cli/health/).
+- Для поиска содержимого используйте [`forgeplan search`](/ru/docs/cli/search/).
 
 ## Использование
 
@@ -62,39 +62,45 @@ forgeplan log --source cli --limit 50
 
 ## Интерпретация вывода
 
-Каждая строка - это одно событие:
+Иллюстрация исторических событий, не записанный transcript и не точный текущий формат колонок:
 
 ```
 2026-04-11 14:32  cli        PRD-001   activate       draft → active
 2026-04-11 14:28  cli        PRD-001   link           → EVID-012 (informs)
-2026-04-11 14:20  file_edit  PRD-001   body_update    (detected by scan-import)
+2026-04-11 14:20  file_edit  PRD-001   body_update    (recorded file synchronization)
 2026-04-11 13:55  cli        EVID-012  create         EvidencePack created
 ```
 
-| Столбец       | Значение                                                |
-|--------------|--------------------------------------------------------|
-| Timestamp    | Локальное время мутации                             |
-| Source       | `cli`, `file_edit`, `git_sync`, `reindex`             |
-| Artifact ID  | Что изменилось                                           |
-| Action       | create, update, link, activate, supersede, deprecate, и т. д. |
-| Detail       | Дельта в удобочитаемом формате                                   |
-
-Если синхронизация Git включена, записи могут включать короткий хеш коммита в столбце «Detail», связывая мутацию с коммитом Git.
+Текущие колонки: **TIMESTAMP**, **ARTIFACT**, **ACTION**, **FIELD**, **CHANGE**, **SOURCE**, **COMMIT**. Время - сокращённая сохранённая метка, не гарантированное преобразование в местный часовой пояс. `CHANGE` содержит сокращённые старое/новое значения; у Git-хеша отдельная колонка.
 
 ## Как это работает
 
-`log` - это низкоуровневый след мутаций. Представления более высокого уровня фильтруют его:
-
-```
-log        (всё, что произошло)
-  ↓
-journal    (только решения с R_eff)
-  ↓
-health     (агрегированное состояние проекта)
-```
+`log` читает исторические записи изменений. `journal` строит хронологию решений, `health` вычисляет текущие сигналы из записей и связей; это не фильтры журнала. Для вызовов MCP есть отдельный [`forgeplan activity`](/ru/docs/cli/activity/).
 
 ## См. также
 
-- [`forgeplan journal`](/docs/cli/journal/) - хронология только решений
-- [`forgeplan health`](/docs/cli/health/) - агрегированная панель мониторинга
-- [`forgeplan session`](/docs/cli/session/) - текущая фаза рабочего процесса
+- [`forgeplan journal`](/ru/docs/cli/journal/) - хронология решений
+- [`forgeplan health`](/ru/docs/cli/health/) - текущее состояние
+- [`forgeplan session`](/ru/docs/cli/session/) - фаза сессии
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan log --help`.
+
+```text
+Show change log — audit trail of artifact mutations
+
+Usage: forgeplan log [OPTIONS] [ID]
+
+Arguments:
+  [ID]  Filter by artifact ID
+
+Options:
+  -n, --limit <LIMIT>    Maximum number of entries (default: 20) [default: 20]
+      --source <SOURCE>  Filter by source (cli, file_edit, git_sync, reindex)
+      --json             Output as JSON for machine consumption
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

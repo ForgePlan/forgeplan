@@ -26,22 +26,24 @@ This model aggregates:
 - SDL — GraphQL / API surface (if the model exposes a contract)
 - Pseudo-code — algorithm sketch (if the model encodes a transformation)
 
-These come from `forgeplan_render_canonical` (Phase E in marketplace#79);
-placeholders below get filled by that pipeline.
+Canonical rendering is a planned Phase E integration in marketplace#79
+(`forgeplan_render_canonical`), not a tool shipped in this target.
+Fill the applicable examples below from reviewed sources; no automatic
+rendering is implied.
 
 ### DDL
 ```sql
--- placeholder; rendered by render_canonical
+-- replace with source-backed DDL if applicable
 ```
 
 ### SDL
 ```graphql
-# placeholder; rendered by render_canonical
+# replace with source-backed SDL if applicable
 ```
 
 ### Pseudo-code
 ```text
-# placeholder; rendered by render_canonical
+# replace with source-backed pseudo-code if applicable
 ```
 
 ## Coverage
@@ -51,7 +53,7 @@ placeholders below get filled by that pipeline.
 - Scenario coverage: N scenarios per use case (target ≥ 2)
 - Hypothesis status: verified / inferred / parked / refuted counts
 
-(filled by `forgeplan_coverage_business` — Phase C)
+(`forgeplan_coverage_business` returns a report; it does not fill this body.)
 
 ## Source
 Where in the codebase did extraction start? Which Discover Agent passes

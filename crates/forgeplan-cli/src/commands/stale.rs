@@ -4,8 +4,11 @@ use forgeplan_core::hints::{self, Hint};
 use crate::commands::common;
 
 pub async fn run(json: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let stale_records = store.find_stale().await?;
+    let (_, source) = common::open_read_source().await?;
+    let stale_records = match &source {
+        common::ReadSource::Legacy(store) => store.find_stale().await?,
+        common::ReadSource::Captured(read) => read.find_stale(),
+    };
 
     if stale_records.is_empty() {
         // PRD-071: empty stale list is terminal — no action to take.
@@ -24,7 +27,7 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
 
     // PRD-071: primary action — renew the first stale artifact, providing
     // a deterministic copy-pasteable command with a real ID.
-    let top_id = stale_records[0].id.clone();
+    let top_id = &stale_records[0].id;
     let next_year_end = format!("{}-12-31", Utc::now().date_naive().year() + 1);
     let next_hints: Vec<Hint> = vec![
         Hint::warning(format!(

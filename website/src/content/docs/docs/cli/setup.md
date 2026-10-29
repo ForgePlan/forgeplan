@@ -3,15 +3,15 @@ title: forgeplan setup
 description: "One-time per-machine preparation: create the fpl alias and download the embedding model"
 ---
 
-`forgeplan setup` does the two things a `cargo install` cannot do for itself: it creates the **`fpl` alias** and downloads the **embedding model** used by semantic search. Both steps are idempotent, and neither is required for Forgeplan to work - without the model, search falls back to BM25 keyword ranking; without the alias, `forgeplan` still runs under its full name.
+`forgeplan setup` prepares the `fpl` alias and model and, inside a Git repository, installs sync hooks unless `--skip-hooks` is passed. Without a model, smart search can use keyword ranking; forced `--semantic` can fail. Setup does not embed workspace artifacts or enable persistent automatic indexing.
 
 The alias exists because the two installation paths land in different states. Homebrew and `install.sh` binaries are produced by cargo-dist, which creates the alias through its `bin-aliases` setting. `cargo install` has no equivalent and **no post-install hook at all**, so a source install has `forgeplan` and no `fpl`.
 
-The model download applies to **every** install. Semantic search is compiled into all released binaries (ADR-023), but the 2.1 GB of BGE-M3 weights are not — they are a lazy first-use download, and fetching them deliberately beats discovering the wait mid-task when the first semantic search appears to hang.
+Model weights are not included in the binary. Prepare them deliberately through an appropriate `setup`/`embed` path. The selected semantic-read path uses the local cache rather than downloading a model on the first search.
 
 ## When to use
 
-- Immediately after any install — Homebrew, `install.sh`, a GitHub Release archive or `cargo install`. All of them ship semantic search; none of them ship the model.
+- After installation when model preparation or hooks are wanted. Release builds include semantic support; source installs need `--features semantic-search`.
 - Once per machine - both the alias and the model cache are machine-wide, not per project.
 - After moving or reinstalling the binary, to point the alias at the new location.
 - Before going offline, if you expect to use semantic search and have not fetched the model yet.
@@ -33,17 +33,18 @@ forgeplan setup [OPTIONS]
 ```text
       --skip-model  Skip the embedding-model download
       --skip-alias  Skip creating the `fpl` alias
+      --skip-hooks  Skip installing project Git sync hooks
   -h, --help        Print help
   -V, --version     Print version
 ```
 
 ## Examples
 
-### Example 1: Full first-install sequence
+### Example 1: First-install sequence without Git hook installation
 
 ```bash
 cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search
-forgeplan setup
+forgeplan setup --skip-hooks
 forgeplan init
 ```
 
@@ -52,7 +53,7 @@ Prepares the machine, then creates a workspace. The model download shows a progr
 ### Example 2: Alias only, no download
 
 ```bash
-forgeplan setup --skip-model
+forgeplan setup --skip-model --skip-hooks
 ```
 
 Useful on a metered connection, or when you only want the short `fpl` command and are content with keyword search for now. Run `forgeplan setup` again later to fetch the model.
@@ -60,7 +61,7 @@ Useful on a metered connection, or when you only want the short `fpl` command an
 ### Example 3: Model only, leave PATH alone
 
 ```bash
-forgeplan setup --skip-alias
+forgeplan setup --skip-alias --skip-hooks
 ```
 
 For anyone who already has their own `fpl` on PATH, or manages shims through their own tooling.
@@ -80,15 +81,14 @@ Symlinks are created on Unix-like systems. On Windows the step is skipped with a
 
 ## What the model step does
 
-Constructing the embedder triggers the download; fastembed prints its own progress bar. The model is cached machine-wide:
+The selected build uses tract, not fastembed. Models default to
+`~/.forgeplan/models` on macOS, Linux and Windows. `FORGEPLAN_MODEL_CACHE`
+is the explicit override; `HF_HOME` does not override this download path.
+Old platform caches remain in place and can be selected explicitly.
 
-| Platform | Cache location |
-|---|---|
-| macOS | `~/Library/Caches/forgeplan/models` |
-| Linux | `~/.cache/forgeplan/models` |
-| Windows | `%LOCALAPPDATA%\forgeplan\models` |
-
-Override with `FORGEPLAN_MODEL_CACHE`. If `HF_HOME` is set it takes precedence over both - that is fastembed's behaviour, deliberately not overridden so a shared HuggingFace cache stays authoritative.
+A prepared model is only one prerequisite. Semantic answers need eligible vectors.
+Automatic maintenance additionally needs a compatible build, active configuration
+and a running handler with maintenance capability.
 
 A failed download is not a failed setup. The alias may well have been created, and everything except semantic search keeps working, so the command reports the problem and exits successfully rather than aborting.
 
@@ -100,9 +100,9 @@ A failed download is not a failed setup. The alias may well have been created, a
 |---|---|
 | `forgeplan init` (interactive) | asks, defaulting to **no** |
 | `forgeplan init --with-model` | yes, without asking |
-| `forgeplan init -y` | **never** |
+| `forgeplan init -y` | no, unless `--with-model` is explicitly supplied |
 
-`-y` never downloads because agents and CI runners call it routinely; pulling gigabytes because someone ran `init -y` in a container would be a denial of service on their build. The interactive default is also no - wanting keyword search only should not require knowing a flag to avoid a 2 GB transfer.
+An explicit `--with-model` differs from ordinary `-y`. If `init` returns early because a workspace already exists, model preparation may not run at all.
 
 The alias step lives only here, not in `init`, because it is a machine-level concern rather than a per-workspace one.
 
@@ -113,3 +113,35 @@ The alias step lives only here, not in `init`, because it is a machine-level con
 - [`forgeplan setup-skill`](/docs/cli/setup-skill/) - install the `/forge` Claude Code skill
 - [Installation](/docs/getting-started/installation/) - which builds carry semantic search, and why
 - [Configuration](/docs/getting-started/configuration/) - the `embedding:` config block
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan setup --help`.
+
+```text
+One-time per-machine preparation: `fpl` alias + embedding model
+
+`cargo install` has no post-install hook and does not create the `fpl` alias that brew and install.sh get from cargo-dist's `bin-aliases`, so a source install has `forgeplan` but no `fpl`. This creates it, and downloads the ~2.1 GB embedding model up front rather than letting the first semantic search stall for minutes with no explanation.
+
+Idempotent, and neither step is required for ForgePlan to work.
+
+Usage: forgeplan setup [OPTIONS]
+
+Options:
+      --skip-model
+          Skip the embedding-model download
+
+      --skip-alias
+          Skip creating the `fpl` alias
+
+      --skip-hooks
+          Skip installing the git hooks that keep the index in step with `git pull` and branch switches (PROB-097)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+```
+<!-- forgeplan-runtime:end -->

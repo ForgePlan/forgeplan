@@ -5,7 +5,7 @@
 Forgeplan can automatically provide project context to AI agents through hooks.
 This guide covers integration with Claude Code, but the same principles apply to any agent framework.
 
-## SessionStart Hook (Claude Code)
+## UserPromptSubmit Hook (Claude Code)
 
 Add to `.claude/settings.json`:
 
@@ -14,8 +14,9 @@ Add to `.claude/settings.json`:
   "hooks": {
     "UserPromptSubmit": [
       {
-        "matcher": "",
-        "command": "forgeplan health --compact --json 2>/dev/null || true"
+        "hooks": [
+          {"type": "command", "command": "forgeplan health --compact"}
+        ]
       }
     ]
   }
@@ -26,24 +27,14 @@ This runs `forgeplan health` at the start of every prompt, giving the agent proj
 
 ### What the agent sees
 
-`forgeplan health --compact --json` returns a compact JSON payload (< 500 tokens):
+`forgeplan health --compact` emits the compact text form. For structured data,
+use `forgeplan health --json` or MCP `forgeplan_health`.
 
-```json
-{
-  "total": 27,
-  "active": 11,
-  "draft": 16,
-  "blind_spots": 0,
-  "at_risk": 2,
-  "stale": 1,
-  "next_action": "Review EVID-003 — evidence expires in 3 days"
-}
-```
-
-This tells the agent:
-- How many artifacts exist and their status breakdown
-- Whether there are blind spots (decisions without evidence)
-- What the most urgent next action is
+`--json` takes precedence over `--compact`: combining them returns the full JSON
+dashboard, not a payload bounded to 500 tokens. Relevant JSON fields include
+`total`, `by_status`, array-valued `blind_spots`/`at_risk`, `stale_count` and the
+CLI hint `_next_action`. The size grows with workspace data; inspect actual output.
+This hook is advisory context, not proof that validation or release gates passed.
 
 ## PostToolUse Hook
 
@@ -55,7 +46,9 @@ Remind the agent to capture decisions after significant file changes:
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
-        "command": "echo '[Forgeplan] Consider: does this change represent a decision worth capturing? Use forgeplan capture if so.'"
+        "hooks": [
+          {"type": "command", "command": "echo '[Forgeplan] Consider: does this change represent a decision worth capturing? Use forgeplan capture if so.'"}
+        ]
       }
     ]
   }
@@ -73,22 +66,24 @@ Auto-determine depth before starting work on a task:
   "hooks": {
     "UserPromptSubmit": [
       {
-        "matcher": "implement|build|create|add feature",
-        "command": "forgeplan route \"$PROMPT\" --json 2>/dev/null || true"
+        "hooks": [
+          {"type": "command", "command": "forgeplan route \"$(jq -r '.prompt // empty')\" --level 0"}
+        ]
       }
     ]
   }
 }
 ```
 
-The agent receives routing guidance:
-```json
-{
-  "depth": "Standard",
-  "pipeline": ["PRD", "RFC"],
-  "confidence": 85
-}
-```
+This example runs on every prompt. `UserPromptSubmit` does not match prompt
+keywords through `matcher`; its JSON stdin supplies `.prompt`, not a `$PROMPT`
+environment variable. `jq` is a prerequisite. These are opt-in examples, not an
+installation or a change to this repository's native settings.
+
+The agent receives human-readable CLI routing guidance, not JSON. `route` has
+no `--json` flag; `--level 0` explicitly avoids LLM routing. Keep stderr and the
+exit status visible so a failed hook is not mistaken for a successful recommendation.
+For a structured response, use the MCP `forgeplan_route` contract instead.
 
 ## MCP Server (Recommended)
 
@@ -98,27 +93,40 @@ For deeper integration, run Forgeplan as an MCP server:
 forgeplan serve
 ```
 
-This exposes all 26+ tools via MCP stdio transport, giving the agent full CRUD access to artifacts, validation, scoring, and search without needing CLI hooks.
+The scoped `0.39.0+constellation.s1.1` build registers 76 full-profile tools and
+an additional 9-tool `constellation-read` profile. Writable `full` remains the
+default; registration alone does not verify every tool's behavior.
+CLI `validate` works on legacy and migrated Constellation layouts; full MCP
+`forgeplan_validate` was also exercised successfully on migrated artifacts.
+See the [pilot compatibility notes (RU)](CONSTELLATION-PILOT.ru.md).
 
 ### Claude Code MCP config
 
-Add to `.claude/settings.json`:
+Add to the project's `.mcp.json` (adapt the executable and workspace paths):
 
 ```json
 {
   "mcpServers": {
     "forgeplan": {
       "command": "forgeplan",
-      "args": ["serve"],
-      "cwd": "/path/to/your/project"
+      "args": ["serve", "--workspace", "/path/to/your/project"]
     }
   }
 }
 ```
 
+For a Constellation pilot, use an explicit versioned executable and
+`serve --profile full --auto-index --workspace <project-root>`. Startup
+maintenance scope prefers `FORGEPLAN_WORKSPACE` over the flag; request selection
+prefers an explicit request workspace over server defaults. Check or unset the
+environment when pinning a project. Automatic embedding also needs active `config.embedding`,
+a complete cached BGE-M3 snapshot and a semantic-search build. See the
+[portable runbook (RU)](CONSTELLATION-PILOT.ru.md); a read-only server is not a writer.
+
 ## Safety Hook (Forge Mode)
 
-Blocks dangerous commands even in yolo/acceptEdits mode:
+With this hook installed and enabled in Claude Code, matching literal Bash
+command strings can be refused before execution:
 
 ```json
 {
@@ -146,9 +154,12 @@ Blocks dangerous commands even in yolo/acceptEdits mode:
 - `cargo publish`
 - `DROP TABLE`
 
-On detection — exit 2, command is blocked. The agent receives the message: "BLOCKED by forge-safety-hook".
+On a literal blacklist match in a `Bash` call, the script exits 2 and reports
+`BLOCKED by forge-safety-hook`. It is not a shell parser or sandbox, does not
+inspect other tools and is not a guarantee against equivalent command spellings.
+Repository prohibitions apply even when a hook does not detect a command.
 
-### Three trust zones (FPF B.3)
+### Three trust zones (local teaching analogy, not FPF B.3's algorithm)
 
 | Zone | Controlled by | Mechanism |
 |------|---------------|-----------|
@@ -181,8 +192,8 @@ Outputs: available skills (/forge, /fpf-simple), methodology rules (Shape -> Val
 
 ## Best Practices
 
-1. **Start with health** — the SessionStart hook gives the agent situational awareness
-2. **MCP > hooks** — MCP provides structured tool access; hooks are text-only
-3. **Keep hooks lightweight** — `2>/dev/null || true` prevents hook failures from blocking the agent
+1. **Start with health** — `UserPromptSubmit` runs once per submitted prompt; use `SessionStart` only when session-start timing is intended
+2. **MCP and hooks have different jobs** — MCP exposes tools; these command-hook examples print context or reminders
+3. **Keep failures visible** — `2>/dev/null || true` suppresses diagnostics and failure status; if deliberately used for optional context, do not treat its result as a passed gate
 4. **Don't over-automate** — the PostToolUse hook should suggest, not force artifact creation
 5. **Route before work** — helps the agent decide whether to create artifacts or just code

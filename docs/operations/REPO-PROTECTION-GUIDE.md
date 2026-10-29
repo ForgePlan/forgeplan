@@ -4,9 +4,16 @@
 
 A practical guide for setting up GitHub repository protection for projects with a dev-based workflow and AI agents (Claude Code, Cursor, etc).
 
+> These are illustrative setup fragments for a separately authorized repository,
+> not a description of ForgePlan's live rules or permission to change them.
+> Do not apply the sample merge methods/review counts over this project's stricter
+> policy. Native settings, hooks, rulesets and credentials remain unchanged here.
+> Rules depend on plan, visibility, enforcement, selected refs, required-check
+> names and bypass credentials. No live remote protection test was performed.
+
 ## Requirements
 
-- GitHub Free (public repo) or GitHub Team (private repo)
+- A GitHub plan/visibility combination that supports the chosen rules and security features; public/private and personal/organization availability differ
 - `gh` CLI installed and authenticated
 - CI workflow (GitHub Actions)
 
@@ -177,7 +184,7 @@ EOF
 | `strict_required_status_checks_policy` | `true` | PR must be up-to-date with main |
 | `do_not_enforce_on_create` | `true` | Don't block branch creation |
 | `bypass_actors.actor_id: 5` | Repository Admin | Emergency bypass |
-| `allowed_merge_methods` | `["merge", "squash"]` | Merge commit for releases, squash for features |
+| `allowed_merge_methods` | sample `["merge", "squash"]` | Generic example, not this project's merge-commit-only convention |
 
 ### 2.2 Dev branch protection
 
@@ -258,14 +265,16 @@ gh api repos/${FULL}/rulesets --method POST --input - <<'EOF'
 EOF
 ```
 
-Only admins can create/delete tags. Agents cannot accidentally tag.
+These sample rules exempt the configured repository-admin role. An agent using
+admin/bypass credentials can also tag; “agent” is not a GitHub permission class.
+Rules must be active and applicable, and bypass possession is not authorization.
 
 ---
 
 ## Step 3: Security Features
 
 ```bash
-# Secret scanning — blocks push with tokens/keys
+# Push protection detects supported secret patterns; it does not recognize every secret.
 gh api repos/${FULL} --method PATCH --input - <<'EOF'
 {
   "security_and_analysis": {
@@ -341,6 +350,10 @@ fi
 exit 0
 ```
 
+The hook samples are literal string checks for configured `Bash` calls.
+They are not a parser, sandbox or protection for all clients/equivalent commands.
+Repository prohibitions remain binding when detection misses them.
+
 ### 4.3 Configuration in settings.json
 
 ```json
@@ -379,16 +392,12 @@ gh api repos/${FULL}/rulesets/RULESET_ID
 gh api repos/${FULL} --jq '.security_and_analysis'
 ```
 
-### Test protection (should fail):
+### Do not test by pushing a fake change to real main
 
-```bash
-# Try pushing directly to main — should be rejected
-git checkout main
-echo "test" >> README.md
-git add README.md && git commit -m "test direct push"
-git push origin main
-# Expected: rejected by ruleset
-```
+The read-only inspections above establish configured rules, not a failed-push
+receipt. A negative test requires separate authorization, a disposable repository
+and a non-bypass identity. With the sample admin bypass, a real-main “should fail”
+push can succeed and mutate protected history. Do not use it as a harmless check.
 
 ---
 
@@ -408,7 +417,9 @@ EOF
 
 ## Quick Setup Script
 
-One command for a new project:
+Historical setup example, not an idempotent installer. It creates new rulesets
+and suppresses some errors; the final `Done!` is not proof of successful setup.
+Inspect each response and the resulting rules before relying on protection.
 
 ```bash
 #!/bin/bash
@@ -451,6 +462,11 @@ echo "Done! Verify: gh api repos/${FULL}/rulesets"
 
 ## Matrix: What Protects Against What
 
+A checkmark means conditional coverage when configured and applicable, not
+complete prevention. Dependabot reports known dependency advisories; it does
+not itself block every vulnerable release. Secret detection covers supported
+patterns. Bypass identities and disabled rules can bypass the shown barriers.
+
 | Threat | Local Hook | CI | Ruleset | Security |
 |--------|:----------:|:--:|:-------:|:--------:|
 | Direct push to main/dev | | | ✅ | |
@@ -472,7 +488,10 @@ A: For public repos — no, GitHub Free is sufficient. For private repos — you
 A: Check that CI checks passed (job names must exactly match `required_status_checks.context`).
 
 **Q: How do I temporarily disable protection?**
-A: Use bypass (you are admin) or change `enforcement` to `"evaluate"` (will warn but not block).
+A: Do not bypass or weaken rules to finish an agent task. An authorized owner
+must separately approve any policy change and inspect supported enforcement
+modes for that plan; `evaluate` is not universally available. Admin capability
+alone is not authorization.
 
 **Q: How do I add a review requirement for a team?**
 A: Change `required_approving_review_count` to `1` (or more) in the PR rule.

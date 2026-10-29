@@ -14,11 +14,13 @@
 
 use std::path::Path;
 
-use forgeplan_core::constellation::jobs::{EmbeddingProfile, section_input_digest, section_input_text};
+use forgeplan_core::constellation::jobs::{
+    EmbeddingProfile, section_input_digest, section_input_text,
+};
 use forgeplan_core::embed::tokenizer::{
     ByteRange, HEADER_CONTEXT_TOKENS, LayoutResolution, MAX_TOKENS_CEILING, MetadataTokenizer,
-    SECTION_LAYOUT_ALGORITHM, SectionLayout, TokenBudgets, find_metadata_snapshot, has_all_metadata,
-    resolve_layout_in, testing,
+    SECTION_LAYOUT_ALGORITHM, SectionLayout, TokenBudgets, find_metadata_snapshot,
+    has_all_metadata, resolve_layout_in, testing,
 };
 
 fn tokenizer(limit: usize) -> (tempfile::TempDir, MetadataTokenizer, TokenBudgets) {
@@ -107,7 +109,9 @@ fn refs_main_selects_the_revision_and_a_scan_finds_one_without_it() {
     // No `refs/main`: the loader must still find the only complete snapshot by
     // scanning, because a cache that lost its ref file is still a usable cache.
     let without_ref = tempfile::TempDir::new().expect("temp dir");
-    let scanned = without_ref.path().join("models--BAAI--bge-m3/snapshots/only");
+    let scanned = without_ref
+        .path()
+        .join("models--BAAI--bge-m3/snapshots/only");
     std::fs::create_dir_all(scanned.parent().expect("parent")).expect("dirs");
     testing::write_snapshot(&scanned, MAX_TOKENS_CEILING).expect("write fixture");
     assert_eq!(
@@ -307,9 +311,7 @@ fn the_assembled_input_never_exceeds_the_actual_limit_with_special_tokens() {
     ] {
         let input = section_input_text(&tokenizer, &budgets, title, heading, body.as_str())
             .expect("a workable profile must build an input");
-        let counted = tokenizer
-            .count_with_special_tokens(&input)
-            .expect("count");
+        let counted = tokenizer.count_with_special_tokens(&input).expect("count");
         assert!(
             counted <= limit,
             "the final input carried {counted} tokens against an actual limit of {limit}"
@@ -341,10 +343,7 @@ fn the_display_title_and_heading_are_never_shortened_in_the_row_but_the_input_is
     )
     .expect("input");
     assert!(
-        tokenizer
-            .count_with_special_tokens(&input)
-            .expect("count")
-            <= budgets.max_tokens,
+        tokenizer.count_with_special_tokens(&input).expect("count") <= budgets.max_tokens,
         "the input is capped"
     );
     // The builder returns only the input; the display strings are the caller's

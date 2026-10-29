@@ -12,18 +12,20 @@ translations:
   ru: building-an-agent-harness
 ---
 
+> **Historical scope, clarified 23 October 2026.** The publication date is preserved; the version/count block below explicitly describes a later 8 May 2026 snapshot. Counts, test outcomes, stars, timings and roadmap gaps are dated author reports, not current acceptance results. Hindsight and host-loaded memory are separate integrations, not built-in ForgePlan storage. Creating a Note does not set `valid_until` or a default 90-day TTL; expiry reporting requires an explicitly assigned date and does not itself change status or force a review. The repository-only and amnesia analogies assume no other connected context source.
+
 ### Lead
 
 If an AI agent did something wrong - chances are, your model is not broken. Your **harness** is broken. A harness is everything that surrounds the model and makes it work as a tool rather than a chat session.
 
-The term was formalized quite recently - in 2025-2026, when OpenAI released "Harness Engineering: leveraging Codex in an agent-first world," and Anthropic released "Effective harnesses for long-running agents." By 2026 it is already a separate discipline. Before that, there was a vague "AI tooling" that meant nothing in particular.
+The term gained visibility through [OpenAI's essay of 11 February 2026](https://openai.com/index/harness-engineering/) and [Anthropic's essay of 26 November 2025](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents). These are useful accounts, not evidence that the term or agent tooling began there.
 
 The definition that clicked hardest for me:
 
 > "If it's not the model's weights - it's the harness. Your harness determines what fraction of the model's capabilities actually gets realized."
 > - walkinglabs, lecture 02
 
-A number that stopped me cold: OpenAI reported that three engineers, through their harness, produced 1,500 code changes in five months. Not the model made 1,500 changes. The environment around the model did. When I read that, I realized I had spent six months building exactly that - I just called it something else: "a tool for ADR discipline."
+A number that stopped me cold: OpenAI reported roughly 1,500 pull requests opened and merged over five months, initially driven by three engineers (the team later grew to seven). Humans steered Codex agents; the environment was part of that system, not an independently measured cause of the output. When I read that, I recognized work I had called "a tool for ADR discipline."
 
 Six months ago I didn't know the word "harness." Now half of my open-source project is harness mechanics. What I learned between those two points is what this post is about.
 
@@ -33,7 +35,7 @@ This is not an ad. ForgePlan is open source, Rust, MIT, **one star on GitHub**. 
 
 ### What a harness is in 2026
 
-The word has an interesting etymology. "Harness" in English refers to both a racehorse's tack and a climber's safety system. Both meanings work simultaneously: a harness gives the model **direction** and **constraints**. Without direction, the model acts randomly. Without constraints, catastrophe. OpenAI and Anthropic formalized the term in 2025-2026 nearly in parallel - a rare case where two competitors independently converge on the same vocabulary.
+"Harness" in English can refer to a horse's tack or a climber's safety equipment. Both are useful metaphors: a harness gives the model **direction** and **constraints**. The two primary essays above describe related engineering practices, not proof of independent invention or universal failure without them.
 
 A harness is everything around the model except its weights. Walkinglabs (a free course in 12 short lectures - it helped me enormously in building this vocabulary) breaks it into **five subsystems**:
 
@@ -77,7 +79,7 @@ The original pain had nothing to do with AI. It was about **decision graveyards*
 
 I started building a tool that forces decisions to be recorded as first-class artifacts. ADR (Architecture Decision Record) is a long-established pattern, but without structure it turns into a dump. I needed mandatory sections (without which the artifact is invalid), evidence linkage (what proves it), and a reliability score R_eff (how much to trust the decision).
 
-That is how the first versions of ForgePlan took shape: PRD, RFC, ADR, Spec, Evidence - six artifact types, a lifecycle (draft -> active -> superseded), a CLI in Rust.
+That is how the first versions of ForgePlan took shape: PRD, RFC, ADR, Spec, Evidence - five types named here, a lifecycle (draft -> active -> superseded), a CLI in Rust.
 
 Four months in, I started noticing something odd. I kept getting invited to discuss **AI agents in coding**, not decision-making processes. I pushed back - "I'm building a discipline tool, agents have nothing to do with it." Until I sat down and looked at **what agents were actually doing with ForgePlan**.
 
@@ -91,7 +93,7 @@ ADR-003 formalized the reversal: **markdown is the source of truth, LanceDB is t
 
 The difference is not in words. It is a different operating model. In the first framing, artifacts exist as a convenient way to record "what we decided." If the database goes down - artifacts are lost. If you migrate to another system - you need data migration. The artifact depends on the infrastructure that stores it.
 
-In the second framing, an artifact is a file in git. The database is a cache. If the cache goes down, `scan-import` rebuilds it from files. If you migrate - take the `.forgeplan/` directory, done. The artifact does not depend on infrastructure; infrastructure depends on the artifact. That is a dependency inversion.
+In the second framing, an artifact is a file in git. The index is derived. For a Constellation workspace, `forgeplan index` publishes an index from canonical files; legacy workspaces use `forgeplan reindex`. `scan-import` imports external Markdown, not a canonical-index rebuild. Moving the source files preserves the records, but config, model caches and integrations still need separate preparation.
 
 For an AI agent this is critical: the agent clones the repository into a fresh sandbox each session, and it does not have your database. If the truth lives in the database, the agent works with invalid state. If the truth lives in files, the agent sees exactly what a human sees, and can fix things without even knowing LanceDB exists.
 
@@ -136,12 +138,12 @@ The implementation in ForgePlan:
 - evidence/   EVID-001..EVID-094.md     (tests, measurements, reviews)
 - problems/   PROB-001..PROB-062.md     (recorded problems)
 - solutions/  SOL-NNN.md                (2-3 options per problem)
-- notes/      NOTE-NNN.md               (micro-decisions, 90-day TTL)
+- notes/      NOTE-NNN.md               (micro-decisions, optional explicit expiry)
 - refresh/    REF-NNN.md                (re-evaluation of stale decisions)
 - memory/     MEMORY.md                 (session continuity)
 ```
 
-343 artifacts at the time of writing. All in git. All human-readable markdown. LanceDB sits alongside as a production-grade derived index for semantic search (using BGE-M3 embeddings). On a fresh clone: `forgeplan scan-import` rebuilds the index in seconds.
+343 artifacts was the reported snapshot: human-readable Markdown in git, with LanceDB as a derived search index. Rebuild with the command matching the workspace format above; no fixed rebuild time is established here. Local semantic inference additionally needs a compatible build, configuration and BGE-M3 cache.
 
 Why this discipline matters becomes clear at the **first parallel-agent conflict**. The PROB-060 story: two processes simultaneously call `forgeplan new prd` -> both generate `PRD-074` -> one goes into dev, the second breaks on rebase, **two different artifacts with the same identifier now live in LanceDB at the same time**. Markdown shows only one (whichever won the rebase). State has drifted.
 
@@ -158,15 +160,15 @@ Every new session, the agent has zero memory of the previous one. That is not a 
 
 ForgePlan preserves context at three levels:
 
-1. **Auto-loaded MEMORY.md** (built into Claude Code) - short bullet points, loaded every session automatically. Zero cost (already in the context window).
+1. **Host-loaded MEMORY.md** (when configured in Claude Code) - short notes supplied to a session. They still consume context tokens; automatic loading is a host feature, not zero-cost ForgePlan memory.
 2. **Hindsight MCP** (semantic memory search) - long-term structured memory scoped per project. One broad recall at session start, then on demand. Does not duplicate MEMORY.md; complements it.
-3. **Notes / Refresh** - micro-decisions with a TTL. A Note lives 90 days by default; once expired it shows up in `forgeplan stale`, requiring `renew` or `supersede`.
+3. **Notes / Refresh** - micro-decisions that can have an explicit review date. `new` does not assign a Note expiry. For example, setting `valid_until: 2027-01-21` on 23 October 2026 gives a 90-day review window; after that date `forgeplan stale` can report it. Review and any supported renewal or supersession remain explicit actions.
 
 The main lesson here is **separation by time scale**. Auto-memory is for facts relevant every turn. Hindsight is for facts needed occasionally, on specific topics. Notes are for micro-decisions that can go stale. Do not try to put everything into one layer; they are different in nature.
 
 The most common mistake is trying to remember **everything** in one layer, usually in auto-memory. That bloats the context, slows session startup, and - paradoxically - lowers output quality, because important facts drown in noise. Hindsight as semantic search fires **only when the agent explicitly asks about something**. That is demand-driven loading carried over from software design into memory architecture.
 
-The second lesson is about Notes. For a long time I could not find the right niche for this artifact type. PRD is too heavy for a daily thought. Hindsight retrieval is unpredictable. Note fits exactly in the middle: a micro-decision with a 90-day TTL, surfaces in `forgeplan stale` when it expires, can be `renew`ed or `supersede`d. This is **forced re-evaluation** - a Note cannot live forever; the harness itself raises the question "is this still current?"
+The second lesson is about Notes. For a long time I could not find the right niche for this artifact type. PRD is too heavy for a daily thought. Hindsight retrieval is unpredictable. Note fits exactly in the middle: a micro-decision that I can give an explicit review date, then find through `forgeplan stale` after expiry. This supports re-evaluation; it does not force it or prevent an undated Note from living indefinitely.
 
 #### 4. The external judge (walkinglabs, lecture 9)
 
@@ -175,31 +177,31 @@ This is the most painful part, and the most important.
 > "Students cannot grade their own exams."
 > - walkinglabs, lecture 09
 
-Anthropic published a finding in 2025: an agent that evaluates itself systematically overestimates. That is not a bug - it is a property of training. The model was trained to be helpful; "helpful" in its world equals "yes, done." Asking an agent "did you do everything right?" is like letting a student grade their own exam. They will write "9 out of 10."
+Anthropic's [24 March 2026 account](https://www.anthropic.com/engineering/harness-design-long-running-apps) observed overly positive self-evaluation in its experiments. That supports trying a separate evaluator; it does not establish that all models necessarily overrate, or that "helpful" training alone causes the behavior.
 
 The walkinglabs solution: separate the writer from the judge. One writes, the other judges - from different contexts, ideally different models.
 
-ForgePlan puts this gate directly into the lifecycle, not into conventions:
+ForgePlan has lifecycle checks, but a reviewer and an activation gate are different mechanisms. The intended workflow is:
 
-```
-draft -> [forgeplan validate]   -> requires 0 errors in mandatory sections
-       -> [forgeplan score]      -> requires R_eff above zero
-       -> [forgeplan activate]   -> blocked if previous steps failed
+```text
+draft -> validate -> inspect evidence and score -> review -> activate
 ```
 
-R_eff is the **weakest link**, not the average. One EvidencePack with missing `verdict` / `congruence_level` / `evidence_type` fields -> parser sets CL0 (congruence level 0 - contradicted) -> 0.9 penalty -> score drops toward zero. Activation is blocked. The agent is **architecturally unable** to declare success prematurely.
+In the selected 0.39.0+constellation.s1.1 source, ordinary activation checks body length, linked evidence, stubs and MUST findings (with caller-level provenance checks). It is not an R_eff>0 or 0.5 threshold, nor proof that the implementation works.
+
+R_eff is the **weakest link**, not the average, over eligible evidence and dependency contributions. Current scoring fails undeclared verdict/CL claims closed to CL0; `evidence_type` has a separate fallback. A low score is a review signal, not an automatic activation refusal. No gate makes an agent architecturally unable to announce success.
 
 The PROB-034 story is a separate nightmare that changed my understanding of harness honesty.
 
-R_eff itself was silently lying about its own honesty. When an EvidencePack lacked the structured fields, the parser quietly dropped to CL0 without reporting why. The agent saw `R_eff = 0.1` and had no idea what was wrong with the evidence. No signal. Just a low score, no explanation. A decision graveyard inside the very tool meant to **prevent** decision graveyards.
+PROB-034's recorded A/B used one workspace and two binaries: v0.17.1 scored 1.00, v0.17.2 scored 0.10. A multi-line template comment shadowed the real CL0 field, numeric parsing failed and CL3 was used instead. The hotfix skipped multi-line comment bodies.
 
-Fixed in two review rounds. Added an explicit warning in `score` output ("EVID-NNN is missing structured fields -> CL0 penalty"), a test for each CL level in `tests/scoring_evidence.rs`, and a red line in `CLAUDE.md` - "EvidencePack body must contain verdict / congruence_level / evidence_type."
+The missing-field warning and fail-closed behavior described elsewhere belong to separate later work, not that root cause. The lesson is to expose why a score was assigned, not merely print a low number.
 
 The lesson: a harness that checks itself **must shout** about why it said "no." A silent low score is worse than a loud error. Silent failures are the most dangerous class of bugs in a harness, because they compromise **the self-checking mechanism itself**.
 
 Extending this lesson to the checks subsystem in general: every "no" from the harness must contain three components - what is wrong (specific artifact, specific field), why this particular criterion failed, and how to fix it (exact command). If any component is missing, it is not feedback - it is noise. The agent sees noise and learns to ignore it. After a few such episodes, you have a checks subsystem that loudly says nothing - formally present, functionally useless.
 
-The canonical example of a "correct no" in ForgePlan:
+An illustrative "correct no" message, not a captured CLI transcript or the implemented 0.5 activation threshold:
 
 ```
 $ forgeplan activate prd-auth-system
@@ -217,7 +219,7 @@ Three components: what (R_eff and EVID), why (CL0, missing fields), how (exact `
 
 The problem is not a lack of docs - it is docs **diverging** from code. The agent reads stale instructions, makes stale assumptions, breaks an integration. Stale documentation is worse than absent documentation, because the agent confidently does the wrong thing.
 
-ForgePlan PRD-071 addresses this through a **hint contract**. Every CLI command and every MCP tool writes exactly one machine-readable pointer to the next step in its response:
+ForgePlan PRD-071 defines a **hint contract**: responses should provide a machine-readable next action. The following output is illustrative, not a promise that every current CLI/MCP path emits exactly one hint:
 
 ```
 $ forgeplan new prd "Auth system"
@@ -243,9 +245,9 @@ Five markers cover the full working cycle:
 
 In JSON output, a parallel `_next_action` field lets the agent parse without regex, by structure.
 
-In version 0.25.0, hint coverage was 36%. After a review and a dedicated sprint - 100%. Every CLI command, every MCP tool. EVID-086 confirmed: verified by tests, no silent gaps. PR #25 in the marketplace plugin v1.5.0 propagated this across the whole ecosystem.
+EVID-086 records a historical 70/70 CLI command audit, following an earlier 36% report. That is not current 100% coverage of all CLI paths, MCP tools or client behavior; the denominators and versions differ. The marketplace propagation is a dated author report, not fresh acceptance evidence.
 
-The architectural problem this solves: **documentation and code cannot drift apart** because the documentation is generated by the code at runtime. Not a separate artifact someone forgets to update. That is walkinglabs lecture 11 (observable progress) applied to the workflow documentation itself.
+Runtime hints reduce the amount of separate workflow documentation, but their text can still be wrong or stale. Generated instructions need semantic checks against the behavior they describe.
 
 A side effect I did not predict: the hint contract made onboarding **new agents** trivial. Previously I had to load an agent with instructions ("after `forgeplan new prd` do `validate`, then `reason`, then ..."). Now - just run a command and read `Next:`. The workflow documents itself. The corresponding section in CLAUDE.md shrank from ~50 instruction lines to ~10. The instructions subsystem (zone 1) got smaller because some knowledge migrated to the checks subsystem (output lines). That redistribution between subsystems is a separate insight I couldn't see until the hint contract was working at 100%.
 
@@ -263,7 +265,7 @@ Walkinglabs treat this tracing as a first-class concept - it is the entirety of 
 
 **Gap 2: the "sprint contract" artifact**
 
-PRD is too heavy for a daily task (requires 13 mandatory sections, reasoning with three hypotheses, evidence linkage). Note is too lightweight - it does not support requirement checklists or evidence linkage. There is no intermediate format for "team's commitment for 2-3 days."
+In this roadmap sketch, PRD felt too heavy for a daily task and Note too light for a sprint commitment. The 13-section template is local and depth-sensitive. The current repository's `CLAUDE.md` requires ADI for Standard+ work, even where document validation does not enforce that workflow obligation; it is not merely an optional Deep+ convention. Notes can carry Markdown checklists and typed links, even without a dedicated sprint-contract schema.
 
 Walkinglabs treat the sprint contract as a separate primitive. In ForgePlan I feel this pain every time I sit down to do **something that takes a day**. I create a draft PRD - over-engineered. I create a Note - lose traceability. On the roadmap as a PROB (number to be assigned on first triage) with an associated PRD.
 
@@ -309,7 +311,7 @@ What I learned over six months (one line each):
 3. Repository as single source of truth is not a slogan - it is an **architectural principle** that requires compile-time enforcement.
 4. Session continuity operates at different time scales - don't try to stuff everything into one memory layer.
 5. An agent cannot check itself - external verification is needed, and it must **shout** about why it said "no."
-6. Documentation and code always drift apart - except when the documentation is generated by the code at runtime.
+6. Generating workflow hints at runtime reduces duplicate documentation; it does not eliminate semantic drift.
 7. Talking openly about how you build is easier when you have honest gaps on the roadmap.
 
 Three links that may be useful:

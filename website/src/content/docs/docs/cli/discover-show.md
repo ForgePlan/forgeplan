@@ -45,24 +45,24 @@ forgeplan discover show disc-001
 forgeplan discover show disc-001 | less
 
 # Typical mid-run check
-forgeplan discover start
+forgeplan discover start "Project discovery"
 # ...agent runs for a while...
 forgeplan discover show disc-001
 ```
 
 ## What you see
 
-Typical output blocks:
+The report shows:
 
-- **Session header** - ID, created_at, status (active / completed), owner/agent.
-- **Coverage** - which source tiers have been touched (code / git / tests / docs), with counts.
-- **Findings by category** - decisions, invariants, drift, debt, risks.
-- **Recent findings** - latest N entries with summary text.
-- **Next action hint** - either "keep scanning" or "ready to complete".
+- **Session header** - ID, project name, status, current phase, start/completion time.
+- **Findings by phase and tier** - counts from recorded findings.
+- **Recent findings** - the last 10, including phase, tier, artifact reference and title.
+- **Total findings** and a next-action hint. The hint is not a coverage certificate.
 
 ## How it fits
 
-`discover show` is the **read** side of the discovery loop. It reads directly from the session store (LanceDB), so it always reflects the latest `discover_finding` MCP calls without needing a refresh.
+`discover show` reads `.forgeplan/discover/<SESSION_ID>.json`, not LanceDB.
+It displays recorded session state; it does not independently verify survey coverage.
 
 ```
 discover start → [agent appends via MCP] → discover show → discover complete
@@ -74,3 +74,22 @@ discover start → [agent appends via MCP] → discover show → discover comple
 - [`forgeplan discover start`](/docs/cli/discover-start/) - begin a session
 - [`forgeplan discover list`](/docs/cli/discover-list/) - all sessions
 - [`forgeplan discover complete`](/docs/cli/discover-complete/) - finalize + recommendations
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan discover show --help`.
+
+```text
+Show status of a discovery session
+
+Usage: forgeplan discover show <SESSION_ID>
+
+Arguments:
+  <SESSION_ID>  Session ID (e.g. disc-20260407-abc)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

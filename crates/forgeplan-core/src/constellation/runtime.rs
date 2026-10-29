@@ -166,9 +166,8 @@ static NATIVE_CALL_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 /// One slot, overwritten. A reader that wants to watch a specific call pairs
 /// lines on `call_id` from the tracing stream rather than polling this, which
 /// is exactly why this is a convenience and not the mechanism.
-static LAST_NATIVE_CALL: std::sync::LazyLock<
-    std::sync::Mutex<Option<NativeCallTrace>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+static LAST_NATIVE_CALL: std::sync::LazyLock<std::sync::Mutex<Option<NativeCallTrace>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 /// The number of native calls this process has entered.
 ///
@@ -182,10 +181,7 @@ pub fn native_call_sequence() -> u64 {
 /// Read-only. It does not gate, sample or influence anything: a probe that
 /// never calls it behaves identically.
 pub fn last_native_call() -> Option<NativeCallTrace> {
-    LAST_NATIVE_CALL
-        .lock()
-        .ok()
-        .and_then(|slot| slot.clone())
+    LAST_NATIVE_CALL.lock().ok().and_then(|slot| slot.clone())
 }
 
 /// A live native encode.
@@ -738,10 +734,7 @@ pub async fn cached_query_embedding(
                         // encode. Admission, the permit and the response
                         // deadline are untouched, and the vector is returned
                         // exactly as computed.
-                        let native_call = NativeCallInFlight::enter(
-                            request.text.as_str(),
-                            "query",
-                        );
+                        let native_call = NativeCallInFlight::enter(request.text.as_str(), "query");
                         let result = engine
                             .embed(&request.text)
                             .map(|vector| (engine.profile_id.clone(), vector));
@@ -2989,8 +2982,7 @@ mod tests {
              unusable for pairing an entry with its return"
         );
         assert_eq!(
-            call.call_id,
-            after,
+            call.call_id, after,
             "the guard must report the id the counter assigned it, not one derived locally"
         );
         assert!(call.call_id >= 1, "ids start at 1, so 0 is never a call");
@@ -3033,7 +3025,10 @@ mod tests {
                     "a failed encode must be recorded as failed: this is what stops a reader \
                      from treating a permanently failing model as healthy"
                 );
-                assert_eq!(trace.op, "query", "the op distinguishes the two admission paths");
+                assert_eq!(
+                    trace.op, "query",
+                    "the op distinguishes the two admission paths"
+                );
                 assert_eq!(trace.canonical_key, "PRD-002");
             }
             _ => {}
@@ -4420,6 +4415,92 @@ mod tests {
         );
     }
 
+    /// A runner must stop its first drain before `run_until` installs a bridge.
+    #[cfg(all(feature = "semantic-search", feature = "test-helpers"))]
+    #[tokio::test]
+    async fn runner_stop_reaches_a_drain_before_the_loop_starts() {
+        use super::super::{facade, storage};
+        let (_tmp, capability) = published_workspace().await;
+        let initial = storage::read_current(capability.index_root())
+            .unwrap()
+            .unwrap();
+        assert!(
+            storage::read_manifest(capability.index_root(), &initial)
+                .unwrap()
+                .pending_jobs
+                .is_empty(),
+            "startup must discover work that has not been admitted"
+        );
+        let profile = synthetic_profile();
+        let (engine, entered, release, finished) = BlockingEngine::new();
+        let mut worker = InferenceWorker::spawn_with_engine(engine.closure()).unwrap();
+        let control = DrainControl::never();
+        let drain_control = control.clone();
+        let drain_capability = capability.clone();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        // Deliberately no receiver-to-control bridge: startup precedes it.
+        let (stop_tx, _stop_rx) = std::sync::mpsc::channel();
+        let handle = tokio::spawn(async move {
+            let result = facade::drain_embedding_queue(
+                &drain_capability,
+                &profile,
+                &mut worker,
+                std::time::Instant::now()
+                    + std::time::Duration::from_millis(INFERENCE_SOFT_DEADLINE_MS),
+                &drain_control,
+            )
+            .await;
+            let shutdown = worker.shutdown();
+            let _ = result_tx.send((result, shutdown));
+        });
+        let runner = MaintenanceRunner {
+            stop_tx,
+            handle,
+            control: control.clone(),
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            tokio::task::spawn_blocking(move || entered.recv()),
+        )
+        .await
+        .expect("the startup drain must reach the encoder")
+        .expect("the entry waiter must finish")
+        .expect("the encoder must have received an input");
+        let admitted = storage::read_current(capability.index_root())
+            .unwrap()
+            .unwrap();
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), runner.stop()).await;
+        // Teardown also runs for the broken implementation: the timed-out
+        // runner must not leave a native worker or publisher in another test.
+        control.request_stop();
+        let (result, shutdown) =
+            tokio::time::timeout(std::time::Duration::from_secs(30), result_rx)
+                .await
+                .expect("teardown must stop the drain")
+                .expect("the drain must report its outcome");
+        assert!(matches!(
+            result,
+            Err(super::super::ConstellationError::IndexBusy { ref detail })
+                if detail.contains("stopping")
+        ));
+        assert_eq!(shutdown.unwrap(), ShutdownOutcome::Detached);
+        let _ = release.send(());
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !call_finished(&finished) && std::time::Instant::now() < until {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(call_finished(&finished), "the released encoder must finish");
+        let after = storage::read_current(capability.index_root())
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.generation_id, admitted.generation_id);
+        assert_eq!(after.manifest_sha256, admitted.manifest_sha256);
+        assert!(
+            stopped.is_ok(),
+            "runner shutdown must reach startup inference without a loop bridge"
+        );
+    }
+
     /// The control scan is still owed while a drain waits, and the drain yields
     /// to it — publishing nothing and failing nothing.
     ///
@@ -4649,6 +4730,8 @@ pub enum Tick {
 pub struct MaintenanceRunner {
     stop_tx: std::sync::mpsc::Sender<()>,
     handle: tokio::task::JoinHandle<()>,
+    // Also reachable before startup has installed the receiver bridge.
+    control: DrainControl,
 }
 
 impl MaintenanceRunner {
@@ -4659,9 +4742,16 @@ impl MaintenanceRunner {
     /// is detached rather than waited on. A hung encoder therefore delays
     /// process exit by one *thread* the process is about to leave anyway, not
     /// indefinitely.
-    pub async fn stop(self) {
+    pub async fn stop(mut self) {
+        self.control.request_stop();
         let _ = self.stop_tx.send(());
-        let _ = self.handle.await;
+        let _ = (&mut self.handle).await;
+    }
+}
+
+impl Drop for MaintenanceRunner {
+    fn drop(&mut self) {
+        self.control.request_stop();
     }
 }
 
@@ -4722,6 +4812,14 @@ impl MaintenanceHost {
         capability: super::facade::MaintainCapability,
         sink: ReportSink,
     ) -> Result<Self, ConstellationError> {
+        Self::start_with_control(capability, sink, DrainControl::never()).await
+    }
+
+    async fn start_with_control(
+        capability: super::facade::MaintainCapability,
+        sink: ReportSink,
+        control: DrainControl,
+    ) -> Result<Self, ConstellationError> {
         let workspace = capability.workspace().to_path_buf();
         // One supervisor per physical index. `register` is idempotent, so two
         // hosts that somehow reach the same index share state and serialise
@@ -4752,7 +4850,7 @@ impl MaintenanceHost {
             workspace,
             capability,
             supervisor,
-            control: DrainControl::never(),
+            control,
             debouncer,
             events,
             watched,
@@ -4780,6 +4878,7 @@ impl MaintenanceHost {
     /// next process's publisher would then lose every pass to `index_busy`.
     pub fn drive(self) -> MaintenanceRunner {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let control = self.control.clone();
         let handle = tokio::spawn(async move {
             let mut host = self;
             if let Err(e) = host.run_until(stop_rx).await {
@@ -4790,7 +4889,11 @@ impl MaintenanceHost {
                 sink.note(&format!("maintenance host did not stop cleanly: {e}"));
             }
         });
-        MaintenanceRunner { stop_tx, handle }
+        MaintenanceRunner {
+            stop_tx,
+            handle,
+            control,
+        }
     }
 
     /// Start the host **and** drive it on its own task.
@@ -4814,8 +4917,10 @@ impl MaintenanceHost {
         sink: ReportSink,
     ) -> Result<MaintenanceRunner, ConstellationError> {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let control = DrainControl::never();
+        let host_control = control.clone();
         let handle = tokio::spawn(async move {
-            let mut host = match Self::start(capability, sink).await {
+            let mut host = match Self::start_with_control(capability, sink, host_control).await {
                 Ok(host) => host,
                 Err(e) => {
                     // Reported, not swallowed: the server still serves reads
@@ -4832,7 +4937,11 @@ impl MaintenanceHost {
                 sink.note(&format!("maintenance host did not stop cleanly: {e}"));
             }
         });
-        Ok(MaintenanceRunner { stop_tx, handle })
+        Ok(MaintenanceRunner {
+            stop_tx,
+            handle,
+            control,
+        })
     }
 
     /// Wait for work, then do at most one capture pass.
@@ -5023,34 +5132,22 @@ impl MaintenanceHost {
             ));
         }
 
-        // A configured model drains here too: normal operation needs no manual
-        // `forgeplan embed`, and an unconfigured model is a no-op. A full scan
-        // only drains when recovery actually found outstanding work —
-        // resolving a profile reads the snapshot's digests, and "nothing
-        // changed" is the common case.
-        if pass.queued > 0 || pass.trigger == Some(PassTrigger::Signalled) {
-            // The scan this pass just ran is what the period counts from, so
-            // the drain yields when the *next* one comes due rather than
-            // sitting on the loop until the inference deadline. Without this
-            // arming, a hung encoder delays the control scan by the full soft
-            // deadline and the "no longer than one scan period" guarantee is
-            // an accident of how fast the model usually is.
-            self.control
-                .arm_scan(std::time::Instant::now() + SCAN_BOUND);
-            // The shared drain, not a host-private one: `serve`, `watch`, the
-            // post-mutation maintenance in the CLI and this host must all reach
-            // the queue the same way, or they would disagree about what "the
-            // model is configured" means.
-            let _ = drain_queue_if_configured(
-                &self.capability,
-                std::time::Instant::now()
-                    + std::time::Duration::from_millis(INFERENCE_SOFT_DEADLINE_MS),
-                trigger_label,
-                &self.control,
-            )
-            .await;
-            self.control.disarm_scan();
-        }
+        // Recovery sees only already-admitted jobs. A CLI may have published
+        // changed rows before this host started, leaving no job or signal.
+        // Full scans must therefore check row eligibility too. The shared
+        // drain skips model construction when every row is already current.
+        // Yield when the next control scan is owed, even if inference hangs.
+        self.control
+            .arm_scan(std::time::Instant::now() + SCAN_BOUND);
+        let _ = drain_queue_if_configured(
+            &self.capability,
+            std::time::Instant::now()
+                + std::time::Duration::from_millis(INFERENCE_SOFT_DEADLINE_MS),
+            trigger_label,
+            &self.control,
+        )
+        .await;
+        self.control.disarm_scan();
         Ok(Tick::Passed)
     }
 }
@@ -5098,6 +5195,9 @@ pub async fn drain_queue_if_configured(
     // than admission uses, so every row would look stale and the drain would
     // re-embed the corpus into a space nothing else agrees with. Say so and
     // leave the rows pending, which is the honest state.
+    if control.stop_requested() {
+        return Ok(());
+    }
     let config = match crate::workspace::load_config(capability.workspace()) {
         Ok(config) => config,
         Err(e) => {
@@ -5135,6 +5235,27 @@ pub async fn drain_queue_if_configured(
     let profile = resolved.profile.clone();
     if storage::read_current(capability.index_root()).is_ok_and(|c| c.is_none()) {
         eprintln!("{label}: no published generation — queue skipped");
+        return Ok(());
+    }
+
+    // A periodic scan can owe vectors without durable jobs. Check the same
+    // bindings admission uses before loading a model. Admission checks again
+    // after model loading because the source may change while no owner is held.
+    let eligibility =
+        match facade::tables_eligibility_report(capability, &profile.profile_id()).await {
+            Ok(report) => report,
+            Err(error) => {
+                eprintln!("{label}: eligibility check failed — queue skipped: {error}");
+                return Ok(());
+            }
+        };
+    if !eligibility.has_eligible() {
+        for (key, reason) in eligibility.cannot_judge() {
+            eprintln!("{label}: cannot judge embedding eligibility for `{key}`: {reason}");
+        }
+        return Ok(());
+    }
+    if control.stop_requested() {
         return Ok(());
     }
 

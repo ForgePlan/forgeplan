@@ -3,11 +3,14 @@ title: forgeplan restore
 description: "Restore a soft-deleted artifact from the most recent non-consumed receipt in `.forgeplan/trash/`. Surgical recovery by explicit ID."
 ---
 
-`forgeplan restore` возвращает конкретный артефакт, который ранее был удалён, заменён (superseded) или признан устаревшим (deprecated). Вы передаёте ID (например, `PRD-042`); команда находит самую свежую запись о его уничтожении в `.forgeplan/trash/` и проигрывает её в обратную сторону: markdown-файл возвращается, запись в поисковом индексе пересоздаётся, связи восстанавливаются там, где их цели ещё существуют, lifecycle-статус переключается обратно с `superseded` / `deprecated`.
+`forgeplan restore` возвращает конкретный артефакт, ранее удалённый, замещённый (`superseded`) или выведенный из эксплуатации (`deprecated`). По ID (например, `PRD-042`) команда находит последний подходящий receipt в `.forgeplan/trash/` и отменяет записанную операцию. Статус возвращается к состоянию, зафиксированному в receipt. На Constellation сначала восстанавливается канонический Markdown, затем reconciliation публикует производный индекс; изучите предупреждения и `index_pending`, не предполагая успешную публикацию. Связи с отсутствующими целями могут быть пропущены.
 
-Если артефакт с таким же ID уже существует (другой), команда отказывает - нужно сначала разрешить конфликт вручную (переименовать или заменить живой, потом повторить `restore`). Записи старше 30 дней удаляются и восстановить их нельзя.
+При восстановлении delete конфликтующая живая identity вызывает отказ.
+Проверьте оба артефакта и receipt до изменений. Не переименовывайте,
+не замещайте и не удаляйте живой артефакт автоматически ради восстановления.
+Нужен действительный неиспользованный receipt; срок хранения по умолчанию - 30 дней.
 
-Это точечный вариант [`forgeplan undo-last`](/ru/docs/cli/undo-last/) - `undo-last` откатывает самую свежую деструктивную операцию независимо от артефакта, а `restore` нацеливается на один конкретный артефакт по ID. Аналог [`forgeplan_restore`](/ru/docs/mcp/forgeplan_restore/) на MCP-стороне.
+Это точечный вариант [`forgeplan undo-last`](/ru/docs/cli/undo-last/) - `undo-last` откатывает самую свежую деструктивную операцию независимо от артефакта, а `restore` нацеливается на один конкретный артефакт по ID. Это аналог [`forgeplan_restore`](/ru/docs/mcp/forgeplan_restore/) на MCP-стороне, с одним отличием: MCP-инструмент дополнительно принимает необязательный параметр `target_status`, а CLI всегда восстанавливает статус, зафиксированный в receipt.
 
 ## Когда использовать
 
@@ -18,8 +21,8 @@ description: "Restore a soft-deleted artifact from the most recent non-consumed 
 ## Когда НЕ использовать
 
 - Не помните ID - [`forgeplan undo-last`](/ru/docs/cli/undo-last/) сам пройдёт по логу деструктивных операций от свежих к старым.
-- Другой артефакт с таким же ID уже существует - сначала разрешите конфликт (переименуйте или замените живой), потом запускайте `restore`.
-- Прошло больше 30 дней - запись из trash удалена. Восстанавливайте, читая тело артефакта из `git log` и пересоздавая вручную.
+- Есть конфликтующий живой артефакт - изучите и осознанно разрешите identity-конфликт до повтора.
+- Действительного receipt нет - изучите историю Git; не придумывайте lifecycle-переход для обхода recovery.
 
 ## Использование
 
@@ -55,10 +58,10 @@ forgeplan restore PRD-042
 
 ```bash
 forgeplan restore PRD-042
-forgeplan show PRD-042
+forgeplan get PRD-042
 ```
 
-После восстановления всегда проверяйте тело, статус и связи - убедитесь, что всё корректно. Если в `relations_skipped` что-то важное, пересоздайте вручную.
+После восстановления всегда проверьте тело, статус и связи - убедитесь, что всё корректно. Если в `relations_skipped` что-то важное, пересоздайте вручную.
 
 ### Пример 3: Машинно-читаемый вывод
 
@@ -70,7 +73,11 @@ forgeplan restore PRD-042 --json | jq '.relations_skipped'
 
 ## Место в рабочем процессе
 
-Восстановление - два шага: понять когда произошло уничтожение, потом восстановить. Используйте [`forgeplan activity`](/ru/docs/cli/activity/) с фильтром по деструктивным операциям, чтобы уточнить таймлайн, запустите `forgeplan restore <ID>`, потом проверьте через `forgeplan show <ID>`. Пропущенные связи перелинкуйте вручную, если они важны.
+Изучите историю деструктивных операций и подходящий receipt, выполните
+`forgeplan restore <ID>`, затем проверьте `forgeplan get <ID>` и связи.
+Recovery отменяет записанную операцию, а не возвращает terminal-статус
+обычным переходом. Наличие команды не доказывает поддержку мигрированного
+workspace каждым recovery tool; см. [Constellation](/ru/docs/guides/constellation/).
 
 ## См. также
 
@@ -79,3 +86,23 @@ forgeplan restore PRD-042 --json | jq '.relations_skipped'
 - [`forgeplan activity`](/ru/docs/cli/activity/) - найти receipt перед восстановлением
 - [`forgeplan delete`](/ru/docs/cli/delete/) - soft-delete, который это откатывает
 - [Обзор CLI](/ru/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan restore --help`.
+
+```text
+Restore a soft-deleted artifact from the most recent non-consumed receipt in `.forgeplan/trash/`. Works for delete (recreates row + moves projection back), supersede (resets status + drops link), and deprecate (resets status). Refuses if a different artifact with the same ID currently exists. TTL default: 30 days from the destructive op
+
+Usage: forgeplan restore [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID to recover from the most recent non-consumed receipt
+
+Options:
+      --json     Output as JSON for machine consumption
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

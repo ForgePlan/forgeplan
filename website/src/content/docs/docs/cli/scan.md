@@ -1,22 +1,23 @@
 ---
 title: forgeplan scan
-description: "Scan the codebase for source modules - the first step of the coverage/drift pipeline."
+description: "Preview source modules, file counts and line counts without persisting a module inventory."
 ---
 
-`forgeplan scan` walks the project tree and builds an inventory of source modules.
-It respects `.gitignore`, groups files by crate / package / directory, and writes
-the resulting list into the workspace so that `coverage` and `drift` can cross-reference
-it against `Affected Files` sections in artifacts.
+`forgeplan scan` walks source directories and prints a module/file/line summary.
+It does not save `.forgeplan/modules.json` or a persistent module graph.
+`coverage` performs its own scan, while `drift` inspects declared affected files
+and Git history; neither requires a prior `scan`.
 
-Think of scan as the "read your own repo" step. It doesn't touch artifacts directly -
-it just makes the module graph queryable by the other quality commands.
+Directory discovery skips explicit directory names and symbolic links. File and
+line counting inside discovered modules can still follow source-file symlinks.
+The scanner does not evaluate `.gitignore` as a general ignore policy.
 
 ## When to use
 
-- First time running coverage/drift in a workspace - scan must precede them.
-- After a big refactor that adds/removes modules - rescan to refresh the inventory.
-- In CI: rescan before any coverage check so stale module lists don't cause false positives.
-- Before onboarding a teammate - rescan so `coverage` shows the real picture.
+- Preview source modules before investigating decision coverage.
+- Inspect the current tree after a refactor.
+- Compare the printed module summary during a review.
+- Help a teammate understand which source directories the scanner recognizes.
 
 ## When NOT to use
 
@@ -45,25 +46,16 @@ forgeplan scan [OPTIONS]
 forgeplan scan
 ```
 
-Output:
+The report prints columns `Module`, `Files`, `Lines`, then aggregate counts.
+Counts depend on the scanned tree; no modules file is written.
 
-```text
-Scanning /Users/me/forgeplan...
-  crates/forgeplan-core      14 modules
-  crates/forgeplan-cli        8 modules
-  crates/forgeplan-mcp        5 modules
-  website/src                12 modules
-
-39 modules indexed in .forgeplan/modules.json
-```
-
-### Scan a sibling repo
+### Scan a directory inside the current root
 
 ```bash
-forgeplan scan --path ../other-project
+forgeplan scan --path crates
 ```
 
-Useful when managing multiple projects from one `.forgeplan/` workspace (advanced).
+The path is canonicalized and must stay inside the current working directory. A sibling path such as `../other-project` is refused.
 
 ### Full coverage pipeline
 
@@ -71,18 +63,20 @@ Useful when managing multiple projects from one `.forgeplan/` workspace (advance
 forgeplan scan && forgeplan coverage && forgeplan drift
 ```
 
-The canonical codebase-reconciliation sequence: refresh modules, compute coverage,
-check drift. Run it monthly or after major refactors.
+This is an optional preview followed by coverage and drift reports, not a
+persisted-inventory pipeline.
 
 ## Output interpretation
 
 | Line          | Meaning                                                    |
 |---------------|------------------------------------------------------------|
-| per-crate row | how many source modules were found in each top-level dir  |
-| total         | modules indexed - this becomes the denominator for coverage|
+| module row | source directory with recognized files, plus file and line counts |
+| total | modules, files and lines observed by this scan |
 
-The scan is language-agnostic but tuned for Rust/TypeScript/Python layouts. Empty
-directories and test-only modules are excluded by default.
+Recognized extensions include Rust, JS/TS, Python, Go, Java, Kotlin, Swift and C/C++.
+Hidden directories and named trees such as `target`, `node_modules`, `vendor`,
+`sources`, `research`, `docs` and `templates` are skipped below the nominated root.
+There is no general exclusion of all test-only modules.
 
 ## How it fits the workflow
 
@@ -90,13 +84,30 @@ directories and test-only modules are excluded by default.
 scan → coverage (modules ↔ artifacts) → drift (artifacts ↔ git history) → remediate
 ```
 
-Scan is step 0 of the quality reconciliation loop. Without it, `coverage` and `drift`
-have no module graph to work against.
+Use `scan` as a preview. Coverage rescans independently; scan output is not a
+required stored input for either coverage or drift.
 
 ## See also
 
 - [`forgeplan coverage`](/docs/cli/coverage/) - per-module decision coverage
 - [`forgeplan drift`](/docs/cli/drift/) - decisions whose code moved away
-- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild LanceDB index from markdown
-- [`forgeplan health`](/docs/cli/health/) - aggregates coverage into the dashboard
+- [`forgeplan scan-import`](/docs/cli/scan-import/) - import foreign Markdown documents
+- [`forgeplan health`](/docs/cli/health/) - separate artifact-health dashboard
 - [CLI overview](/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan scan --help`.
+
+```text
+Scan codebase for source modules
+
+Usage: forgeplan scan [OPTIONS]
+
+Options:
+      --path <PATH>  Path to project root (default: current dir)
+  -h, --help         Print help
+  -V, --version      Print version
+```
+<!-- forgeplan-runtime:end -->

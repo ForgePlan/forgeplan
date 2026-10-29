@@ -3,9 +3,11 @@ title: forgeplan phase
 description: "Read the advisory phase state for an artifact - current phase, workflow type, full transition history. Phase tracking is advisory and never blocks other tools."
 ---
 
-`forgeplan phase` shows where an artifact stands in the methodology pipeline - Shape, Validate, Adi, Code, Test, Audit, Evidence, or Done - and prints the full history of how it got there (timestamps, reasons). The data lives in `.forgeplan/state/<id>.yaml` and is append-only: every transition is preserved.
+`forgeplan phase` shows advisory phase state from `.forgeplan/state/<id>.yaml`. Text shows the last three transitions; JSON includes stored history, bounded to 1024 entries. This is not immutable storage.
 
 The phase is **advisory**, meaning it is a hint for humans and agents, not a lock. No other Forgeplan command refuses to run because the phase looks "wrong". If an artifact has no state file yet (created before phase tracking existed, or with `phase.enabled: false` in config), the command prints `current_phase: unknown` with an empty history - that is normal, not an error.
+
+Corrupt phase YAML may be quarantined during reading.
 
 This is the CLI version of [`forgeplan_phase`](/docs/mcp/forgeplan_phase/) on the MCP side.
 
@@ -51,7 +53,7 @@ forgeplan phase PRD-057
 ```
 
 Prints the current phase, workflow type, and the last three transitions in text mode
-(full history in `--json`). Typical text output:
+(full stored history in `--json`). Illustration, not a runtime transcript:
 
 ```text
 PRD-057 - current_phase: code (greenfield)
@@ -68,7 +70,7 @@ PRD-057 - current_phase: code (greenfield)
 forgeplan phase PRD-057 --json | jq '.history'
 ```
 
-Returns every transition the artifact has ever recorded. Useful for audits or for building a timeline view in a downstream tool.
+Returns retained transitions, not an unbounded lifetime audit log.
 
 ### Example 3: Artifact without a state file
 
@@ -87,5 +89,25 @@ Phase tracking is an observability layer over the methodology pipeline (Shape �
 - [`forgeplan_phase`](/docs/mcp/forgeplan_phase/) - MCP equivalent
 - [`forgeplan phase-advance`](/docs/cli/phase-advance/) - write the next transition
 - [`forgeplan validate`](/docs/cli/validate/) - gate around the `validate` phase
-- [`forgeplan activate`](/docs/cli/activate/) - the `done` terminal state of the methodology
+- [`forgeplan activate`](/docs/cli/activate/) - separate lifecycle activation, not the advisory `done` phase
 - [Methodology guide](/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan phase --help`.
+
+```text
+Read advisory phase state for an artifact. Returns current_phase, workflow_type, timestamps, and the full append-only transition history from `.forgeplan/state/<id>.yaml`. If no state file exists yet (pre-PRD-056 artifact or phase tracking was disabled), returns `current_phase: unknown` -- never an error. Phase tracking is advisory and never blocks other tools
+
+Usage: forgeplan phase [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID whose phase state to read
+
+Options:
+      --json     Output as JSON for machine consumption
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

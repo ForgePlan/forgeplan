@@ -39,22 +39,22 @@ forgeplan fpf section [OPTIONS] <ID>
 ## Examples
 
 ```bash
-# Trust calculus (the FPF B.3 section that defines R_eff semantics)
+# Read Trust Calculus in the ingested revision; distinguish it from ForgePlan's R_eff adaptation
 forgeplan fpf section B.3
 
 # Just the first 500 chars when you only need the gist
 forgeplan fpf section B.3 --summary
 
-# Explore/exploit reasoning
+# Read another section by ID; inspect its title in your ingested revision
 forgeplan fpf section B.4
 
-# ADI cycle
-forgeplan fpf section C.1
+# Abduction–Deduction–Induction (ADI), FPF B.5
+forgeplan fpf section B.5
 ```
 
 ## How it fits
 
-Sections are the atomic unit of the FPF KB. They're what `fpf search` ranks, what `fpf ingest` chunks, what `fpf check` cites when explaining why a rule matched, and what `forgeplan reason --fpf` pulls in as context.
+Sections are retrieved by `fpf search`, loaded by `fpf ingest`, and cited by FPF rules. FPF B.5 describes ADI. `forgeplan reason --fpf` injects relevant FPF sections into the ADI prompt, but on a Constellation-managed workspace the legacy FPF corpus is retired, so that path reports no FPF sections instead of reopening the retired store. ForgePlan's R_eff is a product adaptation, not arithmetic mandated by the current upstream B.3.
 
 A typical workflow:
 
@@ -71,3 +71,23 @@ forgeplan new adr "Evidence grading policy"
 - [`forgeplan fpf search`](/docs/cli/fpf-search/) - find sections by content
 - [`forgeplan fpf list`](/docs/cli/fpf-list/) - all sections at a glance
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf section --help`.
+
+```text
+Show a specific FPF section
+
+Usage: forgeplan fpf section [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Section ID (e.g. "B.3", "C.2.2")
+
+Options:
+      --summary  Show summary only (first 500 chars)
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

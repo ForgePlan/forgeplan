@@ -5,6 +5,14 @@
 > не открывая исходные отчёты. Детализация по разделам: консенсус →
 > [01-consensus.md](01-consensus.md), развилки → [02-open-decisions.md](02-open-decisions.md),
 > WSFold-входы → [03-wsfold-bridge.md](03-wsfold-bridge.md).
+>
+> **Граница чтения (2026-10-23).** Ниже сохранён план июня–июля 2026
+> отдельного ForgeFarm, не shipped-функциональность ForgePlan. Предложенные
+> `graph|health|order --span` отсутствуют в этих командах выбранного CLI
+> 0.39.0+constellation.s1.1; историческое имя fastembed не описывает его
+> текущий BGE-M3/tract движок. Phase/DoD и «уже одобрен» — запись плана,
+> не свидетельство выполнения. `model×task-class` ниже — сокращение:
+> eval-claim должен сохранять и harness/версии, как в `evals/eval-harness.md`.
 
 ---
 
@@ -65,7 +73,7 @@
 6. **Единый verdict enum для всех drift/reconcile контуров:** resolved / missing-recoverable / mismatched-refuse — переиспользуется во всех 5 drift-circuits (worktrees, projections, labels, map.json, constellation stores); auto-repair policy привязана к классу вердикта, а не к каждому контуру отдельно.
 7. **gastown/swarm-forge — prior art, которого корпус не знает:** перед постройкой Worktree Governor и headless runtime — structured extraction pass: у gastown взять worktree lifecycle + per-agent storage + mailbox protocol (в корпусе есть RunEvents, но нет inter-agent handoff), у swarm-forge — session supervision + inbox/outbox. Ни один не становится kernel'ом. Это де-рискует дважды задокументированную worktree-боль (PROB-060 shared-HEAD, disk-fill).
 8. **Eval-loop ADR — вперёд, в Phase 0–1, не Phase 5:** откладывание воспроизводит слепое пятно корпуса и противоречит raison d'être продукта. Все сокеты уже есть в дизайне: capability_class, risk-policy allowed_tiers, budget envelopes, verifier verdicts, HAQ counts.
-9. **EvidencePack/R_eff — decision-слой eval'а, не run store:** verdict↔«model X адекватна task-class Y», congruence_level↔совпадение harness/task-type, decay/valid_until↔устаревание eval'ов при выходе новой версии модели. R_eff тогда делает ПРАВИЛЬНУЮ weakest-link работу: routing-решение на просроченном/опровергнутом eval-evidence видимо падает до 0.1 в blindspots/health.
+9. **EvidencePack/R_eff — decision-слой eval'а, не run store:** verdict относится к паре model+harness и классу задач; CL — к переносу контекста. `valid_until` — явная дата, не автоматическая реакция на выпуск модели. Просроченный вклад scorer равен 0.1, непросроченный `refutes` — 0; итог зависит от eligible evidence/зависимостей и выбранной score surface. Это не вероятность качества модели; детали — `../evals/eval-harness.md`.
 10. **T0–T3 в коде/API/схемах с первого дня** (rename после schema freeze дорог); fpl остаётся stdio-only — никакого HTTP transport запроса назад в fpl core.
 
 ---
@@ -123,7 +131,7 @@
 
 ### Phase 4 — Eval distillation + routing + минимальный UI (M/L)
 
-- Дистилляция run rows → ForgePlan EvidencePacks per (model × task-class): gate-pass rate, cost/task, interventions/task, n. Structured Fields обязательны (verdict/CL/evidence_type/valid_until).
+- Дистилляция run rows → ForgePlan EvidencePacks per (model × harness × task-class), с версиями и условиями прогона: gate-pass rate, cost/task, interventions/task, n. Structured Fields обязательны (verdict/CL/evidence_type/valid_until).
 - Runtime Broker: model-routing.yaml меняется только со ссылкой на активный EVID; v1 policy = calibrate depth→tier.
 - Добавление T1/T3 lanes полноценно (spec/verification + validate/repair, цикл T2↔T3).
 - UI: 2 surfaces — Board (проекция) + Run Inspector/HAQ. Не больше.

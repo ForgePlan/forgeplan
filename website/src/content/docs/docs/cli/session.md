@@ -3,10 +3,7 @@ title: forgeplan session
 description: "Show current methodology session state and next step"
 ---
 
-Show the current methodology session state - which phase of the Forgeplan
-cycle you are in (routing, shaping, validating, coding, evidence, activating)
-and what the next step should be. This is the "where am I?" command for
-agents and humans alike.
+Displays persisted session phase, active artifact, depth, enforcement mode and advisory next steps. The session phase vocabulary is `idle`, `routing`, `shaping`, `coding`, `evidence`, `pr`; validation, reasoning and activation are workflow actions, not additional persisted session states.
 
 ## When to use
 
@@ -50,7 +47,7 @@ forgeplan session --reset
 
 ## Output interpretation
 
-Typical output:
+Illustration of a shaping session, not an exact captured display:
 
 ```
 Session: shaping
@@ -60,36 +57,42 @@ Session: shaping
   Last transition:  2026-04-11 14:05 (routing → shaping)
 ```
 
-Phases map to the Forgeplan cycle:
+Persisted phases:
 
-| Phase       | Meaning                                                  |
-|-------------|----------------------------------------------------------|
-| `idle`      | No active task                                           |
-| `routing`   | Running `forgeplan route` - deciding depth/pipeline      |
-| `shaping`   | Writing MUST sections in a new PRD/RFC/ADR               |
-| `validating`| Running `forgeplan validate` until PASS                  |
-| `reasoning` | ADI hypothesis generation (Standard+ depth)              |
-| `coding`    | Implementing the change                                  |
-| `evidence`  | Creating EvidencePack and linking                        |
-| `activating`| Running `activate` after R_eff > 0                       |
+| Phase | Meaning |
+|---|---|
+| `idle` | No active session task |
+| `routing` | Choose depth and pipeline |
+| `shaping` | Shape and validate the decision |
+| `coding` | Implement the change |
+| `evidence` | Collect/review evidence |
+| `pr` | Prepare the pull request |
 
-The state is stored in `.forgeplan/session.yaml` and persists across CLI
-invocations. Use `--reset` if the state is stuck or stale.
+State lives in `.forgeplan/session.yaml`. `--reset` clears phase and active-session fields; it does not validate artifacts, erase debt or pass any gates.
 
 ## How it fits
 
-`session` is the phase indicator inside the enforced cycle:
-
-```
-route → shape → validate → reason → code → evidence → activate
-```
-
-Each successful command transitions the session forward. If you see the same
-phase for hours, that is a signal to unstick - either finish the phase or
-reset.
+Session phase and per-artifact lifecycle phase are distinct. Methodology actions such as validate → reason → code → evidence → review → activate remain required where applicable, but not every successful command advances the session. Inspect the active artifact and real work before correcting stale session state; do not reset merely to bypass a gate.
 
 ## See also
 
 - [`forgeplan route`](/docs/cli/route/) - determine depth and pipeline
 - [`forgeplan health`](/docs/cli/health/) - project-level health
 - [Unified Workflow](/docs/guides/git-workflow/) - full cycle
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan session --help`.
+
+```text
+Show methodology session state (current phase, active artifact)
+
+Usage: forgeplan session [OPTIONS]
+
+Options:
+      --reset    Reset session to Idle
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

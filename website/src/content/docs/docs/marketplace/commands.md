@@ -1,11 +1,22 @@
 ---
 title: Commands Reference
-description: All slash commands from ForgePlan marketplace plugins
+description: Selected plugin workflows, their ownership, and legacy command examples
 ---
 
 :::note[Installation required]
 Commands listed below come from external marketplace plugins. Install them with `/plugin install <name>@ForgePlan-marketplace` (after `/plugin marketplace add ForgePlan/marketplace`) or use the built-in `forgeplan setup-skill` for the core `/forge` skill.
 :::
+
+This is a selected catalog, not every command in every installed release.
+The marketplace snapshot reviewed at
+[`b4e8a1b9`](https://github.com/ForgePlan/marketplace/tree/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7)
+marks `dev-toolkit` deprecated in favor of `fpl-skills`. Its shipped command
+files are `audit`, `sprint`, `recall`, and `report`. The Research & Build
+section below preserves the earlier catalog's descriptions; installing
+`dev-toolkit` 1.9.1 does **not** provide that whole list. Some corresponding
+workflows now live in `fpl-skills`; inspect the installed version rather than
+assuming old names or arguments still apply. Slash commands are host
+instructions, not extra `forgeplan` binary subcommands.
 
 ## Core Commands (forgeplan-workflow)
 
@@ -23,7 +34,9 @@ The command determines depth automatically and creates the right artifacts.
 ### /forge-cycle PRD-XXX
 **Plugin**: forgeplan-workflow
 
-Explicit step-by-step forge cycle with 8 phases:
+Historical eight-phase outline (not the current template's exact step count).
+The host orchestrator performs the steps; slash names inside the template
+are semantic markers, not automatically chained commands:
 
 ```
 Phase 0: OBSERVE   → forgeplan health
@@ -59,15 +72,16 @@ Reports findings with severity: CRITICAL / HIGH / MEDIUM / LOW.
 ### /sprint "goal"
 **Plugin**: dev-toolkit
 
-Adaptive sprint planning that scales:
-- 1 task → just do it
-- 3-5 tasks → parallel execution
-- 10+ tasks → wave-based sprint with dependency tracking
+The reviewed `/sprint` template scales by risk and complexity:
+- Tactical → one agent
+- Standard → two parallel agents
+- Deep → three or four parallel agents and a fuller pipeline
 
 ### /recall
 **Plugin**: dev-toolkit
 
-Restores session context from Hindsight memory - what you worked on, what was decided, what's pending.
+Restores context from project documentation, Git state and available memory
+tools. Hindsight is optional, not the sole source.
 
 ---
 
@@ -106,12 +120,14 @@ Structured ADI reasoning: 3+ hypotheses → predictions → evidence check.
 ### /session
 **Plugin**: forgeplan-orchestra
 
-Full context restore: Hindsight memory + Forgeplan health + Orchestra tasks.
+Restores project/Git context and consults available Hindsight, Forgeplan and
+Orchestra integrations. Missing optional sources mean a partial briefing.
 
 ### /sync
 **Plugin**: forgeplan-orchestra
 
-Bidirectional sync between Forgeplan artifacts and Orchestra tasks.
+Compares Forgeplan artifacts and Orchestra tasks, proposes a bidirectional
+sync, then waits for confirmation. It is not automatic background sync.
 
 ---
 
@@ -127,7 +143,10 @@ Look up a specific UX law with examples, violations, and best practices.
 
 ---
 
-## Research & Build Commands (dev-toolkit)
+## Research & Build Commands (legacy catalog)
+
+The following entries are historical catalog examples, not commands shipped
+by `dev-toolkit` 1.9.1. Their old plugin labels are retained as provenance.
 
 ### /research "topic"
 **Plugin**: dev-toolkit

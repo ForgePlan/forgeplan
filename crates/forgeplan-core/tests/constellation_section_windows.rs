@@ -153,7 +153,7 @@ fn a_no_space_run_keeps_its_tail() {
     // No spaces at all: one enormous token run, which is the case where a naive
     // character-window implementation silently truncates.
     let (_tmp, tokenizer, budgets) = tokenizer(32);
-    let line: String = std::iter::repeat('x').take(4_000).collect();
+    let line = "x".repeat(4_000);
     let body = format!("# Heading\n\n{line}\n");
     let parsed = artifact(&body);
     let sections = sections_for(&parsed, &tokenizer, &budgets).expect("sections");
@@ -195,7 +195,9 @@ fn whitespace_and_metaspace_between_windows_is_preserved() {
     // here, stop at the token limit" would drop these.
     let mut body = String::new();
     for index in 0..80 {
-        body.push_str(&format!("## Section {index}\n\n   \n\t\nbody word {index}\n\n\n"));
+        body.push_str(&format!(
+            "## Section {index}\n\n   \n\t\nbody word {index}\n\n\n"
+        ));
     }
     let parsed = artifact(&body);
     let sections = sections_for(&parsed, &tokenizer, &budgets).expect("sections");
@@ -403,7 +405,9 @@ fn every_section_input_fits_the_actual_limit_including_special_tokens() {
     let huge_title = "Заголовок ".repeat(300);
     let mut body = String::new();
     for index in 0..100 {
-        body.push_str(&format!("## Раздел {index}\n\nтело для проверки {index}.\n\n"));
+        body.push_str(&format!(
+            "## Раздел {index}\n\nтело для проверки {index}.\n\n"
+        ));
     }
     let mut parsed = artifact(&body);
     parsed.title = huge_title;
@@ -419,9 +423,7 @@ fn every_section_input_fits_the_actual_limit_including_special_tokens() {
                 &budgets,
             )
             .expect("input");
-        let counted = tokenizer
-            .count_with_special_tokens(&input)
-            .expect("count");
+        let counted = tokenizer.count_with_special_tokens(&input).expect("count");
         assert!(
             counted <= budgets.max_tokens,
             "section `{}` produced {counted} tokens against a limit of {}",
@@ -456,7 +458,10 @@ fn the_display_heading_is_never_shortened_even_though_the_input_is() {
             .all(|row| row.heading.as_deref() == Some(markdown_heading)),
         "the row keeps the FULL display heading; only the embedding input is budgeted. \
          got {:?}",
-        sections.iter().map(|r| r.heading.as_deref()).collect::<Vec<_>>()
+        sections
+            .iter()
+            .map(|r| r.heading.as_deref())
+            .collect::<Vec<_>>()
     );
 
     // Non-vacuity: without this the comparison above would also pass against a
@@ -488,10 +493,7 @@ fn two_captures_of_the_same_bytes_under_different_layouts_differ_in_identity() {
 // Metadata absent / present / absent
 // ---------------------------------------------------------------------------
 
-fn view_with(
-    resolution: &LayoutResolution,
-    sections: Vec<CapturedSection>,
-) -> CapturedSourceView {
+fn view_with(resolution: &LayoutResolution, sections: Vec<CapturedSection>) -> CapturedSourceView {
     CapturedSourceView {
         workspace: std::path::PathBuf::from("/tmp/ws/.forgeplan"),
         checkout_id: "local-test".to_string(),

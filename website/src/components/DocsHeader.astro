@@ -16,26 +16,27 @@ const isCliActive    = isActive('/docs/cli', '/ru/docs/cli');
 const isMcpActive    = isActive('/docs/mcp', '/ru/docs/mcp');
 
 const isRu = path === '/ru' || path === '/ru/' || path.startsWith('/ru/');
+const hasLocalePeer = !/^\/404(?:\/|\.html)?$/.test(path) && !/^\/docs\/changelog\/?$/.test(path);
 const altPath = isRu
   ? (path.replace(/^\/ru/, '') || '/')
   : (path === '/' ? '/ru/blog' : '/ru' + path);
 const altLabel = isRu ? 'EN' : 'RU';
-const altLangName = isRu ? 'English' : 'Russian';
+const altLangName = isRu ? 'English' : 'Русский';
 ---
 
-<a href="#main-content" class="skip-link">Skip to content</a>
+<a href="#_top" class="skip-link">{isRu ? 'К содержимому' : 'Skip to content'}</a>
 <div class="docs-header-row">
   <a href="/" class="docs-header-brand">F<span class="docs-brand-dot">●</span>RGEPLAN</a>
 
   <Search class="docs-search" />
 
-  <nav aria-label="Primary navigation" class="docs-header-nav">
-    <a href="/docs/getting-started/installation" class={`docs-nav-cell${isDocsActive ? ' active' : ''}`}>Docs</a>
-    <a href="/blog" class={`docs-nav-cell${isBlogActive ? ' active' : ''}`}>Blog</a>
-    <a href="/guides" class={`docs-nav-cell${isGuidesActive ? ' active' : ''}`}>Guides</a>
-    <a href="/docs/cli/health" class={`docs-nav-cell${isCliActive ? ' active' : ''}`}>CLI Ref</a>
-    <a href="/docs/mcp/" class={`docs-nav-cell${isMcpActive ? ' active' : ''}`}>MCP Tools</a>
-    <a href={altPath} class="docs-nav-cell" aria-label={`Switch to ${altLangName}`}>{altLabel}</a>
+  <nav aria-label={isRu ? 'Основная навигация' : 'Primary navigation'} class="docs-header-nav">
+    <a href={isRu ? '/ru/docs/getting-started/installation' : '/docs/getting-started/installation'} class={`docs-nav-cell${isDocsActive ? ' active' : ''}`}>{isRu ? 'Документация' : 'Docs'}</a>
+    <a href={isRu ? '/ru/blog' : '/blog'} class={`docs-nav-cell${isBlogActive ? ' active' : ''}`}>{isRu ? 'Блог' : 'Blog'}</a>
+    <a href={isRu ? '/ru/guides' : '/guides'} class={`docs-nav-cell${isGuidesActive ? ' active' : ''}`}>{isRu ? 'Гайды' : 'Guides'}</a>
+    <a href={isRu ? '/ru/docs/cli/health' : '/docs/cli/health'} class={`docs-nav-cell${isCliActive ? ' active' : ''}`}>{isRu ? 'Справочник CLI' : 'CLI Ref'}</a>
+    <a href={isRu ? '/ru/docs/mcp/' : '/docs/mcp/'} class={`docs-nav-cell${isMcpActive ? ' active' : ''}`}>{isRu ? 'Инструменты MCP' : 'MCP Tools'}</a>
+    {hasLocalePeer && <a href={altPath} class="docs-nav-cell" aria-label={isRu ? 'Переключить на английский' : `Switch to ${altLangName}`}>{altLabel}</a>}
     <div class="docs-nav-cell docs-nav-cell-install">
       <InstallMenu />
     </div>
@@ -46,7 +47,7 @@ const altLangName = isRu ? 'English' : 'Russian';
     </a>
   </nav>
 
-  <button id="theme-toggle" class="docs-theme-toggle" aria-label="Toggle dark/light theme">
+  <button id="theme-toggle" class="docs-theme-toggle" aria-label={isRu ? 'Переключить светлую и тёмную тему' : 'Toggle dark/light theme'}>
     <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
       <polygon points="14,1 25.66,7 25.66,21 14,27 2.34,21 2.34,7"
                stroke="#FF6B35" stroke-width="1.5" fill="var(--forge-fg)"/>
@@ -306,7 +307,7 @@ const altLangName = isRu ? 'English' : 'Russian';
   .docs-header-compact site-search.docs-search button[data-open-modal] > span { display: none; }
   .docs-header-compact .docs-theme-toggle svg { width: 14px; height: 14px; }
 
-  /* Hide native Starlight search button inside Mobile Menu Footer to prevent dup */
+  /* Hide this desktop navigation on narrow screens; mobile navigation is provided separately. */
   @media (max-width: 900px) {
     .docs-header-nav { display: none; }
     .docs-search-btn kbd { display: none; }

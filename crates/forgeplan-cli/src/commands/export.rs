@@ -3,10 +3,17 @@ use forgeplan_core::hints::{self, Hint};
 use crate::commands::common;
 
 pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
-    let store = common::store().await?;
+    let (_ws, source) = common::open_read_source().await?;
     let cwd = std::env::current_dir()?;
 
-    let records = store.list_records(None).await?;
+    let legacy_records;
+    let records = match &source {
+        common::ReadSource::Legacy(store) => {
+            legacy_records = store.list_records(None).await?;
+            legacy_records.as_slice()
+        }
+        common::ReadSource::Captured(read) => read.records(),
+    };
     let artifacts: Vec<serde_json::Value> = records
         .iter()
         .map(|r| {
@@ -28,7 +35,10 @@ pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
         })
         .collect();
 
-    let all_relations = store.get_all_relations().await?;
+    let all_relations = match &source {
+        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Captured(read) => read.get_all_relations(),
+    };
     let relations: Vec<serde_json::Value> = all_relations
         .into_iter()
         .map(|(source, target, relation)| {

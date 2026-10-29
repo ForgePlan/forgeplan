@@ -2,6 +2,8 @@
 
 > How each of the 12 skills plugs into existing `/autoresearch:*` commands.
 
+> Original integration design. The autoresearch baseline is not pinned to an upstream revision here; modes, emit formats, hooks and freshness automation below are proposed, not current Forgeplan guarantees. See [current status](../README.md#implementation-status-2026-10-23).
+
 ## Autoresearch baseline
 
 From `sources/autoresearch/`, the existing command family:
@@ -119,23 +121,27 @@ Autoresearch's coverage metric is adapted for each mode:
 
 ## Composite metric: `extract_score`
 
-See the canonical formula in `05-AUTORESEARCH-INTEGRATION.md`. This file presents the same metric with the same weights.
+See the [canonical proposed formula](../05-AUTORESEARCH-INTEGRATION.md#composite-metrics). The same eight terms and weights are:
 
 ```
-extract_score = w1 * coverage_glossary
-           + w2 * coverage_use_case
-           + w3 * coverage_invariant
-           + w4 * triangulation_rate
-           + w5 * reproducibility_rate
-
-w1..w5 = [0.2, 0.25, 0.2, 0.2, 0.15]
+extract_score =
+    (glossary_coverage * 0.10) +
+    (use_case_coverage * 0.15) +
+    (invariant_coverage * 0.10) +
+    (hypothesis_verified_pct * 0.20) +
+    (scenarios_written * 0.15) +
+    (kg_consistency * 0.10) +
+    (canonical_reproducibility * 0.15) +
+    (rag_export_quality * 0.05)
 ```
+
+This is not the current core inspector's five-term `extract_score`; see the distinction in the linked document.
 
 Tracked in `metric_snapshot` per session.
 
 ## Decay policy
 
-Autoresearch supports decay on freshness. Extended for this package:
+Proposed freshness policy for this integration (not an implemented gradual-decay function in Forgeplan):
 
 - `glossary`: decay after 60 days or code mention drift.
 - `use-case`: decay after 30 days or entry point code change.

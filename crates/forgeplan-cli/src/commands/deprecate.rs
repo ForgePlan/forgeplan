@@ -72,12 +72,11 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     }
 
     common::log_change_field(
-        &store,
+        &ws,
+        Some(&store),
         id,
         "update",
-        "status",
-        Some(&old_status),
-        Some("deprecated"),
+        ("status", Some(&old_status), Some("deprecated")),
         "cli",
     )
     .await;
@@ -130,6 +129,10 @@ async fn run_file_first(
     let canonical = read
         .resolve_id(id)
         .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let old_status = read
+        .get_record(&canonical)
+        .map(|r| r.status.as_str())
+        .unwrap_or("active");
 
     // Scoped so the context's borrow of the lock guard ends before the
     // reconcile pass below — that pass re-acquires the same lock.
@@ -139,6 +142,16 @@ async fn run_file_first(
             .await
             .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
     };
+
+    common::log_change_field(
+        &ws,
+        None,
+        &canonical,
+        "update",
+        ("status", Some(old_status), Some("deprecated")),
+        "cli",
+    )
+    .await;
 
     common::note_constellation_owns_index();
     // Lock released before reconcile — see `common::reconcile_after_file_mutation`.

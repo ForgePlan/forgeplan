@@ -6,8 +6,11 @@ use crate::commands::common;
 use crate::ui;
 
 pub async fn run() -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let gaps = gaps::find_gaps(&store).await?;
+    let (_, source) = common::open_read_source().await?;
+    let gaps = match source {
+        common::ReadSource::Legacy(store) => gaps::find_gaps(&store).await?,
+        common::ReadSource::Captured(read) => gaps::find_gaps_captured(&read),
+    };
 
     if gaps.is_empty() {
         println!("No pipeline gaps found. All artifacts comply with depth rules.");

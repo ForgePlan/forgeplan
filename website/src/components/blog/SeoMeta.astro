@@ -24,7 +24,7 @@ const altRu = translations?.ru ? new URL(`/ru/blog/${translations.ru}`, site).hr
 const emitEn = altEn ?? (lang === 'en' ? canonical : null);
 const emitRu = altRu ?? (lang === 'ru' ? canonical : null);
 // x-default: always point to EN URL (or fall back to canonical if no EN version exists).
-// Google treats x-default as "the version most users land on" — EN is the correct default.
+// Site convention: EN is the language-neutral fallback; this is not a Google ranking guarantee.
 const xDefault = emitEn ?? canonical;
 
 const jsonLd = {
@@ -55,8 +55,7 @@ const jsonLd = {
   image: {
     '@type': 'ImageObject',
     url: ogImage,
-    width: 1200,
-    height: 630,
+    ...(!cover && { width: 1200, height: 630 }),
   },
   inLanguage: lang,
   url: canonical,

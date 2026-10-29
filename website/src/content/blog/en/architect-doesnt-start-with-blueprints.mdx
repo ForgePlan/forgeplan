@@ -15,6 +15,8 @@ translations:
   ru: architect-doesnt-start-with-blueprints
 ---
 
+> **Scope of the examples.** The construction analogy is not a building or aviation standard. The timings and savings below are illustrative planning targets or the author's recollections, not a measured benchmark or a guarantee. The four-phase framing and 13-section PRD are this series' adaptation, not a universal BMAD requirement.
+
 ## The architect analogy
 
 An architect doesn't start with blueprints. If they sit down to draw blueprints on day one - that's a bad architect.
@@ -37,7 +39,7 @@ For a feature you're adding to a product, the four phases have simple names: exp
 
 **Expanding the solution space**. Input: one problem statement from a Slack message. Output: three or four ways to solve it, each with a brief list of pros and cons. This is the same "three versions" logic from the diagnostic post, applied at the product-decision level. This phase takes 30 minutes to an hour. The key is not letting your brain immediately lock onto the first obvious approach.
 
-**Structuring: breaking it into parts and edge cases**. Take the chosen area and break it into components. What's separate, what's together. Which scenarios are the main path, which are edge cases. What happens when the user does the "wrong" thing. This phase catches 80% of future bugs at the document stage. One hour spent on edge cases saves ten hours of code.
+**Structuring: breaking it into parts and edge cases**. Take the chosen area and break it into components. What's separate, what's together. Which scenarios are the main path, which are edge cases. What happens when the user does the "wrong" thing. This can expose design errors before implementation; no measured 80% bug-prevention rate or ten-to-one saving is established here.
 
 **Choosing an option with tradeoffs**. From the three options in phase one, pick one. With clearly stated reasons for the choice and conditions under which the choice would have been different. This is the same logic as a DDR - just applied at the feature level rather than a single architectural decision.
 
@@ -47,7 +49,7 @@ Four phases for a building takes months. For a feature - a day or two of a produ
 
 ## A concrete example: "tags for notes"
 
-Let me take a concrete case. A team is building a note-taking app (I'll call it Vault). A requirement comes in: "add tags to notes."
+Take a worked example, with illustrative timings. A team is building a note-taking app (I'll call it Vault). A requirement comes in: "add tags to notes." The JSON design below assumes unsuitable queries and indexing; JSON storage is not inherently slow, nor is a join table the only workable design.
 
 Without the four phases, the developer goes to write. First they add a `tags` column to the notes table, storing it as a JSON array of strings. Ships in two days. Two weeks later: "search notes by tag." It turns out JSON search in the database is slow - need to refactor to a separate many-to-many table. Two more weeks. A month later: "delete a tag from all notes at once." Another rebuild. Two months in, the "tags" feature has consumed four weeks of work instead of the original two-day estimate.
 
@@ -69,9 +71,9 @@ This is not theory. I've seen this difference play out on ten teams. Hours at th
 
 A 13-section PRD is often perceived as "extra work that takes time away from engineers." In reality it's a **pilot's pre-flight checklist**.
 
-Before takeoff, the pilot runs through forty items. Not forty-one, not thirty-nine. Each item represents a failure mode that killed people in the past. Skip any one - the same thing can happen again. Forty items look like bureaucracy until you understand they're a hundred years of collective aviation experience, measured in disasters.
+Before takeoff, pilots use checklists appropriate to the aircraft and operation. The number of items is not universally forty, and not every item represents a fatal accident. The useful analogy is a repeatable check against known omissions.
 
-A 13-section PRD is the same thing for product features. Each section is a question teams forgot in the past, and forgetting it cost them rework. "Let's simplify to five sections" means bringing back eight known classes of mistakes.
+A 13-section PRD serves a similar purpose for product features. Each section asks a question worth considering. Reducing it to five sections need not lose eight classes of protection if the same questions remain covered; use the template appropriate to the task.
 
 The thirteen sections fall into three groups. The first (goal, audience, success metrics, scope) answers "why this at all." The second (functional requirements, non-functional requirements, edge cases, design) answers "what exactly we're building." The third (risks, open questions, non-goals, plan) answers "what could go wrong."
 
@@ -91,11 +93,11 @@ Three sections. Ten to fifteen minutes to fill in. Effect - two or three weeks o
 
 ## Who writes it, who reads it
 
-A PRD is written by the product manager. Not the developer, not the designer, not the CEO. The developer can help with technical constraints, the designer with interface sketches - but ownership of the document is the product manager's.
+In the team model I recommend here, the product manager owns the PRD, with developers contributing technical constraints and designers contributing interface sketches. Other teams may assign that ownership differently; one accountable owner matters more than the job title.
 
 This matters because a PRD is a contract. The developer reads it and says "this is clear, I can start from this." The designer reads it and says "I need three mockups here." The stakeholder reads it and says "yes, this is what I wanted."
 
-If the developer wrote the PRD - it will be full of technical detail with no business context. If the stakeholder wrote it - no edge cases. If the designer wrote it - no numbers or metrics. One person responsible for the whole document is insurance against a document with holes.
+Any author can miss business context, edge cases, or metrics. One accountable owner and cross-functional review help find those omissions; the author's role alone does not determine the document's quality.
 
 An AI agent (BMAD - a method for structured document generation from context) drafts the first version of the PRD in a minute from the problem statement and project context. Input: "tags feature for a notes app" plus links to related features (search, filters, note organization). Output: a filled-in template with notes like "needs clarification here" and "metrics needed here." The product manager's job from there: fill in the gaps, cut the bloat, sharpen the vague.
 

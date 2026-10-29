@@ -263,9 +263,10 @@
   <p class="eyebrow">Цикл одного проекта · теория</p>
   <h1>Forgeplan как operational layer</h1>
   <p class="lead">
-    <b class="k">Forgeplan</b> - CLI плюс MCP-сервер, который стоит рядом
-    с репо и забирает на себя механическую часть, оставляя вам только содержательные решения.
+    <b class="k">Forgeplan</b> — CLI и MCP-сервер рядом с репозиторием.
+    Он автоматизирует часть работы с артефактами; обоснование решений и проверка результатов остаются за людьми и агентами.
   </p>
+  <p>Примеры интерфейсов относятся к проверенному снимку исходников <code>0.39.0+constellation.s1.1</code>, не публичному релизу <code>0.38.0</code>. Captured help задаёт синтаксис; ревью исходников и сохранённые наблюдения — оговорки о поведении. Новый результат выполнения здесь не заявлен.</p>
 
   <!-- ============ MINI-PIPELINE ============ -->
   <div class="pipeline">
@@ -277,13 +278,13 @@
     <div class="pipe-arrow">→</div>
     <div class="pipe-box">
       <div class="step-tag">02 · Artifacts + DAG</div>
-      <div class="step-title">10 типов · 6 в ходу</div>
+      <div class="step-title">10 выбранных типов · 6 выделены</div>
       <div class="step-desc">PRD · RFC · ADR · Spec · Epic · Evidence</div>
     </div>
     <div class="pipe-arrow">→</div>
     <div class="pipe-box">
       <div class="step-tag">03 · Depth + Gates</div>
-      <div class="step-title">4 уровня глубины</div>
+      <div class="step-title">Режимы глубины и алиасы</div>
       <div class="step-desc"><span class="dp-tac">tac</span> · <span class="dp-std">std</span> · <span class="dp-deep">deep</span> · <span class="dp-crit">crit</span></div>
     </div>
   </div>
@@ -300,11 +301,11 @@
       оформить</b>.
     </p>
     <p class="analogy">
-      Forgeplan - это POS для методологий. Конкретно - CLI плюс MCP-сервер, который встаёт рядом
-      с репо и берёт на себя механическую часть FPF, BMAD, OpenSpec и QuintCode. Вы решаете,
-      какую фичу строить. Forgeplan помнит, какие секции требует BMAD PRD, какой формат ожидает
-      OpenSpec от delta, какую структуру имеет ADR с FPF reasoning, какие оси R_eff проставить
-      на evidence.
+      Forgeplan похож на такой терминал, но его адаптации не тождественны upstream-методикам.
+      BMAD влияет на продуктовое планирование, OpenSpec — на изменения спецификаций,
+      Quint Code — на работу с evidence, FPF — на рассуждение.
+      В продукте свои шаблоны, проверки, эвристики FGR и движок R_eff.
+      Интеграция не заменяет проверку самих доказательств.
     </p>
 
     <!-- POS split: что в голове vs что в инструменте -->
@@ -313,72 +314,72 @@
         <div class="pos-tag">В голове · до</div>
         <div class="pos-title">Что приходится помнить руками</div>
         <ul class="pos-list">
-          <li>13 секций PRD из BMAD</li>
-          <li>Формат delta-spec ADDED / MODIFIED / REMOVED</li>
-          <li>Где лежат ADR и какой шаблон у frontmatter</li>
-          <li>F-G-R для каждого evidence из QuintCode</li>
-          <li>3 гипотезы из FPF на каждое серьёзное решение</li>
-          <li>Какой артефакт «выше» какого в DAG</li>
+          <li>Какие секции требует местный шаблон PRD</li>
+          <li>Какие операции delta поддерживает реализация</li>
+          <li>Где лежат ADR и как хранятся метаданные</li>
+          <li>Чем поля evidence отличаются от рубрик оценки доверия</li>
+          <li>Как сравнивать серьёзные альтернативы через ADI</li>
+          <li>Какие связи графа означают зависимости</li>
         </ul>
-        <div class="pos-foot">одна методология в голове · реально</div>
+        <div class="pos-foot">Явные соглашения вместо проверки памяти</div>
       </div>
       <div class="pos-col tool">
         <div class="pos-tag">В инструменте · после</div>
         <div class="pos-title">Что забирает Forgeplan</div>
         <ul class="pos-list">
-          <li><code>forgeplan new prd</code> · уже с 13 секциями BMAD</li>
-          <li><code>forgeplan validate</code> · OpenSpec consistency автоматом</li>
-          <li><code>.forgeplan/</code> · одна папка, индекс, шаблоны</li>
-          <li><code>forgeplan score</code> · F-G-R посчитан, R_eff = min</li>
-          <li><code>forgeplan reason</code> · ADI требует 3 гипотезы</li>
-          <li><code>forgeplan graph</code> · DAG картинкой за 5 минут</li>
+          <li><code>forgeplan new prd "Feature title"</code> · местный шаблон, не дословный checklist upstream BMAD</li>
+          <li><code>forgeplan validate</code> · структурные проверки по типу и глубине</li>
+          <li><code>.forgeplan/</code> · Markdown-источники и производный индекс</li>
+          <li><code>forgeplan score</code> · R_eff; <code>forgeplan fgr</code> · отдельная эвристика FGR</li>
+          <li><code>forgeplan reason</code> · промпт запрашивает 3+ подхода, парсер число не обеспечивает</li>
+          <li><code>forgeplan graph</code> · текст графа Mermaid для просмотра</li>
         </ul>
-        <div class="pos-foot">четыре методологии в инструменте · работает</div>
+        <div class="pos-foot">Адаптации с явными границами реализации</div>
       </div>
     </div>
 
     <p style="margin-top: 22px;">
-      В репо появляется папка <code>.forgeplan/</code> с шаблонами, индексом артефактов и графом
-      связей. Через CLI создаёте новый артефакт:
+      Инициализация создаёт <code>.forgeplan/</code>.
+      Команды ниже иллюстрируют создание ADR; это не captured стенограмма.
     </p>
 
     <div class="code-block">
-      <span class="cb-tag">Терминал · создание ADR</span>
+      <span class="cb-tag">Авторский пример терминала · создание ADR</span>
 <span class="cb-prompt">$</span> forgeplan init
-<span class="cb-ok">✓</span> .forgeplan/ created · templates · index · graph
+<span class="cb-comment"># Прочитайте фактический результат инициализации.</span>
 
 <span class="cb-prompt">$</span> forgeplan new adr <span class="cb-val">"Vault architecture: Express + SQLite + Ollama + Anthropic"</span>
-<span class="cb-ok">✓</span> ADR-001 created with FPF reasoning skeleton
-<span class="cb-comment">  → 3 hypothesis slots (Abduction)</span>
-<span class="cb-comment">  → Evidence section with F-G-R rubric</span>
-<span class="cb-comment">  → Decay triggers section</span>
-<span class="cb-comment">  → Frontmatter: depth=deep, related_artifacts=[]</span>
+<span class="cb-comment"># Используйте ID и путь из фактического ответа.</span>
+<span class="cb-comment"># Заполните контекст, решение, альтернативы и последствия.</span>
+<span class="cb-comment"># Укажите требования к evidence и условия пересмотра.</span>
+<span class="cb-comment"># Выберите глубину для реальной задачи явно.</span>
+<span class="cb-comment"># Текст условия пересмотра не устанавливает монитор событий.</span>
 <span class="cb-emph">Next:</span> forgeplan reason ADR-001
     </div>
 
     <p style="margin-top: 14px;">
-      Файл создаётся с готовой структурой: frontmatter с <code>depth</code> и
-      <code>related_artifacts</code>, секция «Рассмотренные гипотезы» (минимум три, как требует
-      FPF), секция «Evidence» (с F-G-R, как требует QuintCode), секция «Условия пересмотра»
-      (как требует Evidence Decay). Остаётся заполнить по существу - не помнить, какие секции
-      должны быть.
+      Заполните шаблон, который действительно вернул инструмент.
+      Проверенный ADR-шаблон разделяет Context, Decision, Alternatives Considered,
+      Consequences, Evidence Requirements и Valid Until; есть дополнительные секции по глубине.
+      Три альтернативы — местная договорённость промпта, не универсальный порог FPF.
+      Сгенерированный шаблон ещё не является завершённым рассуждением.
     </p>
 
     <p style="margin-top: 14px;">
-      Вторая половина - MCP-сервер. После подключения Forgeplan в <code>.mcp.json</code> агент
-      (Claude Code, Cursor, Windsurf) видит ваши артефакты. Когда вы пишете «добавь логирование
-      в auth-сервис», агент сам подтягивает релевантный PRD и ADR и не противоречит принятым
-      решениям. Это не «ещё одна папка с документами» - это <b class="k">память проекта,
-      которую агент читает сам</b>.
+      MCP-сервер предоставляет инструменты подключённому клиенту. Получит ли агент нужные
+      PRD и ADR, зависит от инструкций клиента, доступа к инструментам и поведения агента.
+      Для «добавь логирование в auth-сервис» попросите прочитать записи и проверить ссылки.
+      Сам доступ <b class="k">не гарантирует автоматическое чтение</b>
+      или соблюдение всех прежних решений.
     </p>
 
     <div class="insight">
-      <div class="insight-tag">Дисциплина переходит из головы в инструмент</div>
+      <div class="insight-tag">Различайте рамку и расчёты продукта</div>
       <p>
-        Одну методологию в голове удержать реально. Четыре - нет. CLI удерживает все четыре и
-        напоминает о пропусках, пока вы решаете, что вообще строить. Это и есть смысл слова
-        «<b class="k">интегратор</b>» - не «новая методология сверху», а «общий слой под
-        старыми».
+        Upstream FPF различает порядковую F (строгость выражения), G (ClaimScope) и R конкретного утверждения.
+        Forgeplan отдельно считает Formality, Granularity и Reliability на шкалах 0–1:
+        итог FGR — <b class="k">cube_root(F × G × R)</b>. В reference Quint Code есть
+        текстовая рубрика FGR и отдельный калькулятор формальности/надёжности; это не одна общая формула.
       </p>
     </div>
   </div>
@@ -387,16 +388,16 @@
   <h2>02 · Типология артефактов и DAG зависимостей</h2>
   <div class="concept">
     <div class="concept-tag">Концепция 02 · типология артефактов</div>
-    <h3 class="concept-h">Шесть типов в активном ходу. Связи - через frontmatter, не через память</h3>
+    <h3 class="concept-h">Шесть выделенных типов с явными связями</h3>
     <p class="analogy">
-      В типичной команде requirements живут в Jira, дизайн-решения в Confluence, ADR в
-      <code>docs/</code>, evidence - в PR-комментариях и бенчмарках на Google Drive. Связи -
-      в голове автора. Автор уходит, связи теряются. Через год никто не помнит, почему выбрали
-      gRPC вместо REST.
+      Представим требования в Jira, обсуждение дизайна в Confluence, ADR в
+      <code>docs/</code>, evidence в PR-комментариях и файлах бенчмарков.
+      Если связи остаются только в памяти автора, позднему читателю
+      трудно восстановить, почему выбрали gRPC вместо REST.
     </p>
     <p class="analogy">
-      Forgeplan сводит это в один файловый репозиторий с шестью основными типами артефактов
-      (плюс четыре ситуативных - см. таблицу ниже):
+      Forgeplan хранит записи в файловом workspace. Здесь выделены шесть типов;
+      таблица выбирает десять, а не перечисляет все типы ядра или enum создания MCP.
     </p>
 
     <!-- 6 core artifact type cards -->
@@ -405,7 +406,7 @@
         <div class="art-tag">PRD</div>
         <div class="art-prefix">prefix · prd-</div>
         <div class="art-q"><strong>Что?</strong> Что строим и для кого</div>
-        <div class="art-desc">Продуктовые требования. Выход фазы Delivery в BMAD. Каждое FR в формате «[Actor] can [capability]», без implementation leakage.</div>
+        <div class="art-desc">Продуктовые требования. В upstream BMAD работа с PRD относится к Planning, не к фазе «Delivery». Формулируйте FR как «[Actor] can [capability]», без выбора технологии вместо требования.</div>
       </div>
       <div class="art-card">
         <div class="art-tag">RFC</div>
@@ -417,40 +418,40 @@
         <div class="art-tag">ADR</div>
         <div class="art-prefix">prefix · adr-</div>
         <div class="art-q"><strong>Почему?</strong> Почему именно так</div>
-        <div class="art-desc">Принятое архитектурное решение. Immutable после активации. Ссылается на RFC и Evidence. Меняется только через supersede.</div>
+        <div class="art-desc">Принятое архитектурное решение со ссылками на предложения и evidence. Активные файлы можно менять разрешёнными update. При смене решения оформляйте явную замену; активация не делает файл технически неизменяемым.</div>
       </div>
       <div class="art-card">
         <div class="art-tag">Spec</div>
         <div class="art-prefix">prefix · spec-</div>
         <div class="art-q"><strong>Контракт?</strong> Как ведёт себя система</div>
-        <div class="art-desc">API-контракты и data models. OpenSpec-формат с ADDED / MODIFIED / REMOVED для delta. См. <i>spec-cycle.html</i> для деталей.</div>
+        <div class="art-desc">API-контракты и модели данных. Парсер delta в выбранном продукте поддерживает ADDED / MODIFIED / REMOVED. В upstream OpenSpec есть также RENAMED; это не доказывает поддержку в продукте. Подробнее — <a href="/ru/guides/spec-cycle/">цикл спецификации</a>.</div>
       </div>
       <div class="art-card">
         <div class="art-tag">Epic</div>
         <div class="art-prefix">prefix · epic-</div>
         <div class="art-q"><strong>Связка?</strong> Что общего у группы PRD</div>
-        <div class="art-desc">Объединяет несколько PRD вокруг крупной цели. Используется в Critical-depth, когда фича не помещается в один PRD.</div>
+        <div class="art-desc">Объединяет несколько PRD вокруг крупной цели. Epic помогает организовать группу работ, но не следует из отдельного обязательного конвейера Critical.</div>
       </div>
       <div class="art-card">
         <div class="art-tag">Evidence</div>
         <div class="art-prefix">prefix · evid-</div>
         <div class="art-q"><strong>Работает?</strong> Какие данные подтверждают</div>
-        <div class="art-desc">Бенчмарк, скриншот мониторинга, цитата документации, A/B-тест. С F-G-R из QuintCode. Считается в R_eff = min(scores).</div>
+        <div class="art-desc">Тест, замер, бенчмарк или аудит с объёмом и происхождением. Scorer читает verdict, CL и тип evidence. R_eff агрегирует допустимые вклады, а не тройку F/G/R на шкале 0–9 как универсальную формулу доверия.</div>
       </div>
     </div>
 
     <p style="margin-top: 22px;">
-      Каждый артефакт ссылается на другие через frontmatter - это и есть DAG:
+      Метаданные и типизированные связи делают отношения проверяемыми. Ниже схема, не дословный сгенерированный файл и не полное описание типизированных рёбер:
     </p>
 
     <div class="code-block">
-      <span class="cb-tag">.forgeplan/adrs/adr-001-vault-architecture.md · frontmatter</span>
+      <span class="cb-tag">Схема frontmatter · условные ID, не captured файл</span>
 <span class="cb-comment">---</span>
 <span class="cb-key">id:</span> <span class="cb-val">adr-001</span>
 <span class="cb-key">type:</span> <span class="cb-val">adr</span>
 <span class="cb-key">title:</span> <span class="cb-val">"Vault architecture: Express + SQLite + Ollama"</span>
 <span class="cb-key">depth:</span> <span class="cb-val">deep</span>
-<span class="cb-key">status:</span> <span class="cb-val">activated</span>
+<span class="cb-key">status:</span> <span class="cb-val">active</span>
 <span class="cb-key">related_artifacts:</span>
   - <span class="cb-val">prd-001</span>       <span class="cb-comment"># откуда требование</span>
   - <span class="cb-val">rfc-001</span>       <span class="cb-comment"># откуда обсуждение</span>
@@ -461,7 +462,7 @@
 
     <!-- DAG visualization · clean lanes -->
     <div class="art-dag">
-      <div class="dag-tag">DAG · типичная цепочка от намерения к доказательствам</div>
+      <div class="dag-tag">Иллюстрация ролей графа · не универсальный конвейер артефактов</div>
       <div class="lanes">
         <div class="lane">
           <span class="lane-tag">намерение</span>
@@ -469,7 +470,7 @@
             <span class="node epic">EPIC-001</span>
             <span class="arr">↓</span>
             <span class="node prd">PRD-001</span>
-            <span style="font-size: 12px; color: var(--text-3); margin-left: 4px;">streaming-эндпойнт, p50 первого токена ≤ 800 мс</span>
+            <span style="font-size: 12px; color: var(--text-3); margin-left: 4px;">streaming-эндпойнт · условная цель: p50 первого токена ≤ 800 мс</span>
           </div>
         </div>
         <div class="lane">
@@ -483,7 +484,7 @@
           <span class="lane-tag">решение</span>
           <div class="nodes">
             <span class="node adr">ADR-001</span>
-            <span style="font-size: 12px; color: var(--text-3); margin-left: 4px;">общая архитектура Vault · immutable</span>
+            <span style="font-size: 12px; color: var(--text-3); margin-left: 4px;">архитектура Vault · сохранять причины и историю изменений</span>
           </div>
         </div>
         <div class="lane">
@@ -498,7 +499,7 @@
           <div class="nodes">
             <span class="arr up">↑</span>
             <span class="node evid">EVID-001</span>
-            <span style="font-size: 12px; color: var(--text-3); margin-left: 4px;">бенчмарк SSE vs WS · F=7 G=6 R=8 · informs ADR-001</span>
+            <span style="font-size: 12px; color: var(--text-3); margin-left: 4px;">предлагаемый бенчмарк SSE vs WS · informs ADR-001 · результат здесь не измерен</span>
           </div>
         </div>
       </div>
@@ -507,16 +508,16 @@
     <div class="insight">
       <div class="insight-tag">Через полгода - одна команда вместо археологии</div>
       <p>
-        Новый член команды открывает <code>forgeplan graph --format mermaid</code> и видит DAG
-        одной картинкой. За пять минут понимает, откуда что взялось. Не «тогда казалось
-        логичным» - явная цепочка от требования до evidence. Это превращает мнения в
-        <b class="k">трейсируемые артефакты</b>: у каждого есть источник, альтернативы и данные.
+        <code>forgeplan graph</code> выдаёт текст Mermaid; отобразите его совместимым просмотрщиком.
+        В captured help нет флага <code>--format mermaid</code>.
+        Граф помогает проследить путь от требования до evidence, если связи поддерживаются.
+        Ссылки становятся проверяемыми, но их утверждения от этого не становятся доказанными.
       </p>
     </div>
 
     <!-- 10 types footnote -->
     <div class="tax-foot">
-      <div class="tf-tag">Полная таксономия · 10 типов</div>
+      <div class="tf-tag">Десять выбранных типов · таксономия ядра шире</div>
       <table>
         <thead>
           <tr>
@@ -529,13 +530,13 @@
         <tbody>
           <tr><td class="t-name">PRD</td><td><code>prd-</code></td><td>Продуктовые требования</td><td class="t-usage core">core</td></tr>
           <tr><td class="t-name">RFC</td><td><code>rfc-</code></td><td>Архитектурное предложение</td><td class="t-usage core">core</td></tr>
-          <tr><td class="t-name">ADR</td><td><code>adr-</code></td><td>Принятое решение · immutable</td><td class="t-usage core">core</td></tr>
+          <tr><td class="t-name">ADR</td><td><code>adr-</code></td><td>Принятое решение с историей</td><td class="t-usage core">core</td></tr>
           <tr><td class="t-name">Spec</td><td><code>spec-</code></td><td>API-контракты, поведение</td><td class="t-usage core">core</td></tr>
           <tr><td class="t-name">Epic</td><td><code>epic-</code></td><td>Группа PRD вокруг цели</td><td class="t-usage core">core</td></tr>
           <tr><td class="t-name">Evidence</td><td><code>evid-</code></td><td>Бенчмарк, тест, замер</td><td class="t-usage core">core</td></tr>
           <tr><td class="t-name">Problem</td><td><code>prob-</code></td><td>Сигнал с контекстом · баг / риск</td><td class="t-usage sit">ситуативно</td></tr>
           <tr><td class="t-name">Solution</td><td><code>sol-</code></td><td>Сравнение 2-3 вариантов</td><td class="t-usage sit">ситуативно</td></tr>
-          <tr><td class="t-name">Note</td><td><code>note-</code></td><td>Микро-решение · 90-day TTL</td><td class="t-usage sit">ситуативно</td></tr>
+          <tr><td class="t-name">Note</td><td><code>note-</code></td><td>Микрорешение · смотрите фактический valid_until</td><td class="t-usage sit">ситуативно</td></tr>
           <tr><td class="t-name">Refresh</td><td><code>ref-</code></td><td>Re-evaluation просроченного</td><td class="t-usage sit">ситуативно</td></tr>
         </tbody>
       </table>
@@ -546,190 +547,195 @@
   <h2>03 · Depth calibration и quality gates</h2>
   <div class="concept">
     <div class="concept-tag">Концепция 03 · аналогия досмотра в аэропорту</div>
-    <h3 class="concept-h">Полный конвейер ко всему - остановит работу. Никакого - обрушит качество. Нужна калибровка</h3>
+    <h3 class="concept-h">Соотносите глубину проверки с задачей, не выбирайте один конвейер для всего</h3>
     <p class="analogy">
-      Даже с одним инструментом остаётся вопрос: на какой задаче применять полный конвейер, а
-      на какой коммитить без артефактов? Переименование переменной не требует PRD. Переход на
-      новую базу - требует всего. Между ними - континуум.
+      Косметическая правка и миграция базы требуют разного внимания.
+      Маршрутизатор предлагает глубину по сигналам задачи;
+      политику проекта и реальный риск всё равно нужно оценить.
     </p>
     <p class="analogy">
-      Аналогия - досмотр в аэропорту. Внутренний рейс - быстрая проверка. Международный -
-      полный. Transit - своя процедура. «Полный» ко всем - аэропорт остановится. «Быстрый»
-      ко всем - безопасность рухнет. Нужна <b class="k">калибровка под ситуацию</b>.
+      Полезна аналогия разных процедур досмотра для разных ситуаций.
+      Она объясняет <b class="k">соразмерность проверки</b>,
+      но не описывает правила аэропортов и не обещает качество результата.
     </p>
 
     <!-- 4 depth levels -->
     <div class="depth-grid">
       <div class="depth-card tac">
         <div class="d-tag"><span class="dp-tac">●</span> Tactical</div>
-        <div class="d-title">Без артефактов</div>
+        <div class="d-title">Минимальный конвейер</div>
         <div class="d-pipe none">конвейер: none</div>
-        <div class="d-when">Типографика, косметика, рефактор имён. Достаточно commit message.</div>
+        <div class="d-when">Косметика или небольшое переименование могут подходить. Это не отменяет проверки проекта. В ядре есть и облегчённый режим Note.</div>
       </div>
       <div class="depth-card std">
         <div class="d-tag"><span class="dp-std">●</span> Standard</div>
         <div class="d-title">PRD + RFC</div>
-        <div class="d-pipe">PRD → RFC → Evidence</div>
-        <div class="d-when">Новая фича внутри одной команды, без breaking changes публичного API.</div>
+        <div class="d-pipe">PRD → RFC</div>
+        <div class="d-when">Ограниченная функция может соответствовать Standard. Evidence подтверждает завершение, но не является отдельным узлом списка маршрутизатора.</div>
       </div>
       <div class="depth-card deep">
         <div class="d-tag"><span class="dp-deep">●</span> Deep</div>
         <div class="d-title">+ SPEC + ADR</div>
-        <div class="d-pipe">PRD → Spec → RFC → ADR → Full Review</div>
-        <div class="d-when">Архитектурный выбор, новая внешняя зависимость, breaking change API.</div>
+        <div class="d-pipe">PRD → Spec → RFC → ADR</div>
+        <div class="d-when">Сигналы безопасности, публичного API или необратимости могут требовать Deep. Проверяется наивысший совпавший сигнал.</div>
       </div>
       <div class="depth-card crit">
         <div class="d-tag"><span class="dp-crit">●</span> Critical</div>
-        <div class="d-title">+ Epic + Adversarial</div>
-        <div class="d-pipe">Epic → PRD[] → Spec[] → RFC[] → ADR[] → Adversarial</div>
-        <div class="d-when">Security, cross-team, регуляторика. Полный evidence-граф обязателен.</div>
+        <div class="d-title">Парсится как алиас Deep</div>
+        <div class="d-pipe">Critical → Deep в парсере режима ядра</div>
+        <div class="d-when">Это не отдельный встроенный конвейер Epic/Adversarial. Режимы ядра: Note, Tactical, Standard, Deep.</div>
       </div>
     </div>
 
     <p style="margin-top: 22px;">
-      Калибровка не делается на глаз - её считает CLI:
+      Проверьте рекомендацию и её основания. Ниже авторские примеры, не captured классификации:
     </p>
 
     <div class="code-block">
-      <span class="cb-tag">Терминал · forgeplan route</span>
+      <span class="cb-tag">Иллюстративный выбор глубины · не проверенная стенограмма</span>
 <span class="cb-prompt">$</span> forgeplan route <span class="cb-val">'Add streaming endpoint GET /query/stream for Vault'</span>
-<span class="cb-out">Depth:</span> <span class="cb-emph">deep</span>
-<span class="cb-out">Pipeline:</span> PRD → RFC → SPEC → ADR
-<span class="cb-out">Reason:</span> public API change, new external dependency (Anthropic streaming),
-        cost-budget impact
+<span class="cb-out">Условная глубина:</span> <span class="cb-emph">deep</span>
+<span class="cb-out">Конвейер Deep:</span> PRD → Spec → RFC → ADR
+<span class="cb-comment"># Проверьте публичный API, зависимости и влияние на бюджет.</span>
+<span class="cb-comment"># Задержка и уверенность классификации здесь не измерялись.</span>
 
 <span class="cb-prompt">$</span> forgeplan route <span class="cb-val">'Rename button color from blue to indigo'</span>
-<span class="cb-out">Depth:</span> <span class="cb-emph">tactical</span>
-<span class="cb-out">Pipeline:</span> <span class="cb-comment">(none)</span>
-<span class="cb-out">Reason:</span> pure cosmetic, no behavior change, no cross-team impact
+<span class="cb-out">Условная глубина:</span> <span class="cb-emph">tactical</span>
+<span class="cb-out">Конвейер Tactical:</span> <span class="cb-comment">(none)</span>
+<span class="cb-comment"># Убедитесь, что нет изменения поведения или более широкого влияния.</span>
     </div>
 
     <p style="margin-top: 14px;">
-      Спорить можно, но <b class="k">с CLI</b>. Это убирает бесконечное «а нужен ли тут RFC?».
-      CLI знает правила (security → минимум deep, cross-team → минимум standard) и выдаёт ответ
-      за полсекунды. Экономится не час работы - <b class="k">когнитивная нагрузка на сомнения</b>.
+      Правила ключевых слов берут максимум совпавших сигналов: security — Deep,
+      cross-team — Standard. Help называет уровень 0 значением по умолчанию,
+      но обработчик может выбрать настроенный LLM и повысить глубину. Confidence — эвристика, не измеренная вероятность.
     </p>
 
     <!-- Quality gates table -->
     <div class="gates-wrap">
       <div class="gates-head">
-        <span class="gh-tag">forgeplan validate · 3 quality gates</span>
+        <span class="gh-tag">Три вопроса ревью · не три универсальных гейта CLI</span>
         <span class="gh-cmd">$ forgeplan validate PRD-018</span>
       </div>
       <div class="gate-row">
         <span class="g-num">01</span>
-        <span class="g-name">BMAD validation</span>
-        <span class="g-desc">Все 13 секций PRD заполнены. Acceptance Criteria измеримые. Non-Goals явные.</span>
-        <span class="g-status pass">pass</span>
+        <span class="g-name">Структура PRD</span>
+        <span class="g-desc">Проверьте местные правила типа и глубины. Тринадцать содержательных H2 местного шаблона не являются требованием upstream BMAD к тринадцати секциям.</span>
+        <span class="g-status pass">ревью</span>
       </div>
       <div class="gate-row">
         <span class="g-num">02</span>
-        <span class="g-name">OpenSpec consistency</span>
-        <span class="g-desc">Delta-spec ссылается на существующую базовую. DAG без циклов. ADDED/MODIFIED/REMOVED корректны.</span>
-        <span class="g-status pass">pass</span>
+        <span class="g-name">Согласованность delta</span>
+        <span class="g-desc">Проверьте базовые ссылки, поддерживаемые операции и зависимости там, где они применимы. Проверка PRD не доказывает всё поведение delta.</span>
+        <span class="g-status pass">ревью</span>
       </div>
       <div class="gate-row">
         <span class="g-num">03</span>
-        <span class="g-name">FPF reasoning</span>
-        <span class="g-desc">В ADR минимум 3 гипотезы. Отвергнутые альтернативы имеют причину отказа. Evidence с F-G-R.</span>
-        <span class="g-status pass">pass</span>
+        <span class="g-name">Рассуждение</span>
+        <span class="g-desc">Сравните серьёзные альтернативы, причины отказа и evidence. ADI — Abduction–Deduction–Induction; промпт запрашивает 3+ подхода, но это не обеспеченный универсальный порог.</span>
+        <span class="g-status pass">ревью</span>
       </div>
     </div>
 
     <p style="margin-top: 14px;">
-      Все три прошли - <span style="color: var(--ok)">PASS</span>. Хотя бы один упал - CLI
-      возвращает конкретные pointers «что и где починить». Не «общая ошибка» - а строка и
-      название секции, в которой что-то не так.
+      Строки систематизируют ручное ревью, не сообщают об успешной проверке.
+      Выбранный CLI validate явно отказывает с ограничением legacy-store на migrated workspace.
+      Captured help подтверждает синтаксис, не поддержку каждого обработчика на любой раскладке.
     </p>
 
     <!-- Activate timeline -->
     <div class="activate-timeline">
-      <div class="at-tag">Жизненный цикл артефакта · activate как точка невозврата</div>
+      <div class="at-tag">Схема жизненного цикла · validate — действие, не сохранённый статус</div>
       <div class="at-steps">
         <div class="at-step">
           <div class="as-state">draft</div>
-          <div class="as-rule">можно править свободно</div>
+          <div class="as-rule">правка разрешёнными update</div>
         </div>
         <div class="at-arrow">→</div>
         <div class="at-step">
           <div class="as-state">validate</div>
-          <div class="as-rule">3 quality gates проходят</div>
+          <div class="as-rule">прочитать применимые замечания</div>
         </div>
         <div class="at-arrow">→</div>
         <div class="at-step active">
           <div class="as-state">activate</div>
-          <div class="as-rule">immutable · правка через supersede</div>
+          <div class="as-rule">попытка draft → active; файл остаётся редактируемым</div>
         </div>
         <div class="at-arrow">→</div>
         <div class="at-step terminal">
-          <div class="as-state">superseded · stale</div>
-          <div class="as-rule">история сохранена · timeline честный</div>
+          <div class="as-state">superseded · deprecated</div>
+          <div class="as-rule">терминальные статусы; stale — отдельный сигнал/статус пересмотра</div>
         </div>
       </div>
     </div>
 
     <div class="insight">
-      <div class="insight-tag">Activate - самая важная команда</div>
+      <div class="insight-tag">У активации и замены разные роли</div>
       <p>
-        После <code>forgeplan activate adr-001</code> файл нельзя править. Только
-        <code>forgeplan supersede adr-001 --by adr-002</code> создаёт замену с новым ID и явной
-        ссылкой на superseded. Это даёт <b class="k">честную историю</b>: видно, что решено
-        тогда, что решено потом, в каком порядке. Не перезаписанный файл без следов
-        изменений - а immutable timeline решений.
+        <code>forgeplan activate adr-001</code> проверяет длину, заглушки, связи evidence,
+        MUST и готовность; вызывающие интерфейсы отдельно обрабатывают происхождение. Файл не блокируется.
+        Создайте замену до <code>forgeplan supersede adr-001 --by adr-002</code>.
+        Обнаружение срока может показать активную запись просроченной без смены сохранённого статуса.
+        Supersede связывает существующую замену, а не создаёт её.
+        <code>forgeplan renew adr-001 --reason "Rechecked applicability" --until 2026-12-01</code>
+        использует переход по сохранённому статусу. Help описывает stale → active, но попадание в список просроченных
+        не разрешает active → active; тот же guard допускает draft → active.
+        <code>forgeplan reopen adr-001 --reason "Context changed"</code> принимает active или stale,
+        создаёт новый draft с происхождением и переводит старую запись в deprecated. В captured полном MCP этих двух команд нет.
       </p>
     </div>
   </div>
 
   <!-- ============ WORKED EXAMPLE ============ -->
-  <h2>Цикл на одном проекте · Vault · streaming endpoint</h2>
-  <p>Как Forgeplan ведёт от строки в Slack до активированного решения с evidence и DAG.</p>
+  <h2>Пример · Vault · streaming endpoint</h2>
+  <p>Авторский пример связей намерения, контрактов, решения и evidence. Это не отчёт о бенчмарке или текущем прогоне продукта. До заявления о завершении выполните артефакты выбранного маршрута, реализацию и проверки.</p>
   <div class="worked">
     <div class="worked-step">
       <div class="step-num">01 · route</div>
       <div class="step-content">
         <h4><code>forgeplan route 'Add streaming endpoint GET /query/stream'</code></h4>
-        <p>CLI отвечает: <span class="dp-deep">depth = deep</span>, конвейер = PRD → SPEC → RFC → ADR. Reason: public API change + new external dependency. Калибровка за полсекунды, без споров.</p>
+        <p>В примере выбран <span class="dp-deep">Deep</span>: PRD → Spec → RFC → ADR. Прочитайте фактическую рекомендацию и сигналы публичного API. Ответ за полсекунды или автоматическое согласие не обещаются.</p>
       </div>
     </div>
     <div class="worked-step">
       <div class="step-num">02 · new prd</div>
       <div class="step-content">
         <h4><code>forgeplan new prd "Streaming endpoint for Vault queries"</code></h4>
-        <p>Создаётся файл с 13 секциями BMAD: Context, Problem, Goals, Non-Goals, Success Metrics, Target Users, User Stories, Acceptance Criteria, Technical Requirements, Risks, Dependencies, Open Questions, Timeline. Frontmatter автоматически: <code>depth: deep</code>, <code>parent: epic-001</code>.</p>
+        <p>Заполните сгенерированный местный PRD-шаблон, затем создайте Spec, RFC и ADR выбранного маршрута. New принимает тип и название; глубина deep и родительский Epic не выводятся автоматически из названия примера. Задайте реальные метаданные и связи явно поддерживаемыми инструментами.</p>
       </div>
     </div>
     <div class="worked-step">
       <div class="step-num">03 · reason</div>
       <div class="step-content">
         <h4><code>forgeplan reason PRD-018</code> · ADI</h4>
-        <p>FPF требует минимум три гипотезы. SSE / WebSockets / HTTP/2 push. Для каждой - проверяемое следствие. Без этого <code>activate</code> заблокирован.</p>
+        <p>Сравните SSE, WebSockets и HTTP/2 push с проверяемыми следствиями. Три варианта показывают местную эвристику против привязки к первой идее. Reason требует настроенного LLM-провайдера; без него будет ошибка, а не офлайн-заготовка.</p>
       </div>
     </div>
     <div class="worked-step">
       <div class="step-num">04 · validate</div>
       <div class="step-content">
-        <h4><code>forgeplan validate PRD-018</code> · 3 quality gates</h4>
-        <p>BMAD validation (13 секций - pass). OpenSpec consistency (delta-spec ссылается на api-spec - pass). FPF reasoning (3 гипотезы и отвергнутые альтернативы - pass). Все три зелёные - переходим к evidence.</p>
+        <h4><code>forgeplan validate PRD-018</code> · прочитать реальные замечания</h4>
+        <p>Проверьте полноту шаблона, применимые контракты и рассуждение отдельно. Структурная проверка не доказывает поведение реализации или полное соответствие OpenSpec/FPF. Сохраните отказ раскладки, не выдумывая PASS.</p>
       </div>
     </div>
     <div class="worked-step">
       <div class="step-num">05 · evidence</div>
       <div class="step-content">
         <h4><code>forgeplan new evidence "SSE vs WS benchmark"</code> + <code>link</code></h4>
-        <p>Бенчмарк p50 первого токена для SSE и WebSockets. F=7 (строгая методика), G=6 (числа на нагрузке 50 RPS, payload 2 KB), R=8 (свой замер на staging). <code>forgeplan link EVID-001 ADR-001 --relation informs</code>. R_eff пересчитывается автоматически.</p>
+        <p>Спланируйте сравнение p50 первого токена для SSE и WebSockets: например, при 50 RPS и payload 2 KB. Это параметры сценария, не результаты замера. Укажите ревизию, методику, verdict, congruence_level, evidence_type и ограничения. Свяжите <code>forgeplan link EVID-001 ADR-001 --relation informs</code>, затем прочитайте <code>forgeplan score ADR-001</code>. Не считайте, что любая мутация согласует кэш всех предков.</p>
       </div>
     </div>
     <div class="worked-step crit">
       <div class="step-num">06 · activate</div>
       <div class="step-content">
-        <h4><code>forgeplan activate ADR-001</code> · точка невозврата</h4>
-        <p>R_eff &gt; 0, все gates pass. ADR-001 уходит в <code>status: activated</code>. Файл immutable. Через год, если evidence протухнет - <code>forgeplan supersede adr-001 --by adr-002</code> создаст замену с явной ссылкой. Timeline честный, история не теряется.</p>
+        <h4><code>forgeplan activate ADR-001</code> · явный переход</h4>
+        <p>При выполнении применимых условий сохраняется <code>active</code>, не activated (это производная категория отображения). Активный body остаётся редактируемым. Оценка evidence сохраняется до истечения срока, затем вклад равен 0.1, а не плавно падает до 0.6. Без valid_until в этом scorer нет истечения. Пересмотр требует новых наблюдений, не просто новой даты.</p>
       </div>
     </div>
   </div>
 
   <!-- External docs link -->
-  <a class="deep-link" href="https://forgeplan.dev/docs/methodology/overview" target="_blank" rel="noopener">
+  <a class="deep-link" href="https://forgeplan.dev/ru/docs/methodology/overview" target="_blank" rel="noopener">
     <div class="dl-text">
       <span class="dl-tag">Полная документация · forgeplan.dev</span>
       <span class="dl-title">Methodology Overview · 10 Rules · CLI Reference · MCP Tools · Marketplace</span>

@@ -14,7 +14,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-000.svg?style=flat-square)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/ForgePlan/forgeplan?include_prereleases&style=flat-square&color=orange)](https://github.com/ForgePlan/forgeplan/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/ForgePlan/forgeplan/ci.yml?branch=main&style=flat-square)](https://github.com/ForgePlan/forgeplan/actions)
-[![Artifacts](https://img.shields.io/badge/artifacts-394-blue?style=flat-square)](.forgeplan/)
+[![Artifacts](https://img.shields.io/badge/artifacts-git--tracked-blue?style=flat-square)](.forgeplan/)
 
 **[Сайт](https://forgeplan.dev)** ·
 **[Документация](docs/README.md)** ·
@@ -67,7 +67,7 @@
 - Каждое решение — git-трекаемый артефакт
 - Полный трейл `Problem → Decision → Consequence`
 - Depth calibration заставляет нужный уровень строгости
-- `forgeplan new adr` — одна команда, готово
+- `forgeplan new adr` — создать шаблон черновика, затем заполнить и проверить
 - ADI reasoning требует 3+ гипотезы
 
 </td>
@@ -87,40 +87,68 @@ curl -fsSL https://raw.githubusercontent.com/ForgePlan/forgeplan/main/install.sh
 
 # Из исходников
 git clone https://github.com/ForgePlan/forgeplan.git && cd forgeplan
-cargo install --path crates/forgeplan-cli
+cargo install --path crates/forgeplan-cli --features semantic-search
 ```
 
-## Демо за 60 секунд
+### После установки
 
-```console
-$ forgeplan init -y
-  ✓ Workspace initialized at .forgeplan/
+Релизные бинарники включают семантический поиск; обычная Cargo-сборка не включает
+его по умолчанию. Рецепт выше явно включает `semantic-search`. Инференс работает
+на pure-Rust движке `tract`, но веса модели скачиваются отдельно.
 
-$ forgeplan route "Добавить OAuth2 авторизацию"
-  Depth:      Standard
-  Pipeline:   PRD → RFC
-  Confidence: 92%
+| Возможность | Подготовка |
+|---|---|
+| Локальный семантический поиск | `forgeplan setup` скачивает BGE-M3 (около 2.1 GB). Для офлайн-работы нужен полный snapshot в кэше. |
+| База знаний FPF | Установите `/plugin install fpf@ForgePlan-marketplace`, затем выполните `forgeplan fpf ingest`. Состояние показывает `forgeplan fpf status`. |
+| Команды агентов | Установите [плагины агентского окружения](https://forgeplan.dev/docs/getting-started/installation/) для `/smith`, `/audit` и других команд. |
 
-$ forgeplan new prd "OAuth2 Authentication"
-  ID:    PRD-001
-  Next:  fill Problem, Goals, Non-Goals, Target Users, FR
+Общий для workspace кэш — `~/.forgeplan/models`
+(`%USERPROFILE%\.forgeplan\models` в Windows). `FORGEPLAN_MODEL_CACHE` имеет
+приоритет; `HF_HOME` не переопределяет кэш tract. Старые каталоги автоматически
+не перемещаются и не удаляются.
 
-$ forgeplan validate PRD-001
-  Result: PASS (0 errors, 0 warnings)
+`forgeplan init` может предложить скачивание интерактивно; в скрипте оно
+запрашивается явно: `forgeplan init -y --with-model`. В уже инициализированном
+workspace команда может завершиться раньше и не скачать модель.
+`forgeplan setup --skip-model` пропускает модель, `--skip-alias` — алиас `fpl`.
 
-$ forgeplan reason PRD-001
-  Hypothesis 1: Session-based flow   (confidence: 0.6)
-  Hypothesis 2: JWT with refresh     (confidence: 0.8)  ← лучшая
-  Hypothesis 3: OAuth proxy service  (confidence: 0.4)
+Режим поиска важен. Обычный smart search может сочетать keyword и semantic
+результаты; нельзя рассчитывать на fallback у принудительного `search --semantic`.
+В Constellation он возвращает ошибку без опубликованного embedding profile или
+при отсутствии eligible vectors. После индексации запустите `forgeplan embed`.
+Для автоматического embedding дополнительно нужны активный `config.embedding`,
+поддерживаемая модель в кэше и работающий maintenance writer.
+Ручной `embed` эту настройку не сохраняет.
 
-$ forgeplan new evidence "15 тестов проходят, 180ms p95 на benchmark"
-$ forgeplan link EVID-001 PRD-001 --relation informs
-$ forgeplan score PRD-001
-  R_eff: 1.00  (Adequate)
+FPF поставляется отдельно от бинарника и используется для ADI reasoning.
+Без ingest отсутствие корпуса нельзя отличить от отсутствия совпадений по одному
+поисковому ответу; проверяйте `forgeplan fpf status`. Команды плагинов нужны
+агентскому окружению, но не обычной работе из shell.
 
-$ forgeplan activate PRD-001
-  ✓ PRD-001 (draft → active)
+Доступность интерфейсов зависит и от раскладки workspace. В проверенном срезе
+`0.39.0+constellation.s1.1` CLI `validate` на migrated workspace возвращает
+именованный отказ legacy-store; full MCP `forgeplan_validate` там успешно
+упражнён. Это не доказывает совместимость всех инструментов (issue #538).
+
+## Создать черновик
+
+Начните в новом каталоге вне существующего workspace: обнаружение идёт вверх
+по родительским каталогам. Если workspace уже найден, `init -y` ничего не меняет.
+
+```bash
+forgeplan init -y
+forgeplan route "Добавить OAuth2 авторизацию" --level 0
+forgeplan new prd "OAuth2 Authentication"
 ```
+
+Это шаблон, а не готовый к активации PRD. Заполните требования и секции нужной
+глубины, настройте LLM перед `reason`, приложите реальные evidence вместо
+примерных чисел тестов. На совместимом legacy workspace `forgeplan validate PRD-001`
+показывает замечания схемы, а `forgeplan review PRD-001` — lifecycle checklist.
+Активация отдельно проверяет длину, evidence и заглушки; отсутствие MUST findings
+при validate само по себе не гарантирует активацию.
+Для migrated workspace выбирайте поддерживаемую операцию по
+[справочнику Constellation](https://forgeplan.dev/ru/docs/reference/constellation/).
 
 <div align="center">
 <img src=".github/assets/pipeline.png" alt="ForgePlan Pipeline — Shape, Validate, Reason, Build, Prove + Depth Routing" width="100%">
@@ -133,10 +161,10 @@ $ forgeplan activate PRD-001
 | **📝 Markdown-first** | Все артефакты — обычный markdown в git. LanceDB — производный индекс, пересобирается из файлов. |
 | **🎯 Quality scoring** | `R_eff` (доверие по weakest link) и `F-G-R` (formality, granularity, reliability) — автоматически. |
 | **🧭 Smart routing** | Анализирует задачу, подбирает depth и pipeline. Не надо документировать фикс тайпо. |
-| **🧠 ADI reasoning** | Abduction → Deduction → Induction. Требует 3+ гипотезы перед каждым решением. |
-| **🤖 MCP-native** | 73 инструмента для Claude Code, Cursor, Aider, Continue. Агенты говорят на языке методологии. |
-| **🔍 Локальный семантический поиск** | fastembed (BGE-M3, 1024 dims). Без сети, без API-ключей, без утечек. |
-| **⏰ Evidence decay** | Истёк `valid_until` → артефакт помечается stale. Доверие честно угасает. |
+| **🧠 ADI reasoning** | Abduction → Deduction → Induction. Цикл запрашивает 3+ гипотезы, но не доказывает автоматически их независимость или корректность. |
+| **🤖 MCP-native** | Инструменты для Claude Code, Cursor, Aider, Continue. В scoped Constellation-сборке зарегистрированы 76 full tools и отдельный read-профиль из 9 tools; регистрация не доказывает поддержку migrated layout. |
+| **🔍 Локальный семантический поиск** | BGE-M3 (1024 dims) на `tract`: pure-Rust инференс без API-ключей и отправки запросов в сеть после подготовки кэша модели. |
+| **⏰ Evidence decay** | Истёкший `valid_until` показывается как stale; истёкший evidence получает 0.1. Это обнаружение по сроку, не автоматическое продление или фоновая смена lifecycle-статуса. |
 
 ## Артефакты одним взглядом
 
@@ -190,9 +218,16 @@ $ forgeplan activate PRD-001
 
 | Я хочу... | Начать отсюда |
 |---|---|
-| **Изучить методологию** | [`docs/methodology/FORGEPLAN-GUIDE.md`](docs/methodology/FORGEPLAN-GUIDE.md) |
-| **Посмотреть всю доку** | [`docs/README.md`](docs/README.md) |
+| **Изучить методологию** | [`docs/methodology/FORGEPLAN-GUIDE.ru.md`](docs/methodology/FORGEPLAN-GUIDE.ru.md) |
+| **Посмотреть всю доку** | [`docs/README.ru.md`](docs/README.ru.md) |
 | **Работать с AI-агентами** | [`CLAUDE.md`](CLAUDE.md) · [`AGENTS.md`](AGENTS.md) |
+| **Использовать Constellation** | [Пользовательский гайд](https://forgeplan.dev/ru/docs/guides/constellation/) · [Справочник интерфейсов](https://forgeplan.dev/ru/docs/reference/constellation/) |
+| **Провести пилот миграции** | [Переносимый runbook](docs/operations/CONSTELLATION-PILOT.ru.md) |
+
+Сайт содержит пользовательские инструкции по задачам; `docs/` — методологию,
+архитектуру и эксплуатационные контракты для участников разработки.
+Constellation описан для scoped-сборки `0.39.0+constellation.s1.1`,
+а не для опубликованной версии `0.38.0`.
 
 ## Dogfood
 
@@ -204,6 +239,9 @@ $ forgeplan activate PRD-001
 <td align="center"><b>73</b><br>MCP tools</td>
 </tr>
 </table>
+
+Это исторические счётчики репозитория, не новый замер и не результат приёмки
+Constellation-сборки.
 
 Этот репозиторий использует ForgePlan для управления самим собой. Каждый PRD, RFC, ADR и Evidence лежит в
 [`.forgeplan/`](./.forgeplan/) — можно просматривать напрямую или через `forgeplan list`.
@@ -222,6 +260,13 @@ git checkout -b feat/my-feature
 # PR → dev (main трогаем только через release ветки)
 ```
 
+### Cargo features
+
+| Feature | По умолчанию | Назначение |
+|---|---|---|
+| `semantic-search` | Включена в релизных бинарниках | BGE-M3 на `tract`; веса отдельно (**~2.1 GB**), общий кэш машины (`FORGEPLAN_MODEL_CACHE`). См. [Установка](#установка). В обычном `cargo build` выключена; офлайн нужен полный snapshot. |
+| `test-helpers` | Выключена | Только тестовые fixtures с обходами projection pipeline; запрещена в production-бинарниках. |
+
 ## License
 
 MIT — см. [LICENSE](LICENSE).
@@ -236,7 +281,7 @@ MIT — см. [LICENSE](LICENSE).
 
 <br>
 
-Построен на [Quint-code](https://github.com/m0n0x41d/quint-code) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://github.com/Fission-AI/OpenSpec) · [FPF](https://github.com/ailev/FPF) · [LanceDB](https://lancedb.com/) · [fastembed](https://github.com/qdrant/fastembed)
+Построен на [Quint-code](https://github.com/m0n0x41d/quint-code) · [BMAD](https://github.com/bmadcode/BMAD-METHOD) · [OpenSpec](https://github.com/Fission-AI/OpenSpec) · [FPF](https://github.com/ailev/FPF) · [LanceDB](https://lancedb.com/) · [tract](https://github.com/sonos/tract)
 
 <sub>С заботой от <a href="https://github.com/ForgePlan">@ForgePlan</a> · <a href="README.md">English version</a></sub>
 

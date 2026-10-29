@@ -14,7 +14,7 @@ Show how aged / expired evidence has degraded R_eff scores across the workspace.
 - **Before a release** - make sure shipped decisions aren't riding on decayed evidence.
 - **Explaining R_eff drops** to the user ("why did PRD-039 score go from 0.85 to 0.41?").
 
-Decay follows the R_eff rule: expired evidence is not removed - it drops to CL0 with weight 0.1, so the weakest link in the chain collapses the overall score.
+Expiry does not rewrite the stored congruence level. The scoring implementation assigns expired eligible evidence a score of 0.1; terminal (`superseded`/`deprecated`) packs are excluded from the current-evidence minimum.
 
 ## Input parameters
 
@@ -22,21 +22,23 @@ _No input parameters. Call this tool with an empty object `{}`._
 
 ## Returns
 
+Illustrative response excerpt, not a measured score change. `r_eff_drop` is `fresh_r_eff - current_r_eff`.
+
 ```json
 {
-  "decayed": [
+  "entries": [
     {
-      "id": "PRD-039",
-      "kind": "prd",
-      "r_eff_current": 0.41,
-      "r_eff_fresh": 0.85,
-      "delta": -0.44,
+      "artifact_id": "PRD-039",
+      "artifact_title": "Authentication system",
+      "current_r_eff": 0.1,
+      "fresh_r_eff": 1.0,
+      "r_eff_drop": 0.9,
       "expired_evidence": [
-        { "id": "EVID-047", "days_expired": 12 }
+        { "id": "EVID-047", "valid_until": "2026-03-30", "days_expired": 12, "score": 0.1 }
       ]
     }
   ],
-  "total_impacted": 1
+  "total_affected": 1
 }
 ```
 
@@ -50,9 +52,9 @@ _No input parameters. Call this tool with an empty object `{}`._
 
 1. `forgeplan_stale` - find expired artifacts.
 2. `forgeplan_decay` - see which decisions they damaged.
-3. Sort by `delta` descending - highest-impact first.
-4. `forgeplan_renew` or create new `EvidencePack` → `forgeplan_link`.
-5. `forgeplan_score` - confirm R_eff rebounded.
+3. Sort by `r_eff_drop` descending - highest-impact first.
+4. Re-check the evidence before extending validity with CLI `forgeplan renew <ID> --reason <REASON> --until <YYYY-MM-DD>`, or create and link a new EvidencePack. There is no registered `forgeplan_renew` MCP tool.
+5. `forgeplan_score` - inspect the new score; renewal does not guarantee an increase if another weak link remains.
 
 ## CLI equivalent
 
@@ -66,3 +68,29 @@ forgeplan decay
 - [`forgeplan_score`](/docs/mcp/forgeplan_score/) - recompute R_eff for a specific artifact.
 - [`forgeplan_journal`](/docs/mcp/forgeplan_journal/) - chronological view with R_eff.
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Show evidence decay impact on R_eff scores. Lists artifacts where expired evidence has degraded quality scores, with current vs fresh R_eff comparison.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| — | — | — | No parameters. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "properties": {},
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

@@ -1,13 +1,12 @@
 # Release workflow
 
-End-to-end recipe for cutting a Forgeplan release. Follow these steps in
-order — they reflect what every successful release in `git log --oneline
---all | grep release/v` actually did, plus the two CLAUDE.md red lines
-(#9 post-release sync, #10 dependabot triage at release time) we keep
-forgetting and re-learning.
+Maintainer runbook for cutting a Forgeplan release. Its review gates are project
+conventions, not evidence that a release has passed them. Dated test counts and
+past incident references retain their historical scope. CLAUDE.md red lines
+#9 (post-release sync) and #10 (Dependabot triage) remain in force.
 
 > Audience: maintainers cutting a release. Not for one-off feature merges
-> — those use the simpler `feat/* → dev` PR flow described in `git/`.
+> — those use the simpler `feat/* → dev` PR flow in [GIT-WORKFLOW.ru.md](../operations/GIT-WORKFLOW.ru.md).
 
 ---
 
@@ -34,15 +33,15 @@ A release ships when **all** of the following are true on `dev`:
 Full CI gate reference (what each check does and how to fix failures):
 [`docs/operations/QUALITY-GATES.ru.md`](../operations/QUALITY-GATES.ru.md)
 
-**Canonical playbook (v0.28.0+)**: `marketplace/playbooks/release.yaml`
-кодифицирует pre-merge часть этого workflow как 12-step playbook
-(preflight cargo gates → dependabot triage → CHANGELOG check → branch +
-version bump → release PR creation → release-summary Note). На текущей
-схеме SPEC-003 1.2 нет template engine, поэтому maintainer вручную
-правит `vX.Y.Z` placeholder в step args перед `playbook run release --yes`
-(tracked как PROB-050 A-1). Запуск playbook'а автоматизирует pipeline
-ниже до шага 9; шаги 10+ (post-merge tag + sync PR) остаются
-ручными.
+**Canonical playbook (v0.28.0+)**: `marketplace/playbooks/release.yaml` contains
+12 pre-merge steps (preflight → triage listing → CHANGELOG check → branch/version
+bump → commit/push/PR → summary Note). It is a runbook, not one-button acceptance.
+Inspect its actual `schema_version` and command arguments; hand-edit `vX.Y.Z`
+and `X.Y.Z` before an authorized `forgeplan playbook run release --yes --allow-shell`.
+The shell gate is default-deny. The playbook's ordinary `health` invocation does
+not establish zero findings, and triage listing does not classify/accept alerts.
+Manual gates above still apply. Sections 5–7 below (tag, sync, memory/tracker)
+remain separate post-merge work, not automatically completed steps.
 
 If any of these fails, fix on `dev` (PR through `feat/*`) before
 opening the release branch.
@@ -145,12 +144,10 @@ EOF
 )"
 ```
 
-**Merge strategy: merge commit (NOT squash)**. Squash collapses the
-release commit's history with all the dev commits accumulated since the
-last release, losing per-commit attribution and breaking `git bisect`
-for post-release regressions. This is CLAUDE.md red line #4 (DO NOT
-push to a branch after a PR is merged — squash loses late commits)
-applied to release branches specifically.
+**Merge strategy: merge commit (NOT squash)**, per the project release convention.
+Squash loses individual commit identities and intra-release bisect granularity;
+it does not itself omit changes already present in the merged head. The separate
+rule against pushing late commits to a merged branch still applies.
 
 If the release branch needs an update from main during review (rare,
 e.g., a hotfix on main mid-review), `git merge origin/main` into the
@@ -173,9 +170,8 @@ configured by `cargo-dist`) which:
 
 - Builds binaries for 5 platforms (aarch64/x86_64 × {apple-darwin,
   unknown-linux-gnu} + x86_64-pc-windows-msvc)
-- Creates a GitHub release with all 28 artifacts (5 binaries × 2 archive
-  formats × {sig, sha256}, plus tarball + checksums manifest)
-- Updates the Homebrew formula in the `forgeplan-tap` repo
+- Publishes the artifacts listed in that run's cargo-dist manifest; the asset count and archive formats are not a fixed 28-item contract
+- Updates the Homebrew formula in `ForgePlan/homebrew-tap`
 
 **Verify within 30 minutes**:
 
@@ -185,9 +181,9 @@ brew update && brew info forgeplan
 forgeplan --version  # should match X.Y.Z after `brew upgrade forgeplan`
 ```
 
-If cargo-dist fails, the most common cause is a flaky linker job on the
-windows-msvc target — re-run via `gh run rerun <run-id> --failed`
-before debugging.
+If cargo-dist fails, inspect the actual failed job and logs before deciding
+whether retry is appropriate. No measured "most common" failure cause is
+established by this runbook.
 
 ---
 
@@ -247,13 +243,13 @@ For an urgent fix that can't wait for the next minor:
 
 ## Anti-patterns we have committed (don't repeat)
 
-- **Force-pushing release/* branches** — rewrites the merge commit hash
-  GitHub Actions tagged. Result: cargo-dist runs against a SHA that
-  doesn't exist in the published tag. Recover by re-tagging from the
-  actual merge SHA.
-- **Squashing release/* PRs** — collapses N feature merges into a single
-  commit with the release subject; `git bisect` between releases stops
-  working.
+- **Force-pushing release/* branches** — rewrites branch history. Existing tags
+  still reference their original objects; a branch force-push does not rewrite
+  a published tag. Diagnose the exact branch/tag SHA mismatch before recovery;
+  do not move a published tag as a routine fix.
+- **Squashing release/* PRs** — loses individual feature-commit identities and
+  intra-release bisect granularity; bisect between retained release commits
+  remains possible.
 - **Skipping the main → dev sync** — see CLAUDE.md red line #9.
   Symptom: next release branch has unexpected `Cargo.toml` conflicts.
 - **Letting Dependabot alerts age across releases** — see red line #10.

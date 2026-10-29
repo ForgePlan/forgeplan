@@ -3,7 +3,7 @@ title: forgeplan generate
 description: "Generate an artifact using AI from a natural language description"
 ---
 
-Generates a **fully-drafted artifact** from a natural language description using an LLM (Gemini / OpenAI / Anthropic, configured in `.forgeplan/config.yaml`). Unlike [`forgeplan new`](/docs/cli/new/), which produces an empty template you fill manually, `generate` asks the model to write Problem, Goals, Non-Goals, Functional Requirements, and the rest of the MUST sections in one pass. The result is a draft you still review - but the 30-minute cold-start of staring at an empty template disappears.
+Generates an **LLM-drafted artifact** from a natural-language description using the provider configured in `.forgeplan/config.yaml`. Unlike [`forgeplan new`](/docs/cli/new/), it asks the model to fill the template's sections. Completeness, accuracy, and time saved are not guaranteed; review and validate the result.
 
 ## When to use
 
@@ -15,7 +15,7 @@ Generates a **fully-drafted artifact** from a natural language description using
 
 ## When NOT to use
 
-- You don't have LLM credentials configured - run `forgeplan config set llm.provider ...` first, or fall back to [`forgeplan new`](/docs/cli/new/).
+- No LLM provider is configured - follow [configuration](/docs/getting-started/configuration/) or use [`forgeplan new`](/docs/cli/new/). There is no `forgeplan config set` command.
 - The decision is tactical and doesn't need an artifact at all - just commit.
 - You want full manual control over wording - use [`forgeplan new`](/docs/cli/new/) and fill sections yourself.
 - You're logging a decision from a conversation - use [`forgeplan capture`](/docs/cli/capture/).
@@ -41,7 +41,7 @@ forgeplan generate <KIND> <DESCRIPTION>
   -V, --version  Print version
 ```
 
-`generate` reads your active LLM provider from `.forgeplan/config.yaml`. If no provider is set or the API key is missing, the command fails early with a config hint instead of falling back to an empty stub.
+`generate` reads project `llm` configuration. HTTP providers need the configured API-key environment variable; explicitly opted-in local subscription providers use an existing vendor CLI login. Missing configuration or provider failure is an error, not a successful empty draft.
 
 ## Examples
 
@@ -51,15 +51,15 @@ forgeplan generate <KIND> <DESCRIPTION>
 forgeplan generate prd "add rate limiting to /api/v1/ endpoints"
 ```
 
-Produces `.forgeplan/prds/prd-NNN-add-rate-limiting.md` with Problem ("public endpoints are exposed to abuse..."), Goals, Non-Goals, Target Users, and an FR list drafted by the model. Open the file, read critically, tighten the wording, then run `forgeplan validate PRD-NNN` to confirm MUST rules pass.
+Reports the created path and ID. The model is asked for the PRD sections, but their actual content must be checked. Review the returned artifact and run `forgeplan validate` with its actual ID; do not infer the filename or ID from this illustration.
 
 ### Example 2: Reverse-engineer an RFC for an existing subsystem
 
 ```bash
-forgeplan generate rfc "current embedding pipeline: fastembed BGE-M3, 1024 dims, batch 32, cached in .forgeplan/.fastembed_cache/"
+forgeplan generate rfc "selected Constellation embedding pipeline: tract BGE-M3, 1024 dimensions, model cache root resolved from FORGEPLAN_MODEL_CACHE or ~/.forgeplan/models"
 ```
 
-Good for brown-field documentation - the LLM drafts an RFC describing the as-built architecture with Implementation Phases already checked off. Use this as a starting point, then correct any hallucinated details against the real code.
+Use this as a brownfield writing prompt, not a code-inspection result. Confirm the as-built details against the target source and mark implementation phases complete only when actual evidence supports them.
 
 ### Example 3: Draft a ProblemCard for a fresh signal
 
@@ -67,7 +67,7 @@ Good for brown-field documentation - the LLM drafts an RFC describing the as-bui
 forgeplan generate problem "users report search returns stale results after renaming artifacts"
 ```
 
-Generates Signal / Context / Goals / Anti-Goodhart indicators sections. ProblemCards don't require a validation gate, so you can `activate` as soon as the card is coherent and link follow-up Evidence or Solutions.
+The model is asked to draft the ProblemCard template. Review Signal, Context, Goals, and Anti-Goodhart content, attach real Evidence or Solutions where applicable, and satisfy validation and lifecycle gates before activation.
 
 ## How it fits the workflow
 
@@ -84,3 +84,23 @@ route  →  generate  →  (review + edit)  →  validate  →  reason  →  cod
 - [`forgeplan reason`](/docs/cli/reason/) - ADI cycle to verify hypotheses before coding
 - [`forgeplan capture`](/docs/cli/capture/) - log decisions from a live conversation
 - [Methodology: artifact model](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan generate --help`.
+
+```text
+Generate an artifact using AI from a natural language description
+
+Usage: forgeplan generate <KIND> <DESCRIPTION>
+
+Arguments:
+  <KIND>         Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence
+  <DESCRIPTION>  Description of what to generate
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

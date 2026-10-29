@@ -2,6 +2,11 @@
 
 # PRD → RFC → ADR Flow — Decision Tree
 
+Это конвенция авторинга и процесса. Slash-командам нужны соответствующие host
+commands или skills; это не Rust CLI subcommands. Сроки и роли — примеры, не
+enforcement. Для managed артефактов используйте `forgeplan new`/`link` и контракт
+интерфейса, соответствующий раскладке вашего workspace.
+
 ## Quick Decision: Какой документ создать?
 
 ```
@@ -109,7 +114,7 @@
 | Реализовать по фазам | — | `/sprint` |
 | Проверить качество | — | `/audit` |
 
-## Artifact Lifecycle
+## Этапы процесса (не сохраняемый status артефакта)
 
 ```
              Draft
@@ -128,7 +133,15 @@
    Implemented ─→ verify ─→ Closed
 ```
 
+Диаграмма описывает процесс команды, не допустимые значения `status`. Сохраняемые
+состояния: `draft`, `active`, `superseded`, `deprecated`, `stale`; `review` status
+не меняет. Завершение реализации автоматически артефакт не активирует.
+
 ## Правила связывания
+
+Стрелки обозначают смысловую связь, не новые значения `--relation`.
+Используйте `based_on`, `informs`, `refines`, `contradicts`, `supersedes`
+по смыслу; для Epic есть также `parent_epic`.
 
 | Связь | Описание | Пример |
 |-------|----------|--------|

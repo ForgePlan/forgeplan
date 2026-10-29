@@ -34,20 +34,16 @@ pub async fn run(prd_id: &str) -> anyhow::Result<()> {
             })?
         }
         common::ReadSource::Captured(read) => {
-            let id = read
-                .resolve_id(prd_id)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Artifact '{prd_id}' not found\nFix: forgeplan list --type prd")
-                })?;
-            read.get_record(&id)
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Artifact '{}' not found\n\
+            let id = read.resolve_id(prd_id).ok_or_else(|| {
+                anyhow::anyhow!("Artifact '{prd_id}' not found\nFix: forgeplan list --type prd")
+            })?;
+            read.get_record(&id).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Artifact '{}' not found\n\
                          Fix: forgeplan list --type prd",
-                        id
-                    )
-                })?
+                    id
+                )
+            })?
         }
     };
 

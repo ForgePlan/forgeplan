@@ -52,12 +52,11 @@ pub async fn run(id: &str, reason: &str, until: &str) -> anyhow::Result<()> {
     }
 
     common::log_change_field(
-        &store,
+        &ws,
+        Some(&store),
         id,
         "update",
-        "status",
-        Some("stale"),
-        Some("active"),
+        ("status", Some("stale"), Some("active")),
         "cli",
     )
     .await;
@@ -113,6 +112,16 @@ async fn run_file_first(
         forgeplan_core::lifecycle::canonical::renew_captured(&ctx, &read, &canonical, reason, until)
             .await?
     };
+
+    common::log_change_field(
+        &ws,
+        None,
+        &canonical,
+        "update",
+        ("status", Some("stale"), Some("active")),
+        "cli",
+    )
+    .await;
 
     let ref_form = forgeplan_core::lifecycle::canonical::refs_form(&read, &canonical);
 

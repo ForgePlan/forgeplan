@@ -251,7 +251,8 @@
         <span class="term">Abduction</span> · генерация гипотез. <b>Минимум три.</b> Не одну, не две - три.
         Порог именно такой, потому что две гипотезы почти всегда превращаются в ложную дихотомию
         («либо Redis, либо Postgres»), а третья гипотеза часто ломает эту дихотомию и оказывается
-        самой интересной («in-process LRU без сети вообще»).
+        самой интересной («in-process LRU без сети вообще»). Три - это рабочее правило этого
+        курса против заякорения на первой версии, а не статистический порог.
       </li>
       <li>
         <span class="term">Deduction</span> · логический вывод. Для каждой гипотезы формулируем «если она верна,
@@ -355,8 +356,10 @@
     </p>
     <p class="analogy">
       <b class="k">DDR (Detailed Decision Record)</b> - это мотивировочная часть к вашему техническому
-      решению. Markdown-файл в репо, в <code>docs/decisions/DDR-NNN-&lt;slug&gt;.md</code>,
-      с шестью обязательными секциями:
+      решению. Markdown-файл в репо - в этом курсе принято <code>docs/decisions/DDR-NNN-&lt;slug&gt;.md</code> -
+      с шестью обязательными секциями. Это соглашение курса, а не отдельный тип артефакта
+      Forgeplan: там те же поля живут внутри ADR, где обязательные секции - <code>## Context</code>,
+      <code>## Decision</code> и <code>## Consequences</code>:
     </p>
 
     <!-- DDR card mockup -->
@@ -403,9 +406,9 @@
     </div>
 
     <p style="margin-top: 22px;">
-      Это и называется <b class="k">Evidence Decay</b>: любое evidence устаревает. Бенчмарк 2023 года
-      про Redis 6.x не валиден для Redis 7.4. Цифры для вашего Vault на 50 заметках не валидны на
-      50 000. Хороший DDR это признаёт заранее.
+      Это и называется <b class="k">Evidence Decay</b>: применимость evidence может измениться.
+      Бенчмарк 2023 года про Redis 6.x не обязательно подходит для Redis 7.4; цифры для Vault
+      на 50 заметках нужно проверить перед переносом на 50 000. Хороший DDR отмечает эти ограничения.
     </p>
 
     <div class="insight">
@@ -435,7 +438,9 @@
     </p>
     <p class="analogy">
       <b class="k">Trust Calculus</b> - то же самое для ваших утверждений. Каждое утверждение, на которое
-      опирается решение, оценивается по трём независимым осям, каждая по шкале 0-9:
+      опирается решение, оценивается по трём независимым осям, каждая по шкале 0-9.
+      Шкала 0-9 - учебная разметка этого урока: она показывает принцип «слабого звена»,
+      но это не то, что считает Forgeplan - об этом в блоке в конце раздела.
     </p>
 
     <ul class="deflist">
@@ -472,7 +477,7 @@
         <div class="axis-bar f"><span class="lbl">F</span><div class="track"><div class="fill" style="width: 77%"></div></div><span class="val">7</span></div>
         <div class="axis-bar g"><span class="lbl">G</span><div class="track"><div class="fill" style="width: 88%"></div></div><span class="val">8</span></div>
         <div class="axis-bar r"><span class="lbl">R</span><div class="track"><div class="fill" style="width: 22%"></div></div><span class="val">2</span></div>
-        <div class="ev-meta"><span>Average · 5.7</span><span>WLNK · <span class="wlnk-val">2</span></span></div>
+        <div class="ev-meta"><span>Среднее · 5.7</span><span>WLNK · <span class="wlnk-val">2</span></span></div>
       </div>
       <div class="ev-card">
         <div class="ev-tag">Evidence B · внутренний источник</div>
@@ -480,7 +485,7 @@
         <div class="axis-bar f"><span class="lbl">F</span><div class="track"><div class="fill" style="width: 22%"></div></div><span class="val">2</span></div>
         <div class="axis-bar g"><span class="lbl">G</span><div class="track"><div class="fill" style="width: 88%"></div></div><span class="val">8</span></div>
         <div class="axis-bar r"><span class="lbl">R</span><div class="track"><div class="fill" style="width: 77%"></div></div><span class="val">7</span></div>
-        <div class="ev-meta"><span>Average · 5.7</span><span>WLNK · <span class="wlnk-val">2</span></span></div>
+        <div class="ev-meta"><span>Среднее · 5.7</span><span>WLNK · <span class="wlnk-val">2</span></span></div>
       </div>
     </div>
 
@@ -489,6 +494,34 @@
       (источник продаёт), у B - <span class="ax-f">F</span> (формулировка нестрогая). Trust Calculus
       показывает не «насколько в среднем хорошо», а <b class="k">какая именно ось проваливается</b>.
     </p>
+
+    <div class="insight">
+      <div class="insight-tag">Шкала урока и расчёт Forgeplan - разные вещи</div>
+      <p>
+        Оси 0–9 и «WLNK» выше — учебная модель, а не универсальная формула FPF.
+        Forgeplan отдельно вычисляет F/G/R артефакта по шкале 0–1 и их геометрическое среднее
+        <code>(F × G × R)^(1/3)</code>. Это эвристики качества артефакта.
+        Внутренний балл пакета доказательства не использует учебные F/G/R. В полном расчёте
+        непросроченного пакета это <code>max(0, verdict − штраф_CL − поправка_типа)</code>.
+        Базы <code>supports</code>/<code>weakens</code>/<code>refutes</code> — 1.0 / 0.5 / 0.0;
+        штрафы CL0 / CL1 / CL2 / CL3 — 0.9 / 0.4 / 0.1 / 0; поправки
+        <code>measurement</code>/<code>test</code>/<code>benchmark</code>/<code>audit</code> — 0 / 0 / 0.1 / 0.2.
+        Если необязательная <code>valid_until</code> истекла, раньше этой арифметики возвращается 0.1,
+        в том числе при <code>refutes</code>. Без даты этот расчёт не применяет истечение срока.
+        Рекурсивный <code>R_eff</code> решения — минимум из балла собственных допустимых доказательств
+        и допустимых вкладов зависимостей. Пакеты <code>draft</code> учитываются;
+        <code>superseded</code>/<code>deprecated</code> исключаются. Зависимости также исключают
+        <code>draft</code> и типы <code>note</code>/<code>memory</code>.
+        Вклад зависимости — <code>max(0, R_eff зависимости − штраф связи)</code>:
+        для <code>based_on</code>/<code>informs</code> штраф 0.1 (CL2),
+        для <code>refines</code>/<code>depends_on</code> — 0 (CL3). Собственный балл 1.0
+        и допустимая зависимость <code>based_on</code> с баллом 0.2 дают итог 0.1.
+        Без собственных допустимых доказательств обычное решение получает 0; листовой пакет
+        доказательства оценивается по собственным полям.
+        Плоский помощник для части отображаемых баллов не обходит зависимости и не применяет
+        поправку типа. Его результат может отличаться от полного рекурсивного отчёта.
+      </p>
+    </div>
 
     <a class="deep-link" href="trust-calculus.html">
       <div class="dl-text">
@@ -506,6 +539,9 @@
         Не обязательно всё поднимать до 9/9/9 - это дорого и обычно не нужно. Цель не в
         перфекционизме, а в честности с собой. Если вы видите у себя 2/2/2 («коллега сказал») - вы
         знаете, что рискуете, и это осознанное решение, а не самообман.
+        Порог 12 - сумма, а не слабое звено: три средние оценки дают 12 и при этом могут
+        лежать с очень слабой одной осью. Это соглашение урока (его же использует 3D-разбор),
+        а не порог Forgeplan.
       </p>
     </div>
   </div>
@@ -538,8 +574,8 @@
     <div class="worked-step">
       <div class="step-num">04 · Decay</div>
       <div class="step-content">
-        <h4>Через 6 месяцев решение само возвращается</h4>
-        <p>Когда наступает срок или метрика - DDR открывается, evidence проверяется заново. Может оказаться, что цифры устарели (новый <code>sqlite-vec</code> релиз, рост базы до 200k). Тогда - снова ADI с тремя гипотезами. Цикл замыкается.</p>
+        <h4>Через 6 месяцев — повод начать пересмотр</h4>
+        <p>Когда указанная дата <code>valid_until</code> прошла, запись может попасть в отчёт о просроченных артефактах. Это производный результат проверки даты, а не автоматическое открытие DDR, изменение статуса или повторная проверка evidence. Пересмотр начинает человек или явно настроенная внешняя автоматизация. Может оказаться, что цифры устарели (новый релиз <code>sqlite-vec</code>, рост базы до 200k); тогда команда снова проводит ADI с тремя гипотезами по правилу урока. Метрики и события также проверяет команда или настроенный внешний монитор — встроенных триггеров для них нет. Если используется <code>forgeplan reopen</code>, исходный артефакт должен иметь статус <code>active</code> или <code>stale</code>: команда создаёт новый <code>draft</code> с разделом Lineage и связью <code>based_on</code> к исходному, затем переводит исходный в <code>deprecated</code>.</p>
       </div>
     </div>
   </div>

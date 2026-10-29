@@ -12,13 +12,20 @@
 
 **Rule**: A Spec is needed when there is a **contract** between two systems or teams.
 
-## Required Sections
+## Authoring Checklist
 
-| # | Section | Required? | Validation |
+The table describes content conventions, not a complete validator contract.
+The implemented contract check accepts structural sections (API Contracts,
+Data Models, Interfaces) **or** Requirements / Behavioral Contract. Scenarios
+have a SHOULD check. Human review must still establish that examples, field
+constraints and behavior are correct; zero MUST findings is not activation
+readiness (length, evidence and stub gates also apply).
+
+| # | Section | Authoring expectation | Content guidance |
 |---|---------|-----------|------------|
 | 1 | **Meta Header** | ✅ MUST | Status, Author, PRD link, Type |
 | 2 | **Summary** | ✅ MUST | What is being specified |
-| 3 | **API Contracts** or **Data Models** | ✅ MUST (>= 1) | Endpoints/schemas with examples |
+| 3 | **API Contracts**, **Data Models**, **Interfaces**, **Requirements** or **Behavioral Contract** | Include at least one contract form | Structural or behavioral contract with examples |
 | 4 | **Validation Rules** | SHOULD | Field constraints |
 | 5 | **Events / Side Effects** | SHOULD | What happens on create/update/delete |
 | 6 | **Versioning** | SHOULD | Version history |
@@ -39,7 +46,7 @@
 |--------|---------|
 | ID | `SPEC-NNN` |
 | File | `SPEC-{NNN}-{kebab-case}.md` |
-| Path | `docs/specs/SPEC-015-oauth2-api.md` |
+| Path | `.forgeplan/specs/SPEC-015-oauth2-api.md` |
 
 ## Related Documents
 

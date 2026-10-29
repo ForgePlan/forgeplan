@@ -785,6 +785,7 @@ pub async fn bootstrap_or_recover(
         &index_root,
         &marker,
         std::sync::Arc::clone(publisher.tracking_store()),
+        workspace,
     )
     .await
     {
@@ -800,6 +801,7 @@ pub async fn bootstrap_or_recover(
                 &index_root,
                 &marker,
                 std::sync::Arc::clone(publisher.tracking_store()),
+                workspace,
             )
             .await?;
             (tables, false)

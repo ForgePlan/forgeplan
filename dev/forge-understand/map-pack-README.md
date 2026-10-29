@@ -8,6 +8,13 @@
 >
 > Полная архитектура (схема данных, рендерер, MVP по дням, фазы, решения) — в **`MASTER-SPEC.md`**
 > рядом с этим файлом. Этот README — про **процесс/скиллы/агентов** в marketplace.
+>
+> **Статус (2026-10-23):** дизайн июня–июля 2026, не подтверждённый выпуск
+> marketplace-пака или встроенной map-функции ForgePlan. Последний §23
+> `MASTER-SPEC.md` уточняет ранние MVP-эскизы: полный состав ролей,
+> сначала render-proof, append daemon — P5. Проверка структуры не доказывает
+> истинность содержания карты. Single-writer/guardian-status и учёт scratch
+> в guardian-diff остаются явно отмеченными там вопросами дизайна.
 
 ---
 
@@ -66,11 +73,12 @@ ORCHESTRATOR (map-orchestrator)  — дирижирует, сам данные �
                                             PASS → status: confirmed; FAIL → назад на стадию
 ```
 
-**Все агенты — профиль EMITTER:** разрешено `Read · Glob · Grep · Write` + read-only MCP
-(`forgeplan_graph/list/get`). **Запрещено** `Edit` + все мутаторы (`forgeplan_new/update/link/...`).
-Пишут **ровно в один файл** — `.forgeplan/map/map.json`. → **RED-LINE #11 нарушить структурно
-невозможно**: агент физически не может рассинхронизировать LanceDB/markdown. Карта — derived
-read-only view, не артефакт; ADR-003 не нарушается.
+**EMITTER-профиль в дизайне:** `Read · Glob · Grep · Write` + read-only MCP
+(`forgeplan_graph/list/get`), без `Edit` и мутаторов. Одного списка tools
+недостаточно для защиты write-path: §23 требует также hook и guardian-check.
+Сканеры пишут отдельные scratch-файлы; `map-emitter` — единственный автор
+`map.json`. Это требования к будущему enforcement, не доказательство того,
+что разрешённый `Write` сам по себе не может затронуть `.forgeplan/prds/`.
 
 **Guardian-гейт** проверяет (как `adr_003_invariant.rs` для графа):
 1. JSON соответствует `schemas/map.schema.json` (`forgeplan.map/v1`).
@@ -86,7 +94,7 @@ read-only view, не артефакт; ADR-003 не нарушается.
 Нужны для **C4-rollup** (Context→Container→Component): на L0 видишь мега-узлы, кликаешь — раскрывается
 в под-граф. Guardian проверяет целостность children.
 
-## Скиллы (MVP: 3, остальное Phase 2)
+## Скиллы (ранний эскиз: 3; полный состав ролей — MASTER-SPEC §23)
 
 - `zone-extractor` — dirs/modules/artifact-kinds → zones/layers/nodes/mega-nodes; id = `sha1(kind+":"+path_or_slug)[:12]`.
 - `edge-verifier` — два namespace рёбер, grep-gating для code-dep, невалидные code-dep **дропаются**.
@@ -123,7 +131,7 @@ plugins/forgeplan-map-pack/
 MASTER-SPEC §8, §17. Данные для онбординга готовит **локальный headless-агент (Claude Code,
 `claude -p` в том же каталоге)** — этот пак и есть тот процесс.
 
-## Как пользоваться (в любом forgeplan-проекте)
+## Предлагаемый workflow после реализации и допуска пака (не инструкция для текущего CLI)
 
 1. Установить пак из marketplace (`/plugin install forgeplan-map-pack@ForgePlan`).
 2. Запустить процесс: `map-orchestrator` (или тонкий CLI `forgeplan map build`, который шеллит

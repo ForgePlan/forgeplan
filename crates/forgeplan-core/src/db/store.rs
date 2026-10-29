@@ -16,6 +16,7 @@ use crate::projection::MutationError;
 
 use crate::artifact::store::ArtifactSummary;
 use crate::changelog::ChangeLogEntry;
+use crate::db::auxiliary::verify_table_manifests;
 use crate::db::{convert, migrate, schema};
 
 /// Validate that an artifact ID is safe for use in SQL-like filters AND
@@ -532,6 +533,19 @@ pub struct LanceStore {
     refresh_call_count: std::sync::atomic::AtomicU64,
 }
 
+/// Refuse a damaged table before LanceDB reads one of its manifests.
+///
+/// `lance` derives the manifest length by subtracting the offset it reads
+/// from the manifest footer (`lance-4.0.0/src/dataset.rs:612`), so damaged
+/// manifest bytes abort the process instead of failing the open. A missing
+/// table stays missing: the guard speaks about damage only.
+async fn verify_manifests(lance_dir: &Path, tables: &[&str]) -> anyhow::Result<()> {
+    for table in tables {
+        verify_table_manifests(&lance_dir.join(format!("{table}.lance")), table).await?;
+    }
+    Ok(())
+}
+
 impl LanceStore {
     /// Connect to an existing LanceDB workspace (tables must already exist).
     /// Runs idempotent schema migrations on every open.
@@ -544,6 +558,18 @@ impl LanceStore {
             )
         })?)
         .execute()
+        .await?;
+
+        verify_manifests(
+            &lance_dir,
+            &[
+                "artifacts",
+                "evidence",
+                "relations",
+                "fpf_spec",
+                "change_log",
+            ],
+        )
         .await?;
 
         let artifacts = db.open_table("artifacts").execute().await?;
@@ -626,6 +652,18 @@ impl LanceStore {
             let batch = empty_change_log_batch(schema.clone())?;
             db.create_table("change_log", vec![batch]).execute().await?;
         }
+
+        verify_manifests(
+            &lance_dir,
+            &[
+                "artifacts",
+                "evidence",
+                "relations",
+                "fpf_spec",
+                "change_log",
+            ],
+        )
+        .await?;
 
         let artifacts = db.open_table("artifacts").execute().await?;
         let evidence = db.open_table("evidence").execute().await?;
@@ -1937,22 +1975,7 @@ impl LanceStore {
             )
         })?;
 
-        let batch = RecordBatch::try_new(
-            schema::change_log_schema(),
-            vec![
-                Arc::new(StringArray::from(vec![entry.timestamp.as_str()])),
-                Arc::new(StringArray::from(vec![entry.artifact_id.as_str()])),
-                Arc::new(StringArray::from(vec![entry.action.as_str()])),
-                Arc::new(StringArray::from(vec![entry.field.as_deref()])),
-                Arc::new(StringArray::from(vec![entry.old_value.as_deref()])),
-                Arc::new(StringArray::from(vec![entry.new_value.as_deref()])),
-                Arc::new(StringArray::from(vec![entry.source.as_str()])),
-                Arc::new(StringArray::from(vec![entry.commit_hash.as_deref()])),
-            ],
-        )?;
-
-        table.add(vec![batch]).execute().await?;
-        Ok(())
+        crate::db::auxiliary::change_log_append(table, entry).await
     }
 
     /// Query change log entries with optional artifact filter and source filter.
@@ -1967,34 +1990,7 @@ impl LanceStore {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("change_log table not initialized"))?;
 
-        let mut conditions: Vec<String> = Vec::new();
-        if let Some(aid) = artifact_id {
-            conditions.push(format!("artifact_id = '{}'", aid.replace('\'', "''")));
-        }
-        if let Some(src) = source {
-            conditions.push(format!("source = '{}'", src.replace('\'', "''")));
-        }
-
-        let mut query = table.query();
-        if !conditions.is_empty() {
-            query = query.only_if(conditions.join(" AND "));
-        }
-
-        let batches = collect_batches(query.execute().await?).await?;
-        let mut results: Vec<ChangeLogEntry> = Vec::new();
-
-        for batch in &batches {
-            for row in 0..batch.num_rows() {
-                if let Some(entry) = extract_change_log_entry(batch, row) {
-                    results.push(entry);
-                }
-            }
-        }
-
-        // Sort by timestamp descending (newest first)
-        results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        results.truncate(limit);
-        Ok(results)
+        crate::db::auxiliary::change_log_query(table, artifact_id, source, limit).await
     }
 
     // ── FPF Knowledge Base ───────────────────────────────────────────
@@ -2047,6 +2043,8 @@ impl LanceStore {
     /// - errors when `query_vec.len() != EMBEDDING_DIM` (1024).
     /// - returns an empty Vec when the table has no rows or all embedding
     ///   cells are NULL (pre-ingest workspace).
+    /// - returns an empty Vec for `limit == 0`; larger limits are bounded by
+    ///   the number of embedded rows before reaching the backend.
     /// - returns up to `limit` chunks ordered by ascending cosine distance
     ///   (closest first).
     pub async fn search_fpf_by_vector(
@@ -2214,36 +2212,87 @@ fn get_f64(batch: &RecordBatch, col: &str, row: usize) -> Option<f64> {
     }
 }
 
+fn invalid_required_column(table: &str, column: &str, row: usize) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Invalid {table} row {row}: required column '{column}' is missing, null or has an incompatible type"
+    )
+}
+
+fn required_utf8<'a>(
+    batch: &'a RecordBatch,
+    row: usize,
+    table: &str,
+    column: &str,
+) -> anyhow::Result<&'a str> {
+    batch
+        .column_by_name(column)
+        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+        .filter(|array| !array.is_null(row))
+        .map(|array| array.value(row))
+        .ok_or_else(|| invalid_required_column(table, column, row))
+}
+
+fn required_large_utf8<'a>(
+    batch: &'a RecordBatch,
+    row: usize,
+    table: &str,
+    column: &str,
+) -> anyhow::Result<&'a str> {
+    batch
+        .column_by_name(column)
+        .and_then(|array| {
+            array
+                .as_any()
+                .downcast_ref::<arrow_array::LargeStringArray>()
+        })
+        .filter(|array| !array.is_null(row))
+        .map(|array| array.value(row))
+        .ok_or_else(|| invalid_required_column(table, column, row))
+}
+
+fn required_i32(batch: &RecordBatch, row: usize, table: &str, column: &str) -> anyhow::Result<i32> {
+    batch
+        .column_by_name(column)
+        .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+        .filter(|array| !array.is_null(row))
+        .map(|array| array.value(row))
+        .ok_or_else(|| invalid_required_column(table, column, row))
+}
+
 /// Extract an FpfChunk from a RecordBatch row.
 ///
 /// `pub(crate)`: the auxiliary store reads the same table and must decode rows
 /// with this one function, not a second copy of the column mapping.
-pub(crate) fn extract_fpf_chunk(batch: &RecordBatch, row: usize) -> Option<FpfChunk> {
-    let id = get_string(batch, "id", row)?;
-    let section_id = get_string(batch, "section_id", row)?;
-    let parent_section = get_string(batch, "parent_section", row);
-    let title = get_string(batch, "title", row)?;
-    let body = get_large_string(batch, "body", row)?;
-    let line_count = {
-        let array = batch.column_by_name("line_count")?;
-        let arr = array.as_any().downcast_ref::<Int32Array>()?;
-        if arr.is_null(row) {
-            return None;
-        }
-        arr.value(row)
-    };
-    let file_path = get_string(batch, "file_path", row)?;
-    let created_at = get_string(batch, "created_at", row)?;
+pub(crate) fn extract_fpf_chunk(batch: &RecordBatch, row: usize) -> anyhow::Result<FpfChunk> {
+    Ok(FpfChunk {
+        id: required_utf8(batch, row, "fpf_spec", "id")?.to_string(),
+        section_id: required_utf8(batch, row, "fpf_spec", "section_id")?.to_string(),
+        parent_section: get_string(batch, "parent_section", row),
+        title: required_utf8(batch, row, "fpf_spec", "title")?.to_string(),
+        body: required_large_utf8(batch, row, "fpf_spec", "body")?.to_string(),
+        line_count: required_i32(batch, row, "fpf_spec", "line_count")?,
+        file_path: required_utf8(batch, row, "fpf_spec", "file_path")?.to_string(),
+        created_at: required_utf8(batch, row, "fpf_spec", "created_at")?.to_string(),
+    })
+}
 
-    Some(FpfChunk {
-        id,
-        section_id,
-        parent_section,
-        title,
-        body,
+/// Validate the same required row values without allocating a body copy just
+/// to discard it from a section summary.
+pub(crate) fn extract_fpf_chunk_summary(
+    batch: &RecordBatch,
+    row: usize,
+) -> anyhow::Result<FpfChunkSummary> {
+    required_utf8(batch, row, "fpf_spec", "id")?;
+    let section_id = required_utf8(batch, row, "fpf_spec", "section_id")?;
+    let title = required_utf8(batch, row, "fpf_spec", "title")?;
+    required_large_utf8(batch, row, "fpf_spec", "body")?;
+    let line_count = required_i32(batch, row, "fpf_spec", "line_count")?;
+    required_utf8(batch, row, "fpf_spec", "file_path")?;
+    required_utf8(batch, row, "fpf_spec", "created_at")?;
+    Ok(FpfChunkSummary {
+        section_id: section_id.to_string(),
+        title: title.to_string(),
         line_count,
-        file_path,
-        created_at,
     })
 }
 
@@ -2304,30 +2353,26 @@ fn empty_relations_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatc
 }
 
 /// Extract a ChangeLogEntry from a RecordBatch row.
-fn extract_change_log_entry(batch: &RecordBatch, row: usize) -> Option<ChangeLogEntry> {
-    let timestamp = get_string(batch, "timestamp", row)?;
-    let artifact_id = get_string(batch, "artifact_id", row)?;
-    let action = get_string(batch, "action", row)?;
-    let field = get_string(batch, "field", row);
-    let old_value = get_string(batch, "old_value", row);
-    let new_value = get_string(batch, "new_value", row);
-    let source = get_string(batch, "source", row)?;
-    let commit_hash = get_string(batch, "commit_hash", row);
-
-    Some(ChangeLogEntry {
-        timestamp,
-        artifact_id,
-        action,
-        field,
-        old_value,
-        new_value,
-        source,
-        commit_hash,
+pub(crate) fn extract_change_log_entry(
+    batch: &RecordBatch,
+    row: usize,
+) -> anyhow::Result<ChangeLogEntry> {
+    Ok(ChangeLogEntry {
+        timestamp: required_utf8(batch, row, "change_log", "timestamp")?.to_string(),
+        artifact_id: required_utf8(batch, row, "change_log", "artifact_id")?.to_string(),
+        action: required_utf8(batch, row, "change_log", "action")?.to_string(),
+        field: get_string(batch, "field", row),
+        old_value: get_string(batch, "old_value", row),
+        new_value: get_string(batch, "new_value", row),
+        source: required_utf8(batch, row, "change_log", "source")?.to_string(),
+        commit_hash: get_string(batch, "commit_hash", row),
     })
 }
 
 /// Create an empty RecordBatch for change_log.
-fn empty_change_log_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {
+pub(crate) fn empty_change_log_batch(
+    schema: Arc<arrow_schema::Schema>,
+) -> Result<RecordBatch, ArrowError> {
     RecordBatch::try_new(
         schema,
         vec![
@@ -4657,7 +4702,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_fpf_by_vector_limit_zero() {
-        // C4.5: limit=0 should yield an empty result (LanceDB honors limit).
+        // C4.5: the store handles limit=0 without issuing a zero-k query.
         let tmp = TempDir::new().unwrap();
         let store = seeded_fpf_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
@@ -4672,19 +4717,21 @@ mod tests {
 
     #[tokio::test]
     async fn search_fpf_by_vector_limit_max() {
-        // C4.6: limit=usize::MAX must be capped internally and not OOM on 3
-        // rows.
+        // C4.6: an oversized limit returns every embedded chunk without
+        // overflowing the backend limit or allocating for usize::MAX.
         let tmp = TempDir::new().unwrap();
         let store = seeded_fpf_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let mut q = vec![0.0f32; dim];
         q[0] = 1.0;
         let results = store.search_fpf_by_vector(&q, usize::MAX).await.unwrap();
-        assert!(
-            results.len() <= 3,
-            "must cap at table size, got {}",
-            results.len()
-        );
+        assert_eq!(results.len(), 3);
+        for section_id in ["T.1", "T.2", "T.3"] {
+            assert!(
+                results.iter().any(|chunk| chunk.section_id == section_id),
+                "missing section {section_id}"
+            );
+        }
     }
 
     #[tokio::test]

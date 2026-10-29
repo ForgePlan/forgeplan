@@ -1,9 +1,9 @@
 ---
 title: forgeplan_fpf_rules
-description: "Список активных правил FPF, сгруппированных по категориям действий (EXPLORE / INVESTIGATE / EXPLOIT). Правила кодируют логику принятия решений фреймворка в виде деревьев условий, которые сопоставляются с состоянием артефакта и доказательствами. Используйте это, чтобы понять, что и почему будет делать движок, прежде чем запускать forgeplan_fpf_check для конкретного артефакта."
+description: "Список действующих декларативных правил FPF по приоритету, с фильтрами действия и источника. Проверьте условия перед forgeplan_fpf_check для артефакта."
 ---
 
-Возвращает активный **набор правил FPF** - деревья условий, которые определяют рекомендации Forgeplan по действиям. Каждое правило имеет имя, приоритет, категорию действия (`EXPLORE` / `INVESTIGATE` / `EXPLOIT`), условие, которое оценивается по состоянию артефакта, и сообщение, объясняющее результирующее действие. Правила загружаются из `.forgeplan/config.yaml` (`fpf.rules`), если он присутствует, в противном случае - из встроенных значений по умолчанию (PRD-041).
+Возвращает действующие декларативные **правила FPF** по возрастанию числового приоритета. Непустой список `fpf.rules` в `.forgeplan/config.yaml` заменяет встроенные правила; отсутствующий или пустой список оставляет значения по умолчанию. У правила есть условия, действие (`EXPLORE` / `INVESTIGATE` / `EXPLOIT`), приоритет и сообщение.
 
 **Категория**: База знаний FPF
 
@@ -16,15 +16,17 @@ description: "Список активных правил FPF, сгруппиро
 
 ## Категории действий
 
-Движок Forgeplan рекомендует действия на основе пороговых значений `R_eff` (настраиваемых через `fpf.thresholds` в конфигурации). Три категории:
+Пять встроенных декларативных правил не сводятся к трём исчерпывающим интервалам R_eff:
 
-| Категория | Диапазон R_eff по умолчанию | Значение | Типичные эффекты правил |
-|---|---|---|---|
-| **EXPLORE** | `R_eff < explore_reff` (по умолчанию 0.33) | Доверие слишком низкое - рассматривать как гипотезу | Добавить доказательства, расширить гипотезы, уменьшить объём |
-| **INVESTIGATE** | `explore_reff ≤ R_eff < investigate_reff` (по умолчанию 0.66) | Доверие частичное - тестировать, измерять | Запустить бенчмарки, состязательная ревью, сузить гипотезы |
-| **EXPLOIT** | `R_eff ≥ exploit_reff` (по умолчанию 0.66) | Доверие высокое - действовать | Выпустить, активировать, заместить, применить |
+| Правило | Условия | Действие |
+|---------|---------|----------|
+| `blind-spot` | draft и `R_eff < 0.01` | EXPLORE |
+| `weak-evidence` | active/stale и `R_eff < 0.5` | INVESTIGATE |
+| `orphan-active` | active и нет связей | EXPLORE |
+| `medium-quality` | `0.5 ≤ R_eff < 0.7` | INVESTIGATE |
+| `ready-to-build` | `R_eff ≥ 0.7` и общий F-G-R `≥ 0.6` | EXPLOIT |
 
-Глубина влияет на пороговые значения: более высокая глубина (Deep / Critical) повышает планку для EXPLOIT, поэтому критический артефакт требует более сильных доказательств, чем тактический, чтобы попасть в ту же категорию.
+Побеждает первое совпавшее правило по приоритету. Пользовательское условие может учитывать depth, но встроенные правила не повышают пороги автоматически для Deep/Critical. `fpf.thresholds` настраивает отдельный жёстко заданный путь рекомендаций: это не переписывает декларативный список и не разрешает активацию.
 
 ## Входные параметры
 
@@ -39,39 +41,16 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::FpfRulesParam
 
 ## Возвращает
 
-Полный режим (по умолчанию):
+Полный режим возвращает `source` (`config` или `default`), `count`, `rules` и подсказку. У правила есть `name`, `priority`, `action`, `condition`, `condition_summary`, `message`. Условия — именованные поля, не массив `all` из объектов field/op; числовые выражения сериализуются строками, например `"< 0.01"`.
+
+Сводный режим опускает условия и сообщения. Иллюстративный ответ с фильтром:
 
 ```json
 {
-  "source_in_use": "config",
-  "count": 14,
+  "source": "default",
+  "count": 1,
   "rules": [
-    {
-      "name": "low_trust_explore",
-      "priority": 10,
-      "action": "EXPLORE",
-      "condition": {
-        "all": [
-          { "field": "r_eff", "op": "lt", "value": 0.33 },
-          { "field": "status", "op": "eq", "value": "draft" }
-        ]
-      },
-      "message": "R_eff below explore threshold; add evidence before deciding.",
-      "source": "config"
-    }
-  ]
-}
-```
-
-Режим сводки (`summary: true`):
-
-```json
-{
-  "count": 14,
-  "rules": [
-    { "name": "low_trust_explore",   "priority": 10, "action": "EXPLORE" },
-    { "name": "stale_investigate",   "priority": 20, "action": "INVESTIGATE" },
-    { "name": "high_trust_exploit",  "priority": 30, "action": "EXPLOIT" }
+    { "name": "ready-to-build", "priority": 5, "action": "EXPLOIT" }
   ]
 }
 ```
@@ -93,7 +72,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::FpfRulesParam
 Получить конкретное правило по имени:
 
 ```json
-{ "name": "high_trust_exploit" }
+{ "name": "ready-to-build" }
 ```
 
 Отладка: действительно ли загружены мои переопределения конфигурации?
@@ -106,8 +85,8 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::FpfRulesParam
 
 ```
 forgeplan_fpf_rules                  ← инвентаризация
-forgeplan_fpf_check { id: "PRD-19" } ← какое правило применяется для этого артефакта
-forgeplan_fpf_section { id: "B.3" }  ← почему движок так считает
+forgeplan_fpf_check { id: "PRD-019" } ← какое правило побеждает для артефакта
+forgeplan_fpf_section { id: "<returned-section-id>" } ← прочитать соответствующий источник
 ```
 
 ## Эквивалент CLI
@@ -120,3 +99,76 @@ forgeplan_fpf_section { id: "B.3" }  ← почему движок так счи
 - [`forgeplan_fpf_check`](/ru/docs/mcp/forgeplan_fpf_check/) - оценивает правила для конкретного артефакта
 - [`forgeplan_fpf_list`](/ru/docs/mcp/forgeplan_fpf_list/) - каталог базы знаний
 - [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) - вычисляет R_eff, с которым сопоставляются правила
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+List active FPF rules from the workspace. By default returns all rules with full condition trees and messages. Parameters allow filtering: `action` (EXPLORE/INVESTIGATE/EXPLOIT) to show only rules for that action category; `name` to fetch a single rule by name; `summary: true` to return only name/priority/action without condition details (useful for quick overviews); `source` (config/default) for debugging which rule source is active. If workspace has user-defined rules in .forgeplan/config.yaml under fpf.rules, those take precedence; otherwise built-in defaults are returned.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `action` | нет | string \| null | Filter by action: "EXPLORE", "INVESTIGATE", or "EXPLOIT". Omit for all. |
+| `name` | нет | string \| null | Fetch single rule by name. Returns 1 rule or error if not found. |
+| `source` | нет | string \| null | Filter by source: "config" or "default". For debugging workspace state. |
+| `summary` | нет | boolean \| null | If true, return only {name, priority, action} without condition details. |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "action": {
+      "default": null,
+      "description": "Filter by action: \"EXPLORE\", \"INVESTIGATE\", or \"EXPLOIT\". Omit for all.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "default": null,
+      "description": "Fetch single rule by name. Returns 1 rule or error if not found.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source": {
+      "default": null,
+      "description": "Filter by source: \"config\" or \"default\". For debugging workspace state.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "summary": {
+      "default": null,
+      "description": "If true, return only {name, priority, action} without condition details.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "FpfRulesParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

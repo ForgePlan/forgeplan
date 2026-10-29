@@ -14,7 +14,7 @@ This file is the **entry point**. For full details, read the files it points to.
 
 **Forgeplan** — Rust-based methodology engine (CLI + MCP server + future Desktop app) for managing engineering artifacts (PRD, RFC, ADR, Epic, Spec, Evidence) with quality scoring, semantic search, and decision tracking.
 
-- **Language:** Rust 1.75+ (crates workspace)
+- **Language:** Rust 2024 edition; local toolchain pinned to 1.95 (`rust-toolchain.toml`)
 - **Storage:** Markdown files in `.forgeplan/` as source of truth (ADR-003), LanceDB as derived index
 - **Distribution:** cargo-dist binaries, brew formula, install script
 - **Website:** Astro + Starlight at `website/` (see `website/README.md`)
@@ -57,6 +57,24 @@ with `ld: write() failed, errno=28`, and the harness around it reports
 a check that passed are indistinguishable in every summary format we use. On
 one occasion this produced 26 phantom clippy warnings that did not exist. Twice
 the result was reported as green before anyone noticed.
+
+### Волны по зависимостям
+
+- Сначала подготовить и согласовать общие контракты, схемы и границы владения.
+  Не запускать зависящую от них реализацию до готовности этих входов.
+- Готовые независимые участки запускать параллельно одной волной, до **10
+  субагентов или подзадач** одновременно. Не выполнять их последовательно без
+  причины и не дробить работу искусственно ради десяти исполнителей.
+- Зависимая задача ждёт именно свой вход. После его готовности включать её
+  в следующую доступную волну; независимые задачи не должны ждать чужих входов.
+- У каждого изменяемого файла — **один владелец записи**. Заранее назначить
+  точные файлы и интерфейсы; пересекающиеся изменения выполнять последовательно.
+  Для пишущих агентов использовать отдельные рабочие деревья, а перенос
+  результатов в общее дерево поручать одному владельцу.
+- У каждой сборки — **один владелец**. Параллельные агенты не запускают сборки
+  и проверки самостоятельно; после фиксации входов назначенный владелец
+  выполняет согласованный набор проверок. Ограничение на единственную
+  одновременную компиляцию ниже остаётся обязательным.
 
 Rules for anyone dispatching sub-agents in this repo:
 
@@ -333,6 +351,17 @@ Rules that bite if ignored:
 - **Fallback**: if `tgrep` is absent or the server is down, `rg` is still the
   fallback — the server isn't a hard dependency.
 
+## Documentation interface ownership
+
+User-facing docs are in `website/src/content/docs/`; root `docs/` is for contributors.
+CLI/MCP reference metadata comes from a matching built binary, not a guessed
+signature or an automatic Cargo build. Follow `website/README.md`.
+Generators own only `forgeplan-runtime:start/end` blocks on detail pages and
+the whole CLI/MCP overview pages. Preserve manual prose and EN/RU examples;
+never hand-edit managed blocks. Regenerate both locales and check the selected
+binary's nested CLI help and both MCP profiles. Metadata coverage is not a
+semantic review of all prose, and translation mtime is not proof of equivalence.
+
 ## Findings have a home, and it is not the chat
 
 A finding that lives only in a reply is gone at the end of the session. This has
@@ -394,12 +423,12 @@ left alone without discussion.
 ForgePlan/
 ├── CLAUDE.md, AGENTS.md, README.md
 ├── crates/                ← Rust workspace (core + cli + mcp)
-├── .forgeplan/            ← artifact workspace (markdown tracked, lance/cache/config local)
+├── .forgeplan/            ← artifact workspace (markdown/config tracked, index/cache local)
 │   ├── adrs/, rfcs/, prds/, epics/, specs/
 │   ├── evidence/, problems/, solutions/, notes/
 │   ├── lance/             ← gitignored (derived)
-│   └── config.yaml        ← gitignored (local)
-├── docs/                  ← production documentation
+│   └── config.yaml        ← tracked (env-var references, never secrets)
+├── docs/                  ← contributor documentation — not the website
 │   ├── README.md          ← documentation index
 │   ├── methodology/       ← how to use Forgeplan
 │   ├── operations/        ← agent hooks, enforcement, repo protection
