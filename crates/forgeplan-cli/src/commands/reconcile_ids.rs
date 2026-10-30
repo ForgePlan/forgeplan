@@ -1704,7 +1704,12 @@ mod repair_tests {
             plan["inventory_digest"].as_str().expect("inventory").len(),
             64
         );
-        assert!(plan["workspace"].as_str().expect("workspace").ends_with(".forgeplan"));
+        assert!(
+            plan["workspace_path"]
+                .as_str()
+                .expect("workspace_path")
+                .ends_with(".forgeplan")
+        );
     }
 
     #[test]
@@ -1755,7 +1760,18 @@ mod repair_tests {
         assert!(rewritten.contains("id: PRD-001"), "the display number stays");
         assert!(rewritten.contains("Body of PRD-001."), "the body stays");
         let evidence = fs::read_to_string(forgeplan.join("evidence/EVID-001.md")).expect("read");
-        assert!(evidence.contains("slug:"), "the reference must be rewritten");
+        // The reference now names the **canonical key** of the document the
+        // review attributed it to — the key the re-keyed document carries in
+        // its `slug:` field.
+        let key = rewritten
+            .lines()
+            .find_map(|line| line.strip_prefix("slug: "))
+            .expect("the re-keyed document carries its key")
+            .trim();
+        assert!(
+            evidence.contains(&format!("target: {key}")),
+            "the reference must name the new key: {evidence}"
+        );
         assert!(!evidence.contains("target: PRD-001"), "the old target is gone");
 
         // A second apply refuses: the workspace has moved on.

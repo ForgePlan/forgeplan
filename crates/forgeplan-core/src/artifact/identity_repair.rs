@@ -756,12 +756,19 @@ fn item_scalar_range(
     for index in item.0..item.1 {
         let (start, end) = lines[index];
         let text = &content[start..end];
-        let offset = if let Some(stripped) = text.strip_prefix("- ") {
-            stripped.len()
-        } else if text.starts_with('-') {
-            text.len() - text.trim_start_matches('-').len()
+        // The key may sit on the item's first line, after the `- ` marker, or
+        // on a continuation line, after the indentation. The offset is the
+        // position of the key **in the original line**: the length of the
+        // stripped text is not that offset, and the indentation has to be
+        // counted too.
+        let indent = text.len() - text.trim_start().len();
+        let body = &text[indent..];
+        let offset = if let Some(stripped) = body.strip_prefix("- ") {
+            indent + (body.len() - stripped.len())
+        } else if body.starts_with('-') {
+            indent + (body.len() - body.trim_start_matches('-').len())
         } else {
-            0
+            indent
         };
         let candidate = &text[offset..];
         if candidate.starts_with(&prefix) {
@@ -3124,5 +3131,62 @@ mod tests {
         let workspace = temp_workspace(&[]);
         let forgeplan = workspace.path().join(".forgeplan");
         assert!(detect_git_identity(&forgeplan).expect("detect").is_none());
+    }
+}
+
+#[cfg(test)]
+mod link_entry_tests {
+    use super::*;
+
+    /// A `links:` list whose items start at column zero is the shape the
+    /// projection writes; the item's key sits after the `- ` marker, and a
+    /// continuation key sits after the indentation.
+    #[test]
+    fn link_entries_reads_a_column_zero_list() {
+        let content = "---\nid: EVID-001\nkind: evidence\ntitle: EVID-001\nlinks:\n- target: PRD-001\n  relation: informs\n---\n\n# EVID-001\n\nBody.\n";
+        let entries = link_entries(content).expect("links parse");
+        assert_eq!(entries.len(), 1, "entries: {entries:?}");
+        assert_eq!(entries[0].target, "PRD-001");
+        assert_eq!(entries[0].relation, "informs");
+    }
+}
+
+#[cfg(test)]
+mod plan_reference_tests {
+    use super::*;
+    use std::fs;
+
+    /// A reference that names two documents stays unresolved until a review
+    /// attributes it: the plan carries it with an empty target and the
+    /// mapping of every candidate, so the apply cannot pick a winner.
+    #[test]
+    fn an_ambiguous_reference_stays_unresolved_until_a_review_decides_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forgeplan = dir.path().join(".forgeplan");
+        for kind in crate::workspace::ARTIFACT_DIRS {
+            fs::create_dir_all(forgeplan.join(kind)).expect("dir");
+        }
+        fs::write(
+            forgeplan.join("prds/PRD-001-a.md"),
+            "---\nid: PRD-001\nkind: prd\ntitle: First\n---\n\n# PRD-001\n\nBody of PRD-001.\n",
+        )
+        .expect("write");
+        fs::write(
+            forgeplan.join("prds/PRD-001-b.md"),
+            "---\nid: PRD-001\nkind: prd\ntitle: Second\n---\n\n# PRD-001\n\nBody of PRD-001.\n",
+        )
+        .expect("write");
+        fs::write(
+            forgeplan.join("evidence/EVID-001.md"),
+            "---\nid: EVID-001\nkind: evidence\ntitle: EVID-001\nlinks:\n- target: PRD-001\n  relation: informs\n---\n\n# EVID-001\n\nBody.\n",
+        )
+        .expect("write");
+        let census = census_workspace(&forgeplan).expect("census");
+        let plan = build_repair_plan(&forgeplan, &census, &[]).expect("plan");
+        for reference in &plan.references {
+            println!("REF from={:?} to={:?} resolved={} mapping={:?}", reference.from, reference.to, reference.is_resolved(), reference.mapping);
+        }
+        assert_eq!(plan.references.len(), 1, "references: {:?}", plan.references);
+        assert!(!plan.references[0].is_resolved(), "the ambiguous reference must stay unresolved: {:?}", plan.references[0]);
     }
 }
