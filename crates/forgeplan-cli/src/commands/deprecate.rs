@@ -86,7 +86,15 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     // ADR-020: a displaced evidence pack just left the R_eff min of the
     // artifacts it informs — refresh their cached scores now.
     for target in forgeplan_core::scoring::rescore_evidence_dependents(&store, id).await {
-        println!("  Rescored {target} (displaced evidence left its weakest-link min)");
+        // The dependent is named by its canonical key; the report names it
+        // by the display id a reader can act on.
+        let display = store
+            .resolve_display_id(&target)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(target);
+        println!("  Rescored {display} (displaced evidence left its weakest-link min)");
     }
 
     if !dependents.is_empty() {

@@ -80,7 +80,15 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
     // artifacts it informs — refresh their cached scores now so `get`/`list`
     // serve the recovered value without a manual `forgeplan score`.
     for target in forgeplan_core::scoring::rescore_evidence_dependents(&store, id).await {
-        println!("  Rescored {target} (displaced evidence left its weakest-link min)");
+        // The dependent is named by its canonical key; the report names it
+        // by the display id a reader can act on.
+        let display = store
+            .resolve_display_id(&target)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(target);
+        println!("  Rescored {display} (displaced evidence left its weakest-link min)");
     }
 
     for w in &result.warnings {

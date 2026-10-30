@@ -1674,10 +1674,9 @@ pub async fn remove_projection_at(
     title: &str,
 ) -> anyhow::Result<bool> {
     crate::db::store::validate_artifact_id(id)?;
-    let artifact_kind: ArtifactKind = kind
-        .parse()
+    // Validate the kind before touching the file.
+    kind.parse::<ArtifactKind>()
         .map_err(|e| anyhow::anyhow!("invalid kind '{kind}' for {id}: {e}"))?;
-    let dir = workspace.join(artifact_kind.dir_name());
     let Some(filepath) = document_file_by_id(workspace, kind, id, title).await else {
         return Ok(false);
     };
@@ -2157,15 +2156,16 @@ pub async fn update_metadata_with_projection(
             .get_record(id)
             .await?
             .ok_or_else(|| MutationError::RowNotFound { id: id.to_string() })?;
-        let kind: ArtifactKind =
-            record
-                .kind
-                .parse()
-                .map_err(|error| MutationError::InvalidKind {
-                    id: id.to_string(),
-                    kind: record.kind.clone(),
-                    reason: format!("{error}"),
-                })?;
+        // Validate the kind before touching the file: a corrupt kind must not
+        // reach the path computation.
+        record
+            .kind
+            .parse::<ArtifactKind>()
+            .map_err(|error| MutationError::InvalidKind {
+                id: id.to_string(),
+                kind: record.kind.clone(),
+                reason: format!("{error}"),
+            })?;
         // The document's own file — a document minted under a key is filed
         // as `<canonical_key>.md`, and a name derived from the id and the
         // title names nothing.
