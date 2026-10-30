@@ -427,6 +427,15 @@ fn canonical_filename(r: &ArtifactRecord) -> Option<String> {
 
 /// Whether the on-disk filename already matches the canonical pattern.
 fn filename_matches_canonical(r: &ArtifactRecord) -> bool {
+    // A document minted under its canonical key is filed as `<key>.md`; the
+    // display-number name is the historical form. Both are canonical, and
+    // only the historical one is a mismatch worth reporting.
+    if let Some(slug) = r.slug.as_deref().filter(|slug| !slug.is_empty())
+        && r.path.file_name().and_then(|name| name.to_str())
+            == Some(format!("{slug}.md").as_str())
+    {
+        return true;
+    }
     let Some(expected) = canonical_filename(r) else {
         return true; // not eligible; treat as match to skip
     };
