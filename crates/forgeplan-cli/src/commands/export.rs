@@ -19,6 +19,7 @@ pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
         .map(|r| {
             serde_json::json!({
                 "id": r.id,
+                "canonical_key": r.canonical_key,
                 "kind": r.kind,
                 "status": r.status,
                 "title": r.title,
@@ -39,13 +40,39 @@ pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
         common::ReadSource::Legacy(store) => store.get_all_relations().await?,
         common::ReadSource::Captured(read) => read.get_all_relations(),
     };
+    // The stored endpoints are canonical keys. The bundle keeps the ids it
+    // always carried — the display ids a consumer reads — and carries the
+    // key beside them, so a document that shares its display id with another
+    // is still named exactly.
+    let display_by_key: std::collections::HashMap<&str, &str> = records
+        .iter()
+        .map(|r| (r.canonical_key.as_str(), r.id.as_str()))
+        .collect();
+    let key_by_display: std::collections::HashMap<&str, &str> = records
+        .iter()
+        .map(|r| (r.id.as_str(), r.canonical_key.as_str()))
+        .collect();
+    let describe = |endpoint: &str| -> (String, String) {
+        if let Some(display) = display_by_key.get(endpoint) {
+            return ((*display).to_string(), endpoint.to_string());
+        }
+        if let Some(key) = key_by_display.get(endpoint) {
+            return (endpoint.to_string(), (*key).to_string());
+        }
+        (endpoint.to_string(), endpoint.to_string())
+    };
+
     let relations: Vec<serde_json::Value> = all_relations
         .into_iter()
         .map(|(source, target, relation)| {
+            let (source_id, source_key) = describe(&source);
+            let (target_id, target_key) = describe(&target);
             serde_json::json!({
-                "source": source,
-                "target": target,
+                "source": source_id,
+                "target": target_id,
                 "relation": relation,
+                "source_key": source_key,
+                "target_key": target_key,
             })
         })
         .collect();

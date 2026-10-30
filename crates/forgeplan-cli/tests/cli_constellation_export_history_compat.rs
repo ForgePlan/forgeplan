@@ -113,7 +113,7 @@ fn legacy_fixture() -> (TempDir, Value) {
         // A nonzero cached legacy score must not be replaced with a placeholder.
         store.update_r_eff_score("PRD-021", 0.625).await.unwrap();
         let record = store.get_record("PRD-021").await.unwrap().unwrap();
-        expected_prd(&record.created_at, &record.updated_at, 0.625, PRD)
+        expected_prd(&record.created_at, &record.updated_at, 0.625, PRD, "PRD-021")
     });
     (root, expected_prd)
 }
@@ -125,9 +125,10 @@ fn migrate(root: &Path) {
     assert!(!root.join(".forgeplan/lance/relations.lance").exists());
 }
 
-fn expected_prd(created_at: &str, updated_at: &str, score: f64, body: &str) -> Value {
+fn expected_prd(created_at: &str, updated_at: &str, score: f64, body: &str, key: &str) -> Value {
     json!({
-        "id": "PRD-021", "kind": "prd", "status": "active", "title": "Export contract",
+        "id": "PRD-021", "canonical_key": key, "kind": "prd",
+        "status": "active", "title": "Export contract",
         "body": body, "depth": "deep", "author": "Fixture Author", "parent_epic": "EPIC-007",
         "r_eff_score": score, "valid_until": "2099-12-31", "created_at": created_at,
         "updated_at": updated_at, "tags": ["alpha", "zeta"]
@@ -143,7 +144,12 @@ fn artifact<'a>(bundle: &'a Value, id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("missing {id} in {bundle}"))
 }
 
-fn assert_bundle(bundle: &Value, expected_prd: &Value) {
+/// The bundle of one layout.
+///
+/// `key` is the canonical key the PRD carries in that layout: a legacy index
+/// row that was written with the display id as its key keeps that key, while
+/// the managed layout derives the key from the document's own slug.
+fn assert_bundle(bundle: &Value, expected_prd: &Value, key: &str) {
     let mut keys: Vec<_> = bundle
         .as_object()
         .unwrap()
@@ -173,8 +179,10 @@ fn assert_bundle(bundle: &Value, expected_prd: &Value) {
     assert_eq!(
         relations,
         vec![
-            json!({"source": "PRD-021", "target": "EVID-023", "relation": "informs"}),
-            json!({"source": "RFC-022", "target": "PRD-021", "relation": "based_on"}),
+            json!({"source": "PRD-021", "target": "EVID-023", "relation": "informs",
+                   "source_key": key, "target_key": "EVID-023"}),
+            json!({"source": "RFC-022", "target": "PRD-021", "relation": "based_on",
+                   "source_key": "RFC-022", "target_key": key}),
         ]
     );
 }
@@ -217,7 +225,7 @@ fn export(root: &Path, output: &str) -> Value {
 fn export_preserves_nonempty_legacy_and_managed_bundle_metadata_bodies_and_links() {
     let (root, legacy_prd) = legacy_fixture();
     let legacy = export(root.path(), "backups/legacy.json");
-    assert_bundle(&legacy, &legacy_prd);
+    assert_bundle(&legacy, &legacy_prd, "PRD-021");
 
     migrate(root.path());
     // A residual old table cannot reclaim a managed index or become an export source.
@@ -238,7 +246,9 @@ fn export_preserves_nonempty_legacy_and_managed_bundle_metadata_bodies_and_links
             "2026-02-03T04:05:06+00:00",
             1.0,
             PRD,
+            "prd-export-contract",
         ),
+        "prd-export-contract",
     );
     assert_eq!(
         inventory(&ws),
@@ -268,6 +278,7 @@ fn managed_export_uses_one_fresh_capture_after_offline_metadata_body_and_link_ed
         "2026-03-04T05:06:07+00:00",
         0.0,
         &changed,
+        "prd-export-contract",
     );
     expected["title"] = json!("Edited contract");
     expected["depth"] = json!("tactical");
@@ -277,7 +288,8 @@ fn managed_export_uses_one_fresh_capture_after_offline_metadata_body_and_link_ed
         bundle["relations"]
             .as_array()
             .unwrap()
-            .contains(&json!({"source": "PRD-021", "target": "RFC-022", "relation": "refines"}))
+            .contains(&json!({"source": "PRD-021", "target": "RFC-022", "relation": "refines",
+                              "source_key": "prd-export-contract", "target_key": "RFC-022"}))
     );
     assert!(
         !bundle["relations"]

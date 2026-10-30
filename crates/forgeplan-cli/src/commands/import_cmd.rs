@@ -320,8 +320,16 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             relations
                 .iter()
                 .filter_map(|rel| {
-                    let source = rel["source"].as_str()?;
-                    let target = rel["target"].as_str()?;
+                    // The bundle names each endpoint twice: the display id a
+                    // person reads and the canonical key that identifies the
+                    // document exactly. The key is preferred; a bundle
+                    // written before the key was added still imports.
+                    let source = rel["source_key"]
+                        .as_str()
+                        .or(rel["source"].as_str())?;
+                    let target = rel["target_key"]
+                        .as_str()
+                        .or(rel["target"].as_str())?;
                     let relation = rel["relation"].as_str().unwrap_or("informs");
                     if source.is_empty() || target.is_empty() {
                         return None;
