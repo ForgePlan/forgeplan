@@ -291,15 +291,18 @@ fn has_managed_index_state(index_root: &Path) -> Result<bool, ConstellationError
         })?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.ends_with(".legacy-backup.lance")
-            || name.ends_with(".legacy-backup")
-            || name.strip_suffix(".lance").is_some_and(|name| {
-                name == super::manifest::TABLE_SECTIONS_V1
-                    || storage::ACTIVE_TABLES
-                        .iter()
-                        .any(|(_, table)| *table == name)
-            })
-        {
+        // A backup is NOT live managed state: the crash window renames the
+        // legacy tables aside before anything is published, so finding one
+        // says the bootstrap was interrupted — not that a generation exists.
+        if name.ends_with(".legacy-backup.lance") || name.ends_with(".legacy-backup") {
+            continue;
+        }
+        if name.strip_suffix(".lance").is_some_and(|name| {
+            name == super::manifest::TABLE_SECTIONS_V1
+                || storage::ACTIVE_TABLES
+                    .iter()
+                    .any(|(_, table)| *table == name)
+        }) {
             return Ok(true);
         }
     }
