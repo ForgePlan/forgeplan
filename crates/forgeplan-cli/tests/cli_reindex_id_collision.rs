@@ -41,11 +41,26 @@ fn new_artifact(tmp: &TempDir, kind: &str, title: &str) -> String {
     panic!("no ID parsed from new {kind}: {stdout}");
 }
 
+/// The document under `dir` that declares `<id>`.
+///
+/// The file is named after the document's canonical key (ADR-030), so the
+/// display id is read from the frontmatter the document declares.
 fn find_md(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
     for entry in std::fs::read_dir(dir).unwrap().flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(id) && name.ends_with(".md") {
-            return entry.path();
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let declared = text
+            .lines()
+            .take(12)
+            .find_map(|line| line.strip_prefix("id: "))
+            .map(|value| value.trim().trim_matches('"').trim_matches('\''));
+        if declared == Some(id) {
+            return path;
         }
     }
     panic!("no .md file for {id} in {}", dir.display());
