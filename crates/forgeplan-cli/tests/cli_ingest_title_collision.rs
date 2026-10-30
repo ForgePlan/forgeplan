@@ -165,6 +165,29 @@ rules:
         if_exists: skip
 "#;
 
+/// The document under `dir` that declares `<id>`.
+///
+/// The file is named after the document's canonical key (ADR-030), so the
+/// display id is read from the frontmatter the document declares.
+fn document_declaring(dir: &Path, id: &str) -> PathBuf {
+    std::fs::read_dir(dir)
+        .expect("directory")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .find(|path| {
+            let Ok(text) = std::fs::read_to_string(path) else {
+                return false;
+            };
+            text.lines()
+                .take(12)
+                .filter_map(|line| line.strip_prefix("id: "))
+                .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+                .any(|declared| declared == id)
+        })
+        .unwrap_or_else(|| panic!("no document declaring {id} in {}", dir.display()))
+}
+
 fn files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut result = BTreeMap::new();
     let mut pending = vec![root.to_path_buf()];
@@ -236,14 +259,15 @@ fn public_ingest_reuses_the_native_import_and_updates_only_that_record() {
             "--json",
         ]);
         assert_eq!(native["report"]["failed"], 0);
-        let imported = notes.join("NOTE-003-imported-native-note.md");
+        // The imported document is filed under its canonical key (ADR-030).
+        let imported = document_declaring(&notes, "NOTE-003");
         let initial_body = std::fs::read_to_string(&imported).expect("native marked import");
         let initial_hash =
             extract_existing_source_hash(&initial_body).expect("persisted source hash");
         assert!(initial_body.contains("Importedneedle first revision."));
         let initial_notes = files(&notes);
-        let unmarked =
-            std::fs::read(notes.join("NOTE-001-imported-native-note.md")).expect("unmarked bytes");
+        let unmarked = std::fs::read(document_declaring(&notes, "NOTE-001"))
+            .expect("unmarked bytes");
         let target =
             std::fs::read(notes.join("NOTE-002-existing-target.md")).expect("target bytes");
 
@@ -283,7 +307,7 @@ fn public_ingest_reuses_the_native_import_and_updates_only_that_record() {
         assert!(!changed_body.contains("Importedneedle first revision."));
         let mut expected_notes = initial_notes;
         expected_notes.insert(
-            PathBuf::from("NOTE-003-imported-native-note.md"),
+            imported.file_name().map(PathBuf::from).expect("file name"),
             changed_body.as_bytes().to_vec(),
         );
         assert_eq!(
@@ -292,7 +316,7 @@ fn public_ingest_reuses_the_native_import_and_updates_only_that_record() {
             "update must change only the already imported file"
         );
         assert_eq!(
-            std::fs::read(notes.join("NOTE-001-imported-native-note.md")).expect("collision"),
+            std::fs::read(document_declaring(&notes, "NOTE-001")).expect("collision"),
             unmarked
         );
         assert_eq!(
@@ -306,9 +330,15 @@ fn public_ingest_reuses_the_native_import_and_updates_only_that_record() {
                 .expect("body")
                 .contains("Collisionupdate second revision.")
         );
-        assert_eq!(
-            get["links"]["outbound"],
-            json!([{"target": "NOTE-002", "relation": "based_on"}])
+        // The edge names the document by its display id and carries the
+        // canonical key beside it (ADR-030).
+        let outbound = get["links"]["outbound"].as_array().expect("outbound");
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0]["target"], "NOTE-002");
+        assert_eq!(outbound[0]["relation"], "based_on");
+        assert!(
+            outbound[0]["target_key"].as_str().is_some_and(|key| !key.is_empty()),
+            "the edge must carry the canonical key: {outbound:?}"
         );
         assert_no_write(
             &fixture.ingest(true, false),
@@ -333,7 +363,9 @@ fn public_ingest_creates_one_marked_import_then_reuses_it_behind_the_collision()
         );
         assert_eq!(first["written"][0]["id"], "NOTE-003");
         assert_eq!(first["write_errors"], json!([]));
-        let path = notes.join("NOTE-003-imported-native-note.md");
+        // The created document is filed under its canonical key (ADR-030),
+        // so the file is found by the display id it declares.
+        let path = document_declaring(&notes, "NOTE-003");
         let body = std::fs::read_to_string(&path).expect("created import");
         assert_eq!(
             extract_existing_source_hash(&body).as_deref(),
@@ -342,7 +374,7 @@ fn public_ingest_creates_one_marked_import_then_reuses_it_behind_the_collision()
         assert!(
             expected
                 .insert(
-                    PathBuf::from("NOTE-003-imported-native-note.md"),
+                    path.file_name().map(PathBuf::from).expect("file name"),
                     body.into_bytes()
                 )
                 .is_none(),
@@ -373,7 +405,7 @@ fn public_ingest_creates_one_marked_import_then_reuses_it_behind_the_collision()
         let updated_body = std::fs::read_to_string(&path).expect("updated body");
         assert!(updated_body.contains("Publiccreation changed revision."));
         expected.insert(
-            PathBuf::from("NOTE-003-imported-native-note.md"),
+            path.file_name().map(PathBuf::from).expect("file name"),
             updated_body.into_bytes(),
         );
         assert_eq!(files(&notes), expected);
