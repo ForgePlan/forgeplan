@@ -692,14 +692,27 @@ fn projection_path(
     id: &str,
     kind: &str,
     title: &str,
+    canonical_key: &str,
 ) -> Option<(PathBuf, String)> {
     let artifact_kind = kind.parse::<ArtifactKind>().ok()?;
     let dir_name = artifact_kind.dir_name();
-    let filename = format!("{}-{}.md", id, projection_slug(title));
-    Some((
-        workspace.join(dir_name).join(&filename),
-        format!("{dir_name}/{filename}"),
-    ))
+    let dir = workspace.join(&dir_name);
+    // A document minted under a key is filed as `<canonical_key>.md`; one
+    // that predates the key keeps its historical `{id}-{slug}.md`. The file
+    // on disk decides which one it is — the title may have changed, and the
+    // key does not.
+    let historical = format!("{id}-{}.md", projection_slug(title));
+    let keyed = format!("{canonical_key}.md");
+    for filename in [&keyed, &historical] {
+        let path = dir.join(filename);
+        if path.exists() {
+            return Some((path, format!("{dir_name}/{filename}")));
+        }
+    }
+    // Neither name is on disk: the historical name is the one the renderer
+    // writes for a document without a key, so it is the name the caller
+    // reports as missing.
+    Some((dir.join(&historical), format!("{dir_name}/{historical}")))
 }
 
 /// Normalise a body for comparison.
@@ -766,7 +779,13 @@ pub async fn compare_projection(
     let mut drift = ProjectionDrift::default();
 
     let Some((filepath, relative_path)) =
-        projection_path(workspace, &record.id, &record.kind, &record.title)
+        projection_path(
+            workspace,
+            &record.id,
+            &record.kind,
+            &record.title,
+            &record.canonical_key,
+        )
     else {
         return Ok(drift);
     };

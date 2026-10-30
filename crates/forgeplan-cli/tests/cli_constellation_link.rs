@@ -97,17 +97,25 @@ fn get_json(root: &Path, home: &Path, id: &str) -> serde_json::Value {
     serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("get --json not JSON ({e}):\n{stdout}"))
 }
 
-/// The one `.md` file under `<root>/.forgeplan/<dir>/` whose name starts
-/// with `<id>-`.
+/// The `.md` file under `<root>/.forgeplan/<dir>/` that declares `<id>`.
+///
+/// The file is named after the document's canonical key (ADR-030), so the
+/// display id is read from the frontmatter the document declares.
 fn projection_file(root: &Path, dir: &str, id: &str) -> PathBuf {
     std::fs::read_dir(root.join(".forgeplan").join(dir))
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|ext| ext.to_str()) == Some("md"))
         .find(|p| {
-            p.file_name()
-                .map(|n| n.to_string_lossy().starts_with(&format!("{id}-")))
-                .unwrap_or(false)
+            let Ok(text) = std::fs::read_to_string(p) else {
+                return false;
+            };
+            text.lines()
+                .take(12)
+                .filter_map(|line| line.strip_prefix("id: "))
+                .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+                .any(|declared| declared == id)
         })
         .unwrap_or_else(|| panic!("no projection file for {id} under {dir}"))
 }

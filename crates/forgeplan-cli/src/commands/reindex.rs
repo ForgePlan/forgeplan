@@ -47,12 +47,19 @@ pub(super) async fn orphan_reason(
     id: &str,
     kind: &str,
     title: &str,
+    canonical_key: &str,
 ) -> Option<&'static str> {
     let Ok(kind) = kind.parse::<forgeplan_core::artifact::types::ArtifactKind>() else {
         return Some("corrupt kind field");
     };
     let dir = ws.join(kind.dir_name());
     let slug = forgeplan_core::artifact::types::slugify(title);
+    // A document minted under a key is filed as `<canonical_key>.md`; one
+    // that predates the key keeps its historical `{id}-{slug}.md`. Both are
+    // live files, so neither is an orphan.
+    if !canonical_key.is_empty() && dir.join(format!("{canonical_key}.md")).exists() {
+        return None;
+    }
     if dir.join(format!("{id}-{slug}.md")).exists() {
         return None;
     }
@@ -94,6 +101,7 @@ async fn audit_captured_reindex(ws: &std::path::Path) -> anyhow::Result<()> {
             id,
             record.kind.as_deref().unwrap_or_default(),
             &record.title,
+            &record.canonical_key,
         )
         .await
         .is_some()
@@ -455,7 +463,10 @@ pub async fn run() -> anyhow::Result<()> {
     let mut removed = 0usize;
     let all_records = store.list_records(None).await?;
     for record in &all_records {
-        if let Some(reason) = orphan_reason(&ws, &record.id, &record.kind, &record.title).await {
+        if let Some(reason) =
+            orphan_reason(&ws, &record.id, &record.kind, &record.title, &record.canonical_key)
+                .await
+        {
             projection::delete_orphan_artifact(
                 &projection::MutationContext::new(&ws, &_lock, Some(&store)),
                 &record.id,

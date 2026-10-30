@@ -124,7 +124,13 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                     let existed = match store.as_ref() {
                         Some(store) => match store.get_record(&id).await? {
                             Some(record) => {
-                                super::reindex::orphan_reason(&ws, &id, &record.kind, &record.title)
+                                super::reindex::orphan_reason(
+                        &ws,
+                        &id,
+                        &record.kind,
+                        &record.title,
+                        &record.canonical_key,
+                    )
                                     .await
                                     .is_some()
                             }
