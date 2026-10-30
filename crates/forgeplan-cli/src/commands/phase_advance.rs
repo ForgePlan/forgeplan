@@ -67,20 +67,23 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
     // file named by canonical id; without resolver slug input creates
     // a NEW state file at .forgeplan/state/<slug>.yaml instead of updating
     // existing canonical one — silent state divergence.
-    let canonical = match &source {
-        common::ReadSource::Legacy(store) => store.resolve_id(id).await?,
-        common::ReadSource::Captured(read) => read.resolve_id(id),
-    }
-    .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found"))?;
+    let (canonical, display) = common::resolve_identity(&source, &ws, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found"))?;
+    // A state file written before the key existed carries the display id in
+    // its name. The name resolved to exactly one document, so the file moves
+    // to the key's name.
+    phase::store::migrate_legacy_state(&ws, &display, &canonical).await?;
 
     let target: Phase = to.into();
     let state =
         // #330 — the explicit operator path may move a phase in either
         // direction; the guard belongs on automation, not on a deliberate
         // command someone typed.
-        phase::store::advance_phase_unchecked(
+        phase::store::advance_phase_unchecked_for(
             &ws,
             &canonical,
+            &display,
             target,
             reason.map(|s| s.to_string()),
         )
@@ -93,7 +96,7 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
         hints_vec.push(
             Hint::suggestion(format!("Advance to {}", next.as_str())).with_action(format!(
                 "forgeplan phase-advance {} --to {}",
-                state.artifact_id,
+                display,
                 next.as_str()
             )),
         );
@@ -101,7 +104,8 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
 
     if json {
         let payload = serde_json::json!({
-            "artifact_id": state.artifact_id,
+            "artifact_id": display,
+            "canonical_key": canonical,
             "current_phase": state.current_phase.as_str(),
             "workflow_type": format!("{:?}", state.workflow_type).to_lowercase(),
             "advanced_at": state.advanced_at,
@@ -120,7 +124,7 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
     let current = state.current_phase.as_str();
     println!(
         "{} advanced to {} ({} history entries)",
-        style(&state.artifact_id).bold(),
+        style(&display).bold(),
         style(current).green().bold(),
         state.history.len(),
     );

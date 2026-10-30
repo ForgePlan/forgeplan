@@ -154,6 +154,36 @@ pub async fn read_phase(workspace: &Path, artifact_id: &str) -> anyhow::Result<O
     }
 }
 
+/// Migrate a phase state file that is named after the display id.
+///
+/// The phase state is keyed by the canonical key (ADR-030), so a state file
+/// written before the key existed carries the display id in its name. When
+/// exactly one document answers to that display id, the file is moved to the
+/// key's name — the caller has already resolved the name to one document,
+/// so this never guesses. A state file already named by the key is left
+/// alone, and a display id no document answers to is left alone too.
+pub async fn migrate_legacy_state(
+    workspace: &Path,
+    legacy_id: &str,
+    canonical_key: &str,
+) -> anyhow::Result<bool> {
+    if legacy_id == canonical_key {
+        return Ok(false);
+    }
+    let dir = state_dir(workspace);
+    let legacy = state_path(workspace, legacy_id);
+    let target = state_path(workspace, canonical_key);
+    if !tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
+        return Ok(false);
+    }
+    if tokio::fs::try_exists(&target).await.unwrap_or(false) {
+        return Ok(false);
+    }
+    tokio::fs::create_dir_all(&dir).await?;
+    tokio::fs::rename(&legacy, &target).await?;
+    Ok(true)
+}
+
 /// Atomically write phase state to disk. Creates the state directory
 /// if needed, refuses to write through a symlinked state dir or target,
 /// writes to a per-process-unique tmp, renames, and fsync's file +
@@ -175,7 +205,14 @@ pub async fn write_phase(workspace: &Path, state: &PhaseState) -> anyhow::Result
     }
     tokio::fs::create_dir_all(&dir).await?;
 
-    let target = state_path(workspace, &state.artifact_id);
+    // The state file is named after the document's canonical key: the
+    // identity, not the alias a second document may share. A state written
+    // before the key was recorded keeps the display id in its name.
+    let file_name = state
+        .canonical_key
+        .as_deref()
+        .unwrap_or(state.artifact_id.as_str());
+    let target = state_path(workspace, file_name);
 
     // Symlink guard on the target file too: an attacker with write
     // access to `.forgeplan/state/` could have pre-planted a symlink
@@ -282,7 +319,7 @@ pub async fn advance_phase(
     to: Phase,
     reason: Option<String>,
 ) -> anyhow::Result<PhaseState> {
-    advance_phase_inner(workspace, artifact_id, to, reason, false).await
+    advance_phase_inner(workspace, artifact_id, artifact_id, to, reason, false).await
 }
 
 /// Move the phase anywhere, including backwards — for deliberate correction.
@@ -297,27 +334,75 @@ pub async fn advance_phase_unchecked(
     to: Phase,
     reason: Option<String>,
 ) -> anyhow::Result<PhaseState> {
-    advance_phase_inner(workspace, artifact_id, to, reason, true).await
+    advance_phase_inner(workspace, artifact_id, artifact_id, to, reason, true).await
+}
+
+/// Advance the phase of a document whose canonical key is known.
+///
+/// The state file is named after the canonical key; the state itself keeps
+/// the display id — the name a reader knows the document by.
+pub async fn advance_phase_for(
+    workspace: &Path,
+    canonical_key: &str,
+    display_id: &str,
+    to: Phase,
+    reason: Option<String>,
+) -> anyhow::Result<PhaseState> {
+    advance_phase_inner(
+        workspace,
+        canonical_key,
+        display_id,
+        to,
+        reason,
+        false,
+    )
+    .await
+}
+
+/// Move the phase of a document whose canonical key is known, in either
+/// direction — the deliberate correction path.
+pub async fn advance_phase_unchecked_for(
+    workspace: &Path,
+    canonical_key: &str,
+    display_id: &str,
+    to: Phase,
+    reason: Option<String>,
+) -> anyhow::Result<PhaseState> {
+    advance_phase_inner(
+        workspace,
+        canonical_key,
+        display_id,
+        to,
+        reason,
+        true,
+    )
+    .await
 }
 
 async fn advance_phase_inner(
     workspace: &Path,
+    canonical_key: &str,
     artifact_id: &str,
     to: Phase,
     reason: Option<String>,
     allow_regression: bool,
 ) -> anyhow::Result<PhaseState> {
     validate_artifact_id(artifact_id)?;
+    validate_artifact_id(canonical_key)?;
 
     // Track whether state existed on disk — if no, we synthesized the
     // initial Shape in-memory; even when `to == Shape` we must persist
     // so subsequent reads see the materialized state (Round 2 audit
     // H-logic #2: the silent no-persist bug previously left disk empty
     // after "advance from missing" and confused callers).
-    let (mut state, was_missing) = match read_phase(workspace, artifact_id).await? {
+    let (mut state, was_missing) = match read_phase(workspace, canonical_key).await? {
         Some(s) => (s, false),
         None => (initial_state(artifact_id, None), true),
     };
+    // The state names the document by its display id and carries the key the
+    // file is named after.
+    state.artifact_id = artifact_id.to_string();
+    state.canonical_key = Some(canonical_key.to_string());
 
     let from = state.current_phase;
 

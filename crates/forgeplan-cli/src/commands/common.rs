@@ -806,6 +806,54 @@ pub struct WorkspaceResolution {
     pub candidates: Vec<ArtifactCandidate>,
 }
 
+/// The identity a selector names: the canonical key and the display id.
+///
+/// The two names answer different questions. The canonical key is the
+/// identity — the phase state file is named after it, and a document that
+/// shares its display id with another is still named exactly. The display
+/// id is what a reader knows the document by, so a report carries it.
+///
+/// A selector that names no document keeps its own bytes for both: the
+/// caller decides what to do with that, not this helper.
+pub async fn resolve_identity(
+    source: &ReadSource,
+    workspace: &Path,
+    input: &str,
+) -> anyhow::Result<Option<(String, String)>> {
+    // The document set is the Markdown, not the index: the index holds a
+    // legacy row whose key is the display id, while the document declares
+    // the slug a caller may use. The shared resolver decides over the
+    // documents, so every route a caller may use answers the same way.
+    let candidates = match source {
+        ReadSource::Legacy(_) => {
+            forgeplan_core::artifact::documents::workspace_candidates(workspace).await?
+        }
+        ReadSource::Captured(read) => {
+            forgeplan_core::artifact::documents::capture_candidates(read)
+        }
+    };
+    Ok(
+        match forgeplan_core::artifact::canonical_key::resolve_artifact(input, &candidates) {
+            Ok(Some(resolved)) => Some((
+                resolved.identity.canonical_key,
+                resolved.identity.display_id,
+            )),
+            Ok(None) => None,
+            // An unusable selector is not a broken workspace: the advisory
+            // surfaces keep working on raw names and never error on a
+            // document that is not there.
+            Err(forgeplan_core::artifact::canonical_key::ResolveError::InvalidSelector {
+                ..
+            }) => None,
+            Err(problem) => {
+                anyhow::bail!(
+                    "the document set could not be read in full: {problem}"
+                );
+            }
+        },
+    )
+}
+
 /// Resolve one artifact reference against a workspace's own documents.
 ///
 /// The document set is the workspace's markdown, read by the ONE workspace

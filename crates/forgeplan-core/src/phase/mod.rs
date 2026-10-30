@@ -188,7 +188,14 @@ pub struct PhaseTransition {
 /// `.forgeplan/state/<artifact_id>.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PhaseState {
+    /// The display id of the document — the name a reader knows it by.
     pub artifact_id: String,
+    /// The document's canonical key — the identity the state file is named
+    /// after, so two documents that share a display id keep their own state.
+    ///
+    /// `None` for a state written before the key was recorded.
+    #[serde(default)]
+    pub canonical_key: Option<String>,
     #[serde(default)]
     pub workflow_type: WorkflowType,
     pub current_phase: Phase,
@@ -220,6 +227,7 @@ pub fn initial_state(artifact_id: &str, reason: Option<String>) -> PhaseState {
     let now = Utc::now();
     PhaseState {
         artifact_id: artifact_id.to_string(),
+        canonical_key: None,
         workflow_type: WorkflowType::Greenfield,
         current_phase: Phase::Shape,
         advanced_at: now,

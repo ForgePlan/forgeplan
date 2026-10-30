@@ -102,8 +102,13 @@ impl Fixture {
         self.root.join(".forgeplan")
     }
 
+    /// The phase state file, named after the document's canonical key.
+    ///
+    /// The key is the slug the document declares (ADR-030), so the state of
+    /// this document lives under its key — not under the display id that a
+    /// second document may share.
     fn state_path(&self) -> PathBuf {
-        self.workspace().join("state/PRD-001.yaml")
+        self.workspace().join(format!("state/{SLUG}.yaml"))
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -170,16 +175,20 @@ impl Fixture {
             self.current,
             "phase commands must not publish an index generation",
         );
-        assert!(!self.workspace().join(format!("state/{SLUG}.yaml")).exists());
+        // The state file is named after the canonical key — never after the
+        // display id a second document may share, and never after a form of
+        // it.
+        assert!(!self.workspace().join(format!("state/{ID}.yaml")).exists());
         assert!(!self.workspace().join("state/prd-1.yaml").exists());
     }
 }
 
-fn assert_unknown(payload: &Value, id: &str) {
+fn assert_unknown(payload: &Value, id: &str, key: &str) {
     assert_eq!(
         payload,
         &json!({
             "artifact_id": id,
+            "canonical_key": key,
             "current_phase": "unknown",
             "workflow_type": "greenfield",
             "history": [],
@@ -201,6 +210,7 @@ fn assert_advance(
         payload,
         &json!({
             "artifact_id": ID,
+            "canonical_key": SLUG,
             "current_phase": phase,
             "workflow_type": "greenfield",
             "advanced_at": payload["advanced_at"],
@@ -231,7 +241,7 @@ fn phase_show_advance_and_history_preserve_id_slug_and_display_resolution() {
     for migrated in [false, true] {
         let fixture = Fixture::new(migrated);
         for reference in [ID, SLUG, "prd-1", "PRD-1"] {
-            assert_unknown(&fixture.json(&["phase", reference, "--json"]), ID);
+            assert_unknown(&fixture.json(&["phase", reference, "--json"]), ID, SLUG);
         }
         let unknown_text = fixture.ok(&["phase", SLUG]);
         assert!(unknown_text.contains("PRD-001 phase: unknown (no state file)"));
@@ -333,7 +343,7 @@ fn missing_artifacts_keep_raw_advisory_reads_but_cannot_be_advanced() {
     for migrated in [false, true] {
         let fixture = Fixture::new(migrated);
         for reference in ["PRD-999", "untracked-phase"] {
-            assert_unknown(&fixture.json(&["phase", reference, "--json"]), reference);
+            assert_unknown(&fixture.json(&["phase", reference, "--json"]), reference, reference);
             fixture.fails(
                 &["phase-advance", reference, "--to", "code", "--json"],
                 1,
@@ -450,7 +460,7 @@ fn corrupt_phase_yaml_is_quarantined_and_remains_an_advisory_unknown() {
         std::fs::create_dir_all(&state_dir).unwrap();
         let corrupt = b"{not valid yaml";
         std::fs::write(fixture.state_path(), corrupt).unwrap();
-        assert_unknown(&fixture.json(&["phase", SLUG, "--json"]), ID);
+        assert_unknown(&fixture.json(&["phase", SLUG, "--json"]), ID, SLUG);
         assert!(!fixture.state_path().exists());
         let quarantined: Vec<_> = std::fs::read_dir(&state_dir)
             .unwrap()
@@ -459,7 +469,7 @@ fn corrupt_phase_yaml_is_quarantined_and_remains_an_advisory_unknown() {
                 path.file_name()
                     .unwrap()
                     .to_string_lossy()
-                    .starts_with("PRD-001.yaml.corrupt.")
+                    .starts_with(&format!("{SLUG}.yaml.corrupt."))
             })
             .collect();
         assert_eq!(quarantined.len(), 1);
@@ -573,7 +583,7 @@ fn state_and_lock_symlink_conflicts_refuse_advances_without_changing_the_targets
         std::fs::write(&victim, &original).unwrap();
         std::fs::remove_file(fixture.state_path()).unwrap();
         std::os::unix::fs::symlink(&victim, fixture.state_path()).unwrap();
-        assert_unknown(&fixture.json(&["phase", SLUG, "--json"]), ID);
+        assert_unknown(&fixture.json(&["phase", SLUG, "--json"]), ID, SLUG);
         fixture.fails(
             &["phase-advance", SLUG, "--to", "test", "--json"],
             1,
