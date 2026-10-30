@@ -51,8 +51,16 @@ use crate::db::store::{ArtifactRecord, WorkspaceDocument};
 /// directory, never an absolute one. A candidate list is shown to an
 /// operator or an agent, and an absolute path would disclose where the
 /// workspace lives on disk.
-pub async fn workspace_candidates(workspace: &Path) -> Vec<ArtifactCandidate> {
-    candidates_from_documents(&crate::db::store::workspace_documents(workspace).await)
+///
+/// The scan refuses to return a partial set: a document set that could not
+/// be read in full would answer "not found" for everything it does not
+/// hold, and the specification forbids that answer for an unreadable
+/// document.
+pub async fn workspace_candidates(
+    workspace: &Path,
+) -> anyhow::Result<Vec<ArtifactCandidate>> {
+    let documents = crate::db::store::workspace_documents(workspace).await?;
+    Ok(candidates_from_documents(&documents))
 }
 
 /// The candidate list of a scan result.
@@ -87,14 +95,16 @@ pub fn candidates_from_documents(documents: &[WorkspaceDocument]) -> Vec<Artifac
 ///
 /// The map is derived from the document set itself, so it cannot name a
 /// document the resolver did not see.
-pub async fn workspace_document_paths(workspace: &Path) -> HashMap<String, PathBuf> {
+pub async fn workspace_document_paths(
+    workspace: &Path,
+) -> anyhow::Result<HashMap<String, PathBuf>> {
     let mut paths = HashMap::new();
-    for candidate in workspace_candidates(workspace).await {
+    for candidate in workspace_candidates(workspace).await? {
         paths
             .entry(candidate.canonical_key)
             .or_insert(candidate.relative_path);
     }
-    paths
+    Ok(paths)
 }
 
 /// Resolve one reference against the workspace's own documents.
@@ -107,7 +117,11 @@ pub async fn resolve_in_workspace(
     workspace: &Path,
     input: &str,
 ) -> Result<Option<ResolvedArtifact>, ResolveError> {
-    let documents = workspace_candidates(workspace).await;
+    let documents = workspace_candidates(workspace).await.map_err(|error| {
+        ResolveError::IncompleteCapture {
+            message: error.to_string(),
+        }
+    })?;
     resolve_artifact(input, &documents)
 }
 
@@ -295,7 +309,9 @@ mod tests {
             "Alpha",
         )]);
 
-        let candidates = workspace_candidates(tmp.path()).await;
+        let candidates = workspace_candidates(tmp.path())
+            .await
+            .expect("the workspace scan reads every document");
         assert_eq!(candidates.len(), 1, "the one document must be in the set");
         let only = &candidates[0];
         assert_eq!(only.canonical_key, "prd-alpha-k0123");

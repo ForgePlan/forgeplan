@@ -13,10 +13,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
-use forgeplan_core::artifact::canonical_key::{
-    ArtifactCandidate, ArtifactIdentity, ResolveError, ResolvedArtifact, canonical_key_from_document,
-    resolve_artifact as resolve_artifact_shared,
-};
+use forgeplan_core::artifact::canonical_key::canonical_key_from_document;
 use forgeplan_core::artifact::frontmatter::{
     Frontmatter, augment_frontmatter_with_id_fields, parse_frontmatter,
 };
@@ -4049,10 +4046,10 @@ impl ForgeplanServer {
         // The TARGET may name no document yet — a forward reference is a
         // legal edge. It may NOT be ambiguous: two documents answering one
         // name is an error, not a choice.
-        let source_resolution = read
-            .resolve(&ws, &p.source)
-            .await
-            .map_err(|e| safe_err_result("resolve source: ", e))?;
+        let source_resolution = match read.resolve(&ws, &p.source).await {
+            Ok(resolution) => resolution,
+            Err(error) => return Ok(safe_err_result("resolve source: ", error)),
+        };
         let source_id = match &source_resolution {
             crate::convert::Resolution::Found(resolved) => resolved.identity.display_id.clone(),
             other => return Ok(resolution_error(&p.source, other)),
@@ -4065,10 +4062,10 @@ impl ForgeplanServer {
         let target_id = if target_is_qualified {
             p.target.clone()
         } else {
-            let candidates = read
-                .resolve(&ws, &p.target)
-                .await
-                .map_err(|e| safe_err_result("resolve target: ", e))?;
+            let candidates = match read.resolve(&ws, &p.target).await {
+                Ok(candidates) => candidates,
+                Err(error) => return Ok(safe_err_result("resolve target: ", error)),
+            };
             match &candidates {
                 crate::convert::Resolution::Found(resolved) => resolved.identity.display_id.clone(),
                 // A miss is a legal forward reference.
@@ -4374,10 +4371,10 @@ impl ForgeplanServer {
         // The SOURCE must name exactly one document. The TARGET may name no
         // document yet (a forward reference), but it must NOT be ambiguous:
         // two documents answering one name is an error, not a choice.
-        let source_resolution = read
-            .resolve(&ws, &p.source)
-            .await
-            .map_err(|e| safe_err_result("resolve source: ", e))?;
+        let source_resolution = match read.resolve(&ws, &p.source).await {
+            Ok(resolution) => resolution,
+            Err(error) => return Ok(safe_err_result("resolve source: ", error)),
+        };
         let source_id = match &source_resolution {
             crate::convert::Resolution::Found(resolved) => resolved.identity.display_id.clone(),
             other => return Ok(resolution_error(&p.source, other)),
@@ -4390,10 +4387,10 @@ impl ForgeplanServer {
         let (target_key, target_id) = if target_is_qualified {
             (p.target.clone(), p.target.clone())
         } else {
-            let resolution = read
-                .resolve(&ws, &p.target)
-                .await
-                .map_err(|e| safe_err_result("resolve target: ", e))?;
+            let resolution = match read.resolve(&ws, &p.target).await {
+                Ok(resolution) => resolution,
+                Err(error) => return Ok(safe_err_result("resolve target: ", error)),
+            };
             match &resolution {
                 crate::convert::Resolution::Found(resolved) => (
                     resolved.identity.canonical_key.clone(),

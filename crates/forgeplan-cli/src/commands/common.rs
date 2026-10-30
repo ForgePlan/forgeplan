@@ -816,7 +816,21 @@ pub async fn resolve_against_workspace(
     workspace: &Path,
     input: &str,
 ) -> anyhow::Result<WorkspaceResolution> {
-    let documents = forgeplan_core::artifact::documents::workspace_candidates(workspace).await;
+    let documents = match forgeplan_core::artifact::documents::workspace_candidates(workspace).await
+    {
+        Ok(documents) => documents,
+        Err(error) => {
+            // The document set could not be read in full. That is its own
+            // outcome, not a miss: the CLI and the MCP server report the
+            // same code for the same workspace.
+            return Ok(WorkspaceResolution {
+                outcome: forgeplan_mcp::convert::Resolution::IncompleteCapture {
+                    message: error.to_string(),
+                },
+                candidates: Vec::new(),
+            });
+        }
+    };
     Ok(resolve_over(input, &documents, resolve_in_document_set(input, &documents)))
 }
 
@@ -857,7 +871,8 @@ pub async fn resolve_against_legacy_index(
             // claim that key, with the path each row's markdown has. The
             // paths come from the ONE workspace scan, so they are the same
             // paths the file route would report.
-            let paths = forgeplan_core::artifact::documents::workspace_document_paths(workspace).await;
+            let paths =
+                forgeplan_core::artifact::documents::workspace_document_paths(workspace).await?;
             let summaries = store.list_artifacts(None).await?;
             forgeplan_core::artifact::documents::candidates_from_summaries(&summaries)
                 .into_iter()

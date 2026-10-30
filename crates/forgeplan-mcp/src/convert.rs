@@ -435,7 +435,7 @@ pub async fn resolve_in_legacy_index(
     let records = store.list_records(None).await?;
     let mut candidates = candidates_from_records(&records);
     if !candidates.is_empty() {
-        let paths = forgeplan_core::artifact::documents::workspace_document_paths(workspace).await;
+        let paths = forgeplan_core::artifact::documents::workspace_document_paths(workspace).await?;
         for candidate in &mut candidates {
             if let Some(path) = paths.get(&candidate.canonical_key) {
                 candidate.relative_path = path.clone();
@@ -770,9 +770,7 @@ mod tests {
         )
         .expect("write");
 
-        let resolution = resolve_in_workspace_files(workspace, "PRD-001")
-            .await
-            .expect("the workspace resolves");
+        let resolution = resolve_in_workspace_files(workspace, "PRD-001").await;
         assert!(resolution.is_found(), "the document must resolve");
         assert_eq!(resolution.canonical_key(), Some("prd-alpha-k0123"));
         assert_eq!(resolution.display_id(), Some("PRD-001"));
@@ -792,9 +790,7 @@ mod tests {
             .expect("write");
         }
 
-        let resolution = resolve_in_workspace_files(workspace, "PRD-001")
-            .await
-            .expect("the workspace resolves");
+        let resolution = resolve_in_workspace_files(workspace, "PRD-001").await;
         assert_eq!(
             resolution_code(&resolution),
             "ambiguous",

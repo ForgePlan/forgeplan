@@ -100,7 +100,9 @@ async fn the_cli_and_the_mcp_server_agree_over_the_same_workspace_document_set()
     let tmp = workspace_with_two_prds_sharing_one_display_id();
     let workspace = tmp.path().join(".forgeplan");
 
-    let documents = forgeplan_core::artifact::documents::workspace_candidates(&workspace).await;
+    let documents = forgeplan_core::artifact::documents::workspace_candidates(&workspace)
+        .await
+        .expect("the workspace scan reads every document");
     assert_eq!(
         documents.len(),
         3,
@@ -139,7 +141,9 @@ async fn the_document_set_names_every_document_without_an_absolute_path() {
     let tmp = workspace_with_two_prds_sharing_one_display_id();
     let workspace = tmp.path().join(".forgeplan");
 
-    let documents = forgeplan_core::artifact::documents::workspace_candidates(&workspace).await;
+    let documents = forgeplan_core::artifact::documents::workspace_candidates(&workspace)
+        .await
+        .expect("the workspace scan reads every document");
     let alpha = documents
         .iter()
         .find(|candidate| candidate.canonical_key == "prd-alpha")
@@ -170,7 +174,9 @@ async fn the_refusal_names_every_candidate_by_key_title_and_relative_path() {
     let tmp = workspace_with_two_prds_sharing_one_display_id();
     let workspace = tmp.path().join(".forgeplan");
 
-    let documents = forgeplan_core::artifact::documents::workspace_candidates(&workspace).await;
+    let documents = forgeplan_core::artifact::documents::workspace_candidates(&workspace)
+        .await
+        .expect("the workspace scan reads every document");
     let outcome = forgeplan::commands::common::resolve_in_document_set("PRD-001", &documents);
     let failure =
         forgeplan::commands::common::resolution_failure(&outcome, "PRD-001", &documents);

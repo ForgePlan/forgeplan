@@ -495,6 +495,13 @@ fn label_mermaid_nodes(
     }
     let mut declarations: Vec<String> = Vec::new();
     for (id, identity) in identities {
+        // A node the renderer dropped — the brownfield filter keeps only the
+        // brownfield kinds — must not be declared here. A declaration would
+        // put the node back into the graph the filter just emptied, and the
+        // graph would show a document the caller asked not to see.
+        if !mermaid.contains(id.as_str()) {
+            continue;
+        }
         declarations.push(format!("    {id}[\"{}\"]", escape_identity_label(&identity.label())));
     }
     let mut lines: Vec<String> = mermaid.lines().map(|line| line.to_string()).collect();
