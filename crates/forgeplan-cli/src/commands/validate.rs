@@ -7,7 +7,7 @@ use crate::commands::common;
 use crate::ui;
 
 pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> anyhow::Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (ws, source) = common::open_read_source().await?;
     let legacy_records;
     let all_records = match &source {
         common::ReadSource::Legacy(store) => {
@@ -28,18 +28,22 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> a
         // for display-id input it normalises case+padding. Fall back to
         // the legacy uppercase-match if resolver returns None (covers edge
         // case where DB id differs from any resolve path).
-        let canonical = match &source {
-            common::ReadSource::Legacy(store) => store.resolve_id(target_id).await?,
-            common::ReadSource::Captured(read) => read.resolve_id(target_id),
-        };
+        // The selector is resolved over the document set, so a caller may use
+        // the display id, the slug the document declares or the canonical key
+        // — and the answer is the document, whichever route was taken. The
+        // uppercase fallback keeps the old behaviour for a name that matches
+        // no document.
         let upper_input = target_id.to_uppercase();
-        all_records
-            .iter()
-            .filter(|r| match &canonical {
-                Some(c) => r.id == *c,
-                None => r.id.to_uppercase() == upper_input,
-            })
-            .collect()
+        match common::resolve_identity(&source, &ws, target_id).await? {
+            Some((canonical_key, display_id)) => all_records
+                .iter()
+                .filter(|r| r.id == display_id || r.canonical_key == canonical_key)
+                .collect(),
+            None => all_records
+                .iter()
+                .filter(|r| r.id.to_uppercase() == upper_input)
+                .collect(),
+        }
     } else if ci {
         // CI mode: validate active + stale (stale = expired but still live decisions)
         all_records
