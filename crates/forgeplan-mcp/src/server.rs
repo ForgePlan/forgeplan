@@ -13,7 +13,10 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
-use forgeplan_core::artifact::canonical_key::canonical_key_from_document;
+use forgeplan_core::artifact::canonical_key::{
+    ArtifactCandidate, ArtifactIdentity, ResolveError, ResolvedArtifact, canonical_key_from_document,
+    resolve_artifact as resolve_artifact_shared,
+};
 use forgeplan_core::artifact::frontmatter::{
     Frontmatter, augment_frontmatter_with_id_fields, parse_frontmatter,
 };
@@ -213,6 +216,61 @@ impl ReadSource {
         match self {
             Self::Workspace(read) => Ok(read.resolve_id(input)),
             Self::Legacy(store) => store.resolve_id(input).await,
+        }
+    }
+
+    /// Resolve an artifact reference through the ONE shared resolver.
+    ///
+    /// The document set is this layout's own: the capture's records on a
+    /// migrated workspace, the index's rows on a legacy one. The algorithm
+    /// and the outcome taxonomy are the shared ones, so the CLI and this
+    /// server answer the same question the same way — including refusing
+    /// an ambiguous reference instead of picking one of its claimants.
+    ///
+    /// The `workspace` argument is the `.forgeplan` directory; the legacy
+    /// layout needs it to give an ambiguity report a path an operator can
+    /// open.
+    pub async fn resolve(
+        &self,
+        workspace: &std::path::Path,
+        input: &str,
+    ) -> anyhow::Result<crate::convert::Resolution> {
+        match self {
+            Self::Workspace(read) => Ok(crate::convert::resolve_in_capture(read, input)),
+            Self::Legacy(store) => {
+                crate::convert::resolve_in_legacy_index(store, workspace, input).await
+            }
+        }
+    }
+
+    /// Resolve an artifact reference to the one document it names.
+    ///
+    /// `Ok(Some(display_id))` — exactly one document answers.
+    /// `Ok(None)` — no document answers: a plain miss, which the caller
+    /// words with its own remediation.
+    /// `Err(tool_error)` — the reference was REFUSED: an ambiguity, a
+    /// contested canonical key, an unusable selector, or a document set
+    /// that could not be read in full. These are not misses and must not
+    /// be reported as misses — the caller returns this error as it is.
+    ///
+    /// The distinction is the whole point of the shared resolver: a name
+    /// two documents answer to is a refusal, not a miss, and reporting it
+    /// as "not found" is how a write lands on the wrong document.
+    pub async fn resolve_artifact(
+        &self,
+        workspace: &std::path::Path,
+        input: &str,
+    ) -> Result<Option<String>, CallToolResult> {
+        let resolution = self
+            .resolve(workspace, input)
+            .await
+            .map_err(|e| safe_err_result("resolve reference: ", e))?;
+        match resolution {
+            crate::convert::Resolution::Found(found) => {
+                Ok(Some(found.identity.display_id))
+            }
+            crate::convert::Resolution::NotFound => Ok(None),
+            other => Err(resolution_error(input, &other)),
         }
     }
 
@@ -1660,6 +1718,111 @@ fn artifact_not_found(id: &str) -> CallToolResult {
          `forgeplan_search \"<term>\"`. If you meant to create it: \
          `forgeplan_new kind=<prd|rfc|adr|...> title=\"...\"`.",
     )
+}
+
+/// The tool error a failed resolution produces.
+///
+/// The body is a JSON object, so a caller can branch on the outcome
+/// WITHOUT parsing prose:
+///
+/// - `code` — which of the four outcomes happened (`not_found`,
+///   `ambiguous`, `conflicting_canonical_key`, `invalid_selector`,
+///   `incomplete_capture`);
+/// - `input` — the selector as the caller wrote it;
+/// - `candidates` — every document the refusal involves, each by canonical
+///   key, display id, title and WORKSPACE-RELATIVE path;
+/// - `message` — the same sentence a human reads;
+/// - `_next_action` — how to recover.
+///
+/// A refusal that names no document is NOT a miss: an ambiguity and a
+/// contested key each name their candidates, and an incomplete document set
+/// says so. `not_found` is the only outcome with an empty candidate list.
+///
+/// The id is sanitized before it reaches the body (the C-2 concern
+/// `_next_action` already guards against), and a candidate path is
+/// workspace-relative, so no absolute path is disclosed.
+fn resolution_error(input: &str, resolution: &crate::convert::Resolution) -> CallToolResult {
+    use crate::convert::{describe_candidates, resolution_code, Resolution};
+
+    let code = resolution_code(resolution);
+    let safe_input = sanitize_for_hint(input);
+    let (message, candidates, next_action) = match resolution {
+        Resolution::Found(_) => (
+            "Artifact resolved.".to_string(),
+            Vec::new(),
+            "Nothing to do.".to_string(),
+        ),
+        Resolution::NotFound => (
+            format!("Artifact '{safe_input}' not found."),
+            Vec::new(),
+            "List existing artifacts: `forgeplan_list`. Search by keyword: \
+             `forgeplan_search \"<term>\"`. If you meant to create it: \
+             `forgeplan_new kind=<prd|rfc|adr|...> title=\"...\"`."
+                .to_string(),
+        ),
+        Resolution::Ambiguous { candidates, .. } => (
+            format!(
+                "Artifact reference '{safe_input}' is ambiguous — {} documents match it.",
+                candidates.len()
+            ),
+            candidates.clone(),
+            "Address one document by its canonical key, or rename one of them."
+                .to_string(),
+        ),
+        Resolution::ConflictingCanonicalKey { key, candidates } => (
+            format!(
+                "Canonical key '{}' is claimed by {} documents.",
+                sanitize_for_hint(key),
+                candidates.len()
+            ),
+            candidates.clone(),
+            "Repair the identity collision: run `forgeplan index` to rebuild the \
+             derived index from the markdown, or rename one of the claimants."
+                .to_string(),
+        ),
+        Resolution::InvalidSelector { .. } => (
+            format!("'{safe_input}' is not a valid artifact reference."),
+            Vec::new(),
+            "Use a display id (`PRD-001`) or a canonical key.".to_string(),
+        ),
+        Resolution::IncompleteCapture { message } => (
+            format!(
+                "The document set is incomplete, so '{safe_input}' cannot be resolved: {}",
+                sanitize_for_hint(message)
+            ),
+            Vec::new(),
+            "Run `forgeplan index` to rebuild the derived index from the markdown."
+                .to_string(),
+        ),
+    };
+
+    let candidate_payload: Vec<serde_json::Value> = candidates
+        .iter()
+        .map(|candidate| {
+            serde_json::json!({
+                "canonical_key": candidate.canonical_key,
+                "display_id": candidate.display_id,
+                "title": candidate.title,
+                "relative_path": candidate.relative_path.to_string_lossy(),
+            })
+        })
+        .collect();
+    // The human-readable list of the same candidates, so a caller that
+    // only reads text still sees who matched.
+    let described = describe_candidates(&candidates).join("\n");
+
+    let body = serde_json::json!({
+        "error": code,
+        "code": code,
+        "input": safe_input,
+        "candidates": candidate_payload,
+        "message": message,
+        "_next_action": next_action,
+        "candidates_text": described,
+    });
+    CallToolResult::error(vec![Content::text(
+        serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
+    )])
 }
 
 fn llm_config_for_workspace(
@@ -3625,6 +3788,15 @@ impl ForgeplanServer {
             self.resolve_write_source(p.workspace.as_deref()).await?;
         let ws = resolved.workspace_dir;
 
+        // Resolve the scored artifact through the ONE shared resolver, so a
+        // name two documents answer to is a refusal that names every
+        // candidate — not a silently scored one of them.
+        let score_id = match read.resolve_artifact(&ws, &p.id).await {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(tool_error) => return Ok(tool_error),
+        };
+
         let (target, evidence_dtos, report, link_count) = match &read {
             ReadSource::Legacy(store) => {
                 // Round 9 audit HIGH-1: MCP parity — acquire workspace lock so MCP
@@ -3632,14 +3804,14 @@ impl ForgeplanServer {
                 // Pre-Round 9 the inline `r_eff_recursive` was called but
                 // `update_r_eff_score` was never invoked; the helper closes that gap.
 
-                let target = match store.get_record(&p.id).await {
+                let target = match store.get_record(&score_id).await {
                     Ok(Some(r)) => r,
                     Ok(None) => return Ok(artifact_not_found(&p.id)),
                     Err(e) => return Ok(safe_err_result("", e)),
                 };
 
-                let outgoing = store.get_relations(&p.id).await.unwrap_or_else(|e| {
-                    tracing::warn!("Failed to get relations for {}: {e}", p.id);
+                let outgoing = store.get_relations(&score_id).await.unwrap_or_else(|e| {
+                    tracing::warn!("Failed to get relations for {}: {e}", score_id);
                     Vec::new()
                 });
                 let evidence_targets: Vec<String> = outgoing
@@ -3867,16 +4039,47 @@ impl ForgeplanServer {
             }
         };
 
-        match read.get_record(&p.source).await {
-            Ok(None) => return Ok(artifact_not_found(&p.source)),
-            Err(e) => {
-                return Ok(err_hinted(
-                    &format!("{e}"),
-                    "Re-run with a valid source ID.",
-                ));
+        // Resolve BOTH endpoints through the one shared resolver, so this
+        // tool and the CLI's `link` name the same documents.
+        //
+        // The SOURCE must name exactly one document: an edge is written into
+        // one document's `links:` block, and "the first document that matched"
+        // is the silent pick this resolver exists to prevent.
+        //
+        // The TARGET may name no document yet — a forward reference is a
+        // legal edge. It may NOT be ambiguous: two documents answering one
+        // name is an error, not a choice.
+        let source_resolution = read
+            .resolve(&ws, &p.source)
+            .await
+            .map_err(|e| safe_err_result("resolve source: ", e))?;
+        let source_id = match &source_resolution {
+            crate::convert::Resolution::Found(resolved) => resolved.identity.display_id.clone(),
+            other => return Ok(resolution_error(&p.source, other)),
+        };
+
+        // A qualified cross-source reference (`KEY@qualifier`) names a
+        // document in ANOTHER workspace: it is not a local selector, so the
+        // local resolver must not judge it. It stays verbatim.
+        let target_is_qualified = p.target.contains('@');
+        let target_id = if target_is_qualified {
+            p.target.clone()
+        } else {
+            let candidates = read
+                .resolve(&ws, &p.target)
+                .await
+                .map_err(|e| safe_err_result("resolve target: ", e))?;
+            match &candidates {
+                crate::convert::Resolution::Found(resolved) => resolved.identity.display_id.clone(),
+                // A miss is a legal forward reference.
+                crate::convert::Resolution::NotFound => p.target.clone(),
+                // An ambiguity, a contested key, an unusable selector, an
+                // incomplete document set — all refusals.
+                other => return Ok(resolution_error(&p.target, other)),
             }
-            _ => {}
-        }
+        };
+        let source_id = source_id.as_str();
+        let target_id = target_id.as_str();
 
         // ADR-003 / PROB-048 / PRD-073: pre-sync canonical participants into
         // the derived index, then render only the changed outgoing source.
@@ -3888,13 +4091,13 @@ impl ForgeplanServer {
         // preserve its duplicate-rejection behavior.
         let ctx = projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref());
         let upsert_outcome = if p.replace {
-            match projection::replace_link_with_projection(&ctx, &p.source, &p.target, &relation)
+            match projection::replace_link_with_projection(&ctx, source_id, target_id, &relation)
                 .await
             {
                 Ok(o) => Some(o),
                 Err(e) => {
-                    let safe_src = sanitize_for_hint(&p.source);
-                    let safe_tgt = sanitize_for_hint(&p.target);
+                    let safe_src = sanitize_for_hint(source_id);
+                    let safe_tgt = sanitize_for_hint(target_id);
                     return Ok(err_hinted(
                         &format!("{e}"),
                         format!(
@@ -3906,10 +4109,10 @@ impl ForgeplanServer {
             }
         } else {
             if let Err(e) =
-                projection::add_link_with_projection(&ctx, &p.source, &p.target, &relation).await
+                projection::add_link_with_projection(&ctx, source_id, target_id, &relation).await
             {
-                let safe_src = sanitize_for_hint(&p.source);
-                let safe_tgt = sanitize_for_hint(&p.target);
+                let safe_src = sanitize_for_hint(source_id);
+                let safe_tgt = sanitize_for_hint(target_id);
                 return Ok(err_hinted(
                     &format!("{e}"),
                     format!(
@@ -3930,18 +4133,18 @@ impl ForgeplanServer {
         // workspace has nothing to recompute here — the link itself already
         // committed to the canonical Markdown.
         if let Some(store) = legacy_sink.as_deref()
-            && let Err(e) = forgeplan_core::scoring::sync_score_target(store, &p.source).await
+            && let Err(e) = forgeplan_core::scoring::sync_score_target(store, source_id).await
         {
             tracing::warn!(
                 target = "scoring",
                 error = %e,
-                id = %p.source,
+                id = %source_id,
                 "auto-recompute failed after MCP forgeplan_link; run forgeplan_score_all"
             );
         }
 
-        let safe_src = sanitize_for_hint(&p.source);
-        let safe_tgt = sanitize_for_hint(&p.target);
+        let safe_src = sanitize_for_hint(source_id);
+        let safe_tgt = sanitize_for_hint(target_id);
         let next_action = match relation.as_str() {
             // PRD-075 FR-009 / Round 9 HIGH-1: cache is now self-healing for
             // the source after each link, so the canonical follow-up is parent
@@ -3972,16 +4175,16 @@ impl ForgeplanServer {
         let message = match upsert_outcome {
             Some(projection::LinkUpsertOutcome::Replaced { old_relation }) => format!(
                 "Replaced: {} --{}--> {} (was: --{}-->)",
-                p.source, relation, p.target, old_relation
+                source_id, relation, target_id, old_relation
             ),
             Some(projection::LinkUpsertOutcome::Unchanged) => {
                 format!(
                     "Unchanged: {} --{}--> {} already exists",
-                    p.source, relation, p.target
+                    source_id, relation, target_id
                 )
             }
             Some(projection::LinkUpsertOutcome::Created) | None => {
-                format!("Linked: {} --{}--> {}", p.source, relation, p.target)
+                format!("Linked: {} --{}--> {}", source_id, relation, target_id)
             }
         };
 
@@ -3999,7 +4202,7 @@ impl ForgeplanServer {
         // next step.
         let mut auto_activated: Option<String> = None;
         let mut completion_hint: Option<String> = None;
-        let safe_src = sanitize_for_hint(&p.source);
+        let safe_src = sanitize_for_hint(source_id);
         // Fresh read: the pre-link snapshot predates this very mutation, and on a
         // migrated workspace the auto-activate decision below is about the
         // committed Markdown, not about what the capture saw before it.
@@ -4008,7 +4211,7 @@ impl ForgeplanServer {
             .await
             .map_err(safe_mcp_error)?;
         let post_link_source = post_link_view
-            .get_record(&p.source)
+            .get_record(source_id)
             .await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
         if let Some(src_record) = post_link_source
@@ -4044,19 +4247,19 @@ impl ForgeplanServer {
                 if p.auto_activate_source_if_complete {
                     let activate_outcome = match &post_link_view {
                         ReadSource::Legacy(store) => {
-                            match forgeplan_core::lifecycle::activate(store, &p.source, false).await
+                            match forgeplan_core::lifecycle::activate(store, source_id, false).await
                             {
                                 Ok(_) => {
                                     // Re-render after activation so the file's
                                     // status: reflects active (same discipline as
                                     // forgeplan_activate tool above).
                                     if let Err(e) =
-                                        projection::render_after_mutation(&ws, store, &p.source)
+                                        projection::render_after_mutation(&ws, store, source_id)
                                             .await
                                     {
                                         tracing::warn!(
                                             "auto-activate post-render for {} failed: {e}",
-                                            p.source
+                                            source_id
                                         );
                                     }
                                     Ok(())
@@ -4071,7 +4274,7 @@ impl ForgeplanServer {
                                 legacy_sink.as_deref(),
                             );
                             forgeplan_core::lifecycle::canonical::activate_captured(
-                                &ctx, view, &p.source, false,
+                                &ctx, view, source_id, false,
                             )
                             .await
                             .map(|_| ())
@@ -4079,7 +4282,7 @@ impl ForgeplanServer {
                     };
                     match activate_outcome {
                         Ok(()) => {
-                            auto_activated = Some(p.source.clone());
+                            auto_activated = Some(source_id.to_string());
                             completion_hint = Some(format!(
                                 "Linked. R_eff={r_eff_after:.2} on {safe_src} (complete evidence). \
                                  Source auto-activated draft → active. Reconcile parents: \
@@ -4089,7 +4292,7 @@ impl ForgeplanServer {
                         Err(e) => {
                             tracing::warn!(
                                 "auto-activate of {} failed: {e} (link succeeded; user can retry forgeplan_activate manually)",
-                                p.source
+                                source_id
                             );
                             completion_hint = Some(format!(
                                 "Linked. R_eff={r_eff_after:.2} on {safe_src} (complete evidence). \
@@ -4164,24 +4367,68 @@ impl ForgeplanServer {
             }
         };
 
+        // Resolve BOTH endpoints through the one shared resolver, exactly as
+        // `forgeplan_link` does — so the two tools and the CLI's `link`/
+        // `unlink` name the same documents.
+        //
+        // The SOURCE must name exactly one document. The TARGET may name no
+        // document yet (a forward reference), but it must NOT be ambiguous:
+        // two documents answering one name is an error, not a choice.
+        let source_resolution = read
+            .resolve(&ws, &p.source)
+            .await
+            .map_err(|e| safe_err_result("resolve source: ", e))?;
+        let source_id = match &source_resolution {
+            crate::convert::Resolution::Found(resolved) => resolved.identity.display_id.clone(),
+            other => return Ok(resolution_error(&p.source, other)),
+        };
+
+        // A qualified cross-source reference names a document in ANOTHER
+        // workspace: it is not a local selector, so the local resolver must
+        // not judge it. It stays verbatim.
+        let target_is_qualified = p.target.contains('@');
+        let (target_key, target_id) = if target_is_qualified {
+            (p.target.clone(), p.target.clone())
+        } else {
+            let resolution = read
+                .resolve(&ws, &p.target)
+                .await
+                .map_err(|e| safe_err_result("resolve target: ", e))?;
+            match &resolution {
+                crate::convert::Resolution::Found(resolved) => (
+                    resolved.identity.canonical_key.clone(),
+                    resolved.identity.display_id.clone(),
+                ),
+                // A miss is a legal forward reference — and an edge to it
+                // cannot exist, so the "relation not found" refusal below
+                // is the honest answer.
+                crate::convert::Resolution::NotFound => (p.target.clone(), p.target.clone()),
+                other => return Ok(resolution_error(&p.target, other)),
+            }
+        };
+
         // Verify the edge actually exists before delete so we can return a
         // useful error rather than a silent no-op (LanceDB's delete is
         // idempotent — without this check the caller has no signal that the
         // typo'd relation was never present).
-        let existing = match read.get_relations(&p.source).await {
+        //
+        // The edges are keyed by CANONICAL KEY, so that is what the
+        // comparison uses: comparing a display id against a key would miss
+        // every edge of a minted document.
+        let existing = match read.get_relations(&source_id).await {
             Ok(rs) => rs,
             Err(e) => return Ok(safe_err_result("read relations", e)),
         };
         let found = existing
             .iter()
-            .any(|(t, r)| t.eq_ignore_ascii_case(&p.target) && r == &relation);
+            .any(|(t, r)| t.eq_ignore_ascii_case(&target_key) && r == &relation);
         if !found {
-            let safe_src = sanitize_for_hint(&p.source);
-            let safe_tgt = sanitize_for_hint(&p.target);
+            let safe_src = sanitize_for_hint(&source_id);
+            let safe_tgt = sanitize_for_hint(&target_id);
             return Ok(err_hinted(
                 &format!(
                     "Relation '{}' from {} to {} not found",
-                    relation, p.source, p.target
+                    relation, source_id, target_id
                 ),
                 format!(
                     "List existing edges from source: `forgeplan_get {safe_src}` (check the \
@@ -4190,11 +4437,10 @@ impl ForgeplanServer {
                 ),
             ));
         }
-
         if let Err(e) = projection::delete_link_with_projection(
             &projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref()),
-            &p.source,
-            &p.target,
+            &source_id,
+            &target_id,
             &relation,
         )
         .await
@@ -4207,19 +4453,19 @@ impl ForgeplanServer {
         // therefore changed R_eff). Legacy projection only — see
         // `forgeplan_link`.
         if let Some(store) = legacy_sink.as_deref()
-            && let Err(e) = forgeplan_core::scoring::sync_score_target(store, &p.source).await
+            && let Err(e) = forgeplan_core::scoring::sync_score_target(store, &source_id).await
         {
             tracing::warn!(
                 target = "scoring",
                 error = %e,
-                id = %p.source,
+                id = %source_id,
                 "auto-recompute failed after MCP forgeplan_unlink; run forgeplan_score_all"
             );
         }
 
         // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
         let mut base = serde_json::to_value(&LinkResponse {
-            message: format!("Unlinked: {} --{}--> {}", p.source, relation, p.target),
+            message: format!("Unlinked: {} --{}--> {}", source_id, relation, target_id),
             auto_activated: None,
         })
         .map_err(|e| safe_mcp_error(anyhow::anyhow!("Response serialization failed: {e}")))?;
@@ -4279,13 +4525,20 @@ impl ForgeplanServer {
         // accepts both display id (`PRD-074`) and slug (`prd-auth-system`)
         // and returns the canonical DB id.
         //
-        // Order: resolve → get_record. `resolve_id(None)` here means "try the
-        // verbatim id anyway" so legacy artifacts without a slug field still
-        // load via the original direct path.
-        let canonical = match read.resolve_id(&p.id).await {
-            Ok(Some(c)) => c,
-            Ok(None) => p.id.clone(),
-            Err(e) => return Ok(safe_err_result("", e)),
+        // Order: resolve → get_record. The resolver accepts both a display
+        // id (`PRD-074`) and a canonical key (`prd-auth-system-k0123…`),
+        // and it returns the display id of the ONE document the reference
+        // names.
+        //
+        // A name two documents answer to is a REFUSAL, not a miss: the
+        // error names every candidate instead of reporting "not found" and
+        // leaving the caller to guess. The previous `resolve_id` collapsed
+        // that case into `None`, which is how an ambiguous reference
+        // became indistinguishable from a typo.
+        let canonical = match read.resolve_artifact(&ws, &p.id).await {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(tool_error) => return Ok(tool_error),
         };
         match read.get_record(&canonical).await {
             Ok(Some(r)) => {
@@ -4407,12 +4660,14 @@ impl ForgeplanServer {
         // downstream id use hits the case-sensitive direct `id` column lookup and
         // `forgeplan_update id=prd-001` fails with "not found" even though
         // `forgeplan_get`/`validate`/`list` accept the same lowercase/slug form.
-        // `resolve_id(None)` falls back to the verbatim id so legacy artifacts
-        // (no slug field) still load via the original direct path.
-        let canonical = match read.resolve_id(&p.id).await {
-            Ok(Some(c)) => c,
-            Ok(None) => p.id.clone(),
-            Err(e) => return Ok(safe_err_result("", e)),
+        //
+        // The shared resolver also separates the outcomes: a name two
+        // documents answer to is a refusal that names every candidate, not a
+        // miss.
+        let canonical = match read.resolve_artifact(&ws, &p.id).await {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(tool_error) => return Ok(tool_error),
         };
 
         // Verify exists. The helpers do their own sync_before_mutation; we
@@ -4878,10 +5133,10 @@ impl ForgeplanServer {
         let legacy_sink = resolved.legacy_store.clone();
         let migrated = legacy_sink.is_none();
         let ws = resolved.workspace_dir;
-        let canonical_id = match read.resolve_id(&p.id).await {
-            Ok(Some(c)) => c,
+        let canonical_id = match read.resolve_artifact(&ws, &p.id).await {
+            Ok(Some(id)) => id,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(safe_err_result("", e)),
+            Err(tool_error) => return Ok(tool_error),
         };
 
         // ADR-003 / PROB-048 file-first: pre-mutation file→store sync. Only a
@@ -5077,18 +5332,28 @@ impl ForgeplanServer {
         let legacy_sink = resolved.legacy_store.clone();
         let migrated = legacy_sink.is_none();
         let ws = resolved.workspace_dir;
-        let canonical_id = match read.resolve_id(&p.id).await {
-            Ok(Some(c)) => c,
+        let canonical_id = match read.resolve_artifact(&ws, &p.id).await {
+            Ok(Some(id)) => id,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(safe_err_result("", e)),
+            Err(tool_error) => return Ok(tool_error),
         };
-        let replacement_id = match read.resolve_id(&p.by).await {
-            Ok(Some(c)) => c,
-            // Forward references are allowed by design: the replacement may be
-            // minted by a later cross-PR call. Pass the input through so the
-            // lifecycle layer's own "Replacement not found" refusal fires.
-            Ok(None) => p.by.clone(),
-            Err(e) => return Ok(safe_err_result("", e)),
+        // The REPLACEMENT may be a forward reference: it may be minted by a
+        // later cross-PR call. So a miss keeps the declared text and the
+        // lifecycle layer's own "Replacement not found" refusal fires.
+        //
+        // An AMBIGUITY is not a forward reference: two documents already
+        // answer to the name, and superseding one of them by accident is
+        // exactly the write this resolver exists to prevent. It is an error.
+        let replacement_id = if p.by.contains('@') {
+            // A qualified cross-source reference names a document in another
+            // workspace: it is not a local selector.
+            p.by.clone()
+        } else {
+            match read.resolve_artifact(&ws, &p.by).await {
+                Ok(Some(id)) => id,
+                Ok(None) => p.by.clone(),
+                Err(tool_error) => return Ok(tool_error),
+            }
         };
 
         // PRD-055: capture the original state BEFORE lifecycle transition
@@ -5277,10 +5542,10 @@ impl ForgeplanServer {
         let legacy_sink = resolved.legacy_store.clone();
         let migrated = legacy_sink.is_none();
         let ws = resolved.workspace_dir;
-        let canonical_id = match read.resolve_id(&p.id).await {
-            Ok(Some(c)) => c,
+        let canonical_id = match read.resolve_artifact(&ws, &p.id).await {
+            Ok(Some(id)) => id,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(e) => return Ok(safe_err_result("", e)),
+            Err(tool_error) => return Ok(tool_error),
         };
 
         // PRD-055: capture original state before lifecycle transition.
@@ -6309,11 +6574,28 @@ impl ForgeplanServer {
             }
         }
 
+        // The document set the graph is read against: every document, named
+        // by its canonical key, its display id and its title. It is the SAME
+        // set the CLI graph reads — one builder, one list — so the two
+        // surfaces render the same vertices and the same labels.
+        //
+        // The node id of the graph is the canonical key, so two documents
+        // that share a display id stay two vertices.
+        let documents = forgeplan_core::artifact::documents::candidates_from_records(&records);
+
+        // Every endpoint is addressed by the canonical key of the ONE
+        // document it names. A forward reference — or an alias two documents
+        // answer to — keeps its declared text.
+        let mut edges = graph::canonical_edges(&edges, &documents);
+
         edges.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
 
         // Issue #287 Phase F (W4): collect brownfield render data — per-HYP
-        // verification state and per-DM composition list. Pre-loaded so
-        // `render_mermaid_with_opts` stays a pure function.
+        // verification state and per-DM composition list. Pre-loaded so the
+        // renderer stays a pure function.
+        //
+        // Keyed by the canonical key: the key IS the node id of the graph,
+        // and two documents may share a display id.
         let mut hypothesis_states: BTreeMap<String, forgeplan_core::hypothesis::HypothesisState> =
             BTreeMap::new();
         let mut dm_compositions: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -6324,7 +6606,7 @@ impl ForgeplanServer {
                         Ok((fm, _)) => {
                             let state =
                                 forgeplan_core::hypothesis::current_state_from_frontmatter(&fm);
-                            hypothesis_states.insert(record.id.clone(), state);
+                            hypothesis_states.insert(record.canonical_key.clone(), state);
                         }
                         Err(err) => {
                             tracing::warn!(
@@ -6337,7 +6619,7 @@ impl ForgeplanServer {
                 }
                 "domain_model" => {
                     let composed = graph::composition_for_dm(&record.body);
-                    dm_compositions.insert(record.id.clone(), composed);
+                    dm_compositions.insert(record.canonical_key.clone(), composed);
                 }
                 _ => {}
             }
@@ -6351,7 +6633,10 @@ impl ForgeplanServer {
         };
 
         let edge_count = edges.len();
-        let mermaid = graph::render_mermaid_with_opts(&edges, &opts);
+        // The identity graph: every node id is a canonical key and every node
+        // is labelled with its display id and its title. Two documents that
+        // share a display id stay two vertices.
+        let mermaid = graph::render_identity_graph(&edges, &documents, &opts);
 
         // PRD-071: single primary action per state.
         let next_action = if edge_count == 0 {

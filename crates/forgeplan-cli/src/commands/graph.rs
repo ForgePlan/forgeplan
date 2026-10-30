@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use forgeplan_core::artifact::canonical_key::ArtifactCandidate;
 use forgeplan_core::artifact::frontmatter::parse_frontmatter;
 use forgeplan_core::graph;
 use forgeplan_core::hints::{self, Hint};
@@ -40,6 +41,21 @@ pub async fn run(json: bool, brownfield_only: bool) -> anyhow::Result<()> {
         }
     }
 
+    // The document set the graph is read against: every document, named by
+    // its canonical key, its display id and its title. The node id of the
+    // graph is the canonical key, so two documents that share a display id
+    // stay two vertices.
+    //
+    // It is the SAME set the MCP graph reads — one builder in core — so the
+    // two surfaces render the same vertices and the same labels.
+    let documents: Vec<ArtifactCandidate> =
+        forgeplan_core::artifact::documents::candidates_from_records(records);
+
+    // Every endpoint is addressed by the canonical key of the one document
+    // it names. A forward reference — or an alias two documents answer to —
+    // keeps its declared text.
+    let mut all_edges = graph::canonical_edges(&all_edges, &documents);
+
     all_edges.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
 
     // Issue #287 Phase F (W4): collect brownfield render data — per-HYP
@@ -60,7 +76,10 @@ pub async fn run(json: bool, brownfield_only: bool) -> anyhow::Result<()> {
                 match parse_frontmatter(&record.body) {
                     Ok((fm, _)) => {
                         let state = current_state_from_frontmatter(&fm);
-                        hypothesis_states.insert(record.id.clone(), state);
+                        // Keyed by the canonical key: the key IS the node id
+                        // of the graph, and two documents may share a
+                        // display id.
+                        hypothesis_states.insert(record.canonical_key.clone(), state);
                     }
                     Err(err) => {
                         // Body without parseable frontmatter is a recovery
@@ -79,8 +98,9 @@ pub async fn run(json: bool, brownfield_only: bool) -> anyhow::Result<()> {
             "domain_model" => {
                 // `composition_for_dm` is total — empty section yields an
                 // empty vec, which still emits the labelled cluster.
+                // Keyed by the canonical key, like every other node id.
                 let composed = graph::composition_for_dm(&record.body);
-                dm_compositions.insert(record.id.clone(), composed);
+                dm_compositions.insert(record.canonical_key.clone(), composed);
             }
             _ => {}
         }
@@ -122,7 +142,9 @@ pub async fn run(json: bool, brownfield_only: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let mermaid = graph::render_mermaid_with_opts(&all_edges, &opts);
+    // The identity graph: every node id is a canonical key and every node
+    // is labelled with its display id and its title.
+    let mermaid = graph::render_identity_graph(&all_edges, &documents, &opts);
     println!("{}", mermaid);
     // Mermaid output is consumed by `mmdc`; emit hint as a comment so that
     // pipe consumers don't choke on it. Plain `Next:` line is human-friendly

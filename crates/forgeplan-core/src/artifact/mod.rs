@@ -1,5 +1,6 @@
 pub mod canonical_key;
 pub mod delta;
+pub mod documents;
 pub mod frontmatter;
 pub mod id_alloc;
 pub mod identity;
@@ -24,3 +25,9 @@ pub use validation::{MAX_TITLE_LEN, validate_title};
 pub use canonical_key::{
     ArtifactCandidate, ArtifactIdentity, ResolveError, ResolvedArtifact, mint_artifact_key,
 };
+
+// ADR-030 / SPEC-009 — the workspace document set: the candidate list the
+// one shared resolver decides over. Re-exported at module level so a
+// caller can write `forgeplan_core::artifact::workspace_candidates(...)`
+// the same way it writes `forgeplan_core::artifact::mint_artifact_key(...)`.
+pub use documents::{resolve_in_workspace, workspace_candidates, workspace_document_paths};
