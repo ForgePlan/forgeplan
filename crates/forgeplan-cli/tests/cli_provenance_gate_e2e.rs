@@ -83,15 +83,24 @@ fn seed_empty_delta_evidence(dir: &Path, head: &str) -> String {
         .assert()
         .success();
 
-    // Find the created EVID id from the filename.
+    // Find the created EVID id from the document that declares it: the file
+    // is named after the canonical key (ADR-030), not after the display id.
     let evid_dir = dir.join(".forgeplan/evidence");
-    let file = std::fs::read_dir(&evid_dir)
+    let id = std::fs::read_dir(&evid_dir)
         .unwrap()
         .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .find(|n| n.starts_with("EVID-"))
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .find_map(|path| {
+            let text = std::fs::read_to_string(&path).ok()?;
+            text.lines()
+                .take(12)
+                .find_map(|line| line.strip_prefix("id: "))
+                .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+                .filter(|value| value.starts_with("EVID-"))
+                .map(str::to_string)
+        })
         .expect("an EVID file");
-    let id = file.split('-').take(2).collect::<Vec<_>>().join("-");
 
     let body = format!(
         "## Structured Fields\n\nverdict: supports\ncongruence_level: 3\nevidence_type: test\n\
