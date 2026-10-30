@@ -40,6 +40,29 @@ use tempfile::TempDir;
 /// Listing it here made every migrated workspace look like it still carried a
 /// legacy table, so the precondition below failed for all of these tests
 /// regardless of what the code under test did.
+/// The display id a document declares, if its frontmatter declares one.
+fn declared_id(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines()
+        .take(12)
+        .find_map(|line| line.strip_prefix("id: "))
+        .map(|value| value.trim().trim_matches('"').trim_matches('\'').to_string())
+}
+
+/// The first display id under `dir` that starts with `prefix`.
+fn first_declared_id(dir: &Path, prefix: &str) -> Option<String> {
+    let mut ids: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .filter_map(|path| declared_id(&path))
+        .filter(|id| id.starts_with(prefix))
+        .collect();
+    ids.sort();
+    ids.into_iter().next()
+}
+
 fn legacy_tables(ws: &Path) -> Vec<String> {
     let lance = ws.join(".forgeplan/lance");
     ["artifacts.lance", "relations.lance"]
@@ -730,16 +753,10 @@ fn activate_on_a_migrated_workspace_enforces_the_evidence_gate_from_canonical_li
     .current_dir(&ws)
     .assert()
     .success();
-    let evid = std::fs::read_dir(ws.join(".forgeplan/evidence"))
-        .expect("the evidence directory exists")
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .find(|n| n.starts_with("EVID-"))
+    // The file is named after the document's canonical key (ADR-030), so the
+    // display id is read from the frontmatter the document declares.
+    let evid_id = first_declared_id(&ws.join(".forgeplan/evidence"), "EVID-")
         .expect("an evidence artifact was created");
-    // The renderer writes `<ID>-<slug>.md`, so the display id is the first two
-    // dash-separated fields — not the filename with `.md` trimmed off, which
-    // yields a name no command resolves.
-    let evid_id = evid.split('-').take(2).collect::<Vec<_>>().join("-");
     let evid_body = "## Structured Fields\n\nverdict: supports\ncongruence_level: 3\nevidence_type: test\n\n## Verdict\n\nThe lifecycle transition ran on the migrated layout.\n";
     home_env(
         forgeplan().args(["update", &evid_id, "--body", evid_body]),
@@ -984,10 +1001,8 @@ fn renew_on_a_migrated_workspace_writes_section_status_and_valid_until() {
         .expect("the notes directory exists")
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .find(|p| {
-            p.file_stem()
-                .is_some_and(|s| s.to_string_lossy().starts_with("NOTE-001"))
-        })
+        .filter(|p| p.extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .find(|p| declared_id(p).is_some_and(|id| id == "NOTE-001"))
         .expect("NOTE-001 exists under .forgeplan/notes");
     let note = std::fs::read_to_string(&note_path).unwrap();
     std::fs::write(
@@ -1239,16 +1254,13 @@ fn review_on_a_migrated_workspace_reads_gates_from_canonical_links() {
     .current_dir(&ws)
     .assert()
     .success();
-    let evid = std::fs::read_dir(ws.join(".forgeplan/evidence"))
+    let evid_id = std::fs::read_dir(ws.join(".forgeplan/evidence"))
         .expect("the evidence directory exists")
         .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .find(|n| n.starts_with("EVID-"))
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .find_map(|p| declared_id(&p))
         .expect("an evidence artifact was created");
-    // The renderer writes `<ID>-<slug>.md`, so the display id is the first two
-    // dash-separated fields — not the filename with `.md` trimmed off, which
-    // yields a name no command resolves.
-    let evid_id = evid.split('-').take(2).collect::<Vec<_>>().join("-");
     let evid_body = "## Structured Fields\n\nverdict: supports\ncongruence_level: 3\nevidence_type: test\n\n## Verdict\n\nThe lifecycle transition ran on the migrated layout.\n";
     home_env(
         forgeplan().args(["update", &evid_id, "--body", evid_body]),
@@ -1376,10 +1388,8 @@ fn link_auto_activates_complete_evidence_on_a_migrated_workspace() {
         .expect("the evidence directory exists")
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .find(|p| {
-            p.file_stem()
-                .is_some_and(|s| s.to_string_lossy().starts_with("EVID-001"))
-        })
+        .filter(|p| p.extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .find(|p| declared_id(p).is_some_and(|id| id == "EVID-001"))
         .expect("EVID-001 exists under .forgeplan/evidence");
     let evidence = std::fs::read_to_string(&evidence_path).unwrap();
     let (frontmatter, _) =

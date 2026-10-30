@@ -601,13 +601,21 @@ async fn assurance_recursive(
     let mut weakest_link: Option<String> = None;
 
     for (dep_id, rel_type) in &deps {
+        // The relations name their endpoints by the canonical key; a report
+        // names the document by its display id, which is what a reader can
+        // act on.
+        let dep_record = source.record(dep_id).await.ok().flatten();
+        let dep_name = dep_record
+            .as_ref()
+            .map(|record| record.id.clone())
+            .unwrap_or_else(|| dep_id.clone());
         // Skip non-active dependencies — draft/deprecated/superseded should not drag down R_eff
-        if let Ok(Some(dep_record)) = source.record(dep_id).await {
+        if let Some(dep_record) = dep_record {
             if matches!(
                 dep_record.status.as_str(),
                 "draft" | "deprecated" | "superseded"
             ) {
-                factors.push(format!("Skipped {dep_id} (status: {})", dep_record.status));
+                factors.push(format!("Skipped {dep_name} (status: {})", dep_record.status));
                 continue;
             }
 
@@ -624,7 +632,7 @@ async fn assurance_recursive(
             // the cascade surfacing it is the product working.
             if matches!(dep_record.kind.as_str(), "note" | "memory") {
                 factors.push(format!(
-                    "Skipped {dep_id} (kind: {} — exempt from evidence by routing depth)",
+                    "Skipped {dep_name} (kind: {} — exempt from evidence by routing depth)",
                     dep_record.kind
                 ));
                 continue;
@@ -634,7 +642,7 @@ async fn assurance_recursive(
         let dep_report = match Box::pin(assurance_recursive(dep_id, source, visited)).await {
             Ok(report) => report,
             Err(_) => {
-                factors.push(format!("Failed to compute R_eff for dependency {dep_id}"));
+                factors.push(format!("Failed to compute R_eff for dependency {dep_name}"));
                 AssuranceReport {
                     artifact_id: dep_id.clone(),
                     r_eff: 0.0,
@@ -659,12 +667,12 @@ async fn assurance_recursive(
 
         if effective_r < min_dep_score {
             min_dep_score = effective_r;
-            weakest_link = Some(dep_id.clone());
+            weakest_link = Some(dep_name.clone());
         }
 
         if penalty > 0.0 {
             factors.push(format!(
-                "CL penalty applied for {dep_id} (relation: {rel_type})"
+                "CL penalty applied for {dep_name} (relation: {rel_type})"
             ));
         }
     }
