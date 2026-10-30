@@ -873,7 +873,7 @@ pub async fn compare_projection(
     // translated first, so the comparison and the write below speak one
     // language — otherwise every sync would find a difference, delete the
     // stored edge and write it back under the same display id.
-    let declared = declared_edges(workspace, &parsed.outgoing).await;
+    let declared = declared_edges(workspace, &parsed.outgoing).await?;
     let stored_edges: std::collections::BTreeSet<crate::constellation::capture::OutgoingEdge> =
         store
             .get_relations(&record.id)
@@ -975,13 +975,13 @@ pub async fn compare_projection(
 async fn declared_edges(
     workspace: &Path,
     outgoing: &std::collections::BTreeSet<crate::constellation::capture::OutgoingEdge>,
-) -> std::collections::BTreeSet<crate::constellation::capture::OutgoingEdge> {
+) -> anyhow::Result<std::collections::BTreeSet<crate::constellation::capture::OutgoingEdge>> {
     if outgoing.is_empty() {
-        return outgoing.clone();
+        return Ok(outgoing.clone());
     }
-    let documents = crate::db::store::workspace_documents(workspace).await;
+    let documents = crate::db::store::workspace_documents(workspace).await?;
     let by_display = crate::db::store::document_keys_by_display(&documents);
-    outgoing
+    Ok(outgoing
         .iter()
         .map(|edge| {
             crate::constellation::capture::OutgoingEdge::new(
@@ -989,7 +989,7 @@ async fn declared_edges(
                 edge.relation.clone(),
             )
         })
-        .collect()
+        .collect())
 }
 
 /// Body prefix length that feeds the embedding input digest.

@@ -634,27 +634,41 @@ pub struct WorkspaceDocument {
 /// This is the one scan of the workspace's documents. Both the endpoint
 /// resolution and the surfaces that name a document read from here, so two
 /// surfaces cannot disagree about which document a name means.
-pub async fn workspace_documents(workspace: &Path) -> Vec<WorkspaceDocument> {
+pub async fn workspace_documents(workspace: &Path) -> anyhow::Result<Vec<WorkspaceDocument>> {
     let mut documents: Vec<WorkspaceDocument> = Vec::new();
     for dir in crate::workspace::ARTIFACT_DIRS {
         let dir_path = workspace.join(dir);
-        let Ok(mut entries) = tokio::fs::read_dir(&dir_path).await else {
-            continue;
+        let mut entries = match tokio::fs::read_dir(&dir_path).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(anyhow::anyhow!("cannot read {}: {err}", dir_path.display()));
+            }
         };
-        while let Ok(Some(entry)) = entries.next_entry().await {
+        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
                 continue;
             }
-            let Ok(bytes) = tokio::fs::read(&path).await else {
-                continue;
-            };
+            let bytes = tokio::fs::read(&path).await.map_err(|err| {
+                anyhow::anyhow!("cannot read {}: {err}", path.display())
+            })?;
             let text = String::from_utf8_lossy(&bytes).to_string();
-            let Ok((frontmatter, _body)) =
-                crate::artifact::frontmatter::parse_frontmatter_borrowed(&text)
-            else {
-                continue;
-            };
+            let (frontmatter, _body) =
+                match crate::artifact::frontmatter::parse_frontmatter_borrowed(&text) {
+                    Ok(parsed) => parsed,
+                    Err(reason) => {
+                        // A document this scan cannot read makes the set
+                        // partial, and a partial set answers "not found" for
+                        // everything it does not hold. The scan refuses
+                        // instead: a caller that needs the whole set gets
+                        // an error, not a shorter list.
+                        return Err(anyhow::anyhow!(
+                            "{} cannot be read: {reason}",
+                            path.display()
+                        ));
+                    }
+                };
             let Some(display_id) = frontmatter.get("id").and_then(|value| value.as_str()) else {
                 continue;
             };
@@ -672,7 +686,7 @@ pub async fn workspace_documents(workspace: &Path) -> Vec<WorkspaceDocument> {
         }
     }
     documents.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    documents
+    Ok(documents)
 }
 
 /// The canonical keys of the workspace's documents, by the display id they
@@ -1794,7 +1808,7 @@ impl LanceStore {
         // document that comes later. The workspace knows the key, so the
         // edge is stored under it instead of under a display id that no
         // key-based query can match.
-        let documents = workspace_documents(&self.workspace).await;
+        let documents = workspace_documents(&self.workspace).await?;
         Ok(declared_endpoint_key(
             endpoint,
             &document_keys_by_display(&documents),
