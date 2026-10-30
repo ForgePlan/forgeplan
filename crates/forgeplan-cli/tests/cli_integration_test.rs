@@ -72,7 +72,17 @@ fn new_creates_artifact() {
         .filter(|e| e.file_name() != ".gitkeep")
         .collect();
     assert_eq!(entries.len(), 1);
-    assert!(entries[0].file_name().to_string_lossy().contains("PRD-001"));
+    // The file is named after the document's canonical key (ADR-030), so the
+    // display id is read from the frontmatter the document declares.
+    let text = std::fs::read_to_string(entries[0].path()).expect("read the document");
+    assert!(
+        text.lines()
+            .take(12)
+            .filter_map(|line| line.strip_prefix("id: "))
+            .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+            .any(|declared| declared == "PRD-001"),
+        "the created document must declare PRD-001: {text}"
+    );
 }
 
 #[test]
@@ -3900,9 +3910,10 @@ fn score_respects_explicit_cl0_in_body() {
         .success();
 
     // Edit the template default congruence_level: 3 to 0 in-place.
-    let evid_path = tmp
-        .path()
-        .join(".forgeplan/evidence/EVID-001-low-confidence-cross-domain-benchmark.md");
+    let evid_path = document_declaring(
+        &tmp.path().join(".forgeplan/evidence"),
+        "EVID-001",
+    );
     let body = std::fs::read_to_string(&evid_path).unwrap();
     let body = body.replace("congruence_level: 3", "congruence_level: 0");
     std::fs::write(&evid_path, body).unwrap();
@@ -3972,9 +3983,7 @@ fn new_evidence_works_in_routing_phase_without_session_warning() {
         stderr
     );
     assert!(
-        tmp.path()
-            .join(".forgeplan/evidence/EVID-001-backfill-benchmark.md")
-            .exists(),
+        document_declaring(&tmp.path().join(".forgeplan/evidence"), "EVID-001").exists(),
         "evidence file must be created"
     );
 }
