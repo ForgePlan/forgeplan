@@ -132,10 +132,13 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     if let Some(record) = store.get_record(id).await? {
         let rels = store.get_relations(id).await.unwrap_or_default();
         let incoming = store.get_incoming_relations(id).await.unwrap_or_default();
-        let has_evidence = rels
-            .iter()
-            .chain(incoming.iter())
-            .any(|(t, _)| t.to_uppercase().starts_with("EVID-"));
+        // The endpoint is a canonical key for a minted document and a display
+        // id for a legacy one: the key spells the kind out (`evidence-…`),
+        // the display id abbreviates it (`EVID-…`).
+        let has_evidence = rels.iter().chain(incoming.iter()).any(|(t, _)| {
+            let upper = t.to_uppercase();
+            upper.starts_with("EVID-") || upper.starts_with("EVIDENCE-")
+        });
         let kind: forgeplan_core::artifact::types::ArtifactKind = record
             .kind
             .parse()
@@ -229,11 +232,17 @@ async fn run_file_first(
     .await;
 
     let ref_form = forgeplan_core::lifecycle::canonical::refs_form(&read, &canonical);
+    // The endpoint is a canonical key for a minted document and a display id
+    // for a legacy one: the key spells the kind out (`evidence-…`), the
+    // display id abbreviates it (`EVID-…`).
     let has_evidence = read
         .get_relations(&canonical)
         .iter()
         .chain(read.get_incoming_relations(&canonical).iter())
-        .any(|(t, _)| t.to_uppercase().starts_with("EVID-"));
+        .any(|(t, _)| {
+            let upper = t.to_uppercase();
+            upper.starts_with("EVID-") || upper.starts_with("EVIDENCE-")
+        });
     let kind: forgeplan_core::artifact::types::ArtifactKind = read
         .get_record(&canonical)
         .and_then(|r| r.kind.parse().ok())
