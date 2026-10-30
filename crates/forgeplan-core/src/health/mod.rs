@@ -927,7 +927,7 @@ fn build_health_report(
     }
 
     // Build relation index
-    let (outgoing, incoming) = build_relation_index(all_relations);
+    let (outgoing, incoming) = build_relation_index(all_relations, &all);
 
     // Non-evidence, non-memory artifacts only.
     // Evidence is tracked separately. Memory artifacts are standalone by design.
@@ -1578,7 +1578,10 @@ pub fn find_duplicate_pairs(records: &[ArtifactRecord], threshold: f64) -> Vec<D
     pairs
 }
 
-fn build_relation_index(relations: &[(String, String, String)]) -> (RelationIndex, RelationIndex) {
+fn build_relation_index(
+    relations: &[(String, String, String)],
+    records: &[ArtifactRecord],
+) -> (RelationIndex, RelationIndex) {
     let mut outgoing: RelationIndex = BTreeMap::new();
     let mut incoming: RelationIndex = BTreeMap::new();
     for (from, to, rel) in relations {
@@ -1590,6 +1593,22 @@ fn build_relation_index(relations: &[(String, String, String)]) -> (RelationInde
             .entry(to.clone())
             .or_default()
             .push((from.clone(), rel.clone()));
+    }
+
+    // The relations name their endpoints by the canonical key, and a record's
+    // display id is an alias for the same document. Both names answer "which
+    // edges touch this document", so both are indexed — otherwise a document
+    // that has an edge reads as an orphan and the strict verdict trips.
+    for record in records {
+        if record.canonical_key == record.id {
+            continue;
+        }
+        if let Some(edges) = outgoing.get(&record.canonical_key).cloned() {
+            outgoing.entry(record.id.clone()).or_insert(edges);
+        }
+        if let Some(edges) = incoming.get(&record.canonical_key).cloned() {
+            incoming.entry(record.id.clone()).or_insert(edges);
+        }
     }
     (outgoing, incoming)
 }
