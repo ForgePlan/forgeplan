@@ -13,7 +13,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
-use forgeplan_core::artifact::canonical_key::canonical_key_from_document;
 use forgeplan_core::artifact::frontmatter::{
     Frontmatter, augment_frontmatter_with_id_fields, parse_frontmatter,
 };
@@ -3226,12 +3225,12 @@ impl ForgeplanServer {
         };
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
-        let slug = slug_from_kind_title(&artifact_kind, &p.title).map_err(|e| {
-            safe_mcp_error(anyhow::anyhow!(
-                "failed to build canonical slug from title {:?}: {e}",
-                p.title
-            ))
-        })?;
+        let slug = slug_from_kind_title(&artifact_kind, &p.title).unwrap_or_else(|_| {
+            format!(
+                "{}-document",
+                artifact_kind.prefix().trim_end_matches('-')
+            )
+        });
 
         // PROB-067 build closure: re-rendered for each retry attempt.
         let title_owned = p.title.clone();
@@ -3240,7 +3239,7 @@ impl ForgeplanServer {
         let template_owned: String = template.to_string();
         let slug_owned = slug.clone();
         let artifact_kind_owned = artifact_kind.clone();
-        let build = move |id: &str, number: u32| -> anyhow::Result<NewArtifact> {
+        let build = move |id: &str, number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
             let nnn = id
                 .split('-')
                 .next_back()
@@ -3271,11 +3270,7 @@ impl ForgeplanServer {
                 }
             }
             Ok(NewArtifact {
-                // ADR-030: the canonical key of a document is the slug its
-                // frontmatter declares, and its display id when it declares
-                // none. The rendered template carries the slug the file will
-                // declare.
-                canonical_key: canonical_key_from_document(id, &rendered),
+                canonical_key: canonical_key.to_string(),
                 id: id.to_string(),
                 kind: template_key_owned.clone(),
                 status: "draft".into(),
@@ -3292,30 +3287,17 @@ impl ForgeplanServer {
         // workspace writes the LanceDB projection through `legacy_sink`, a
         // migrated one leaves the Markdown as the whole mutation and lets the
         // reconcile pass below publish it.
-        let allocated = match legacy_sink.as_deref() {
-            Some(store) => {
-                forgeplan_core::artifact::id_alloc::allocate_and_create_artifact(
-                    &ws,
-                    &_lock_guard,
-                    store,
-                    &artifact_kind,
-                    3,
-                    &build,
-                )
-                .await
-            }
-            None => {
-                forgeplan_core::artifact::id_alloc::allocate_and_create_artifact_file_first(
-                    &ws,
-                    &_lock_guard,
-                    &artifact_kind,
-                    3,
-                    &build,
-                )
-                .await
-            }
-        }
-        .map_err(|e| safe_mcp_error(anyhow::anyhow!("Create failed (id-alloc): {e}")))?;
+        let allocated = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+            &ws,
+            &_lock_guard,
+            legacy_sink.as_deref(),
+            &artifact_kind,
+            3,
+            &p.title,
+            &build,
+        )
+        .await
+        .map_err(|e| safe_mcp_error(anyhow::anyhow!("Create failed (canonical-key): {e}")))?;
         let id = allocated.id;
         let predicted_number = allocated.number;
         let filepath = allocated.filepath;
@@ -6440,11 +6422,9 @@ impl ForgeplanServer {
             .take(80)
             .collect();
 
-        let build = |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
+        let build = |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
             Ok(NewArtifact {
-                // ADR-030: no minted key yet — the document declares no slug,
-                // so its canonical key is its display id.
-                canonical_key: id.to_string(),
+                canonical_key: canonical_key.to_string(),
                 id: id.to_string(),
                 kind: template_key.into(),
                 status: "draft".into(),
@@ -6457,33 +6437,16 @@ impl ForgeplanServer {
                 tags: Vec::new(),
             })
         };
-        // Id allocation + canonical write in one step, branched on the
-        // workspace's index owner exactly as `forgeplan_new` does: a legacy
-        // workspace also takes the derived row, a migrated one leaves the
-        // Markdown as the whole mutation.
-        let allocated = match legacy_sink.as_deref() {
-            Some(store) => {
-                forgeplan_core::artifact::id_alloc::allocate_and_create_artifact(
-                    &ws,
-                    &_lock_guard,
-                    store,
-                    &kind,
-                    3,
-                    &build,
-                )
-                .await
-            }
-            None => {
-                forgeplan_core::artifact::id_alloc::allocate_and_create_artifact_file_first(
-                    &ws,
-                    &_lock_guard,
-                    &kind,
-                    3,
-                    &build,
-                )
-                .await
-            }
-        }
+        let allocated = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+            &ws,
+            &_lock_guard,
+            legacy_sink.as_deref(),
+            &kind,
+            3,
+            &title,
+            &build,
+        )
+        .await
         .map_err(|e| safe_mcp_error_anyhow(&e))?;
         let id = allocated.id;
         let filepath = allocated.filepath;
@@ -7666,11 +7629,9 @@ impl ForgeplanServer {
             Err(e) => return Ok(llm_err("LLM generation", &llm_config, e)),
         };
 
-        let build = |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
+        let build = |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
             Ok(NewArtifact {
-                // ADR-030: no minted key yet — the document declares no slug,
-                // so its canonical key is its display id.
-                canonical_key: id.to_string(),
+                canonical_key: canonical_key.to_string(),
                 id: id.to_string(),
                 kind: template_key.into(),
                 status: "draft".into(),
@@ -7683,31 +7644,16 @@ impl ForgeplanServer {
                 tags: Vec::new(),
             })
         };
-        // See `forgeplan_capture`: one id-alloc + canonical write, branched on
-        // the workspace's index owner.
-        let allocated = match legacy_sink.as_deref() {
-            Some(store) => {
-                forgeplan_core::artifact::id_alloc::allocate_and_create_artifact(
-                    &ws,
-                    &_lock_guard,
-                    store,
-                    &artifact_kind,
-                    3,
-                    &build,
-                )
-                .await
-            }
-            None => {
-                forgeplan_core::artifact::id_alloc::allocate_and_create_artifact_file_first(
-                    &ws,
-                    &_lock_guard,
-                    &artifact_kind,
-                    3,
-                    &build,
-                )
-                .await
-            }
-        }
+        let allocated = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+            &ws,
+            &_lock_guard,
+            legacy_sink.as_deref(),
+            &artifact_kind,
+            3,
+            &title,
+            &build,
+        )
+        .await
         .map_err(|e| safe_mcp_error_anyhow(&e))?;
         let id = allocated.id;
         let filepath = allocated.filepath;
@@ -9205,11 +9151,9 @@ impl ForgeplanServer {
             }
         }
 
-        let build = |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
+        let build = |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
             Ok(NewArtifact {
-                // ADR-030: no minted key yet — the document declares no slug,
-                // so its canonical key is its display id.
-                canonical_key: id.to_string(),
+                canonical_key: canonical_key.to_string(),
                 id: id.to_string(),
                 kind: artifact_kind.template_key().to_string(),
                 status: "draft".to_string(),
@@ -9222,32 +9166,17 @@ impl ForgeplanServer {
                 tags: tags.clone(),
             })
         };
-        // See `forgeplan_capture`: id allocation + canonical write in one step,
-        // branched on the workspace's index owner.
-        let allocation_result = match legacy_sink.as_deref() {
-            Some(store) => {
-                forgeplan_core::artifact::id_alloc::allocate_and_create_artifact(
-                    &ws,
-                    &_lock_guard,
-                    store,
-                    &artifact_kind,
-                    3,
-                    &build,
-                )
-                .await
-            }
-            None => {
-                forgeplan_core::artifact::id_alloc::allocate_and_create_artifact_file_first(
-                    &ws,
-                    &_lock_guard,
-                    &artifact_kind,
-                    3,
-                    &build,
-                )
-                .await
-            }
-        };
-        let allocated = match allocation_result {
+        let allocated = match forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+            &ws,
+            &_lock_guard,
+            legacy_sink.as_deref(),
+            &artifact_kind,
+            3,
+            &p.title,
+            &build,
+        )
+        .await
+        {
             Ok(allocated) => allocated,
             Err(error) => return Ok(safe_err_result("Failed to create artifact", error)),
         };
@@ -14423,31 +14352,21 @@ mod claim_mcp_tests {
         );
     }
 
-    // ── PRD-057 AC-4: concurrent forgeplan_new → unique IDs ──────────
+    // Ordinary MCP creation mints a canonical key once and publishes each
+    // resulting document under its distinct key-named path.
 
     #[tokio::test]
     async fn concurrent_forgeplan_new_emits_unique_ids() {
-        // R3 audit task-completion PARTIAL: Inc 1 lock test is a proxy;
-        // this asserts the full MCP path produces distinct IDs + distinct
-        // projection files when called concurrently from three sub-agents
-        // sharing one workspace.
         use std::sync::Arc;
 
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().to_path_buf();
         let ws = forgeplan_core::workspace::init_workspace(&root, "ac4").unwrap();
-        // Force LanceDB init so the test server has a store.
         let _ = forgeplan_core::db::store::LanceStore::init(&ws)
             .await
             .unwrap();
 
         let server = Arc::new(ForgeplanServer::new(root).await);
-
-        // Spawn 3 concurrent forgeplan_new calls — mirrors the scenario in
-        // the PRD-057 AC-4 Gherkin. Each call holds the workspace lock
-        // for its critical section (next_id + create_artifact + projection
-        // render); with the lock working correctly, all three complete
-        // serially with distinct IDs and distinct files on disk.
         let mut handles = Vec::new();
         for i in 0..3 {
             let srv = Arc::clone(&server);
@@ -14463,43 +14382,62 @@ mod claim_mcp_tests {
         }
 
         let mut results = Vec::new();
-        for h in handles {
-            let r = h.await.unwrap().unwrap();
-            assert_ne!(r.is_error, Some(true), "forgeplan_new must not error");
-            results.push(r);
+        for handle in handles {
+            let result = handle.await.unwrap().unwrap();
+            assert_ne!(result.is_error, Some(true), "forgeplan_new must not error");
+            results.push(result);
         }
 
-        // The JSON body carries the assigned id under "id". Pull them
-        // out — cheap and avoids a full Response deserialization path.
-        let mut seen = std::collections::HashSet::new();
-        for r in &results {
-            assert!(!r.content.is_empty(), "content must be non-empty");
-            let text = match &r.content[0].raw {
-                rmcp::model::RawContent::Text(t) => t.text.clone(),
+        let mut seen_ids = std::collections::HashSet::new();
+        for result in &results {
+            assert!(!result.content.is_empty(), "creation returns its result");
+            let text = match &result.content[0].raw {
+                rmcp::model::RawContent::Text(text) => &text.text,
                 _ => panic!("expected text content"),
             };
-            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON body");
-            let id = v
+            let value: serde_json::Value =
+                serde_json::from_str(text).expect("valid JSON body");
+            let id = value
                 .get("id")
-                .and_then(|x| x.as_str())
+                .and_then(serde_json::Value::as_str)
                 .expect("response should include id");
-            assert!(
-                seen.insert(id.to_string()),
-                "AC-4 violation: duplicate id {id} across concurrent forgeplan_new calls"
-            );
+            assert!(seen_ids.insert(id.to_string()), "duplicate display id {id}");
         }
 
-        // Also verify three distinct projection files landed on disk.
-        let prds_dir = ws.join("prds");
-        let mut rd = tokio::fs::read_dir(&prds_dir).await.unwrap();
-        let mut md_files = 0;
-        while let Some(entry) = rd.next_entry().await.unwrap() {
-            let n = entry.file_name().to_string_lossy().to_string();
-            if n.ends_with(".md") {
-                md_files += 1;
-            }
+        let documents = forgeplan_core::artifact::documents::workspace_candidates(&ws)
+            .await
+            .expect("the canonical workspace scan reads the created documents");
+        assert_eq!(documents.len(), 3);
+        assert_eq!(
+            documents
+                .iter()
+                .map(|document| document.display_id.as_str())
+                .collect::<std::collections::HashSet<_>>(),
+            seen_ids.iter().map(String::as_str).collect()
+        );
+        let mut seen_keys = std::collections::HashSet::new();
+        for document in &documents {
+            assert!(
+                seen_keys.insert(document.canonical_key.as_str()),
+                "each created document must have a distinct canonical key"
+            );
+            assert_eq!(
+                document.relative_path.file_name().unwrap().to_str().unwrap(),
+                format!("{}.md", document.canonical_key),
+                "MCP creation must publish the document at its key-named path"
+            );
+            let text = tokio::fs::read_to_string(ws.join(&document.relative_path))
+                .await
+                .unwrap();
+            let (frontmatter, _) =
+                forgeplan_core::artifact::frontmatter::parse_frontmatter(&text).unwrap();
+            assert_eq!(
+                frontmatter
+                    .get("canonical_key")
+                    .and_then(serde_yaml::Value::as_str),
+                Some(document.canonical_key.as_str())
+            );
         }
-        assert_eq!(md_files, 3, "expected 3 markdown files, got {md_files}");
     }
 
     #[tokio::test]

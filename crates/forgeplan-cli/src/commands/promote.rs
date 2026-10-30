@@ -1,7 +1,6 @@
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::hints::{self, Hint};
@@ -83,7 +82,7 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
     let template_key = artifact_kind.template_key().to_string();
     let author = record.author.clone();
     let tags = record.tags.clone();
-    let build = |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
+    let build = |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
         let body = format!(
             "# {}: {}\n\n## Content\n\n{}\n\n---\n\n*Promoted from {} on {}*\n",
             id,
@@ -93,9 +92,7 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
             chrono::Utc::now().format("%Y-%m-%d"),
         );
         Ok(NewArtifact {
-            // ADR-030: no minted key yet — the document declares no slug, so
-            // its canonical key is its display id.
-            canonical_key: id.to_string(),
+            canonical_key: canonical_key.to_string(),
             id: id.to_string(),
             kind: template_key.clone(),
             status: "draft".to_string(),
@@ -112,39 +109,22 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
 
     // Create the new artifact.
     //
-    // Legacy layout: the id comes from the store's counter and the same
-    // helper syncs the derived row. Migrated layout: `allocate_and_create_
-    // artifact_file_first` computes the id from the canonical markdown under
-    // the cross-worktree id-alloc lock (with collision retry) and the write
-    // IS the mutation — there is no row to take.
-    let (new_id, ctx) = match &store {
-        Some(store) => {
-            let prefix = artifact_kind.prefix().trim_end_matches('-').to_uppercase();
-            let id = store.next_id(&prefix).await?;
-            let artifact = build(&id, 0)?;
-            let ctx = projection::MutationContext::new(&workspace, &lock, Some(store));
-            // PRD-073 file-first: helper writes the markdown projection
-            // first, then syncs to LanceDB. If the insert fails, reindex
-            // recovers.
-            projection::create_artifact_with_projection(&ctx, &artifact).await?;
-            (id, ctx)
-        }
-        None => {
-            let allocated =
-                forgeplan_core::artifact::id_alloc::allocate_and_create_artifact_file_first(
-                    &workspace,
-                    &lock,
-                    &artifact_kind,
-                    3,
-                    &build,
-                )
-                .await?;
-            (
-                allocated.id,
-                projection::MutationContext::new(&workspace, &lock, None),
-            )
-        }
-    };
+    // The shared creator mints the key before reserving a display number.
+    // The optional legacy sink only controls the derived-row write.
+
+    let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+        &workspace,
+        &lock,
+        store.as_ref(),
+        &artifact_kind,
+        3,
+        title,
+        &build,
+    )
+    .await?;
+    let new_id = created.id;
+    let new_key = created.canonical_key;
+    let ctx = projection::MutationContext::new(&workspace, &lock, store.as_ref());
 
     // PRD-073 file-first: helper removes the memory's markdown file first,
     // then cascades relations and the LanceDB row. With a `None` sink it
@@ -166,7 +146,7 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
     // SEC-H1 (CWE-117 / CWE-150): title came from the source memory artifact's
     // frontmatter (attacker-controllable for adversarial imports); sanitize
     // before TTY emission to neutralise ANSI/bidi/control bytes.
-    println!("  Title: \"{}\"", sanitize_for_hint(title));
+    println!("  Key: {}", new_key);
     println!(
         "  Status: draft — fill required sections, then: forgeplan validate {}",
         new_id

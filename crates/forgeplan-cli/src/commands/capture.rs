@@ -4,7 +4,6 @@ use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::llm::capture;
-use forgeplan_core::projection;
 
 use crate::commands::common;
 
@@ -55,19 +54,15 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
     // `(workspace, store)` separately so the persistent dependencies
     // funnel through one shape.
     //
-    // Both layouts allocate through the same `build` closure so the written
-    // bytes are identical; only the id source and the derived sink differ.
-    // A migrated workspace takes its id from the canonical markdown under
-    // the cross-worktree id-alloc lock (with collision retry) and writes no
-    // legacy row — opening one would resurrect a retired table.
+    // The shared creator mints the key before reserving the display number,
+    // then publishes the key-named document. The optional legacy sink only
+    // controls whether the derived row is written alongside the file.
     let captured_body = body.clone();
     let captured_title = title.clone();
     let captured_template_key = template_key.to_string();
-    let build = move |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
+    let build = move |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
         Ok(NewArtifact {
-            // ADR-030: no minted key yet — the document declares no slug, so
-            // its canonical key is its display id.
-            canonical_key: id.to_string(),
+            canonical_key: canonical_key.to_string(),
             id: id.to_string(),
             kind: captured_template_key.clone(),
             status: "draft".to_string(),
@@ -82,27 +77,20 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
         })
     };
 
-    let (id, filepath) = match &store {
-        Some(store) => {
-            let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-            let id = store.next_id(&prefix).await?;
-            let artifact = build(&id, 0)?;
-            let filepath = projection::create_artifact_with_projection(
-                &projection::MutationContext::new(&workspace, &lock, Some(store)),
-                &artifact,
-            )
-            .await?;
-            (id, filepath)
-        }
-        None => {
-            let allocated =
-                forgeplan_core::artifact::id_alloc::allocate_and_create_artifact_file_first(
-                    &workspace, &lock, &kind, 3, &build,
-                )
-                .await?;
-            (allocated.id, allocated.filepath)
-        }
-    };
+    let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+        &workspace,
+        &lock,
+        store.as_ref(),
+        &kind,
+        3,
+        &title,
+        &build,
+    )
+    .await?;
+    let id = created.id;
+    let canonical_key = created.canonical_key;
+    let filepath = created.filepath;
+
 
     if store.is_none() {
         common::note_constellation_owns_index();
@@ -114,6 +102,7 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
 
     println!("  Captured: {}", filepath.display());
     println!("  ID:       {}", id);
+    println!("  Key:      {}", canonical_key);
     println!("  Kind:     {} (auto-detected)", template_key);
     println!("  Title:    {}", title);
 

@@ -405,7 +405,6 @@ pub async fn reopen_captured(
     read: &WorkspaceRead,
     artifact_id: &str,
     reason: &str,
-    new_id: &str,
 ) -> anyhow::Result<ReopenResult> {
     let record = resolve(read, artifact_id)?.clone();
 
@@ -428,49 +427,52 @@ pub async fn reopen_captured(
         );
     }
 
-    // Race guard (audit C3): the caller allocated `new_id` from the same
-    // snapshot, but the filesystem is the authority on whether it is free.
-    if read.get_record(new_id).is_some()
-        || crate::artifact::store::resolve_artifact_path(ctx.workspace(), new_id)
-            .await
-            .is_some()
-    {
-        anyhow::bail!(
-            "Cannot reopen: artifact '{}' already exists. Try again.",
-            new_id
-        );
-    }
+    let successor_kind: crate::artifact::types::ArtifactKind = record
+        .kind
+        .parse()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let successor_title = format!("{} (reopened)", record.title);
 
     let safe_reason = super::sanitize_reason(reason);
     let today = chrono::Utc::now().format("%Y-%m-%d");
 
-    // Step 1 — create the new draft first (audit C3: atomicity).
+    // Step 1 — mint the key once, reserve the new display id, and publish
+    // the successor under its key before touching the old artifact.
     let lineage = format!(
         "## Lineage\n\nReopened from: {artifact_id}\nReason: {safe_reason}\n\n\
          Previous title: {}\n\n---\n",
         record.title
     );
-    let new_artifact = NewArtifact {
-        // ADR-030: no minted key yet — the document declares no slug, so its
-        // canonical key is its display id.
-        canonical_key: new_id.to_string(),
-        id: new_id.to_string(),
-        kind: record.kind.clone(),
-        status: "draft".to_string(),
-        title: format!("{} (reopened)", record.title),
-        body: lineage,
-        depth: record.depth.clone(),
-        author: record.author.clone(),
-        parent_epic: record.parent_epic.clone(),
-        valid_until: None,
-        tags: record.tags.clone(),
+    let build = |new_id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
+        Ok(NewArtifact {
+            canonical_key: canonical_key.to_string(),
+            id: new_id.to_string(),
+            kind: record.kind.clone(),
+            status: "draft".to_string(),
+            title: successor_title.clone(),
+            body: lineage.clone(),
+            depth: record.depth.clone(),
+            author: record.author.clone(),
+            parent_epic: record.parent_epic.clone(),
+            valid_until: None,
+            tags: record.tags.clone(),
+        })
     };
-    projection::create_artifact_with_projection(ctx, &new_artifact)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let created = crate::artifact::id_alloc::create_artifact_with_minted_key(
+        ctx.workspace,
+        ctx.guard,
+        ctx.legacy_sink,
+        &successor_kind,
+        3,
+        &successor_title,
+        &build,
+    )
+    .await?;
+    let new_id = created.id;
+    let new_key = created.canonical_key;
 
     // Step 2 — lineage edge, new → old.
-    projection::add_link_with_projection(ctx, new_id, &record.id, "based_on")
+    projection::add_link_with_projection(ctx, &new_id, &record.id, "based_on")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -487,7 +489,8 @@ pub async fn reopen_captured(
 
     Ok(ReopenResult {
         old_id: record.id.clone(),
-        new_id: new_id.to_string(),
+        new_id,
+        new_key,
         new_kind: record.kind,
     })
 }

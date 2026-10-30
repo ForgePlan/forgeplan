@@ -1008,7 +1008,6 @@ async fn reopen_creates_the_successor_then_links_then_deprecates() {
         &read,
         "NOTE-001",
         "needs revision",
-        "NOTE-002",
     )
     .await
     .unwrap();
@@ -1016,9 +1015,16 @@ async fn reopen_creates_the_successor_then_links_then_deprecates() {
     assert_eq!(result.new_id, "NOTE-002");
     assert_eq!(result.new_kind, "note");
 
-    // The successor exists, is a draft, and carries its lineage.
+    // The successor is published under its stored canonical key.
+    let documents = forgeplan_core::artifact::documents::workspace_candidates(ws)
+        .await
+        .unwrap();
+    let successor_candidate = documents
+        .iter()
+        .find(|candidate| candidate.display_id == result.new_id)
+        .expect("the reopened successor is in the document set");
     let successor =
-        std::fs::read_to_string(ws.join("notes/NOTE-002-reopenable-note-reopened.md")).unwrap();
+        std::fs::read_to_string(ws.join(&successor_candidate.relative_path)).unwrap();
     assert!(
         successor.contains("status: draft"),
         "the successor must be a draft:\n{successor}"
@@ -1087,12 +1093,12 @@ async fn reopen_refuses_a_terminal_artifact_and_creates_nothing() {
     let read = published_read(ws).await;
     let lock = lock(ws).await;
     let ctx = MutationContext::new(ws, &lock, None);
+    let original = std::fs::read_to_string(ws.join("notes/NOTE-001-finished-note.md")).unwrap();
     let err = forgeplan_core::lifecycle::canonical::reopen_captured(
         &ctx,
         &read,
         "NOTE-001",
         "second thoughts",
-        "NOTE-002",
     )
     .await
     .expect_err("a terminal artifact cannot be reopened");
@@ -1100,18 +1106,22 @@ async fn reopen_refuses_a_terminal_artifact_and_creates_nothing() {
         err.to_string().contains("terminal"),
         "the refusal must say the state is terminal, got: {err}"
     );
-    // The successor's title is derived from the SOURCE artifact's title, so
-    // the orphan this guards against would be `NOTE-002-finished-note-reopened.md`.
-    assert!(
-        !ws.join("notes/NOTE-002-finished-note-reopened.md").exists(),
-        "a refused reopen must not have created a successor"
+    let files: Vec<_> = std::fs::read_dir(ws.join("notes"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(files.len(), 1, "a refused reopen must not create a file");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("notes/NOTE-001-finished-note.md")).unwrap(),
+        original,
+        "the refused reopen must leave the source bytes untouched"
     );
 }
 
-/// An `new_id` that is already taken is refused before anything is written —
-/// the audit-C3 race guard.
+/// The allocator chooses the next display number even when an earlier
+/// candidate number is already occupied, without changing that document.
 #[tokio::test]
-async fn reopen_refuses_a_taken_new_id_without_writing() {
+async fn reopen_allocates_the_next_number_and_preserves_existing_documents() {
     let tmp = workspace().await;
     let ws = tmp.path();
     write_artifact(
@@ -1136,28 +1146,32 @@ async fn reopen_refuses_a_taken_new_id_without_writing() {
             title: "Already here",
             status: "active",
             depth: "tactical",
-            body: "Body.",
+            body: "Existing document must survive.",
             links: &[],
         },
     );
+    let existing_path = ws.join("notes/NOTE-002-already-here.md");
+    let existing_bytes = std::fs::read(&existing_path).unwrap();
 
     let read = published_read(ws).await;
     let lock = lock(ws).await;
     let ctx = MutationContext::new(ws, &lock, None);
-    let err = forgeplan_core::lifecycle::canonical::reopen_captured(
-        &ctx, &read, "NOTE-001", "reason", "NOTE-002",
-    )
-    .await
-    .expect_err("a taken id is refused");
-    assert!(err.to_string().contains("already exists"), "got: {err}");
+    let result =
+        forgeplan_core::lifecycle::canonical::reopen_captured(&ctx, &read, "NOTE-001", "reason")
+            .await
+            .unwrap();
+    assert_eq!(result.new_id, "NOTE-003");
+    assert_eq!(std::fs::read(&existing_path).unwrap(), existing_bytes);
 
-    let bytes = std::fs::read_to_string(ws.join("notes/NOTE-001-reopenable-note.md")).unwrap();
-    assert!(
-        bytes.contains("status: active"),
-        "a refused reopen must leave the source untouched:\n{bytes}"
-    );
-    assert!(
-        !bytes.contains("## Reopened"),
-        "a refused reopen must not have appended anything:\n{bytes}"
+    let documents = forgeplan_core::artifact::documents::workspace_candidates(ws)
+        .await
+        .unwrap();
+    let successor = documents
+        .iter()
+        .find(|candidate| candidate.display_id == result.new_id)
+        .expect("the reopened successor is in the document set");
+    assert_eq!(
+        successor.relative_path.file_name().unwrap().to_str().unwrap(),
+        format!("{}.md", successor.canonical_key)
     );
 }

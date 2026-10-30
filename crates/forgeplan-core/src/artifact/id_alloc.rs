@@ -23,17 +23,9 @@
 // 2. **Per-kind granularity** — different artifact kinds do not block
 //    each other (parallel `new prd` + `new evidence` is fine).
 //
-// 3. **Post-write collision detection (Option D)** — even with the lock
-//    held, after the projection write we re-check whether the target slug
-//    path was racily created by an unlocked path. If yes, retry up to
-//    5 times with the next-higher number, panic on cap exceeded (lock
-//    is broken — diagnostic > silent corruption).
-//
-// 4. **Slug-based collision check** — we look at on-disk filenames AND
-//    the LanceDB row set, because PROB-067 surfaced via the LanceDB row
-//    overwriting an existing artifact's body. Verifying both makes the
-//    allocator immune to either store being inconsistent at the moment
-//    of the call.
+// 3. **Canonical-key publication** — mint the key once before reserving a
+//    display number, then publish `<canonical_key>.md` with create-only
+//    semantics. A key collision refuses without overwriting or reminting.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -48,13 +40,6 @@ use crate::db::store::{LanceStore, NewArtifact};
 use crate::projection::{self, MutationContext};
 use crate::workspace::git::git_common_dir;
 use crate::workspace::lock::{DEFAULT_LOCK_TIMEOUT, WorkspaceLock};
-
-/// Maximum number of retries when collision detected post-write.
-///
-/// Above this cap we panic with a diagnostic — it indicates the lock is
-/// broken (someone is allocating IDs OUTSIDE the locked path) rather
-/// than a legitimate race the retry could resolve.
-const MAX_COLLISION_RETRIES: u32 = 5;
 
 /// Timeout for the cross-worktree id-allocation lock. Inherits the
 /// workspace-lock default (30 s) — keeps consistency with the rest of
@@ -76,8 +61,8 @@ fn id_alloc_lock_path(workspace: &Path, kind: &ArtifactKind) -> PathBuf {
         return dir.join(format!("id-{}.lock", kind.prefix().trim_end_matches('-')));
     }
     // Fallback: workspace-local. This is the existing race surface but
-    // strictly no worse than today's behavior — added paths still
-    // benefit from collision retry below.
+    // strictly no worse than today's behavior; the shared lock still
+    // serializes reservations within this workspace.
     workspace.join(format!(
         ".id-alloc-{}.lock",
         kind.prefix().trim_end_matches('-')
@@ -680,17 +665,42 @@ pub async fn create_artifact_with_minted_key(
     title: &str,
     build: &BuildMintedArtifactFn<'_>,
 ) -> anyhow::Result<CreatedArtifact> {
-    // 1. Mint the key — once, before anything is reserved or written.
-    let canonical_key = crate::artifact::canonical_key::mint_artifact_key(kind, title)?;
+    create_artifact_with_minted_key_using(
+        workspace,
+        guard,
+        store,
+        kind,
+        digits,
+        title,
+        |kind, title| crate::artifact::canonical_key::mint_artifact_key(kind, title),
+        build,
+    )
+    .await
+}
 
-    // 2. Reserve the display number under the shared per-kind ledger.
+async fn create_artifact_with_minted_key_using<M>(
+    workspace: &Path,
+    guard: &WorkspaceLock,
+    store: Option<&LanceStore>,
+    kind: &ArtifactKind,
+    digits: u32,
+    title: &str,
+    mint: M,
+    build: &BuildMintedArtifactFn<'_>,
+) -> anyhow::Result<CreatedArtifact>
+where
+    M: FnOnce(&ArtifactKind, &str) -> anyhow::Result<String>,
+{
+    // Mint exactly once before reserving a number. Entropy failures leave no
+    // file or index row and consume no display number.
+    let canonical_key = mint(kind, title)?;
+
     let _lock = acquire_id_alloc_lock(workspace, kind)
         .await
         .with_context(|| format!("acquire id-alloc lock for {}", kind.prefix()))?;
     let reserved =
         reserve_display_number_locked(workspace, store, kind, digits, None).await?;
 
-    // 3. Render the body for the reserved id.
     let mut artifact = build(&reserved.id, reserved.number, &canonical_key)
         .with_context(|| format!("build artifact for {}", reserved.id))?;
     if artifact.id != reserved.id {
@@ -701,15 +711,9 @@ pub async fn create_artifact_with_minted_key(
         );
     }
     artifact.canonical_key = canonical_key.clone();
-    // The document declares the key it is filed under — the body, the row
-    // and the file name all name the same identity.
-    artifact.body = crate::artifact::frontmatter::ensure_canonical_key(
-        &artifact.body,
-        &canonical_key,
-    )?;
+    artifact.body =
+        crate::artifact::frontmatter::ensure_canonical_key(&artifact.body, &canonical_key)?;
 
-    // 4. Publish under the canonical key — never clobbering an existing
-    //    document.
     let ctx = MutationContext::new(workspace, guard, store);
     let filepath = projection::create_artifact_with_canonical_key(&ctx, &artifact)
         .await
@@ -758,235 +762,6 @@ async fn compute_next_id(
     Ok((id, next))
 }
 
-/// Result of allocating an id and creating its artifact.
-#[derive(Debug)]
-pub struct AllocatedArtifact {
-    /// Final assigned id (`PRD-074`, `EVID-119`, …).
-    pub id: String,
-    /// Numeric portion (`074`, `119`, …).
-    pub number: u32,
-    /// Path of the projection file on disk.
-    pub filepath: PathBuf,
-    /// The body that the build closure produced for the final id. Kept
-    /// alongside the path because callers (MCP / CLI `forgeplan_new`)
-    /// derive response fields (`slug`, `assigned_number`, hint refs)
-    /// from the augmented frontmatter inside this rendered string, NOT
-    /// from the on-disk projection (which re-renders frontmatter from
-    /// `NewArtifact` fields and folds the augmented fm into the body
-    /// section). Returning the canonical rendered body avoids a
-    /// disk re-read + double-frontmatter parsing edge case.
-    pub rendered_body: String,
-}
-
-/// Callback used by `allocate_and_create_artifact` to render a fresh
-/// `NewArtifact` for a given allocated id. The callback is invoked
-/// AFTER the cross-worktree lock is held, and may be called multiple
-/// times if a post-write collision is detected (retry path).
-pub type BuildArtifactFn<'a> = dyn Fn(&str, u32) -> anyhow::Result<NewArtifact> + Send + Sync + 'a;
-
-/// Allocate an id and write the projection file atomically with respect
-/// to other concurrent `forgeplan_new` invocations — even those running
-/// in sibling git worktrees of the same repo.
-///
-/// Workflow:
-/// 1. Acquire cross-worktree id-alloc lock for `kind` (per-kind).
-/// 2. Compute candidate next-id from filesystem + LanceDB.
-/// 3. Call `build` to render the `NewArtifact` for that id.
-/// 4. Pre-write existence check (`<kind>/{ID}-*.md`).
-///    On collision: bump and retry (loop).
-/// 5. `create_artifact_with_projection`.
-/// 6. Post-write verify: assert the file we just wrote is the unique
-///    holder of `{ID}-` prefix in `<kind>/`. On collision: bump and
-///    retry (loop, ≤ MAX_COLLISION_RETRIES).
-///
-/// The `build` closure receives `(id, number)`; callers use these to
-/// fill template placeholders + augment frontmatter with `slug` /
-/// `predicted_number`. Re-running `build` for the retry case yields a
-/// fresh artifact with the bumped id — no stale-state bleed.
-///
-/// `guard` is the caller's already-held workspace lock. It is threaded
-/// into the [`MutationContext`] so the canonical write happens under the
-/// same serialization every other mutation uses. It is NOT the per-kind
-/// id-alloc lock this function takes internally — that one guards id
-/// computation across worktrees, and passing it as the mutation guard
-/// would serialize far less than the caller believes.
-pub async fn allocate_and_create_artifact(
-    workspace: &Path,
-    guard: &WorkspaceLock,
-    store: &LanceStore,
-    kind: &ArtifactKind,
-    digits: u32,
-    build: &BuildArtifactFn<'_>,
-) -> anyhow::Result<AllocatedArtifact> {
-    allocate_and_create_impl(workspace, guard, Some(store), kind, digits, build).await
-}
-
-/// Constellation-migrated variant of [`allocate_and_create_artifact`]: on a
-/// workspace whose index moved to the constellation protocol there is no
-/// `LanceStore` to take the derived row — the markdown write IS the whole
-/// mutation, and reconcile (`maintain_index` / `forgeplan index`) publishes
-/// the row afterwards. Identical cross-worktree lock, id computation,
-/// collision-retry and render discipline; only the index insert is absent.
-///
-/// `guard` is the caller's already-held workspace lock — see
-/// [`allocate_and_create_artifact`].
-pub async fn allocate_and_create_artifact_file_first(
-    workspace: &Path,
-    guard: &WorkspaceLock,
-    kind: &ArtifactKind,
-    digits: u32,
-    build: &BuildArtifactFn<'_>,
-) -> anyhow::Result<AllocatedArtifact> {
-    allocate_and_create_impl(workspace, guard, None, kind, digits, build).await
-}
-
-async fn allocate_and_create_impl(
-    workspace: &Path,
-    guard: &WorkspaceLock,
-    store: Option<&LanceStore>,
-    kind: &ArtifactKind,
-    digits: u32,
-    build: &BuildArtifactFn<'_>,
-) -> anyhow::Result<AllocatedArtifact> {
-    let _lock = acquire_id_alloc_lock(workspace, kind)
-        .await
-        .with_context(|| format!("acquire id-alloc lock for {}", kind.prefix()))?;
-
-    let mut bump_above: Option<u32> = None;
-    for attempt in 0..MAX_COLLISION_RETRIES {
-        // Reserve the number FIRST and persist it to the per-kind ledger
-        // before anything is written to disk. A crash between the
-        // reservation and the write leaves a gap — never a repeated number.
-        let reserved =
-            reserve_display_number_locked(workspace, store, kind, digits, bump_above)
-                .await
-                .context("reserve next-id under id-alloc lock")?;
-        let id = reserved.id;
-        let number = reserved.number;
-
-        // Pre-write: file with `{ID}-` prefix must not exist on disk yet.
-        if id_exists_on_disk(workspace, kind, &id).await? {
-            tracing::warn!(
-                kind = kind.prefix(),
-                id = %id,
-                attempt,
-                "id-alloc pre-write collision — file already exists, bumping"
-            );
-            bump_above = Some(number);
-            continue;
-        }
-
-        let artifact = build(&id, number).with_context(|| format!("build artifact for {id}"))?;
-        // Sanity: caller must respect the passed-in id.
-        if artifact.id != id {
-            anyhow::bail!(
-                "internal: build() returned mismatched id {:?}, expected {id}",
-                artifact.id
-            );
-        }
-        let rendered_body = artifact.body.clone();
-
-        // Both layouts go through the one helper: the same id/kind validation,
-        // the same forced-body render, and the same canonical write. The
-        // only difference is the derived step — `Some(store)` takes the
-        // LanceDB row, `None` leaves the markdown as the whole mutation for
-        // reconcile to publish. This used to be two hand-inlined branches;
-        // the `None` one re-implemented the validation guards by hand and
-        // had to be kept in sync with the helper by memory.
-        let ctx = MutationContext::new(workspace, guard, store);
-        let filepath = projection::create_artifact_with_projection(&ctx, &artifact)
-            .await
-            .with_context(|| format!("create projection for {id}"))?;
-
-        // Post-write: re-confirm `{ID}-` prefix uniqueness. If a parallel
-        // unlocked path slipped in between compute_next_id and projection,
-        // the duplicate is visible now and we bump+retry.
-        if !is_unique_owner_of_id(workspace, kind, &id, &filepath).await? {
-            tracing::warn!(
-                kind = kind.prefix(),
-                id = %id,
-                attempt,
-                "id-alloc post-write collision — non-unique owner, removing and retrying"
-            );
-            // Best-effort rollback of the file we just wrote so we don't
-            // leave an orphan when the retry bumps to a higher id. The
-            // LanceDB row is left in place — reindex will reconcile on
-            // next list operation. Caller could call `delete_artifact`
-            // but at this scale it would race with the parallel writer.
-            let _ = tokio::fs::remove_file(&filepath).await;
-            bump_above = Some(number);
-            continue;
-        }
-
-        return Ok(AllocatedArtifact {
-            id,
-            number,
-            filepath,
-            rendered_body,
-        });
-    }
-
-    panic!(
-        "id-alloc exceeded MAX_COLLISION_RETRIES ({MAX_COLLISION_RETRIES}) for kind {} — \
-         the cross-worktree lock is not serializing allocations. Investigate \
-         git-common-dir resolution and `.git/forgeplan/id-*.lock` files.",
-        kind.prefix()
-    );
-}
-
-/// Return `true` if any markdown file in `<workspace>/<kind-dir>/`
-/// starts with `{id}-`. Case-insensitive on the id portion (mirror
-/// `next_id` scanning).
-async fn id_exists_on_disk(
-    workspace: &Path,
-    kind: &ArtifactKind,
-    id: &str,
-) -> anyhow::Result<bool> {
-    let dir = workspace.join(kind.dir_name());
-    if !dir.exists() {
-        return Ok(false);
-    }
-    let upper_prefix = format!("{}-", id.to_uppercase());
-    let mut rd = tokio::fs::read_dir(&dir).await?;
-    while let Some(entry) = rd.next_entry().await? {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.to_uppercase().starts_with(&upper_prefix) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Confirm that the file we just wrote is the SOLE owner of `{id}-`
-/// prefix in `<kind-dir>`. Used as post-write collision detection
-/// (PROB-067 Option D).
-async fn is_unique_owner_of_id(
-    workspace: &Path,
-    kind: &ArtifactKind,
-    id: &str,
-    our_path: &Path,
-) -> anyhow::Result<bool> {
-    let dir = workspace.join(kind.dir_name());
-    if !dir.exists() {
-        return Ok(true);
-    }
-    let upper_prefix = format!("{}-", id.to_uppercase());
-    let our_name = our_path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let mut rd = tokio::fs::read_dir(&dir).await?;
-    while let Some(entry) = rd.next_entry().await? {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name == our_name {
-            continue;
-        }
-        if name.to_uppercase().starts_with(&upper_prefix) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
 
 #[cfg(test)]
 mod tests {
@@ -1091,9 +866,9 @@ mod tests {
         let ws = ws(&tmp);
         let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
         let title = String::from("Borrowed request title");
-        let build = |id: &str, _: u32| -> anyhow::Result<NewArtifact> {
+        let build = |id: &str, _: u32, key: &str| -> anyhow::Result<NewArtifact> {
             Ok(NewArtifact {
-                canonical_key: id.to_owned(),
+                canonical_key: key.to_owned(),
                 id: id.to_owned(),
                 kind: "prd".into(),
                 status: "draft".into(),
@@ -1107,18 +882,27 @@ mod tests {
             })
         };
         let first =
-            allocate_and_create_artifact_file_first(&ws, &guard, &ArtifactKind::Prd, 3, &build)
+            create_artifact_with_minted_key(&ws, &guard, None, &ArtifactKind::Prd, 3, &title, &build)
                 .await
                 .unwrap();
         let first_bytes = tokio::fs::read(&first.filepath).await.unwrap();
         let second =
-            allocate_and_create_artifact_file_first(&ws, &guard, &ArtifactKind::Prd, 3, &build)
+            create_artifact_with_minted_key(&ws, &guard, None, &ArtifactKind::Prd, 3, &title, &build)
                 .await
                 .unwrap();
         assert_eq!(first.id, "PRD-001");
         assert_eq!(second.id, "PRD-002");
+        assert_ne!(first.canonical_key, second.canonical_key);
         assert_ne!(first.filepath, second.filepath);
         assert_eq!(tokio::fs::read(&first.filepath).await.unwrap(), first_bytes);
+        assert_eq!(
+            first.filepath.file_name().unwrap().to_str().unwrap(),
+            format!("{}.md", first.canonical_key)
+        );
+        assert_eq!(
+            second.filepath.file_name().unwrap().to_str().unwrap(),
+            format!("{}.md", second.canonical_key)
+        );
         let text = tokio::fs::read_to_string(&second.filepath).await.unwrap();
         let (frontmatter, body) = crate::artifact::frontmatter::parse_frontmatter(&text).unwrap();
         assert_eq!(
@@ -1210,13 +994,245 @@ mod tests {
         assert!(second.filepath.exists());
         assert_ne!(first.id, second.id);
 
-        // The published document declares the key it is filed under.
-        let text = std::fs::read_to_string(&first.filepath).unwrap();
-        let (fm, _body) = crate::artifact::frontmatter::parse_frontmatter(&text).unwrap();
+        for created in [&first, &second] {
+            let text = std::fs::read_to_string(&created.filepath).unwrap();
+            let (fm, body) = crate::artifact::frontmatter::parse_frontmatter(&text).unwrap();
+            assert_eq!(
+                fm.get("slug").and_then(|v| v.as_str()),
+                Some(created.canonical_key.as_str())
+            );
+            assert_eq!(fm.get("title").and_then(|v| v.as_str()), Some(title.as_str()));
+            assert_eq!(body.trim_end(), "## Summary\n\nSame title, different document.");
+        }
+    }
+
+    #[tokio::test]
+    async fn cyrillic_title_creation_publishes_the_key_and_preserves_file_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let title = "Еженедельный обзор";
+        let expected_body = "## Summary\n\nCyrillic title body.\n";
+        let build = |id: &str, _: u32, key: &str| -> anyhow::Result<NewArtifact> {
+            Ok(NewArtifact {
+                canonical_key: key.to_owned(),
+                id: id.to_owned(),
+                kind: "prd".into(),
+                status: "draft".into(),
+                title: title.to_string(),
+                body: expected_body.to_string(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: vec![],
+            })
+        };
+
+        let first = create_artifact_with_minted_key(
+            &ws,
+            &guard,
+            None,
+            &ArtifactKind::Prd,
+            3,
+            title,
+            &build,
+        )
+        .await
+        .unwrap();
+        let first_bytes = tokio::fs::read(&first.filepath).await.unwrap();
+        let second = create_artifact_with_minted_key(
+            &ws,
+            &guard,
+            None,
+            &ArtifactKind::Prd,
+            3,
+            title,
+            &build,
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(first.canonical_key, second.canonical_key);
+        assert_ne!(first.filepath, second.filepath);
+        assert_eq!(tokio::fs::read(&first.filepath).await.unwrap(), first_bytes);
+        for created in [&first, &second] {
+            assert!(created.canonical_key.starts_with("prd-document-k"));
+            assert_eq!(
+                created.filepath.file_name().unwrap().to_str().unwrap(),
+                format!("{}.md", created.canonical_key)
+            );
+            let bytes = tokio::fs::read(&created.filepath).await.unwrap();
+            let text = std::str::from_utf8(&bytes).unwrap();
+            let (frontmatter, body) =
+                crate::artifact::frontmatter::parse_frontmatter(text).unwrap();
+            assert_eq!(
+                frontmatter.get("slug").and_then(|value| value.as_str()),
+                Some(created.canonical_key.as_str())
+            );
+            assert_eq!(
+                frontmatter.get("title").and_then(|value| value.as_str()),
+                Some(title)
+            );
+            assert_eq!(body.trim_end(), expected_body.trim_end());
+        }
+    }
+
+    #[tokio::test]
+    async fn entropy_failure_creates_no_file_and_reserves_no_number() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let build = |id: &str, _: u32, key: &str| -> anyhow::Result<NewArtifact> {
+            Ok(NewArtifact {
+                canonical_key: key.to_owned(),
+                id: id.to_owned(),
+                kind: "prd".into(),
+                status: "draft".into(),
+                title: "Entropy failure".into(),
+                body: "Content.".into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: vec![],
+            })
+        };
+
+        let error = create_artifact_with_minted_key_using(
+            &ws,
+            &guard,
+            None,
+            &ArtifactKind::Prd,
+            3,
+            "Entropy failure",
+            |_, _| anyhow::bail!("entropy unavailable"),
+            &build,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("entropy unavailable"));
+        assert!(!ws.join("prds").exists());
+        assert!(!id_ledger_path(&ws, &ArtifactKind::Prd).exists());
+    }
+
+    #[tokio::test]
+    async fn canonical_key_collision_refuses_without_overwriting_or_reminting() {
+        use std::cell::Cell;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let key = "prd-collision-k0123456789abcdef0123456789abcdef";
+        let mint_calls = Cell::new(0);
+        let mint = |_: &ArtifactKind, _: &str| {
+            mint_calls.set(mint_calls.get() + 1);
+            Ok(key.to_string())
+        };
+        let build = |id: &str, _: u32, key: &str| -> anyhow::Result<NewArtifact> {
+            Ok(NewArtifact {
+                canonical_key: key.to_owned(),
+                id: id.to_owned(),
+                kind: "prd".into(),
+                status: "draft".into(),
+                title: "Collision".into(),
+                body: "Original bytes.".into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: vec![],
+            })
+        };
+
+        let first = create_artifact_with_minted_key_using(
+            &ws,
+            &guard,
+            None,
+            &ArtifactKind::Prd,
+            3,
+            "Collision",
+            &mint,
+            &build,
+        )
+        .await
+        .unwrap();
+        let before = tokio::fs::read(&first.filepath).await.unwrap();
+        let second = create_artifact_with_minted_key_using(
+            &ws,
+            &guard,
+            None,
+            &ArtifactKind::Prd,
+            3,
+            "Collision",
+            &mint,
+            &build,
+        )
+        .await;
+
+        assert!(second.is_err());
+        assert_eq!(mint_calls.get(), 2);
+        assert_eq!(tokio::fs::read(&first.filepath).await.unwrap(), before);
+        let mut entries = tokio::fs::read_dir(first.filepath.parent().unwrap())
+            .await
+            .unwrap();
+        let mut files = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            files.push(entry.file_name());
+        }
+        assert_eq!(files, [std::ffi::OsString::from(format!("{key}.md"))]);
+    }
+
+    #[tokio::test]
+    async fn created_row_and_file_store_the_same_canonical_key() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init(&ws).await.unwrap();
+        let title = "Stored identity";
+        let build = |id: &str, _: u32, key: &str| -> anyhow::Result<NewArtifact> {
+            Ok(NewArtifact {
+                canonical_key: key.to_owned(),
+                id: id.to_owned(),
+                kind: "prd".into(),
+                status: "draft".into(),
+                title: title.to_string(),
+                body: "## Summary\n\nStored row content.\n".into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: vec![],
+            })
+        };
+
+        let created = create_artifact_with_minted_key(
+            &ws,
+            &guard,
+            Some(&store),
+            &ArtifactKind::Prd,
+            3,
+            title,
+            &build,
+        )
+        .await
+        .unwrap();
+        let row = store
+            .get_record(&created.canonical_key)
+            .await
+            .unwrap()
+            .unwrap();
+        let file = tokio::fs::read_to_string(&created.filepath).await.unwrap();
+        let (frontmatter, _body) = crate::artifact::frontmatter::parse_frontmatter(&file).unwrap();
+
+        assert_eq!(row.canonical_key, created.canonical_key);
+        assert_eq!(frontmatter.get("slug").and_then(|value| value.as_str()), Some(created.canonical_key.as_str()));
         assert_eq!(
-            fm.get("slug").and_then(|v| v.as_str()),
-            Some(first.canonical_key.as_str())
+            created.filepath.file_name().unwrap().to_str().unwrap(),
+            format!("{}.md", created.canonical_key)
         );
+        assert_eq!(std::fs::read_to_string(&created.filepath).unwrap(), file);
     }
 
     #[test]

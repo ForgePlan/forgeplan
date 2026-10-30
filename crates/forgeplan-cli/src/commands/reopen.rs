@@ -1,152 +1,16 @@
 use forgeplan_core::hints::{self, Hint};
-use forgeplan_core::lifecycle;
 use forgeplan_core::projection;
 
 use crate::commands::common;
 
 pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
-    // `reopen` creates a new artifact, links it `based_on` the old, and only
-    // then deprecates the old one (audit C3's ordering). Every one of those
-    // three writes is a canonical Markdown write on a migrated workspace, and
-    // the precondition checks read the artifact's own frontmatter — so the
-    // whole flow is file-first here. The old artifact is never left
-    // half-retired: the deprecation is the last step and runs only after the
-    // successor exists.
-    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
-
-    let Some(store) = store else {
-        return run_file_first(ws, _lock, id, reason).await;
-    };
-
-    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    let id = store
-        .resolve_id(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
-    let id = id.as_str();
-
-    // Sync file→LanceDB before lifecycle call (preserve user edits)
-    if let Some(record) = store.get_record(id).await? {
-        projection::sync_file_to_store(&store, &ws, &record).await?;
-    }
-
-    // Auto-generate new ID: same prefix, next sequence
-    // PRD-071 contract: missing-artifact error emits a `Fix:` marker so the
-    // agent has a deterministic next step (list available artifacts).
-    let record = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact not found: {id}\nFix: forgeplan list"))?;
-    let new_id = store.next_id(&record.kind).await?;
-
-    // PRD-071 contract: lifecycle gate failure (e.g. status=draft) emits
-    // a `Fix:` marker — `validate` reveals what state is missing.
-    let result = lifecycle::reopen(&store, id, reason, &new_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id))?;
-
-    // Render projections for both old (deprecated) and new (draft).
-    //
-    // #478 — the OLD artifact needs the forcing variant: `render_projection`
-    // is files-first and dropped its `## Reopened` section, so the record of
-    // why it was retired never reached the file. Safe to force here because
-    // `sync_file_to_store` ran above. The NEW artifact below keeps the plain
-    // call: its file does not exist yet, so the renderer already takes the
-    // passed body.
-    if let Some(old_record) = store.get_record(&result.old_id).await? {
-        let links = store
-            .get_relations(&result.old_id)
-            .await
-            .unwrap_or_default();
-        projection::render_projection_with_body(
-            &ws,
-            &old_record.id,
-            &old_record.kind,
-            &old_record.title,
-            &old_record.status,
-            &old_record.depth,
-            old_record.author.as_deref(),
-            old_record.parent_epic.as_deref(),
-            old_record.valid_until.as_deref(),
-            &old_record.body,
-            &links,
-        )
-        .await?;
-    }
-    if let Some(new_record) = store.get_record(&result.new_id).await? {
-        let links = store
-            .get_relations(&result.new_id)
-            .await
-            .unwrap_or_default();
-        projection::render_projection(
-            &ws,
-            &new_record.id,
-            &new_record.kind,
-            &new_record.title,
-            &new_record.status,
-            &new_record.depth,
-            new_record.author.as_deref(),
-            new_record.parent_epic.as_deref(),
-            new_record.valid_until.as_deref(),
-            &new_record.body,
-            &links,
-        )
-        .await?;
-    }
-
-    common::log_change_field(
-        &ws,
-        Some(&store),
-        id,
-        "update",
-        ("status", Some(&record.status), Some("deprecated")),
-        "cli",
-    )
-    .await;
-    common::log_change_field(
-        &ws,
-        Some(&store),
-        &new_id,
-        "create",
-        ("status", None, Some("draft")),
-        "cli",
-    )
-    .await;
-
-    println!("  Reopened {id} → deprecated");
-    println!(
-        "  Created {} ({}, draft) with lineage from {id}",
-        result.new_id, result.new_kind
-    );
-    println!("  Link: {} --based_on--> {id}", result.new_id);
-
-    // PRD-071: primary action is to validate the freshly-minted draft so
-    // the user can fill MUST sections and chain into activation.
-    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
-    // id post-merge so the validate command stays canonical. The reopen
-    // path creates the new artifact via lifecycle, which keeps the
-    // display id in `result.new_id`; refs_form_from_body falls back to it
-    // when the freshly created body has no slug yet.
-    let new_ref_form = match store.get_record(&result.new_id).await? {
-        Some(rec) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id),
-        None => result.new_id.clone(),
-    };
-    let next_hints: Vec<Hint> = vec![
-        Hint::info(format!(
-            "New draft {} created — fill MUST sections",
-            new_ref_form
-        ))
-        .with_action(format!("forgeplan validate {}", new_ref_form)),
-    ];
-    print!("{}", hints::render_next_action_line(&next_hints));
-
-    Ok(())
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    run_file_first(ws, lock, id, reason, store.as_ref()).await
 }
 
-/// File-first `reopen` for a constellation-migrated workspace.
+/// Reopen through the canonical document set for either index layout.
 ///
-/// The successor id is allocated from the canonical Markdown on disk
-/// (`artifact::store::next_id`) rather than a store counter, and
+/// The successor key is minted before its display number is reserved, and
 /// `reopen_captured` keeps the audit-C3 order: create → link → deprecate.
 /// A failure before the last step leaves the old artifact active and the new
 /// draft orphaned rather than retiring something with no successor.
@@ -155,6 +19,7 @@ async fn run_file_first(
     lock: forgeplan_core::workspace::lock::WorkspaceLock,
     id: &str,
     reason: &str,
+    store: Option<&forgeplan_core::db::store::LanceStore>,
 ) -> anyhow::Result<()> {
     let read = common::workspace_read(&ws).await?;
     let canonical = read
@@ -163,26 +28,24 @@ async fn run_file_first(
     let record = read
         .get_record(&canonical)
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {canonical}\nFix: forgeplan list"))?;
-    let kind: forgeplan_core::artifact::types::ArtifactKind =
-        record.kind.parse().map_err(|e| anyhow::anyhow!("{e}"))?;
+    if let Some(store) = store {
+        if let Some(stored) = store.get_record(&record.canonical_key).await? {
+            projection::sync_file_to_store(store, &ws, &stored).await?;
+        }
+    }
 
-    // Auto-generate new ID: same prefix, next sequence on disk.
-    let new_id = forgeplan_core::artifact::store::next_id(&ws, &kind, 3).await?;
-
-    // Scoped so the context's borrow of the lock guard ends before the
-    // reconcile pass below — that pass re-acquires the same lock.
+    // The context borrow ends before reconcile, which reacquires the same
+    // workspace lock on constellation-managed workspaces.
     let result = {
-        let ctx = projection::MutationContext::new(&ws, &lock, None);
-        forgeplan_core::lifecycle::canonical::reopen_captured(
-            &ctx, &read, &canonical, reason, &new_id,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
+        let ctx = projection::MutationContext::new(&ws, &lock, store);
+        forgeplan_core::lifecycle::canonical::reopen_captured(&ctx, &read, &canonical, reason)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
     };
 
     common::log_change_field(
         &ws,
-        None,
+        store,
         &canonical,
         "update",
         ("status", Some(&record.status), Some("deprecated")),
@@ -191,18 +54,22 @@ async fn run_file_first(
     .await;
     common::log_change_field(
         &ws,
-        None,
-        &new_id,
+        store,
+        &result.new_id,
         "create",
         ("status", None, Some("draft")),
         "cli",
     )
     .await;
 
-    common::note_constellation_owns_index();
-    // Lock released before reconcile — see `common::reconcile_after_file_mutation`.
-    drop(lock);
-    let published = common::reconcile_after_file_mutation(&ws).await;
+    let published = if store.is_none() {
+        common::note_constellation_owns_index();
+        // Lock released before reconcile — see `common::reconcile_after_file_mutation`.
+        drop(lock);
+        Some(common::reconcile_after_file_mutation(&ws).await)
+    } else {
+        None
+    };
 
     println!("  Reopened {canonical} → deprecated");
     println!(
@@ -210,6 +77,7 @@ async fn run_file_first(
         result.new_id, result.new_kind
     );
     println!("  Link: {} --based_on--> {canonical}", result.new_id);
+    println!("  Key: {}", result.new_key);
 
     let next_hints: Vec<Hint> = vec![
         Hint::info(format!(
@@ -220,7 +88,7 @@ async fn run_file_first(
     ];
     print!("{}", hints::render_next_action_line(&next_hints));
 
-    if !published {
+    if published == Some(false) {
         println!("  ! derived index not yet updated");
     }
     Ok(())

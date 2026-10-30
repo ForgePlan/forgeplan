@@ -361,7 +361,11 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
         let kind_label = record.kind.clone();
         let raw_analysis = analysis.clone();
         let model_name = format!("{}/{}", llm_config.provider, llm_config.model);
-        let build = move |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
+        let note_title = format!("ADI analysis of {}", target_id);
+
+        let title_for_key = note_title.clone();
+
+        let build = move |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
             let adi_record = if adi_source.raw_markdown.is_none() {
                 Some(AdiRecord::from_adi_output(
                     id.to_string(),
@@ -373,7 +377,6 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
                 None
             };
 
-            let note_title = format!("ADI analysis of {}", target_id);
             let note_body = if let Some(adi_rec) = &adi_record {
                 // Structured: AdiRecord JSON + readable summary
                 format!(
@@ -400,13 +403,11 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             };
 
             Ok(NewArtifact {
-                // ADR-030: no minted key yet — the document declares no slug,
-                // so its canonical key is its display id.
-                canonical_key: id.to_string(),
+                canonical_key: canonical_key.to_string(),
                 id: id.to_string(),
                 kind: "note".to_string(),
                 status: "draft".to_string(),
-                title: note_title,
+                title: note_title.clone(),
                 body: note_body,
                 depth: "tactical".to_string(),
                 author: None,
@@ -418,29 +419,18 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             })
         };
 
-        let note_id = match &store {
-            Some(store) => {
-                let note_id = store.next_id("NOTE").await?;
-                let artifact = build(&note_id, 0)?;
-                // PRD-073 file-first: create the note's canonical projection;
-                // the outgoing provenance edge is written below.
-                let ctx = projection::MutationContext::new(&ws, &lock, Some(store));
-                projection::create_artifact_with_projection(&ctx, &artifact).await?;
-                note_id
-            }
-            None => {
-                let allocated =
-                    forgeplan_core::artifact::id_alloc::allocate_and_create_artifact_file_first(
-                        &ws,
-                        &lock,
-                        &forgeplan_core::artifact::types::ArtifactKind::Note,
-                        3,
-                        &build,
-                    )
-                    .await?;
-                allocated.id
-            }
-        };
+        let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+            &ws,
+            &lock,
+            store.as_ref(),
+            &forgeplan_core::artifact::types::ArtifactKind::Note,
+            3,
+            &title_for_key,
+            &build,
+        )
+        .await?;
+        let note_id = created.id;
+        let note_key = created.canonical_key;
 
         // The link is written in both layouts through the same helper; a
         // `None` sink writes it into the note file's `links:` block.
@@ -462,6 +452,7 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             sanitize_for_hint(&note_id),
             sanitize_for_hint(&record.id)
         );
+        println!("  Key: {}", sanitize_for_hint(&note_key));
     }
 
     // PRD-071 contract: terminal Next: line in CLI text mode (json already handled).

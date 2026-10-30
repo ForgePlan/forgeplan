@@ -584,6 +584,7 @@ pub async fn renew(
 pub struct ReopenResult {
     pub old_id: String,
     pub new_id: String,
+    pub new_key: String,
     pub new_kind: String,
 }
 
@@ -682,6 +683,7 @@ pub async fn reopen(
     Ok(ReopenResult {
         old_id: artifact_id.to_string(),
         new_id: new_id.to_string(),
+        new_key: canonical_key,
         new_kind: record.kind,
     })
 }

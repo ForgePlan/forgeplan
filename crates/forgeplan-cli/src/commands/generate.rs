@@ -4,7 +4,6 @@ use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::llm::generate::generate_body;
-use forgeplan_core::projection;
 
 use crate::commands::common;
 
@@ -61,19 +60,15 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
 
     // Create artifact with generated body.
     //
-    // Both layouts build the artifact through the same closure so the written
-    // bytes are identical; only the id source and the derived sink differ. A
-    // migrated workspace takes its id from the canonical markdown under the
-    // cross-worktree id-alloc lock and writes no legacy row — the retired
-    // `artifacts.lance` must not be reopened to number a new artifact.
+    // The shared creator mints the key before reserving the display number,
+    // then publishes the key-named document. The optional legacy sink only
+    // controls whether the derived row is written alongside the file.
     let generated_body = body.clone();
     let generated_title = title.clone();
     let generated_template_key = template_key.to_string();
-    let build = move |id: &str, _number: u32| -> anyhow::Result<NewArtifact> {
+    let build = move |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
         Ok(NewArtifact {
-            // ADR-030: no minted key yet — the document declares no slug, so
-            // its canonical key is its display id.
-            canonical_key: id.to_string(),
+            canonical_key: canonical_key.to_string(),
             id: id.to_string(),
             kind: generated_template_key.clone(),
             status: "draft".to_string(),
@@ -90,32 +85,21 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
 
     // PRD-073 file-first: helper writes file FIRST then syncs to LanceDB.
     // PROB-049 H-6: persistent deps now flow through `MutationContext`.
-    let (id, filepath) = match &store {
-        Some(store) => {
-            let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-            let id = store.next_id(&prefix).await?;
-            let artifact = build(&id, 0)?;
-            let filepath = projection::create_artifact_with_projection(
-                &projection::MutationContext::new(&workspace, &lock, Some(store)),
-                &artifact,
-            )
-            .await
-            .with_context(|| format!("Failed to create artifact {} (file-first)", id))?;
-            (id, filepath)
-        }
-        None => {
-            let allocated =
-                forgeplan_core::artifact::id_alloc::allocate_and_create_artifact_file_first(
-                    &workspace, &lock, &kind, 3, &build,
-                )
-                .await
-                .with_context(|| {
-                    format!("Failed to create {} {} (file-first)", template_key, title)
-                })?;
-            (allocated.id, allocated.filepath)
-        }
-    };
 
+    let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+        &workspace,
+        &lock,
+        store.as_ref(),
+        &kind,
+        3,
+        &title,
+        &build,
+    )
+    .await
+    .with_context(|| format!("Failed to create {} {} (key-file)", template_key, title))?;
+    let id = created.id;
+    let canonical_key = created.canonical_key;
+    let filepath = created.filepath;
     if store.is_none() {
         common::note_constellation_owns_index();
         // Lock must drop before reconcile — it re-acquires the same lock per
@@ -126,6 +110,7 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
 
     println!("  Created: {}", filepath.display());
     println!("  ID:      {}", id);
+    println!("  Key:     {}", canonical_key);
     println!("  Kind:    {}", template_key);
     println!("  Title:   {}", title);
     println!(

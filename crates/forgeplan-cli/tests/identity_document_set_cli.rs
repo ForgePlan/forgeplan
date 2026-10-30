@@ -358,3 +358,64 @@ fn the_refused_candidates_are_the_candidates_of_the_one_document_set() {
         "an ambiguity is not a miss"
     );
 }
+/// Ordinary CLI creation publishes each artifact under the key minted for
+/// that document, even when the display id and title repeat.
+#[tokio::test]
+async fn cli_new_publishes_distinct_canonical_key_files_for_duplicate_titles() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    for _ in 0..2 {
+        let output = forgeplan()
+            .args(["new", "prd", "Auth System", "--allow-duplicate"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("forgeplan new runs");
+        assert!(
+            output.status.success(),
+            "ordinary creation must publish the artifact: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let workspace = tmp.path().join(".forgeplan");
+    let documents = forgeplan_core::artifact::documents::workspace_candidates(&workspace)
+        .await
+        .expect("the workspace scan reads the created documents");
+    assert_eq!(documents.len(), 2, "both created documents survive");
+    assert_ne!(
+        documents[0].canonical_key, documents[1].canonical_key,
+        "each created document receives its own key"
+    );
+    let mut display_ids: Vec<_> = documents
+        .iter()
+        .map(|document| document.display_id.as_str())
+        .collect();
+    display_ids.sort_unstable();
+    assert_eq!(
+        display_ids,
+        ["PRD-001", "PRD-002"],
+        "the display ids remain the allocator's sequential aliases"
+    );
+    for document in &documents {
+        assert_eq!(
+            document.relative_path.file_name().unwrap().to_str().unwrap(),
+            format!("{}.md", document.canonical_key),
+            "ordinary creation writes the document to its key-named file"
+        );
+        let text = std::fs::read_to_string(workspace.join(&document.relative_path)).unwrap();
+        let (frontmatter, _) =
+            forgeplan_core::artifact::frontmatter::parse_frontmatter(&text).unwrap();
+        assert_eq!(
+            frontmatter
+                .get("canonical_key")
+                .and_then(serde_yaml::Value::as_str),
+            Some(document.canonical_key.as_str()),
+            "the stored document carries its minted key"
+        );
+    }
+}

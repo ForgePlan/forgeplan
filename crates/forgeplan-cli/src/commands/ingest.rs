@@ -589,32 +589,34 @@ async fn write_draft(
         }
     }
 
-    let id = candidates.next_id(&kind);
-
-    let new = NewArtifact {
-        // ADR-030: no minted key yet — the document declares no slug, so its
-        // canonical key is its display id.
-        canonical_key: id.clone(),
-        id: id.clone(),
-        kind: template_key.to_string(),
-        status: "draft".to_string(),
-        title: draft.title.clone(),
-        body: draft.body.clone(),
-        depth: default_depth_for(&kind).to_string(),
-        author: None,
-        parent_epic: None,
-        valid_until: None,
-        tags: vec![format!("source=ingest:{}", draft.rule_id)],
+    let build = |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
+        Ok(NewArtifact {
+            canonical_key: canonical_key.to_string(),
+            id: id.to_string(),
+            kind: template_key.to_string(),
+            status: "draft".to_string(),
+            title: draft.title.clone(),
+            body: draft.body.clone(),
+            depth: default_depth_for(&kind).to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![format!("source=ingest:{}", draft.rule_id)],
+        })
     };
-    // PRD-073 Phase 3b: file-first helper writes the markdown projection
-    // FIRST then syncs to LanceDB. Previous DB-first order would have
-    // stranded the artifact in DB-only state on a crash between the two.
-    let path = projection::create_artifact_with_projection(
-        &projection::MutationContext::new(ws, guard, store),
-        &new,
+    let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+        ws,
+        guard,
+        store,
+        &kind,
+        3,
+        &draft.title,
+        &build,
     )
     .await
-    .with_context(|| format!("create_artifact_with_projection failed for {id}"))?;
+    .with_context(|| format!("create canonical-key artifact for {}", draft.title))?;
+    let id = created.id;
+    let path = created.filepath;
     candidates.record_written(template_key, draft, id.clone(), path);
 
     common::log_change(ws, store, &id, "ingest_create", "cli").await;
