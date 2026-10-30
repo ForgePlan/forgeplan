@@ -959,11 +959,12 @@ pub fn parse_artifact_file(
         ));
     }
 
-    // ADR-012: the slug is canonical when it validates, otherwise the legacy
-    // id. Never guess a key from the title — two artifacts can share one.
+    // ADR-030: the declared slug is the canonical key when it is one — a
+    // minted key (SPEC-009) or a grandfathered slug (SPEC-005). Never guess
+    // a key from the title — two artifacts can share one.
     let identity = IdentityTriple {
         slug: frontmatter::slug_from_frontmatter(&fm)
-            .filter(|s| crate::artifact::types::validate_slug(s).is_ok())
+            .filter(|s| crate::artifact::types::is_canonical_key(s))
             .map(str::to_string),
         predicted_number: frontmatter::predicted_number_from_frontmatter(&fm),
         assigned_number: frontmatter::assigned_number_from_frontmatter(&fm),

@@ -3,7 +3,7 @@ use forgeplan_core::artifact::frontmatter::{
     slug_from_frontmatter,
 };
 use forgeplan_core::artifact::store::ArtifactSummary;
-use forgeplan_core::artifact::types::{ArtifactKind, render_display_id, validate_slug};
+use forgeplan_core::artifact::types::{ArtifactKind, is_canonical_key, render_display_id};
 use forgeplan_core::db::store::ArtifactRecord;
 use forgeplan_core::validation::{Finding, ValidationResult};
 
@@ -51,11 +51,12 @@ pub(crate) fn identity_from_record(id: &str, kind_str: &str, body: &str) -> Iden
         Ok((fm, _body)) => (
             slug_from_frontmatter(&fm)
                 .filter(|s| {
-                    // HIGH-3: drop slugs that violate the SPEC-005 grammar.
+                    // HIGH-3: drop a slug that is neither a minted canonical
+                    // key (SPEC-009) nor a grandfathered slug (SPEC-005).
                     // We log a structured warning so an operator can spot
                     // the bad row, but we never let a malformed slug flow
                     // into agent-visible DTO fields.
-                    let ok = validate_slug(s).is_ok();
+                    let ok = is_canonical_key(s);
                     if !ok {
                         tracing::warn!(
                             target: "forgeplan_mcp::convert",

@@ -259,7 +259,7 @@ fn canonical_key_for_import(artifact_id: &str, document: &ParsedDocument) -> Str
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|slug| !slug.is_empty())
-        .filter(|slug| crate::artifact::types::validate_slug(slug).is_ok())
+        .filter(|slug| crate::artifact::types::is_canonical_key(slug))
         .unwrap_or(artifact_id)
         .to_string()
 }

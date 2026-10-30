@@ -27,7 +27,7 @@
 use std::path::PathBuf;
 
 use crate::artifact::frontmatter::{parse_frontmatter, slug_from_frontmatter};
-use crate::artifact::types::{ArtifactKind, MAX_SLUG_LEN, slugify, validate_slug};
+use crate::artifact::types::{ArtifactKind, MAX_SLUG_LEN, slugify};
 
 /// Random bytes behind the key's hexadecimal suffix.
 const KEY_ENTROPY_BYTES: usize = 16;
@@ -148,9 +148,13 @@ impl std::error::Error for ResolveError {}
 ///
 /// The key is `<kind>-<title-part>-k<32 lowercase hex>`:
 ///
-/// * `<kind>` is the artifact kind's slug prefix (`prd`, `evid`, `note`, …) —
-///   the same prefix the slug grammar accepts, so the key is a valid slug and
-///   can live in the `slug` frontmatter field;
+/// * `<kind>` is the artifact kind's **key** segment — the vocabulary SPEC-009
+///   names (`prd`, `spec`, `rfc`, `adr`, `note`, `epic`, `problem`,
+///   `solution`, `evidence`, `refresh`). It is deliberately NOT the display
+///   number prefix: `PROB-037` and `prob-037` are display forms, while the
+///   key segment spells the kind out (`problem-…`). The two vocabularies are
+///   separate, so a key never has to be reverse-engineered from its display
+///   id;
 /// * `<title-part>` is the slugified title, truncated at a hyphen boundary so
 ///   the whole key stays within [`MAX_SLUG_LEN`]; an all-Cyrillic title
 ///   slugifies to nothing and becomes `document`;
@@ -174,6 +178,12 @@ pub fn mint_artifact_key(kind: &ArtifactKind, title: &str) -> anyhow::Result<Str
 /// canonical key by exactly this rule, so a record built here and a document
 /// read from the same workspace agree on one identity.
 ///
+/// The declared `slug:` is a canonical key when it is a **minted** key
+/// (SPEC-009's format) or a **grandfathered** slug (the SPEC-005 grammar the
+/// historical corpus uses). Both answer the same question — "what is this
+/// document's identity?" — so both are accepted here. A slug that is neither
+/// is not an identity and the display id stands in for it.
+///
 /// `document` is the document's markdown text — the whole file, frontmatter
 /// included, which is how the store keeps it. A document without a parseable
 /// frontmatter keeps its display id: it declares no slug, so it has no other
@@ -188,7 +198,7 @@ pub fn canonical_key_from_document(display_id: &str, document: &str) -> String {
     }
     match parse_frontmatter(document) {
         Ok((frontmatter, _body)) => match slug_from_frontmatter(&frontmatter) {
-            Some(slug) if validate_slug(slug).is_ok() => slug.to_string(),
+            Some(slug) if crate::artifact::types::is_canonical_key(slug) => slug.to_string(),
             _ => display_id.to_string(),
         },
         Err(_) => display_id.to_string(),
@@ -208,7 +218,10 @@ fn mint_artifact_key_with_entropy<F>(
 where
     F: FnOnce(&mut [u8]) -> anyhow::Result<()>,
 {
-    let kind_prefix = kind.prefix().trim_end_matches('-');
+    // The key's kind segment is the key vocabulary, NOT the display-number
+    // prefix: SPEC-009 names `problem`, `solution`, `evidence` and
+    // `refresh` where the display prefixes abbreviate them.
+    let kind_prefix = kind.canonical_key_kind();
 
     let mut title_part = slugify(title);
     if title_part.is_empty() {
@@ -219,20 +232,18 @@ where
     fill(&mut entropy)?;
     let suffix = render_hex_lower(&entropy);
 
-    // Build the key, then let the slug grammar have the last word: a key the
-    // grammar rejects is not a key. The only grammar rule a title can break
-    // is the reserved-prefix rule (a title starting with `draft-`, `pending-`
-    // or `tmp-`), and the established escape for it is the `x-` marker
-    // `slug_from_kind_title` uses.
-    let mut key = assemble_key(kind_prefix, &title_part, &suffix);
-    if let Err(error) = validate_slug(&key) {
-        let escaped = format!("x-{title_part}");
-        key = assemble_key(kind_prefix, &escaped, &suffix);
-        validate_slug(&key).map_err(|second| {
-            anyhow::anyhow!(
-                "cannot build a canonical key for {kind_prefix:?}: {second} (first attempt: {error})"
-            )
-        })?;
+    // The key has its own grammar (SPEC-009 "Canonical key format"): a
+    // lowercase kind segment, a slugified title part, and 32 random hex
+    // characters. The title part is the only part a title can break, and the
+    // only way it breaks it is by being empty after truncation — the
+    // `document` fallback above already covers that, and a second escape
+    // would only make the key less predictable.
+    let key = assemble_key(kind_prefix, &title_part, &suffix);
+    if !crate::artifact::types::is_minted_canonical_key(&key) {
+        anyhow::bail!(
+            "cannot build a canonical key for kind {kind_prefix:?} from title {title:?}: \
+             the assembled key {key:?} does not satisfy the canonical key format"
+        );
     }
 
     Ok(key)
@@ -455,6 +466,7 @@ fn sort_candidates(candidates: Vec<&ArtifactCandidate>) -> Vec<ArtifactCandidate
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artifact::types::validate_slug;
     use std::path::Path;
 
     fn candidate(key: &str, display: &str, title: &str, path: &str) -> ArtifactCandidate {
@@ -506,8 +518,8 @@ mod tests {
             key.len()
         );
         assert!(
-            validate_slug(&key).is_ok(),
-            "a minted key must satisfy the slug grammar: {key:?}"
+            crate::artifact::types::is_canonical_key(&key),
+            "a minted key must satisfy the canonical key grammar: {key:?}"
         );
     }
 
@@ -535,10 +547,108 @@ mod tests {
     fn a_title_that_would_use_a_reserved_prefix_still_yields_a_valid_key() {
         let key = mint_artifact_key(&ArtifactKind::Prd, "Draft alternative").unwrap();
         assert!(
-            validate_slug(&key).is_ok(),
+            crate::artifact::types::is_canonical_key(&key),
             "the reserved-prefix rule must not make a document unmintable: {key:?}"
         );
         assert!(key.starts_with("prd-"));
+    }
+
+    /// The key's kind segment is the SPEC-009 vocabulary, not the display
+    /// number prefix. `problem`, `solution`, `evidence` and `refresh` are
+    /// spelled out; the legacy abbreviations `prob`, `sol`, `evid` and `ref`
+    /// belong to the display-number vocabulary and must not appear in a key.
+    #[test]
+    fn a_minted_key_uses_the_specified_key_kind_vocabulary() {
+        for (kind, expected) in [
+            (ArtifactKind::ProblemCard, "problem"),
+            (ArtifactKind::SolutionPortfolio, "solution"),
+            (ArtifactKind::EvidencePack, "evidence"),
+            (ArtifactKind::RefreshReport, "refresh"),
+            (ArtifactKind::Prd, "prd"),
+            (ArtifactKind::Spec, "spec"),
+            (ArtifactKind::Rfc, "rfc"),
+            (ArtifactKind::Adr, "adr"),
+            (ArtifactKind::Note, "note"),
+            (ArtifactKind::Epic, "epic"),
+        ] {
+            let key = mint_artifact_key(&kind, "Weekly review").unwrap();
+            let (segment, _) = key.split_once('-').unwrap();
+            assert_eq!(
+                segment, expected,
+                "the key kind segment for {kind:?} must be {expected:?}, got {key:?}"
+            );
+        }
+    }
+
+    /// The key kind vocabulary is independent of the display-number prefix:
+    /// `PROB-001` names the same kind as the key `problem-…`, and the two
+    /// vocabularies never borrow from each other.
+    #[test]
+    fn the_key_kind_vocabulary_is_independent_of_the_display_prefix() {
+        assert_eq!(
+            ArtifactKind::ProblemCard.prefix().trim_end_matches('-'),
+            "prob",
+            "the display-number prefix keeps its legacy abbreviation"
+        );
+        assert_eq!(
+            ArtifactKind::ProblemCard.canonical_key_kind(),
+            "problem",
+            "the key kind segment spells the kind out"
+        );
+        for legacy in ["prob", "sol", "evid", "ref"] {
+            assert!(
+                !crate::artifact::types::is_canonical_key_kind(legacy),
+                "{legacy:?} is a display prefix, never a key kind segment"
+            );
+        }
+        for key_kind in [
+            "problem",
+            "solution",
+            "evidence",
+            "refresh",
+            "prd",
+            "spec",
+            "rfc",
+            "adr",
+            "note",
+            "epic",
+        ] {
+            assert!(
+                crate::artifact::types::is_canonical_key_kind(key_kind),
+                "{key_kind:?} must be a key kind segment"
+            );
+        }
+    }
+
+    /// A minted key is a canonical key even though it is not a SPEC-005
+    /// slug: its kind segment (`problem`) is not one the slug grammar
+    /// accepts. The two grammars are separate, and the key grammar is the
+    /// one an identity obeys.
+    #[test]
+    fn a_minted_key_is_a_canonical_key_even_when_it_is_not_a_slug() {
+        let key = mint_artifact_key(&ArtifactKind::ProblemCard, "Weekly review").unwrap();
+        assert!(
+            !validate_slug(&key).is_ok(),
+            "the key kind segment is outside the slug grammar: {key:?}"
+        );
+        assert!(
+            crate::artifact::types::is_canonical_key(&key),
+            "a minted key is a canonical key: {key:?}"
+        );
+    }
+
+    /// The key a document declares is read back as that key — a minted one
+    /// as well as a grandfathered slug. A document whose key cannot be
+    /// recognised keeps its display id.
+    #[test]
+    fn a_declared_minted_key_is_read_back_as_the_key() {
+        let key = mint_artifact_key(&ArtifactKind::ProblemCard, "Weekly review").unwrap();
+        let document = format!("---\nid: PROB-001\nkind: problem\nslug: {key}\n---\n\nBody.\n");
+        assert_eq!(
+            canonical_key_from_document("PROB-001", &document),
+            key,
+            "the declared key must survive the round trip"
+        );
     }
 
     #[test]

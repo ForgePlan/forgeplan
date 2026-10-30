@@ -535,7 +535,7 @@ fn parse_identity_v5_document(
         .map_err(|err| anyhow::anyhow!("the frontmatter does not parse: {err}"))?;
 
     let slug = crate::artifact::frontmatter::slug_from_frontmatter(&frontmatter)
-        .filter(|slug| crate::artifact::types::validate_slug(slug).is_ok())
+        .filter(|slug| crate::artifact::types::is_canonical_key(slug))
         .map(str::to_string);
     let display_id = frontmatter_string(&frontmatter, "id").ok_or_else(|| {
         anyhow::anyhow!(

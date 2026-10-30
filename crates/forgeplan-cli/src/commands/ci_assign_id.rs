@@ -79,7 +79,7 @@ use forgeplan_core::artifact::frontmatter::{
     assigned_number_from_frontmatter, parse_frontmatter, predicted_number_from_frontmatter,
     set_assigned_number, slug_from_frontmatter,
 };
-use forgeplan_core::artifact::types::{ArtifactKind, validate_slug};
+use forgeplan_core::artifact::types::{ArtifactKind, is_canonical_key};
 use forgeplan_core::git::{
     artifact_filenames_in_origin_dev, max_assigned_number_in_base, slug_exists_in_filenames,
     validate_git_ref,
@@ -424,17 +424,18 @@ pub fn discover_candidates(workspace: &Path) -> Result<Vec<Candidate>> {
                 Some(s) => s.to_string(),
                 None => continue,
             };
-            // PROB-060 Phase 0b SEC-2 [CWE-94] Part B: re-validate slug
-            // here, on the read path. The frontmatter is PR-controlled
-            // YAML и flows downstream into commit messages, JSON output,
-            // и `git commit -m` arguments. validate_slug is the single
-            // source of truth для SPEC-005 slug shape; an invalid slug
-            // here means the frontmatter has been tampered with или the
-            // author skipped `forgeplan new`. Fail loudly rather than
-            // letting bogus content reach commit-msg interpolation.
-            if let Err(e) = validate_slug(&slug) {
+            // PROB-060 Phase 0b SEC-2 [CWE-94] Part B: re-validate the
+            // declared identity here, on the read path. The frontmatter is
+            // PR-controlled YAML и flows downstream into commit messages,
+            // JSON output, и `git commit -m` arguments. The accepted shape
+            // is a canonical key — a minted SPEC-009 key or a grandfathered
+            // SPEC-005 slug; an invalid value here means the frontmatter
+            // has been tampered with или the author skipped `forgeplan
+            // new`. Fail loudly rather than letting bogus content reach
+            // commit-msg interpolation.
+            if !is_canonical_key(&slug) {
                 anyhow::bail!(
-                    "ci-assign-id: malformed slug {slug:?} in {}: {e}",
+                    "ci-assign-id: malformed slug {slug:?} in {}: not a canonical key",
                     redact_path(workspace, &path)
                 );
             }

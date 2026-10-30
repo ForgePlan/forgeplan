@@ -110,6 +110,49 @@ impl ArtifactKind {
         }
     }
 
+    /// The kind segment of a **canonical key**.
+    ///
+    /// SPEC-009 "Canonical key format" fixes the key's kind segment to its
+    /// own vocabulary — `prd`, `spec`, `rfc`, `adr`, `note`, `evidence`,
+    /// `problem`, `solution`, `epic`, `refresh` — and that vocabulary is NOT
+    /// the display-number prefix. The two are separate on purpose:
+    ///
+    /// * the display prefix answers "which number is this?" — `PROB-037`;
+    /// * the key segment answers "what kind of document is this?" — and it
+    ///   spells the kind out in full, so `problem` and `evidence` do not
+    ///   hide behind `prob` and `evid`.
+    ///
+    /// A key minted from this segment is therefore not a SPEC-005 slug: its
+    /// kind segment is not in [`VALID_KIND_PREFIXES`]. That is fine — the
+    /// canonical key has its own grammar (see
+    /// [`crate::artifact::canonical_key::is_canonical_key`]), and ADR-030
+    /// makes the key the identity rather than a title-derived slug.
+    ///
+    /// The kinds SPEC-009 does not name (memory and the brownfield kinds)
+    /// keep their existing slug prefixes, so their keys stay both valid
+    /// slugs and valid keys.
+    pub fn canonical_key_kind(&self) -> &'static str {
+        match self {
+            Self::ProblemCard => "problem",
+            Self::SolutionPortfolio => "solution",
+            Self::EvidencePack => "evidence",
+            Self::RefreshReport => "refresh",
+            Self::Prd => "prd",
+            Self::Spec => "spec",
+            Self::Rfc => "rfc",
+            Self::Adr => "adr",
+            Self::Note => "note",
+            Self::Epic => "epic",
+            Self::Memory => "mem",
+            Self::UseCase => "uc",
+            Self::Glossary => "glos",
+            Self::Invariant => "inv",
+            Self::Scenario => "scen",
+            Self::Hypothesis => "hyp",
+            Self::DomainModel => "dm",
+        }
+    }
+
     /// Returns the subdirectory name for this kind.
     pub fn dir_name(&self) -> &'static str {
         match self {
@@ -264,6 +307,93 @@ pub fn slugify(title: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+/// The number of hexadecimal characters in the random part of a minted
+/// canonical key — SPEC-009 "Canonical key format" fixes it at 32
+/// (16 random bytes rendered as hexadecimal).
+pub const CANONICAL_KEY_HEX_LEN: usize = 32;
+
+/// Every kind segment a canonical key may carry.
+///
+/// The vocabulary is the key's own, not the display-number prefix's:
+/// SPEC-009 names `problem`, `solution`, `evidence` and `refresh` where the
+/// display prefixes abbreviate them. The kinds SPEC-009 does not name
+/// (memory and the brownfield kinds) keep their slug prefixes.
+const CANONICAL_KEY_KINDS: &[&str] = &[
+    "prd",
+    "spec",
+    "rfc",
+    "adr",
+    "note",
+    "epic",
+    "problem",
+    "solution",
+    "evidence",
+    "refresh",
+    "mem",
+    "uc",
+    "glos",
+    "inv",
+    "scen",
+    "hyp",
+    "dm",
+];
+
+/// Whether `segment` is a kind segment of a canonical key.
+pub fn is_canonical_key_kind(segment: &str) -> bool {
+    CANONICAL_KEY_KINDS.contains(&segment)
+}
+
+/// Whether `value` is a **minted** canonical key.
+///
+/// A minted key is `<kind>-<title-part>-k<32 lowercase hex>` (SPEC-009
+/// "Canonical key format"):
+///
+/// * the kind segment is one of [`CANONICAL_KEY_KINDS`] — the key's own
+///   vocabulary, which is NOT the display-number prefix vocabulary;
+/// * the title part is a slugified, hyphen-separated fragment;
+/// * the random part is 32 lowercase hexadecimal characters, so a key can
+///   never be mistaken for a display id.
+///
+/// The whole key stays within [`MAX_SLUG_LEN`] characters.
+pub fn is_minted_canonical_key(value: &str) -> bool {
+    if value.is_empty() || value.len() > MAX_SLUG_LEN {
+        return false;
+    }
+    let Some((head, random)) = value.rsplit_once("-k") else {
+        return false;
+    };
+    if random.len() != CANONICAL_KEY_HEX_LEN
+        || !random
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+    {
+        return false;
+    }
+    let Some((kind, title_part)) = head.split_once('-') else {
+        return false;
+    };
+    if !is_canonical_key_kind(kind) || title_part.is_empty() {
+        return false;
+    }
+    head.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Whether `value` may serve as a document's canonical key.
+///
+/// Two things answer to that question:
+///
+/// * a **minted** key — `<kind>-<title-part>-k<32 lowercase hex>`;
+/// * a **grandfathered** slug — the ADR-012 `slug:` a legacy document
+///   already carries. ADR-030 preserves existing unique slugs, so the
+///   historical corpus's identities stay valid keys.
+///
+/// Everything else — an empty value, a bare display id, a random string —
+/// is not a key.
+pub fn is_canonical_key(value: &str) -> bool {
+    is_minted_canonical_key(value) || validate_slug(value).is_ok()
 }
 
 /// Minimum allowed slug length (kind prefix + dash + at least 1 suffix char).
@@ -1096,6 +1226,101 @@ mod tests {
                 format!("{bare}-"),
                 **with_dash,
                 "with-dash array entry {with_dash:?} doesn't match bare {bare:?}"
+            );
+        }
+    }
+
+    /// The canonical-key kind vocabulary and the display-number prefix
+    /// vocabulary are two separate tables, and each kind contributes to
+    /// both.
+    ///
+    /// SPEC-009 names the key vocabulary (`problem`, `solution`,
+    /// `evidence`, `refresh` where the display prefixes abbreviate them);
+    /// SPEC-005's slug grammar keeps the abbreviations. Mixing them would
+    /// make a key indistinguishable from a display alias, so the two tables
+    /// are checked apart.
+    #[test]
+    fn the_key_kind_vocabulary_covers_every_kind_exactly_once() {
+        let all_kinds = [
+            ArtifactKind::Prd,
+            ArtifactKind::Rfc,
+            ArtifactKind::Adr,
+            ArtifactKind::Epic,
+            ArtifactKind::Spec,
+            ArtifactKind::ProblemCard,
+            ArtifactKind::SolutionPortfolio,
+            ArtifactKind::EvidencePack,
+            ArtifactKind::Note,
+            ArtifactKind::RefreshReport,
+            ArtifactKind::Memory,
+            ArtifactKind::UseCase,
+            ArtifactKind::Glossary,
+            ArtifactKind::Invariant,
+            ArtifactKind::Scenario,
+            ArtifactKind::Hypothesis,
+            ArtifactKind::DomainModel,
+        ];
+        let mut seen: Vec<&str> = all_kinds
+            .iter()
+            .map(|kind| kind.canonical_key_kind())
+            .collect();
+        seen.sort_unstable();
+        let before = seen.len();
+        seen.dedup();
+        assert_eq!(
+            before,
+            seen.len(),
+            "two kinds share one key kind segment: {seen:?}"
+        );
+        for segment in &seen {
+            assert!(
+                is_canonical_key_kind(segment),
+                "{segment:?} is a key kind segment but is not in the vocabulary"
+            );
+        }
+        // Every vocabulary entry is claimed by exactly one kind.
+        assert_eq!(
+            seen.len(),
+            CANONICAL_KEY_KINDS.len(),
+            "the key vocabulary holds an entry no kind claims"
+        );
+    }
+
+    /// A minted key is recognised as a canonical key; a grandfathered slug
+    /// is too; anything else is not an identity.
+    #[test]
+    fn a_canonical_key_is_a_minted_key_or_a_grandfathered_slug() {
+        let minted = "problem-weekly-review-k0123456789abcdef0123456789abcdef";
+        assert!(
+            is_minted_canonical_key(minted),
+            "a minted key must be recognised: {minted:?}"
+        );
+        assert!(is_canonical_key(minted));
+
+        assert!(
+            is_canonical_key("prd-auth-system"),
+            "a grandfathered slug stays a valid key"
+        );
+        assert!(
+            !is_minted_canonical_key("prd-auth-system"),
+            "a grandfathered slug is not a minted key"
+        );
+
+        for not_a_key in [
+            "",
+            "PRD-001",
+            "prd-",
+            "prd-004",
+            "problem-weekly-review-k0123",
+            "problem-weekly-review-k0123456789abcdef0123456789abcdeg",
+            "problem-weekly-review-k0123456789ABCDEF0123456789abcdef",
+            "problem-weekly-review-K0123456789abcdef0123456789abcdef",
+            "xyz-weekly-review-k0123456789abcdef0123456789abcdef",
+            "problem--k0123456789abcdef0123456789abcdef",
+        ] {
+            assert!(
+                !is_canonical_key(not_a_key),
+                "{not_a_key:?} must not be a canonical key"
             );
         }
     }

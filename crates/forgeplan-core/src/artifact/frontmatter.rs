@@ -326,8 +326,9 @@ pub fn is_pre_merge(fm: &Frontmatter) -> bool {
 ///
 /// Contract:
 /// - **Pre-merge** (`assigned_number` is `null` or absent) → return the
-///   `slug` field if present **and the slug passes [`crate::artifact::types::validate_slug`]**
-///   (`prd-auth-system`).
+///   `slug` field if present **and the slug is a canonical key**
+///   ([`crate::artifact::types::is_canonical_key`] — a minted SPEC-009 key
+///   or a grandfathered SPEC-005 slug like `prd-auth-system`).
 /// - **Post-merge** (`assigned_number` is set) → return `fallback_id`,
 ///   which the caller is expected to populate with the zero-padded
 ///   display ID (`PRD-074`) — typically the resolver's canonical form
@@ -352,7 +353,7 @@ pub fn is_pre_merge(fm: &Frontmatter) -> bool {
 pub fn refs_form<'a>(fm: &'a Frontmatter, fallback_id: &'a str) -> &'a str {
     if is_pre_merge(fm) {
         match slug_from_frontmatter(fm) {
-            Some(s) if crate::artifact::types::validate_slug(s).is_ok() => s,
+            Some(s) if crate::artifact::types::is_canonical_key(s) => s,
             _ => fallback_id,
         }
     } else {

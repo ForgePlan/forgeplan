@@ -95,7 +95,7 @@ use forgeplan_core::artifact::identity_repair::{
     merge_decisions, read_decision_file, read_plan_json, repair_journal_dir, repair_journal_root,
     rollback_repair, write_plan_json,
 };
-use forgeplan_core::artifact::types::{ArtifactKind, validate_slug};
+use forgeplan_core::artifact::types::{ArtifactKind, is_canonical_key};
 use serde::Serialize;
 
 /// CLI arguments for `forgeplan reconcile-ids`.
@@ -370,9 +370,9 @@ fn read_record(path: &Path, kind: &ArtifactKind) -> Result<ArtifactRecord> {
     // reach apply-mode rename and downstream consumers. Legacy artifacts
     // that pre-date the slug field have `slug: None` — those are skipped.
     if let Some(s) = slug.as_deref()
-        && let Err(e) = validate_slug(s)
+        && !is_canonical_key(s)
     {
-        anyhow::bail!("malformed slug {s:?}: {e}");
+        anyhow::bail!("malformed slug {s:?}: not a canonical key");
     }
     let predicted = predicted_number_from_frontmatter(&fm);
     let assigned = assigned_number_from_frontmatter(&fm);
