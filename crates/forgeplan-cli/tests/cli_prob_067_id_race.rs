@@ -31,22 +31,39 @@ fn init_workspace(path: &Path) {
 /// Collect every `EVID-NNN` id from the workspace's evidence directory
 /// by parsing filenames.
 fn evidence_ids(workspace_root: &Path) -> HashSet<String> {
-    let dir = workspace_root.join(".forgeplan/evidence");
+    declared_ids(workspace_root, "evidence", "EVID-")
+}
+
+/// The display ids declared under `.forgeplan/<subdir>` that start with
+/// `prefix`.
+///
+/// The file is named after the document's canonical key (ADR-030); the
+/// display id is the one the document declares.
+fn declared_ids(workspace_root: &Path, subdir: &str, prefix: &str) -> HashSet<String> {
+    let dir = workspace_root.join(".forgeplan").join(subdir);
     if !dir.exists() {
         return HashSet::new();
     }
     let mut ids = HashSet::new();
     for entry in std::fs::read_dir(&dir).expect("read evidence dir") {
         let entry = entry.expect("read_dir entry");
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".md") {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
             continue;
         }
-        // Filename shape: `EVID-NNN-<slug>.md`.
-        if let Some(rest) = name.strip_prefix("EVID-")
-            && let Some(num_str) = rest.split('-').next()
+        // The file is named after the document's canonical key (ADR-030); the
+        // display id is the one the document declares.
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some(declared) = text
+            .lines()
+            .take(12)
+            .find_map(|line| line.strip_prefix("id: "))
+            .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+            .filter(|value| value.starts_with(prefix))
         {
-            ids.insert(format!("EVID-{num_str}"));
+            ids.insert(declared.to_string());
         }
     }
     ids
@@ -175,17 +192,7 @@ fn prob_067_per_kind_lock_does_not_serialize_unrelated_kinds() {
     );
 
     // Same shape for notes.
-    let note_dir = root.join(".forgeplan/notes");
-    let mut note_ids = HashSet::new();
-    for entry in std::fs::read_dir(&note_dir).expect("read notes dir") {
-        let entry = entry.unwrap();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if let Some(rest) = name.strip_prefix("NOTE-")
-            && let Some(num_str) = rest.split('-').next()
-        {
-            note_ids.insert(format!("NOTE-{num_str}"));
-        }
-    }
+    let note_ids = declared_ids(root, "notes", "NOTE-");
     assert_eq!(
         note_ids.len(),
         5,
