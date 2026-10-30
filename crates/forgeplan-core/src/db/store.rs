@@ -1184,6 +1184,29 @@ impl LanceStore {
         }
     }
 
+    /// The display id a selector names.
+    ///
+    /// The history rows carry the display id, so a selector given in any
+    /// legacy route — the display id, a lower-case form of it, or the
+    /// canonical key — has to arrive at the same description. A selector that
+    /// names more than one document, or none, yields `None`: the caller then
+    /// keeps the bytes it was given rather than choosing a document.
+    pub async fn resolve_display_id(&self, selector: &str) -> anyhow::Result<Option<String>> {
+        let candidates = self.alias_candidates().await?;
+        match resolve_artifact(selector, &candidates) {
+            Ok(Some(resolved)) => Ok(Some(resolved.identity.display_id)),
+            Ok(None) => Ok(None),
+            Err(problem) => {
+                tracing::warn!(
+                    selector = %selector,
+                    problem = ?problem,
+                    "selector does not name exactly one artifact; no description was chosen"
+                );
+                Ok(None)
+            }
+        }
+    }
+
     /// This index's own rows as resolver candidates.
     ///
     /// Only the three columns the resolver reads are pulled: a resolution
@@ -2209,19 +2232,23 @@ impl LanceStore {
             )
         })?;
 
-        let mut keyed = entry.clone();
-        if let Some(key) = self.resolve_canonical_key(&entry.artifact_id).await? {
-            keyed.artifact_id = key;
+        // The audit trail keeps the event's original description — the display
+        // id a person reads. A caller that named the document by its
+        // canonical key gets the display id written, so one column holds one
+        // kind of description and the event is never rewritten into a key.
+        let mut recorded = entry.clone();
+        if let Some(display_id) = self.resolve_display_id(&entry.artifact_id).await? {
+            recorded.artifact_id = display_id;
         }
-        crate::db::auxiliary::change_log_append(table, &keyed).await
+        crate::db::auxiliary::change_log_append(table, &recorded).await
     }
 
     /// Query change log entries with optional artifact filter and source filter.
     ///
-    /// Schema v5: the artifact filter is a *selector*. It is resolved to the
-    /// canonical key the history rows carry; a selector that names no row
-    /// falls back to its own bytes so entries written before the upgrade
-    /// stay reachable.
+    /// The artifact filter is a *selector*. It is resolved to the display id
+    /// the history rows carry; a selector that names no document falls back
+    /// to its own bytes so entries written for a document that is gone stay
+    /// reachable.
     pub async fn get_change_log(
         &self,
         artifact_id: Option<&str>,
@@ -2233,15 +2260,15 @@ impl LanceStore {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("change_log table not initialized"))?;
 
-        let key = match artifact_id {
+        let selector = match artifact_id {
             Some(selector) => Some(
-                self.resolve_canonical_key(selector)
+                self.resolve_display_id(selector)
                     .await?
                     .unwrap_or_else(|| selector.to_string()),
             ),
             None => None,
         };
-        crate::db::auxiliary::change_log_query(table, key.as_deref(), source, limit).await
+        crate::db::auxiliary::change_log_query(table, selector.as_deref(), source, limit).await
     }
 
     // ── FPF Knowledge Base ───────────────────────────────────────────
@@ -5498,6 +5525,57 @@ mod tests {
             Some("prd-beta".to_string()),
             "an unambiguous key still resolves"
         );
+    }
+
+    /// The audit trail keeps the event's own description: a document named by
+    /// its canonical key is recorded under the display id a person reads, and
+    /// the entry is found through either route.
+    #[tokio::test]
+    async fn the_journal_records_the_display_id_and_is_found_through_either_route() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp).await;
+        store
+            .create_artifact(&NewArtifact {
+                canonical_key: "prd-auth-system".to_string(),
+                id: "PRD-001".to_string(),
+                kind: "prd".to_string(),
+                status: "draft".to_string(),
+                title: "Auth".to_string(),
+                body: "body".to_string(),
+                depth: "standard".to_string(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        store
+            .log_change(&ChangeLogEntry::new("prd-auth-system", "create", "cli"))
+            .await
+            .unwrap();
+
+        let by_key = store
+            .get_change_log(Some("prd-auth-system"), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(by_key.len(), 1, "the entry is found through the canonical key");
+        assert_eq!(
+            by_key[0].artifact_id, "PRD-001",
+            "the row keeps the display id a person reads, not the key"
+        );
+
+        let by_display = store
+            .get_change_log(Some("PRD-001"), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            by_display.len(),
+            1,
+            "the entry is found through the display id too"
+        );
+        assert_eq!(by_display[0].artifact_id, "PRD-001");
     }
 
     /// The row carries its canonical key, and the row is found by that key

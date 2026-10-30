@@ -5,7 +5,10 @@
 pub struct ChangeLogEntry {
     /// RFC 3339 timestamp
     pub timestamp: String,
-    /// Which artifact changed
+    /// Which artifact changed — the **display id** (`PRD-002`).
+    ///
+    /// The audit trail keeps the original description of the event: this is
+    /// what a person reads and what the row said before the key existed.
     pub artifact_id: String,
     /// create, update, delete, link, unlink
     pub action: String,

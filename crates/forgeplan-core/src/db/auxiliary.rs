@@ -544,10 +544,10 @@ pub(crate) async fn change_log_append(table: &Table, entry: &ChangeLogEntry) -> 
 
 /// Query history rows.
 ///
-/// Schema v5 (ADR-030): `artifact_id` holds the **canonical key** of the
-/// changed artifact, so the filter is a key filter. The caller resolves the
-/// selector it was given; a row written before the upgrade keeps its display
-/// id and is reachable only under that id.
+/// The row keeps the event's original description in `artifact_id`: the
+/// display id a person reads. The caller resolves the selector it was given
+/// to that display id; a selector that names no document falls back to its
+/// own bytes so entries written for a document that is gone stay reachable.
 pub(crate) async fn change_log_query(
     table: &Table,
     artifact_id: Option<&str>,
