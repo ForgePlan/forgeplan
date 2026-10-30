@@ -39,6 +39,28 @@ fn new_artifact(tmp: &TempDir, kind: &str, title: &str) -> String {
     panic!("no ID parsed from new {kind}: {stdout}");
 }
 
+/// The document under `dir` that declares `<id>`.
+fn document_declaring(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    for entry in std::fs::read_dir(dir).expect("directory").flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let declared = text
+            .lines()
+            .take(12)
+            .find_map(|line| line.strip_prefix("id: "))
+            .map(|value| value.trim().trim_matches('"').trim_matches('\''));
+        if declared == Some(id) {
+            return path;
+        }
+    }
+    panic!("no document declaring {id} in {}", dir.display());
+}
+
 /// PROB-028 main trace — create an artifact, delete its `.md` file
 /// directly, run `forgeplan reindex`, и assert the LanceDB row gets
 /// trimmed AND `forgeplan get <id>` reports not-found.
@@ -51,11 +73,24 @@ fn reindex_trims_orphan_after_md_file_deleted() {
 
     // Find the .md file и delete it directly (simulating git pull / manual rm).
     let prds_dir = tmp.path().join(".forgeplan").join("prds");
+    // The file is named after the document's canonical key (ADR-030), so the
+    // document is found by the display id it declares in its frontmatter.
     let mut deleted_count = 0;
     for entry in std::fs::read_dir(&prds_dir).unwrap().flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prd) && name.ends_with(".md") {
-            std::fs::remove_file(entry.path()).unwrap();
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let declared = text
+            .lines()
+            .take(12)
+            .find_map(|line| line.strip_prefix("id: "))
+            .map(|value| value.trim().trim_matches('"').trim_matches('\''));
+        if declared == Some(prd.as_str()) {
+            std::fs::remove_file(&path).unwrap();
             deleted_count += 1;
         }
     }
@@ -112,25 +147,18 @@ fn reindex_continues_after_per_file_error_and_still_trims_orphans() {
     let prds_dir = tmp.path().join(".forgeplan").join("prds");
 
     // Delete orphan's file.
-    for entry in std::fs::read_dir(&prds_dir).unwrap().flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prd_orphan) && name.ends_with(".md") {
-            std::fs::remove_file(entry.path()).unwrap();
-        }
-    }
+    // The file is named after the document's canonical key (ADR-030), so the
+    // document is found by the display id it declares.
+    std::fs::remove_file(document_declaring(&prds_dir, &prd_orphan))
+        .expect("the orphan's file is on disk");
 
     // Touch divergent's body to force a Phase 1 sync attempt (otherwise it
     // skips at "body matches"). We use append rather than full rewrite so
     // frontmatter и body shape stay sane.
-    for entry in std::fs::read_dir(&prds_dir).unwrap().flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prd_divergent) && name.ends_with(".md") {
-            let path = entry.path();
-            let mut content = std::fs::read_to_string(&path).unwrap();
-            content.push_str("\n\nAppended body for PROB-028 test.\n");
-            std::fs::write(&path, content).unwrap();
-        }
-    }
+    let divergent_path = document_declaring(&prds_dir, &prd_divergent);
+    let mut content = std::fs::read_to_string(&divergent_path).unwrap();
+    content.push_str("\n\nAppended body for PROB-028 test.\n");
+    std::fs::write(&divergent_path, content).unwrap();
 
     let reindex_out = forgeplan()
         .args(["reindex"])
