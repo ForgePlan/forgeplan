@@ -761,6 +761,268 @@ pub async fn sync_score_target_or_warn(store: &LanceStore, id: &str) {
     }
 }
 
+// ── Shared artifact resolution (CLI side) ─────────────────────────────
+//
+// The CLI resolves a selector through the SAME resolver the MCP server
+// uses: `forgeplan_mcp::convert`. The decision, the outcome taxonomy and
+// the candidate list are one implementation, so the two surfaces cannot
+// disagree about which document a name means.
+//
+// The document set itself lives in core —
+// `forgeplan_core::artifact::documents` — because it is a workspace
+// capability, not an MCP one: the ONE scan, the ONE candidate list, and
+// the CLI and the MCP server read the very same documents.
+//
+// What lives here is the CLI's half of that contract: handing a document
+// set to the shared resolver, and rendering a refusal as a command that
+// exits non-zero.
+
+use forgeplan_core::artifact::canonical_key::ArtifactCandidate;
+
+/// The outcome of resolving one artifact reference.
+///
+/// The very type the MCP server answers with — one taxonomy, one shape.
+/// The refusals stay apart: `not_found`, `ambiguous`,
+/// `conflicting_canonical_key`, `invalid_selector` and `incomplete_capture`
+/// are five different facts, and none of them is "not found".
+pub use forgeplan_mcp::convert::Resolution;
+
+/// Resolve one artifact reference over a document set.
+///
+/// The one resolver: `forgeplan_mcp::convert::resolve_reference` — the
+/// shared algorithm the MCP server calls too.
+pub fn resolve_in_document_set(input: &str, documents: &[ArtifactCandidate]) -> Resolution {
+    forgeplan_mcp::convert::resolve_reference(input, documents)
+}
+
+/// A resolution against a workspace: the outcome plus the documents a
+/// refusal names.
+#[derive(Debug, Clone)]
+pub struct WorkspaceResolution {
+    /// The shared outcome of the resolution.
+    pub outcome: Resolution,
+    /// The documents the refusal names: every claimant of an ambiguity, and
+    /// every claimant of a contested canonical key.
+    pub candidates: Vec<ArtifactCandidate>,
+}
+
+/// Resolve one artifact reference against a workspace's own documents.
+///
+/// The document set is the workspace's markdown, read by the ONE workspace
+/// scan — `forgeplan_core::artifact::documents::workspace_candidates` — so
+/// the answer is about the documents themselves and carries their
+/// workspace-relative paths. The decision is made by the shared resolver.
+pub async fn resolve_against_workspace(
+    workspace: &Path,
+    input: &str,
+) -> anyhow::Result<WorkspaceResolution> {
+    let documents = forgeplan_core::artifact::documents::workspace_candidates(workspace).await;
+    Ok(resolve_over(input, &documents, resolve_in_document_set(input, &documents)))
+}
+
+/// Resolve one artifact reference against a captured workspace view.
+///
+/// The capture is the document set on a migrated workspace: it knows each
+/// document's canonical key, display id, title and relative path, and it
+/// knows whether it read the whole source — a partial capture is an
+/// `incomplete_capture` refusal, never a "not found".
+pub fn resolve_against_capture(
+    read: &forgeplan_core::constellation::workspace_read::WorkspaceRead,
+    input: &str,
+) -> WorkspaceResolution {
+    let documents = forgeplan_core::artifact::documents::capture_candidates(read);
+    let outcome = forgeplan_mcp::convert::resolve_in_capture(read, input);
+    resolve_over(input, &documents, outcome)
+}
+
+/// Resolve one artifact reference against a legacy index.
+///
+/// The index rows are the document set on this layout, and the shared
+/// resolver decides over them — so a name two rows answer to names
+/// neither, and the refusal names both.
+///
+/// The workspace is passed along because a refusal has to point at a file
+/// the operator can open: the index records no path, so the paths come
+/// from the workspace's own markdown.
+pub async fn resolve_against_legacy_index(
+    store: &LanceStore,
+    workspace: &Path,
+    input: &str,
+) -> anyhow::Result<WorkspaceResolution> {
+    let outcome = forgeplan_mcp::convert::resolve_in_legacy_index(store, workspace, input).await?;
+    let candidates = match &outcome {
+        Resolution::Ambiguous { candidates, .. } => candidates.clone(),
+        _ if forgeplan_mcp::convert::resolution_code(&outcome) == "conflicting_canonical_key" => {
+            // A contested canonical key names its claimants: the rows that
+            // claim that key, with the path each row's markdown has. The
+            // paths come from the ONE workspace scan, so they are the same
+            // paths the file route would report.
+            let paths = forgeplan_core::artifact::documents::workspace_document_paths(workspace).await;
+            let summaries = store.list_artifacts(None).await?;
+            forgeplan_core::artifact::documents::candidates_from_summaries(&summaries)
+                .into_iter()
+                .filter(|row| row.canonical_key == input.trim())
+                .map(|mut row| {
+                    if let Some(path) = paths.get(&row.canonical_key) {
+                        row.relative_path = path.clone();
+                    }
+                    row
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    Ok(WorkspaceResolution { outcome, candidates })
+}
+
+/// Pair an outcome with the documents a refusal names.
+///
+/// An ambiguity names its candidates through the outcome itself. Every
+/// other refusal names no candidate of its own, except a contested
+/// canonical key — whose claimants are the documents that claim that key,
+/// which the document set answers whether or not the outcome carries them.
+fn resolve_over(
+    input: &str,
+    documents: &[ArtifactCandidate],
+    outcome: Resolution,
+) -> WorkspaceResolution {
+    let candidates = match &outcome {
+        Resolution::Ambiguous { candidates, .. } => candidates.clone(),
+        _ => documents
+            .iter()
+            .filter(|document| document.canonical_key == input.trim())
+            .cloned()
+            .collect(),
+    };
+    WorkspaceResolution { outcome, candidates }
+}
+
+/// A resolution that named no single document, rendered for the terminal.
+#[derive(Debug, Clone)]
+pub struct ResolutionFailure {
+    /// The machine-readable code: `not_found`, `ambiguous`,
+    /// `conflicting_canonical_key`, `invalid_selector` or
+    /// `incomplete_capture`.
+    pub code: &'static str,
+    /// The selector as the caller wrote it.
+    pub input: String,
+    /// The documents the refusal names.
+    pub candidates: Vec<ArtifactCandidate>,
+    /// The human-readable message.
+    pub message: String,
+}
+
+impl ResolutionFailure {
+    /// The candidates as the terminal shows them: canonical key, title and
+    /// workspace-relative path.
+    ///
+    /// No absolute path and no other source's data ever reaches the
+    /// output.
+    pub fn candidate_lines(&self) -> Vec<String> {
+        forgeplan_mcp::convert::describe_candidates(&self.candidates)
+    }
+}
+
+/// Describe a refusal of the shared resolver.
+///
+/// The code comes from the shared taxonomy, so the CLI and the MCP server
+/// report the same code for the same refusal.
+pub fn resolution_failure(
+    outcome: &Resolution,
+    input: &str,
+    candidates: &[ArtifactCandidate],
+) -> ResolutionFailure {
+    let code = forgeplan_mcp::convert::resolution_code(outcome);
+    let (named, message) = match outcome {
+        Resolution::Ambiguous { candidates, .. } => (
+            candidates.clone(),
+            format!(
+                "selector '{input}' matches {} documents — address one of them by its canonical key",
+                candidates.len()
+            ),
+        ),
+        Resolution::InvalidSelector { input: given } => (
+            Vec::new(),
+            format!("selector '{given}' is not a valid artifact reference"),
+        ),
+        Resolution::IncompleteCapture { message } => (
+            Vec::new(),
+            format!("the document set is incomplete: {message}"),
+        ),
+        _ => {
+            let claimants = candidates
+                .iter()
+                .filter(|document| document.canonical_key == input.trim())
+                .cloned()
+                .collect::<Vec<_>>();
+            let message = if claimants.is_empty() {
+                // The CLI's wording for a miss, unchanged: the code says
+                // `not_found`, the text says what the operator sees.
+                format!("Artifact '{input}' not found\nFix: forgeplan list")
+            } else {
+                format!(
+                    "canonical key '{input}' is claimed by {} documents",
+                    claimants.len()
+                )
+            };
+            (claimants, message)
+        }
+    };
+    ResolutionFailure {
+        code,
+        input: input.to_string(),
+        candidates: named,
+        message,
+    }
+}
+
+/// Print a refusal: the candidates first, then the message.
+///
+/// The candidates are what makes a refusal actionable — they are named by
+/// their canonical key, their title and their workspace-relative path, so
+/// the operator can open the file and address the document by its key.
+pub fn print_resolution_failure(failure: &ResolutionFailure) {
+    eprintln!("error: {}", failure.message);
+    for candidate in failure.candidate_lines() {
+        eprintln!("  {candidate}");
+    }
+    if failure.code == "ambiguous"
+        && let Some(candidate) = failure.candidates.first()
+    {
+        eprintln!("Fix: forgeplan get {}", candidate.canonical_key);
+    }
+}
+
+/// The error a command returns for a resolution that named no single
+/// document.
+///
+/// Returning it ends the command with a non-zero exit status: an
+/// ambiguity, a contested key, an unusable selector and an incomplete
+/// document set are refusals, and none of them is "not found".
+pub fn resolution_failure_error(failure: &ResolutionFailure) -> anyhow::Error {
+    anyhow::anyhow!("{}", failure.message)
+}
+
+/// Refuse a reference the shared resolver did not accept.
+///
+/// The refusal is rendered the way every refusal is rendered — the
+/// candidates first, each named by its canonical key, its title and its
+/// workspace-relative path, then the message — and the error ends the
+/// command with a non-zero exit status.
+///
+/// The code comes from the shared taxonomy, so the CLI and the MCP server
+/// report the SAME refusal for the same reference: an ambiguity is an
+/// ambiguity on both surfaces, and neither of them calls it "not found".
+pub fn refuse_resolution(
+    input: &str,
+    outcome: &Resolution,
+    documents: &[ArtifactCandidate],
+) -> anyhow::Error {
+    let failure = resolution_failure(outcome, input, documents);
+    print_resolution_failure(&failure);
+    resolution_failure_error(&failure)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

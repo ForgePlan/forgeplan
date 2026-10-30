@@ -5,19 +5,33 @@ use crate::ui;
 
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
-    let workspace = forgeplan_core::workspace::find_workspace(&cwd);
-    let (record, relations, incoming, view_metadata) = if let Some(ws) =
-        workspace.filter(|ws| common::index_migrated(ws))
-    {
-        let read = common::workspace_read(&ws).await?;
-        let canonical = read
-            .resolve_id(id)
-            .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let workspace = forgeplan_core::workspace::find_workspace(&cwd).ok_or_else(|| {
+        anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first.")
+    })?;
+    let (record, relations, incoming, view_metadata) = if common::index_migrated(&workspace) {
+        let read = common::workspace_read(&workspace).await?;
+        // The reference is resolved through the ONE shared resolver, over
+        // the documents the capture holds. A name two documents answer to
+        // names NEITHER of them: the command says which two, and exits
+        // non-zero. It never picks one.
+        let resolution = common::resolve_against_capture(&read, id);
+        let canonical = match &resolution.outcome {
+            common::Resolution::Found(found) => found.identity.canonical_key.clone(),
+            other => {
+                let failure = common::resolution_failure(other, id, &resolution.candidates);
+                common::print_resolution_failure(&failure);
+                return Err(common::resolution_failure_error(&failure));
+            }
+        };
         let record = read
-            .get_record(&canonical)
-            .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' missing from the captured view"))?
+            .get_record_by_key(&canonical)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Artifact '{id}' is not in the captured view\nFix: forgeplan index"
+                )
+            })?
             .clone();
-        let relations = read.get_relations(&canonical);
+        let relations = read.get_relations_by_key(&canonical);
         let incoming = read.get_incoming_relations(&canonical);
         let metadata = serde_json::json!({
             "index": "constellation",
@@ -28,11 +42,20 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         });
         (record, relations, incoming, Some(metadata))
     } else {
+        // The legacy layout resolves against the index rows: the same shared
+        // algorithm, over the same document set the MCP server reads. A name
+        // two rows answer to names neither of them — the command says which
+        // two, and exits non-zero.
         let store = common::store().await?;
-        let canonical = store
-            .resolve_id(id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+        let resolution = common::resolve_against_legacy_index(&store, &workspace, id).await?;
+        let canonical = match &resolution.outcome {
+            common::Resolution::Found(found) => found.identity.canonical_key.clone(),
+            other => {
+                let failure = common::resolution_failure(other, id, &resolution.candidates);
+                common::print_resolution_failure(&failure);
+                return Err(common::resolution_failure_error(&failure));
+            }
+        };
         let record = store
             .get_record(&canonical)
             .await?
@@ -107,6 +130,10 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     if json {
         let mut json_data = serde_json::json!({
             "id": record.id,
+            // ADR-030 / SPEC-009: the response keeps the display id AND
+            // carries the canonical key — the identity an address must use
+            // when the display id is not unique.
+            "canonical_key": record.canonical_key,
             "slug": slug_for_json,
             "kind": record.kind,
             "status": record.status,

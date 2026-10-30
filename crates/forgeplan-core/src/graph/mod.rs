@@ -4,6 +4,7 @@ pub mod topological;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
+use crate::artifact::canonical_key::ArtifactCandidate;
 use crate::artifact::frontmatter;
 use crate::hypothesis::HypothesisState;
 use crate::link;
@@ -335,6 +336,198 @@ pub fn render_mermaid_with_opts(edges: &[Edge], opts: &BrownfieldRenderOpts) -> 
     lines.join("\n") + "\n"
 }
 
+/// The identity of one node in a rendered graph.
+///
+/// The node **id** is the document's canonical key; the identity is what a
+/// person reads — the display id and the title. ADR-030 made the display
+/// id a repeatable alias, so it can never stand in for the identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeIdentity {
+    /// The human-facing alias: `PRD-074`.
+    pub display_id: String,
+    /// The document's title.
+    pub title: String,
+}
+
+impl NodeIdentity {
+    /// The label text of one node: its display id and its title.
+    ///
+    /// A document without a title still gets its display id, so a label
+    /// never renders as an empty string.
+    pub fn label(&self) -> String {
+        knowledge::ArtifactNode::label_for(&self.display_id, &self.title)
+    }
+}
+
+/// Render the identity graph of a document set.
+///
+/// The node id of every vertex is the document's **canonical key**, and
+/// every vertex is labelled with its display id and its title. Two
+/// documents that share a display id therefore stay two vertices, each
+/// labelled with its own title — the alias is never the identity.
+///
+/// `edges` are the declared edges. Their endpoints may be display ids or
+/// canonical keys; each is mapped to the canonical key of the ONE
+/// document it names. An endpoint that names no document — a forward
+/// reference — or several keeps its declared text: the graph shows what
+/// was declared and merges nothing.
+///
+/// `documents` is the document set the edges are read against.
+pub fn render_identity_graph(
+    edges: &[Edge],
+    documents: &[ArtifactCandidate],
+    opts: &BrownfieldRenderOpts,
+) -> String {
+    let edges = canonical_edges(edges, documents);
+    let opts = canonical_opts(opts, documents);
+    let mermaid = render_mermaid_with_opts(&edges, &opts);
+    label_mermaid_nodes(&mermaid, &node_identities(&edges, &opts, documents))
+}
+
+/// The edges with every endpoint addressed by canonical key.
+///
+/// Each endpoint is mapped to the canonical key of the ONE document it
+/// names. An endpoint that names no document — a forward reference — or
+/// several keeps its declared text: nothing is merged, and nothing is
+/// invented.
+///
+/// This is the graph's own re-keying, exposed so a caller that reports the
+/// edges (a JSON surface) addresses the same vertices the rendered graph
+/// does.
+pub fn canonical_edges(edges: &[Edge], documents: &[ArtifactCandidate]) -> Vec<Edge> {
+    edges
+        .iter()
+        .map(|edge| Edge {
+            from: canonical_endpoint(&edge.from, documents),
+            to: canonical_endpoint(&edge.to, documents),
+            relation: edge.relation.clone(),
+        })
+        .collect()
+}
+
+/// The render options with every node id addressed by canonical key.
+///
+/// The hypothesis states and the domain-model compositions are keyed by
+/// the id the graph shows, so a keyed entry keeps pointing at the same
+/// vertex after the re-keying.
+fn canonical_opts(
+    opts: &BrownfieldRenderOpts,
+    documents: &[ArtifactCandidate],
+) -> BrownfieldRenderOpts {
+    let hypothesis_states = opts
+        .hypothesis_states
+        .iter()
+        .map(|(id, state)| (canonical_endpoint(id, documents), *state))
+        .collect();
+    let dm_compositions = opts
+        .dm_compositions
+        .iter()
+        .map(|(id, members)| {
+            (
+                canonical_endpoint(id, documents),
+                members
+                    .iter()
+                    .map(|member| canonical_endpoint(member, documents))
+                    .collect(),
+            )
+        })
+        .collect();
+    BrownfieldRenderOpts {
+        hypothesis_states,
+        dm_compositions,
+        brownfield_only: opts.brownfield_only,
+    }
+}
+
+/// The canonical key of the document an endpoint names.
+///
+/// An endpoint that names exactly one document becomes that document's
+/// canonical key. An endpoint that names none — a forward reference — or
+/// several keeps its declared text: an ambiguous alias is not attributed
+/// to one of its claimants.
+fn canonical_endpoint(endpoint: &str, documents: &[ArtifactCandidate]) -> String {
+    match crate::artifact::canonical_key::resolve_artifact(endpoint, documents) {
+        Ok(Some(resolved)) => resolved.identity.canonical_key,
+        Ok(None) | Err(_) => endpoint.to_string(),
+    }
+}
+
+/// The identity of every node the graph shows.
+fn node_identities(
+    edges: &[Edge],
+    opts: &BrownfieldRenderOpts,
+    documents: &[ArtifactCandidate],
+) -> BTreeMap<String, NodeIdentity> {
+    let mut ids: BTreeSet<String> = BTreeSet::new();
+    for edge in edges {
+        ids.insert(edge.from.clone());
+        ids.insert(edge.to.clone());
+    }
+    for (dm_id, members) in &opts.dm_compositions {
+        ids.insert(dm_id.clone());
+        ids.extend(members.iter().cloned());
+    }
+    ids.into_iter()
+        .filter_map(|id| {
+            let document = documents.iter().find(|document| document.canonical_key == id)?;
+            Some((
+                id,
+                NodeIdentity {
+                    display_id: document.display_id.clone(),
+                    title: document.title.clone(),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Label the nodes of a rendered mermaid graph by identity.
+///
+/// The node id stays the canonical key — the graph's identity — and the
+/// label carries the display id and the title. A node without an identity
+/// (a forward reference) keeps its bare text.
+fn label_mermaid_nodes(
+    mermaid: &str,
+    identities: &BTreeMap<String, NodeIdentity>,
+) -> String {
+    if identities.is_empty() {
+        return mermaid.to_string();
+    }
+    let mut declarations: Vec<String> = Vec::new();
+    for (id, identity) in identities {
+        declarations.push(format!("    {id}[\"{}\"]", escape_identity_label(&identity.label())));
+    }
+    let mut lines: Vec<String> = mermaid.lines().map(|line| line.to_string()).collect();
+    // The declarations go right after the `graph LR` header, so a reader
+    // sees the labels before the edges that use them.
+    let header = if lines
+        .first()
+        .is_some_and(|first| first.trim_start().starts_with("graph "))
+    {
+        1
+    } else {
+        0
+    };
+    for (offset, declaration) in declarations.into_iter().enumerate() {
+        lines.insert(header + offset, declaration);
+    }
+    lines.join("\n") + "\n"
+}
+
+/// Escape a node label so it cannot break out of the mermaid label
+/// syntax.
+fn escape_identity_label(label: &str) -> String {
+    label
+        .chars()
+        .map(|character| match character {
+            '"' => "\\\"".to_string(),
+            '\\' => "\\\\".to_string(),
+            '{' | '}' | '|' | '\n' | '\r' => ' '.to_string(),
+            other => other.to_string(),
+        })
+        .collect()
+}
+
 /// Single-edge mermaid line. Returns the rendered text and optionally
 /// pushes a `linkStyle` override into `link_styles` keyed by `edge_idx`.
 /// Audit-r7 M3 defence-in-depth: escape mermaid label characters that
@@ -582,6 +775,132 @@ fn is_brownfield_kind(kind: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- identity graph ---
+
+    /// A document of the identity graph: a canonical key, a display alias,
+    /// a title.
+    fn document(key: &str, display: &str, title: &str) -> ArtifactCandidate {
+        ArtifactCandidate {
+            canonical_key: key.to_string(),
+            display_id: display.to_string(),
+            title: title.to_string(),
+            relative_path: std::path::PathBuf::from(format!("prds/{key}.md")),
+        }
+    }
+
+    #[test]
+    fn the_graph_node_id_is_the_canonical_key_and_the_label_carries_the_display_id() {
+        let documents = vec![
+            document("prd-alpha-k0123", "PRD-001", "Alpha"),
+            document("prd-beta-k0456", "PRD-002", "Beta"),
+        ];
+        let edges = vec![Edge {
+            from: "PRD-002".to_string(),
+            to: "PRD-001".to_string(),
+            relation: "based_on".to_string(),
+        }];
+        let rendered = render_identity_graph(&edges, &documents, &BrownfieldRenderOpts::default());
+
+        assert!(
+            rendered.contains("prd-beta-k0456 -->|based_on| prd-alpha-k0123"),
+            "the edge must address the canonical keys: {rendered}"
+        );
+        assert!(
+            rendered.contains(r#"prd-alpha-k0123["PRD-001 · Alpha"]"#),
+            "the node must be labelled with its display id and title: {rendered}"
+        );
+        assert!(
+            rendered.contains(r#"prd-beta-k0456["PRD-002 · Beta"]"#),
+            "every node must carry its own label: {rendered}"
+        );
+    }
+
+    #[test]
+    fn two_documents_sharing_one_display_id_stay_two_vertices() {
+        let documents = vec![
+            document("prd-alpha-k0123", "PRD-001", "Alpha"),
+            document("prd-beta-k0456", "PRD-001", "Beta"),
+        ];
+        let edges = vec![Edge {
+            from: "prd-beta-k0456".to_string(),
+            to: "prd-alpha-k0123".to_string(),
+            relation: "based_on".to_string(),
+        }];
+        let rendered = render_identity_graph(&edges, &documents, &BrownfieldRenderOpts::default());
+
+        assert!(
+            rendered.contains(r#"prd-alpha-k0123["PRD-001 · Alpha"]"#),
+            "the first claimant keeps its own label: {rendered}"
+        );
+        assert!(
+            rendered.contains(r#"prd-beta-k0456["PRD-001 · Beta"]"#),
+            "the second claimant keeps its own label: {rendered}"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_endpoint_is_not_attributed_to_one_of_its_claimants() {
+        let documents = vec![
+            document("prd-alpha-k0123", "PRD-001", "Alpha"),
+            document("prd-beta-k0456", "PRD-001", "Beta"),
+        ];
+        let edges = vec![Edge {
+            from: "prd-beta-k0456".to_string(),
+            to: "PRD-001".to_string(),
+            relation: "based_on".to_string(),
+        }];
+        let rendered = render_identity_graph(&edges, &documents, &BrownfieldRenderOpts::default());
+
+        assert!(
+            rendered.contains("prd-beta-k0456 -->|based_on| PRD-001"),
+            "an alias two documents answer to keeps its declared text: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_forward_reference_keeps_its_declared_text() {
+        let documents = vec![document("prd-alpha-k0123", "PRD-001", "Alpha")];
+        let edges = vec![Edge {
+            from: "PRD-001".to_string(),
+            to: "PRD-404".to_string(),
+            relation: "based_on".to_string(),
+        }];
+        let rendered = render_identity_graph(&edges, &documents, &BrownfieldRenderOpts::default());
+
+        assert!(
+            rendered.contains("prd-alpha-k0123 -->|based_on| PRD-404"),
+            "a reference to a document that does not exist stays visible: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_node_label_cannot_break_out_of_the_mermaid_label_syntax() {
+        let documents = vec![document(
+            "prd-alpha-k0123",
+            "PRD-001",
+            "Alpha \"quoted\" {braces}",
+        )];
+        let edges = vec![Edge {
+            from: "PRD-001".to_string(),
+            to: "PRD-001".to_string(),
+            relation: "based_on".to_string(),
+        }];
+        let rendered = render_identity_graph(&edges, &documents, &BrownfieldRenderOpts::default());
+
+        let label_line = rendered
+            .lines()
+            .find(|line| line.contains("prd-alpha-k0123["))
+            .expect("the node must be declared");
+        assert!(
+            label_line.contains("\\\""),
+            "a quote in a title must be escaped: {label_line}"
+        );
+        assert!(
+            !label_line.contains('{') && !label_line.contains('}'),
+            "braces would break the label syntax: {label_line}"
+        );
+    }
 
     // --- kind_from_id ---
 
