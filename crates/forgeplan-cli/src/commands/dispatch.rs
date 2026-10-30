@@ -79,7 +79,14 @@ pub async fn run(
     for summary in summaries {
         let fields = match &source {
             common::ReadSource::Legacy(_) => {
-                read_dispatch_fm_fields(&ws, &summary.kind, &summary.id, &summary.title).await
+                read_dispatch_fm_fields(
+                    &ws,
+                    &summary.kind,
+                    &summary.id,
+                    &summary.title,
+                    &summary.canonical_key,
+                )
+                .await
             }
             common::ReadSource::Captured(_) => parse_dispatch_fm_fields(&summary.body),
         };
@@ -254,6 +261,7 @@ async fn read_dispatch_fm_fields(
     kind: &str,
     id: &str,
     title: &str,
+    canonical_key: &str,
 ) -> DispatchFmFields {
     let artifact_kind = match kind.parse::<ArtifactKind>() {
         Ok(k) => k,
@@ -266,16 +274,22 @@ async fn read_dispatch_fm_fields(
         };
     }
     let dir = ws.join(artifact_kind.dir_name());
-    let filename = format!("{}-{}.md", id, slugify(title));
-    let path = dir.join(filename);
-    let content = match tokio::fs::read_to_string(&path).await {
+    // A document minted under a key is filed as `<canonical_key>.md`; one
+    // that predates the key keeps its historical `{id}-{slug}.md`. The file
+    // on disk decides which one it is.
+    let keyed = dir.join(format!("{canonical_key}.md"));
+    let historical = dir.join(format!("{}-{}.md", id, slugify(title)));
+    let content = match tokio::fs::read_to_string(&keyed).await {
         Ok(s) => s,
-        Err(_) => {
-            return DispatchFmFields {
-                parse_failed: true,
-                ..Default::default()
-            };
-        }
+        Err(_) => match tokio::fs::read_to_string(&historical).await {
+            Ok(s) => s,
+            Err(_) => {
+                return DispatchFmFields {
+                    parse_failed: true,
+                    ..Default::default()
+                };
+            }
+        },
     };
     parse_dispatch_fm_fields(&content)
 }

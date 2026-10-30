@@ -2933,15 +2933,51 @@ fn e2e_full_lifecycle_deprecate() {
 // what let the defect ship.
 // -----------------------------------------------------------------------
 
+/// The document under `<dir>` that declares `<id>` in its frontmatter.
+///
+/// The file is named after the document's canonical key (ADR-030), so the
+/// display id is read from the frontmatter the document declares.
+fn document_declaring(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .find(|path| {
+            let Ok(text) = std::fs::read_to_string(path) else {
+                return false;
+            };
+            text.lines()
+                .take(12)
+                .filter_map(|line| line.strip_prefix("id: "))
+                .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+                .any(|declared| declared == id)
+        })
+        .unwrap_or_else(|| panic!("no document declaring {id} in {}", dir.display()))
+}
+
 /// Read an artifact's markdown projection from a workspace.
 fn read_projection(workspace: &std::path::Path, dir: &str, prefix: &str) -> String {
     let d = workspace.join(".forgeplan").join(dir);
-    let entry = std::fs::read_dir(&d)
+    // The file is named after the document's canonical key (ADR-030), so the
+    // document is found by the display id it declares in its frontmatter.
+    let path = std::fs::read_dir(&d)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", d.display()))
         .filter_map(Result::ok)
-        .find(|e| e.file_name().to_string_lossy().starts_with(prefix))
-        .unwrap_or_else(|| panic!("no file starting with {prefix} in {}", d.display()));
-    std::fs::read_to_string(entry.path()).unwrap()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .find(|path| {
+            let Ok(text) = std::fs::read_to_string(path) else {
+                return false;
+            };
+            text.lines()
+                .take(12)
+                .filter_map(|line| line.strip_prefix("id: "))
+                .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+                .any(|declared| declared.starts_with(prefix))
+        })
+        .unwrap_or_else(|| panic!("no document declaring {prefix} in {}", d.display()));
+    std::fs::read_to_string(path).unwrap()
 }
 
 #[test]
@@ -3634,16 +3670,7 @@ fn tag_writes_to_markdown_frontmatter() {
 
     // Find the PRD-001 markdown file
     let prds_dir = tmp.path().join(".forgeplan").join("prds");
-    let mut found = None;
-    for entry in std::fs::read_dir(&prds_dir).unwrap() {
-        let entry = entry.unwrap();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with("PRD-001") && name.ends_with(".md") {
-            found = Some(entry.path());
-            break;
-        }
-    }
-    let path = found.expect("PRD-001 markdown file should exist");
+    let path = document_declaring(&prds_dir, "PRD-001");
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(
         content.contains("tags:"),
@@ -3733,15 +3760,7 @@ fn untag_writes_to_markdown_frontmatter() {
         .success();
 
     let prds_dir = tmp.path().join(".forgeplan").join("prds");
-    let path = std::fs::read_dir(&prds_dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .find(|e| {
-            let n = e.file_name().to_string_lossy().to_string();
-            n.starts_with("PRD-001") && n.ends_with(".md")
-        })
-        .map(|e| e.path())
-        .expect("PRD-001 markdown file");
+    let path = document_declaring(&prds_dir, "PRD-001");
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains("alpha"), "alpha must remain: {}", content);
     assert!(

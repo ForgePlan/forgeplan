@@ -2005,10 +2005,18 @@ fn coverage_and_backfill_on_a_migrated_workspace_use_canonical_markdown() {
         .unwrap()
         .filter_map(Result::ok)
         .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
         .find(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("PRD-001-"))
+            // The file is named after the document's canonical key (ADR-030);
+            // the display id is in the frontmatter it declares.
+            let Ok(text) = std::fs::read_to_string(path) else {
+                return false;
+            };
+            text.lines()
+                .take(12)
+                .filter_map(|line| line.strip_prefix("id: "))
+                .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+                .any(|declared| declared == "PRD-001")
         })
         .expect("PRD markdown file");
     let prd = std::fs::read_to_string(prd_path).unwrap();

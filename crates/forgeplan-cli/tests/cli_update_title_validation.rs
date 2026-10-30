@@ -31,18 +31,33 @@ fn forgeplan() -> Command {
 
 fn first_id_with_prefix(ws: &std::path::Path, subdir: &str, prefix: &str) -> String {
     let dir = ws.join(".forgeplan").join(subdir);
-    let mut names: Vec<_> = std::fs::read_dir(&dir)
+    // The file is named after the document's canonical key (ADR-030), so the
+    // display id is read from the frontmatter the document declares.
+    let mut ids: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("read_dir({}) failed: {e}", dir.display()))
         .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.starts_with(prefix))
-        .collect();
-    names.sort();
-    let name = names
-        .first()
-        .unwrap_or_else(|| panic!("no {prefix}* in {}", dir.display()))
-        .clone();
-    name.split('-').take(2).collect::<Vec<_>>().join("-")
+    {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read the document");
+        for line in text.lines().take(12) {
+            let Some(value) = line.strip_prefix("id: ") else {
+                continue;
+            };
+            let id = value.trim().trim_matches('"').trim_matches('\'').to_string();
+            if id.starts_with(prefix) {
+                ids.push(id);
+            }
+            break;
+        }
+    }
+    ids.sort();
+    ids.first()
+        .unwrap_or_else(|| panic!("no {prefix}* document in {}", dir.display()))
+        .clone()
 }
 
 fn fixture() -> (TempDir, String) {
