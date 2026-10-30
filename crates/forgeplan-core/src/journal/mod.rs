@@ -126,9 +126,11 @@ fn journal_from_records(
             .or_default()
             .insert(to.to_ascii_lowercase());
     }
+    // The relation endpoints are canonical keys (ADR-030), so the evidence
+    // keys are the canonical keys too.
     let evidence_keys: Vec<String> = evidence_records
         .iter()
-        .map(|ev| ev.id.to_ascii_lowercase())
+        .map(|ev| ev.canonical_key.to_ascii_lowercase())
         .collect();
 
     let now = chrono::Utc::now().naive_utc();
@@ -136,7 +138,8 @@ fn journal_from_records(
     let mut entries: Vec<JournalEntry> = Vec::new();
 
     for record in records {
-        let record_key = record.id.to_ascii_lowercase();
+        // The relation endpoints are canonical keys (ADR-030).
+        let record_key = record.canonical_key.to_ascii_lowercase();
 
         // Find linked evidence
         let mut items = Vec::new();

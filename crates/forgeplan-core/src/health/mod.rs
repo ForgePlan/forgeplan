@@ -875,7 +875,8 @@ async fn health_report_with_phase_from_records(
             // so the recommendation logic below treats them uniformly.
             true
         };
-        let has_links = outgoing_set.contains_key(record.id.as_str());
+        // The relation endpoints are canonical keys (ADR-030).
+        let has_links = outgoing_set.contains_key(record.canonical_key.as_str());
         // Audit-r3 F1: routes through `lifecycle::ready_to_activate`
         // (kind=evidence + status=draft + is_evidence_complete) + the
         // health-specific `has_links` augmentation. The previous

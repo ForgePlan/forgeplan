@@ -479,9 +479,11 @@ fn build_lookup_maps<'a>(
     HashMap<String, Vec<String>>,
     HashMap<String, usize>,
 ) {
+    // The relation endpoints are canonical keys (ADR-030), so the lookup maps
+    // are keyed by the key too — the display id is a repeatable alias.
     let kind_map: HashMap<&str, &str> = records
         .iter()
-        .map(|r| (r.id.as_str(), r.kind.as_str()))
+        .map(|r| (r.canonical_key.as_str(), r.kind.as_str()))
         .collect();
 
     let mut linked_kinds_map: HashMap<String, Vec<String>> = HashMap::new();
@@ -519,7 +521,7 @@ fn enrich_one(
     now: chrono::NaiveDateTime,
     config: &FpfConfig,
 ) -> rules::EnrichedData {
-    let link_count = link_count_map.get(&record.id).copied().unwrap_or(0);
+    let link_count = link_count_map.get(&record.canonical_key).copied().unwrap_or(0);
 
     let is_stale = record
         .valid_until
@@ -554,7 +556,7 @@ fn enrich_one(
     };
 
     let linked_kinds = linked_kinds_map
-        .get(&record.id)
+        .get(&record.canonical_key)
         .cloned()
         .unwrap_or_default();
 

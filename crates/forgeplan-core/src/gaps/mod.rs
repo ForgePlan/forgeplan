@@ -114,15 +114,19 @@ fn build_linked_kinds_map(
     outgoing: &RelationIndex,
     incoming: &RelationIndex,
 ) -> BTreeMap<String, Vec<String>> {
-    let id_to_kind: BTreeMap<String, String> =
-        all.iter().map(|r| (r.id.clone(), r.kind.clone())).collect();
+    // The relation endpoints are canonical keys (ADR-030), so the kind lookup
+    // is keyed by the key too.
+    let id_to_kind: BTreeMap<String, String> = all
+        .iter()
+        .map(|r| (r.canonical_key.clone(), r.kind.clone()))
+        .collect();
 
     let mut result: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for record in all {
         let mut kinds = Vec::new();
 
-        if let Some(targets) = outgoing.get(&record.id) {
+        if let Some(targets) = outgoing.get(&record.canonical_key) {
             for (target_id, _) in targets {
                 if let Some(kind) = id_to_kind.get(target_id) {
                     kinds.push(kind.clone());
@@ -130,7 +134,7 @@ fn build_linked_kinds_map(
             }
         }
 
-        if let Some(sources) = incoming.get(&record.id) {
+        if let Some(sources) = incoming.get(&record.canonical_key) {
             for (source_id, _) in sources {
                 if let Some(kind) = id_to_kind.get(source_id) {
                     kinds.push(kind.clone());
@@ -163,7 +167,7 @@ fn check_depth_compliance(
     }
 
     let depth = record.depth.to_lowercase();
-    let kinds = linked_kinds.get(&record.id).cloned().unwrap_or_default();
+    let kinds = linked_kinds.get(&record.canonical_key).cloned().unwrap_or_default();
 
     let has_rfc = kinds.iter().any(|k| k == "rfc");
     let has_spec = kinds.iter().any(|k| k == "spec");

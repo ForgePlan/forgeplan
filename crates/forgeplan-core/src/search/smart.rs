@@ -152,7 +152,8 @@ pub fn smart_search(
             let kw = keyword_score(record, query);
             let keyword_channel = bm25_norm.max(kw);
             let sem = semantic_scores
-                .and_then(|m| m.get(&record.id))
+                // The semantic index is keyed by the canonical key (ADR-030).
+                .and_then(|m| m.get(&record.canonical_key))
                 .copied()
                 .unwrap_or(0.0);
             let centrality = graph
@@ -229,34 +230,58 @@ pub fn expand_with_graph_neighbors(
     }
     let direct_ids: HashSet<String> = top_results.iter().map(|r| r.id.clone()).collect();
 
-    // Index records by id for fast lookup.
-    let record_by_id: HashMap<&str, &ArtifactRecord> =
-        all_records.iter().map(|r| (r.id.as_str(), r)).collect();
+    // The graph is keyed by the canonical key (ADR-030); the results carry the
+    // display id. Both directions are resolved here, so the neighbour is looked
+    // up by its key and reported by its display id.
+    let key_by_id: HashMap<&str, &str> = all_records
+        .iter()
+        .map(|r| (r.id.as_str(), r.canonical_key.as_str()))
+        .collect();
+    let display_by_key: HashMap<&str, &str> = all_records
+        .iter()
+        .map(|r| (r.canonical_key.as_str(), r.id.as_str()))
+        .collect();
+
+    // Index records by canonical key for fast lookup.
+    let record_by_key: HashMap<&str, &ArtifactRecord> = all_records
+        .iter()
+        .map(|r| (r.canonical_key.as_str(), r))
+        .collect();
 
     for parent in top_results {
-        let neighbors = graph.neighbors(&parent.id);
+        let Some(parent_key) = key_by_id.get(parent.id.as_str()).copied() else {
+            continue;
+        };
+        let neighbors = graph.neighbors(parent_key);
         let mut added = 0usize;
         for n in neighbors {
             if added >= max_expansions_per_result {
                 break;
             }
-            if direct_ids.contains(&n.id) {
+            // The node id is the canonical key; the result is reported by the
+            // display id.
+            let display_id = display_by_key
+                .get(n.id.as_str())
+                .copied()
+                .unwrap_or(n.id.as_str())
+                .to_string();
+            if direct_ids.contains(&display_id) {
                 continue; // direct hit wins
             }
             let neighbor_score = parent.score * decay_factor;
             // Skip if we already have this neighbor with a higher score.
-            if let Some(existing) = by_id.get(&n.id)
+            if let Some(existing) = by_id.get(&display_id)
                 && existing.score >= neighbor_score
             {
                 continue;
             }
             // Pull metadata from records when available; fall back to graph node.
-            let (title, status, r_eff) = match record_by_id.get(n.id.as_str()) {
+            let (title, status, r_eff) = match record_by_key.get(n.id.as_str()) {
                 Some(rec) => (rec.title.clone(), rec.status.clone(), rec.r_eff_score),
                 None => (n.id.clone(), n.status.clone(), 0.0),
             };
             let entry = SmartSearchResult {
-                id: n.id.clone(),
+                id: display_id.clone(),
                 title,
                 kind: n.kind.clone(),
                 status,
@@ -268,7 +293,7 @@ pub fn expand_with_graph_neighbors(
                 graph_centrality: graph.degree_centrality(&n.id),
                 expanded_from: Some(parent.id.clone()),
             };
-            by_id.insert(n.id.clone(), entry);
+            by_id.insert(display_id, entry);
             added += 1;
         }
     }

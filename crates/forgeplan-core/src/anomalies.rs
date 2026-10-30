@@ -434,10 +434,15 @@ fn detect_anomalies_from_records(
 ) -> AnomalyReport {
     let mut anomalies: Vec<Anomaly> = Vec::new();
 
-    let id_set: HashSet<&str> = all_records.iter().map(|r| r.id.as_str()).collect();
+    // The relation endpoints are canonical keys (ADR-030), so the record
+    // lookups are keyed by the key: the display id is a repeatable alias.
+    let id_set: HashSet<&str> = all_records
+        .iter()
+        .map(|r| r.canonical_key.as_str())
+        .collect();
     let kind_by_id: HashMap<&str, &str> = all_records
         .iter()
-        .map(|r| (r.id.as_str(), r.kind.as_str()))
+        .map(|r| (r.canonical_key.as_str(), r.kind.as_str()))
         .collect();
 
     // Outgoing-edge index — needed by stuck_draft (has_links) and
@@ -464,7 +469,7 @@ fn detect_anomalies_from_records(
         if age_hours < DEFAULT_STALE_DRAFT_HOURS {
             continue;
         }
-        let has_links = outgoing.contains_key(r.id.as_str());
+        let has_links = outgoing.contains_key(r.canonical_key.as_str());
         let r_eff = r.r_eff_score;
         // Audit-r3 F1: route through `lifecycle::ready_to_activate`
         // (kind=evidence + status=draft + is_evidence_complete) + the

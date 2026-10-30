@@ -281,10 +281,17 @@ pub async fn supersede_captured(
         );
     }
 
+    // The relation endpoints are canonical keys; the dependents are named by
+    // their display id, because the list is written into a document a person
+    // reads.
     let dependents: Vec<String> = read
         .get_incoming_relations(&record.id)
         .into_iter()
-        .map(|(source, _)| source)
+        .map(|(source, _)| {
+            read.get_record_by_key(&source)
+                .map(|record| record.id.clone())
+                .unwrap_or(source)
+        })
         .collect();
 
     projection::add_link_with_projection(ctx, &record.id, &replacement_id, "supersedes")
@@ -316,10 +323,17 @@ pub async fn deprecate_captured(
     let record = resolve(read, artifact_id)?.clone();
     transitions::validate_transition(&record.status, "deprecated")?;
 
+    // The relation endpoints are canonical keys; the dependents are named by
+    // their display id, because the list is written into a document a person
+    // reads.
     let dependents: Vec<String> = read
         .get_incoming_relations(&record.id)
         .into_iter()
-        .map(|(source, _)| source)
+        .map(|(source, _)| {
+            read.get_record_by_key(&source)
+                .map(|record| record.id.clone())
+                .unwrap_or(source)
+        })
         .collect();
 
     let body = post_frontmatter_body(&record)?;
