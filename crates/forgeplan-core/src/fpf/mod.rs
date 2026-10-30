@@ -33,6 +33,12 @@ pub struct FpfDashboard {
     pub fgr_scores: Vec<fgr::FgrScore>,
     pub pipeline_status: String,
     pub artifact_count: usize,
+    /// The display id of every document, by its canonical key.
+    ///
+    /// The cluster members are held by their canonical key, because that is
+    /// the identity and the display id may repeat. A reader of the report
+    /// knows the documents by their display id, so the report prints those.
+    pub display_by_key: BTreeMap<String, String>,
 }
 
 impl std::fmt::Display for FpfDashboard {
@@ -53,13 +59,30 @@ impl std::fmt::Display for FpfDashboard {
             )?;
         } else {
             for ctx in &self.contexts {
+                // The report names the documents the way a reader knows them.
+                // The members are held by canonical key; the display id is
+                // what the reader can act on.
+                let mut named: Vec<(&str, &str)> = ctx
+                    .members
+                    .iter()
+                    .map(|key| {
+                        let display = self
+                            .display_by_key
+                            .get(key)
+                            .map(String::as_str)
+                            .unwrap_or(key.as_str());
+                        (display, key.as_str())
+                    })
+                    .collect();
+                named.sort();
+                let members: Vec<&str> = named.into_iter().map(|(display, _)| display).collect();
                 writeln!(
                     f,
                     "  [{}] {} members, cohesion {:.0}%: {}",
                     ctx.name,
                     ctx.members.len(),
                     ctx.cohesion * 100.0,
-                    ctx.members.join(", ")
+                    members.join(", ")
                 )?;
             }
         }
@@ -189,6 +212,10 @@ fn dashboard_from_records(
         fgr_scores,
         pipeline_status,
         artifact_count: records.len(),
+        display_by_key: records
+            .iter()
+            .map(|record| (record.canonical_key.clone(), record.id.clone()))
+            .collect(),
     }
 }
 

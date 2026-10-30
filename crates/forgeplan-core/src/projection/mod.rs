@@ -868,6 +868,12 @@ pub async fn compare_projection(
     db_tags.dedup();
     drift.tags = file_tags != db_tags;
 
+    // The declared endpoints name documents by their display id; the store
+    // holds the edges by their canonical key. The declared side is
+    // translated first, so the comparison and the write below speak one
+    // language — otherwise every sync would find a difference, delete the
+    // stored edge and write it back under the same display id.
+    let declared = declared_edges(workspace, &parsed.outgoing).await;
     let stored_edges: std::collections::BTreeSet<crate::constellation::capture::OutgoingEdge> =
         store
             .get_relations(&record.id)
@@ -877,7 +883,7 @@ pub async fn compare_projection(
                 crate::constellation::capture::OutgoingEdge::new(target, relation)
             })
             .collect();
-    drift.outgoing = stored_edges != parsed.outgoing;
+    drift.outgoing = stored_edges != declared;
 
     if !drift.needs_store_write() {
         return Ok(drift);
@@ -931,12 +937,12 @@ pub async fn compare_projection(
         // Exact replacement: first remove what the file no longer declares,
         // then add what it newly does. Removing first also keeps
         // `add_relation`'s duplicate guard honest for a retargeted edge.
-        for edge in stored_edges.difference(&parsed.outgoing) {
+        for edge in stored_edges.difference(&declared) {
             store
                 .delete_relation(&record.id, &edge.target, &edge.relation)
                 .await?;
         }
-        for edge in parsed.outgoing.difference(&stored_edges) {
+        for edge in declared.difference(&stored_edges) {
             if let Err(e) = store
                 .add_relation(&record.id, &edge.target, &edge.relation)
                 .await
@@ -958,6 +964,32 @@ pub async fn compare_projection(
     }
 
     Ok(drift)
+}
+
+/// The declared outgoing edges, with every target named by its canonical key.
+///
+/// A document declares its link targets by their display id; the store holds
+/// the edges by the key of the document they name. The workspace knows which
+/// key a display id names even before the row is written, so the translation
+/// does not depend on the order the rows were written in.
+async fn declared_edges(
+    workspace: &Path,
+    outgoing: &std::collections::BTreeSet<crate::constellation::capture::OutgoingEdge>,
+) -> std::collections::BTreeSet<crate::constellation::capture::OutgoingEdge> {
+    if outgoing.is_empty() {
+        return outgoing.clone();
+    }
+    let documents = crate::db::store::workspace_documents(workspace).await;
+    let by_display = crate::db::store::document_keys_by_display(&documents);
+    outgoing
+        .iter()
+        .map(|edge| {
+            crate::constellation::capture::OutgoingEdge::new(
+                crate::db::store::declared_endpoint_key(&edge.target, &by_display),
+                edge.relation.clone(),
+            )
+        })
+        .collect()
 }
 
 /// Body prefix length that feeds the embedding input digest.

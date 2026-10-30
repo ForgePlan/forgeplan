@@ -568,6 +568,13 @@ fn canonicalize_tag(raw: &str) -> String {
 /// LanceDB-backed artifact store.
 pub struct LanceStore {
     _db: Connection,
+    /// The workspace this index belongs to.
+    ///
+    /// The rows know which documents exist in the index; the workspace knows
+    /// which documents exist at all. A link may name a document whose row is
+    /// not written yet, and only the workspace can say which key that
+    /// document has.
+    workspace: PathBuf,
     artifacts: Table,
     #[allow(dead_code)]
     evidence: Table,
@@ -602,6 +609,107 @@ pub struct LanceStore {
     /// (the cost is negligible but the field is purely diagnostic).
     #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
     refresh_call_count: std::sync::atomic::AtomicU64,
+}
+
+/// One document of the workspace, as the scan found it on disk.
+///
+/// The Markdown is the only place that knows a document's key, and a link
+/// may name a document whose row is not written yet. This is what the scan
+/// answers for every document of the workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceDocument {
+    /// The document's canonical key — the slug its frontmatter declares, and
+    /// its display id when it declares none.
+    pub canonical_key: String,
+    /// The display id the document declares.
+    pub display_id: String,
+    /// The document's title.
+    pub title: String,
+    /// The document's path, relative to the workspace.
+    pub relative_path: String,
+}
+
+/// Every document of the workspace, read from the Markdown.
+///
+/// This is the one scan of the workspace's documents. Both the endpoint
+/// resolution and the surfaces that name a document read from here, so two
+/// surfaces cannot disagree about which document a name means.
+pub async fn workspace_documents(workspace: &Path) -> Vec<WorkspaceDocument> {
+    let mut documents: Vec<WorkspaceDocument> = Vec::new();
+    for dir in crate::workspace::ARTIFACT_DIRS {
+        let dir_path = workspace.join(dir);
+        let Ok(mut entries) = tokio::fs::read_dir(&dir_path).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(bytes) = tokio::fs::read(&path).await else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&bytes).to_string();
+            let Ok((frontmatter, _body)) =
+                crate::artifact::frontmatter::parse_frontmatter_borrowed(&text)
+            else {
+                continue;
+            };
+            let Some(display_id) = frontmatter.get("id").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            documents.push(WorkspaceDocument {
+                canonical_key: canonical_key_of("", display_id, &text),
+                display_id: display_id.to_string(),
+                title: frontmatter
+                    .get("title")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                relative_path: format!("{dir}/{file_name}"),
+            });
+        }
+    }
+    documents.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    documents
+}
+
+/// The canonical keys of the workspace's documents, by the display id they
+/// declare.
+///
+/// A display id several documents declare stays ambiguous — the map holds
+/// every candidate, and the caller that needs one document says so.
+pub fn document_keys_by_display(
+    documents: &[WorkspaceDocument],
+) -> BTreeMap<String, Vec<String>> {
+    let mut by_display: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for document in documents {
+        by_display
+            .entry(document.display_id.clone())
+            .or_default()
+            .push(document.canonical_key.clone());
+    }
+    by_display
+}
+
+/// The canonical key a declared link endpoint names.
+///
+/// A qualified cross-source reference is not a local selector and keeps its
+/// bytes. A display id exactly one document declares becomes that
+/// document's key. A display id several documents declare stays ambiguous —
+/// it keeps its bytes, and the resolver reports it rather than picking one.
+pub fn declared_endpoint_key(
+    endpoint: &str,
+    by_display: &BTreeMap<String, Vec<String>>,
+) -> String {
+    if endpoint.contains('@') {
+        return endpoint.to_string();
+    }
+    match by_display.get(endpoint) {
+        Some(keys) if keys.len() == 1 => keys[0].clone(),
+        _ => endpoint.to_string(),
+    }
 }
 
 /// Refuse a damaged table before LanceDB reads one of its manifests.
@@ -669,6 +777,7 @@ impl LanceStore {
 
         Ok(Self {
             _db: db,
+            workspace: workspace_path.to_path_buf(),
             artifacts,
             evidence,
             relations,
@@ -761,6 +870,7 @@ impl LanceStore {
 
         Ok(Self {
             _db: db,
+            workspace: workspace_path.to_path_buf(),
             artifacts,
             evidence,
             relations,
@@ -1676,10 +1786,19 @@ impl LanceStore {
         if endpoint.contains('@') {
             return Ok(endpoint.to_string());
         }
-        Ok(self
-            .resolve_canonical_key(endpoint)
-            .await?
-            .unwrap_or_else(|| endpoint.to_string()))
+        if let Some(key) = self.resolve_canonical_key(endpoint).await? {
+            return Ok(key);
+        }
+        // The row is not written yet, but the document may be: a bulk
+        // reindex writes the rows in file order and a link may name a
+        // document that comes later. The workspace knows the key, so the
+        // edge is stored under it instead of under a display id that no
+        // key-based query can match.
+        let documents = workspace_documents(&self.workspace).await;
+        Ok(declared_endpoint_key(
+            endpoint,
+            &document_keys_by_display(&documents),
+        ))
     }
 
     /// Remove ALL relations where artifact is source or target (cascade on delete).

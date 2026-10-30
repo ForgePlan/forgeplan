@@ -474,13 +474,20 @@ pub async fn run() -> anyhow::Result<()> {
     let mut orphan_relations = 0usize;
     let all_relations = store.get_all_relations().await?;
     if !all_relations.is_empty() {
-        // Re-fetch fresh artifact ID set after Phase 2 trims so cascade works
-        let surviving_ids: std::collections::HashSet<String> = store
-            .list_records(None)
-            .await?
-            .into_iter()
-            .map(|r| r.id)
-            .collect();
+        // Re-fetch fresh artifact ID set after Phase 2 trims so cascade works.
+        //
+        // A relation names its endpoints by their canonical key (ADR-030),
+        // while a row written before the identity work still holds a display
+        // id. Both name a live document, so both survive the trim — only an
+        // endpoint that names no document at all is an orphan. Comparing the
+        // endpoints against the display ids alone would declare every edge of
+        // a keyed index an orphan and delete the graph with it.
+        let mut surviving_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for record in store.list_records(None).await? {
+            surviving_ids.insert(record.canonical_key);
+            surviving_ids.insert(record.id);
+        }
         for (source, target, relation) in &all_relations {
             let source_exists = surviving_ids.contains(source);
             // Constellation stage 4: a `KEY@qualifier` target names an
