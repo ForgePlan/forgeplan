@@ -41,7 +41,10 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
         .collect();
     let real_status = |id: &str| -> &str { status_by_id.get(id).copied().unwrap_or("unknown") };
 
-    let result = topological::kahn_sort(&all_relations, &resolved_ids);
+    // The relations are stored under the canonical key; the report names the
+    // documents by their display id, so the graph is read in that namespace.
+    let display_relations = common::relations_by_display_id(&all_relations, all_records);
+    let result = topological::kahn_sort(&display_relations, &resolved_ids);
 
     // PRD-071 contract: priority — fix cycles first, then activate ready
     // artifacts, else inspect order.

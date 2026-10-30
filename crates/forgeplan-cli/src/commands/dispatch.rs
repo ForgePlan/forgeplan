@@ -70,6 +70,9 @@ pub async fn run(
         common::ReadSource::Captured(read) => read.get_all_relations(),
     };
     let resolved_ids = common::resolved_ids(records);
+    // The relations are stored under the canonical key; the blocking graph
+    // is read in the namespace the records answer to.
+    let relations = common::relations_by_display_id(&relations, records);
     let topo = topological::kahn_sort(&relations, &resolved_ids);
     let blocked_ids: HashSet<String> = topo.blocked.iter().map(|(id, _)| id.clone()).collect();
 

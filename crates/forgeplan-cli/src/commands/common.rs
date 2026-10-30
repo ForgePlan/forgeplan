@@ -481,6 +481,38 @@ pub fn advance_session(to: Phase, artifact: Option<&str>) {
 
 /// Build set of "resolved" artifact IDs: active + deprecated + superseded.
 /// Only "draft" (and "stale") artifacts are considered unresolved and can block.
+/// The relations with their endpoints named by the display id.
+///
+/// The relations are stored under the canonical key, and a report names the
+/// documents the way a reader knows them. The mapping is by the key, so it
+/// stays unambiguous even when two documents share a display id — the
+/// relation keeps naming the right document, and the reader sees the number.
+pub fn relations_by_display_id(
+    relations: &[(String, String, String)],
+    records: &[ArtifactRecord],
+) -> Vec<(String, String, String)> {
+    let display: std::collections::HashMap<&str, &str> = records
+        .iter()
+        .map(|record| (record.canonical_key.as_str(), record.id.as_str()))
+        .collect();
+    relations
+        .iter()
+        .map(|(source, target, relation)| {
+            let source = display
+                .get(source.as_str())
+                .copied()
+                .unwrap_or(source.as_str())
+                .to_string();
+            let target = display
+                .get(target.as_str())
+                .copied()
+                .unwrap_or(target.as_str())
+                .to_string();
+            (source, target, relation.clone())
+        })
+        .collect()
+}
+
 pub fn resolved_ids(records: &[ArtifactRecord]) -> HashSet<String> {
     records
         .iter()

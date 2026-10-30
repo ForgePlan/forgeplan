@@ -190,12 +190,19 @@ pub fn activation_gates_from(
     };
 
     // 2. Evidence gate — no evidence linked = blind spot.
+    // The endpoints are canonical keys for a minted document and display ids
+    // for a legacy one, so both prefixes are recognised: the key spells the
+    // kind out (`evidence-…`), the display id abbreviates it (`EVID-…`), and
+    // a legacy key carries the display prefix.
     let has_evidence = outgoing
         .iter()
         .any(|(_, r)| r == "informs" || r == "supports")
-        || incoming
-            .iter()
-            .any(|(source_id, _)| source_id.to_uppercase().starts_with("EVID-"));
+        || incoming.iter().any(|(source_id, _)| {
+            let upper = source_id.to_uppercase();
+            upper.starts_with("EVID-")
+                || upper.starts_with("EVIDENCE-")
+                || upper.starts_with("EVIDENCE_")
+        });
     let evidence_ok = has_evidence;
     let evidence_msg = if !evidence_ok {
         Some("No evidence linked — create evidence and link it before activating".to_string())

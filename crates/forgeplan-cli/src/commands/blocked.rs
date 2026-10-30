@@ -19,6 +19,9 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         common::ReadSource::Captured(read) => read.records(),
     };
     let resolved_ids = common::resolved_ids(all_records);
+    // The relations are stored under the canonical key; the report names the
+    // documents by their display id.
+    let all_relations = common::relations_by_display_id(&all_relations, all_records);
 
     if let Some(artifact_id) = id {
         let blocked_by = topological::get_blocked_by(artifact_id, &all_relations, &resolved_ids);
