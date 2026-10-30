@@ -715,6 +715,49 @@ fn projection_path(
     Some((dir.join(&historical), format!("{dir_name}/{historical}")))
 }
 
+/// The file a document lives in, by the id it declares.
+///
+/// A document minted under a key is filed as `<canonical_key>.md`; a document
+/// that predates the key keeps its historical `{id}-{slug}.md`. The name
+/// derived from the title cannot tell them apart — the title may have
+/// changed — so the document itself is asked: the file whose frontmatter
+/// declares this id is the document's file.
+async fn document_file_by_id(
+    workspace: &Path,
+    kind: &str,
+    id: &str,
+    title: &str,
+) -> Option<PathBuf> {
+    let artifact_kind = kind.parse::<ArtifactKind>().ok()?;
+    let dir = workspace.join(artifact_kind.dir_name());
+    let historical = dir.join(format!("{}-{}.md", id, projection_slug(title)));
+    if historical.exists() {
+        return Some(historical);
+    }
+    let mut entries = tokio::fs::read_dir(&dir).await.ok()?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(bytes) = tokio::fs::read(&path).await else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        let Ok((frontmatter, _body)) = frontmatter::parse_frontmatter(&text) else {
+            continue;
+        };
+        let declared = frontmatter
+            .get("id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if declared == id {
+            return Some(path);
+        }
+    }
+    None
+}
+
 /// Normalise a body for comparison.
 ///
 /// The renderer writes `<body>\n`, so a row produced by
@@ -1513,9 +1556,9 @@ pub async fn stamp_agent_identity(
 ) -> anyhow::Result<()> {
     let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
     let dir = workspace.join(artifact_kind.dir_name());
-    let slug = projection_slug(title);
-    let filename = format!("{}-{}.md", id, slug);
-    let filepath = dir.join(&filename);
+    let filepath = document_file_by_id(workspace, kind, id, title)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("no projection file for {id} under {}", dir.display()))?;
 
     let content = tokio::fs::read_to_string(&filepath).await?;
     let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
@@ -1635,8 +1678,9 @@ pub async fn remove_projection_at(
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid kind '{kind}' for {id}: {e}"))?;
     let dir = workspace.join(artifact_kind.dir_name());
-    let slug = projection_slug(title);
-    let filepath = dir.join(format!("{}-{}.md", id, slug));
+    let Some(filepath) = document_file_by_id(workspace, kind, id, title).await else {
+        return Ok(false);
+    };
     if filepath.exists() {
         tokio::fs::remove_file(&filepath).await?;
         Ok(true)
