@@ -31,8 +31,31 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
                 )
             })?
             .clone();
-        let relations = read.get_relations_by_key(&canonical);
-        let incoming = read.get_incoming_relations(&canonical);
+        // The edges are held under the canonical key. The report names each
+        // endpoint by the display id a reader knows it by, and carries the
+        // key beside it — so a document that shares its display id with
+        // another is still named exactly.
+        let display_by_key: std::collections::HashMap<String, String> = read
+            .records()
+            .iter()
+            .map(|record| (record.canonical_key.clone(), record.id.clone()))
+            .collect();
+        let name = |endpoint: &str| -> String {
+            display_by_key
+                .get(endpoint)
+                .cloned()
+                .unwrap_or_else(|| endpoint.to_string())
+        };
+        let relations = read
+            .get_relations_by_key(&canonical)
+            .into_iter()
+            .map(|(target, relation)| (name(&target), target, relation))
+            .collect::<Vec<_>>();
+        let incoming = read
+            .get_incoming_relations(&canonical)
+            .into_iter()
+            .map(|(source, relation)| (name(&source), source, relation))
+            .collect::<Vec<_>>();
         let metadata = serde_json::json!({
             "index": "constellation",
             "generation_id": read.view().descriptor().map(|descriptor| &descriptor.generation_id),
@@ -60,8 +83,25 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             .get_record(&canonical)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' missing after resolution"))?;
-        let relations = store.get_relations(&record.id).await?;
-        let incoming = store.get_incoming_relations(&record.id).await?;
+        // The edges are held under the canonical key. The report names each
+        // endpoint by the display id a reader knows it by, and carries the
+        // key beside it.
+        let mut relations: Vec<(String, String, String)> = Vec::new();
+        for (target, relation) in store.get_relations(&record.id).await? {
+            let display = store
+                .resolve_display_id(&target)
+                .await?
+                .unwrap_or_else(|| target.clone());
+            relations.push((display, target, relation));
+        }
+        let mut incoming: Vec<(String, String, String)> = Vec::new();
+        for (source, relation) in store.get_incoming_relations(&record.id).await? {
+            let display = store
+                .resolve_display_id(&source)
+                .await?
+                .unwrap_or_else(|| source.clone());
+            incoming.push((display, source, relation));
+        }
         (record, relations, incoming, None)
     };
     let has_links = !relations.is_empty() || !incoming.is_empty();
@@ -75,11 +115,15 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let links_json = serde_json::json!({
         "outbound": relations
             .iter()
-            .map(|(target, relation)| serde_json::json!({ "target": target, "relation": relation }))
+            .map(|(target, target_key, relation)| serde_json::json!({
+                "target": target, "target_key": target_key, "relation": relation
+            }))
             .collect::<Vec<_>>(),
         "inbound": incoming
             .iter()
-            .map(|(source, relation)| serde_json::json!({ "source": source, "relation": relation }))
+            .map(|(source, source_key, relation)| serde_json::json!({
+                "source": source, "source_key": source_key, "relation": relation
+            }))
             .collect::<Vec<_>>(),
     });
     let kind: forgeplan_core::artifact::types::ArtifactKind = record
@@ -191,12 +235,15 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         if !relations.is_empty() {
             let out: Vec<String> = relations
                 .iter()
-                .map(|(t, r)| format!("{t} ({r})"))
+                .map(|(t, _key, r)| format!("{t} ({r})"))
                 .collect();
             ui::kv("Links out", &out.join(", "));
         }
         if !incoming.is_empty() {
-            let inc: Vec<String> = incoming.iter().map(|(s, r)| format!("{s} ({r})")).collect();
+            let inc: Vec<String> = incoming
+                .iter()
+                .map(|(s, _key, r)| format!("{s} ({r})"))
+                .collect();
             ui::kv("Links in", &inc.join(", "));
         }
     }
