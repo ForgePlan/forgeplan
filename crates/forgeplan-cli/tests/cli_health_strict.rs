@@ -153,9 +153,14 @@ fn health_strict_exits_nonzero_on_blind_spots() {
                 .next()
                 .expect("at least one prd file")
                 .expect("dirent ok");
-            let name = entry.file_name().to_string_lossy().to_string();
-            // PRD-001-foo-bar.md → PRD-001
-            name.split('-').take(2).collect::<Vec<_>>().join("-")
+            // The file is named after the document's canonical key (ADR-030),
+            // so the display id is read from the frontmatter it declares.
+            let text = std::fs::read_to_string(entry.path()).expect("read the document");
+            text.lines()
+                .take(12)
+                .find_map(|line| line.strip_prefix("id: "))
+                .map(|value| value.trim().trim_matches('"').trim_matches('\'').to_string())
+                .expect("the document declares its id")
         });
 
     // Force-activate (bypass evidence gate) so the PRD becomes active

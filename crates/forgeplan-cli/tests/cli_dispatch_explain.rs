@@ -30,14 +30,24 @@ fn init(tmp: &TempDir) {
 /// Locate the markdown file for a given artifact prefix (`PRD-001` etc.).
 fn artifact_path(tmp: &TempDir, kind_dir: &str, prefix: &str) -> std::path::PathBuf {
     let dir = tmp.path().join(format!(".forgeplan/{kind_dir}"));
+    // The file is named after the document's canonical key (ADR-030), so the
+    // document is found by the display id it declares in its frontmatter.
     let entries: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .to_uppercase()
-                .starts_with(&prefix.to_uppercase())
+            let path = e.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+                return false;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                return false;
+            };
+            text.lines()
+                .take(12)
+                .filter_map(|line| line.strip_prefix("id: "))
+                .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+                .any(|id| id.to_uppercase().starts_with(&prefix.to_uppercase()))
         })
         .collect();
     assert_eq!(
