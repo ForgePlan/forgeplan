@@ -127,7 +127,13 @@ fn render(
         .warnings
         .iter()
         .any(|w| w.contains("No evidence linked"));
-    let is_stub = result.warnings.iter().any(|w| w.contains("Body too short"));
+    // The stub is recognised by the validation's stub marker. The lifecycle
+    // review carries its findings as strings, so the marker is matched rather
+    // than the whole sentence around it.
+    let is_stub = result
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("unfilled template") || warning.contains("Body too short"));
     let has_must_errors = !result.must_findings.is_empty();
     let review_hints = forgeplan_core::hints::review_hints(
         ref_form,

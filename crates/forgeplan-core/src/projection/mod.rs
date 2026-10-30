@@ -3151,11 +3151,17 @@ pub async fn sync_artifact_from_file(
                 reason: e.to_string(),
             },
         )?;
-    let path = workspace.join(kind.dir_name()).join(format!(
-        "{}-{}.md",
-        artifact.id,
-        projection_slug(&artifact.title)
-    ));
+    // The document's own file — a document filed under its canonical key is
+    // not named after its id and its title.
+    let path = document_file_by_id(workspace, &artifact.kind, &artifact.id, &artifact.title)
+        .await
+        .unwrap_or_else(|| {
+            workspace.join(kind.dir_name()).join(format!(
+                "{}-{}.md",
+                artifact.id,
+                projection_slug(&artifact.title)
+            ))
+        });
     let Some(store) = store else {
         // File→index direction with no legacy index to write. The caller
         // already holds the canonical file (it just read it), so there is
@@ -3238,11 +3244,17 @@ pub async fn sync_body_from_file(
                 reason: e.to_string(),
             },
         )?;
-    let path = workspace.join(parsed_kind.dir_name()).join(format!(
-        "{}-{}.md",
-        id,
-        projection_slug(title)
-    ));
+    // The document's own file — a document filed under its canonical key is
+    // not named after its id and its title.
+    let path = document_file_by_id(workspace, kind, id, title)
+        .await
+        .unwrap_or_else(|| {
+            workspace.join(parsed_kind.dir_name()).join(format!(
+                "{}-{}.md",
+                id,
+                projection_slug(title)
+            ))
+        });
     let Some(store) = store else {
         // No legacy index to sync into — see `sync_artifact_from_file`.
         return Ok(());
