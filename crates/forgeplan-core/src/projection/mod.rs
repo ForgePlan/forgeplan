@@ -2166,9 +2166,12 @@ pub async fn update_metadata_with_projection(
                     kind: record.kind.clone(),
                     reason: format!("{error}"),
                 })?;
-        let old_path = workspace
-            .join(kind.dir_name())
-            .join(format!("{id}-{}.md", projection_slug(&record.title)));
+        // The document's own file — a document minted under a key is filed
+        // as `<canonical_key>.md`, and a name derived from the id and the
+        // title names nothing.
+        let old_path = document_file_by_id(workspace, &record.kind, id, &record.title)
+            .await
+            .ok_or_else(|| MutationError::RowNotFound { id: id.to_string() })?;
         sync_before_mutation(workspace, store, id).await?;
         update_metadata_file_first(&old_path, status, title, None).await?;
     } else {
