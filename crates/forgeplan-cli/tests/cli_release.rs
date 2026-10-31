@@ -65,9 +65,17 @@ fn release_by_wrong_agent_fails_without_force() {
         .stderr(predicate::str::contains("--force"));
 
     // Claim must still exist.
-    assert!(
-        tmp.path().join(".forgeplan/claims/PRD-001.yaml").exists(),
-        "rejected release must not delete the claim"
+    // The sidecar is named after the document's canonical key, not the
+    // display alias; what matters is that the claim is still there.
+    let claims: Vec<_> = std::fs::read_dir(tmp.path().join(".forgeplan/claims"))
+        .unwrap()
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|extension| extension == "yaml"))
+        .collect();
+    assert_eq!(
+        claims.len(),
+        1,
+        "rejected release must not delete the claim: {claims:?}"
     );
 }
 
@@ -123,9 +131,15 @@ fn release_ownership_hint_offers_identity_first_and_force_only_as_alternative() 
         "force must stay reachable for an orchestrator that means it: {alt}"
     );
 
-    assert!(
-        tmp.path().join(".forgeplan/claims/PRD-001.yaml").exists(),
-        "a rejected release must not delete the claim"
+    let claims: Vec<_> = std::fs::read_dir(tmp.path().join(".forgeplan/claims"))
+        .unwrap()
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|extension| extension == "yaml"))
+        .collect();
+    assert_eq!(
+        claims.len(),
+        1,
+        "a rejected release must not delete the claim: {claims:?}"
     );
 }
 
