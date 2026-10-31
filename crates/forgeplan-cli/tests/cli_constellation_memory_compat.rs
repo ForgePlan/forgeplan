@@ -322,7 +322,9 @@ fn remember_recall_forget_round_trip_keeps_literal_body_and_consumer_fields() {
             .collect();
         assert_eq!(files.len(), 1);
         let canonical = std::fs::read_to_string(&files[0]).unwrap();
-        assert!(canonical.ends_with(&format!("{text}\n")), "{canonical:?}");
+        // The supplied body is preserved byte for byte (creation no longer
+        // appends a newline of its own), so the file ENDS with it.
+        assert!(canonical.ends_with(text), "{canonical:?}");
         let before = read_state(&workspace);
         let recalled = workspace.json(&["recall", "cAfÉ", "--category", "PROCEDURE", "--json"]);
         assert_memory_fields(&recalled["memories"][0]);

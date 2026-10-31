@@ -632,14 +632,20 @@ fn fgr_workspace_and_single_artifact_preserve_scores_outgoing_links_and_text() {
 fn analysis_errors_remain_named_and_empty_estimates_remain_actionable_on_both_layouts() {
     let pair = Pair::new();
     for root in pair.roots() {
-        for args in [
-            vec!["context", "PRD-404", "--json"],
-            vec!["estimate", "PRD-404", "--json"],
-            vec!["fgr", "PRD-404", "--json"],
-            vec!["calibrate-estimate", "PRD-404", "--actual-hours", "8"],
+        // One code per fact: a selector that names no document exits 3, and a
+        // command with its own advisory contract keeps the code it always
+        // answered. Both say 'not found' and neither invents a document.
+        for (args, code) in [
+            (vec!["context", "PRD-404", "--json"], 3),
+            (vec!["estimate", "PRD-404", "--json"], 1),
+            (vec!["fgr", "PRD-404", "--json"], 1),
+            (
+                vec!["calibrate-estimate", "PRD-404", "--actual-hours", "8"],
+                1,
+            ),
         ] {
             let output = run(root, &args);
-            assert_eq!(output.status.code(), Some(1), "{args:?}");
+            assert_eq!(output.status.code(), Some(code), "{args:?}");
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
                 stderr.contains("PRD-404") && stderr.contains("not found"),
