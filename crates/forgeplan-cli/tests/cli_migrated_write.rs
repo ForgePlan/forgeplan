@@ -1923,7 +1923,7 @@ fn claim_and_release_on_a_migrated_workspace_use_canonical_records() {
     migrate_in_place(&ws, &home);
     // Under `.forgeplan/`, where the claim record is written: the earlier
     // `ws.join("claims/…")` pointed at a path no command ever creates.
-    let claim_path = ws.join(".forgeplan/claims/PRD-001.yaml");
+    let claim_dir = ws.join(".forgeplan/claims");
 
     home_env(
         forgeplan().args(["claim", "PRD-001", "--agent", "agent-A"]),
@@ -1932,10 +1932,11 @@ fn claim_and_release_on_a_migrated_workspace_use_canonical_records() {
     .current_dir(&ws)
     .assert()
     .success();
-    assert!(
-        claim_path.exists(),
-        "claim must be written to the workspace"
-    );
+    let claim_path = std::fs::read_dir(&claim_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .find(|path| path.extension().is_some_and(|extension| extension == "yaml"))
+        .expect("claim must be written to the workspace under its key");
     assert!(
         legacy_tables(&ws).is_empty(),
         "claim reopened a retired legacy table"

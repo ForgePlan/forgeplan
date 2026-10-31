@@ -135,6 +135,25 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             .or_else(|| art["slug"].as_str())
             .map(str::to_string)
             .unwrap_or_else(|| canonical_key_from_document(raw_id, raw_body));
+        // A payload that names the document by its display id only (a bundle
+        // written before the key existed) is matched through the shared
+        // resolver, so a kind mismatch is still caught instead of importing a
+        // duplicate of the same document.
+        let canonical_key = if art["canonical_key"].as_str().is_none()
+            && art["slug"].as_str().is_none()
+        {
+            match common::resolve_against_workspace(&ws, raw_id).await {
+                Ok(resolution) => match resolution.outcome {
+                    forgeplan_mcp::convert::Resolution::Found(found) => {
+                        found.identity.canonical_key
+                    }
+                    _ => canonical_key,
+                },
+                Err(_) => canonical_key,
+            }
+        } else {
+            canonical_key
+        };
         let (existing, resolved_id): (
             Option<forgeplan_core::db::store::ArtifactRecord>,
             Option<String>,
@@ -174,6 +193,23 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             }
         };
         let id: &str = resolved_id.as_deref().unwrap_or(raw_id);
+
+        // A replacement may not change what the document IS: the key names one
+        // document, and its kind is part of that identity. Force replaces
+        // content, never the kind.
+        let payload_kind = art["kind"].as_str().unwrap_or_default();
+        if let Some(existing) = existing.as_ref()
+            && !payload_kind.is_empty()
+            && existing.kind != payload_kind
+        {
+            anyhow::bail!(
+                "Import would change kind of '{}': existing '{}', payload '{}' (key '{}')",
+                existing.id,
+                existing.kind,
+                payload_kind,
+                canonical_key
+            );
+        }
 
         if existing.is_some() && !force {
             skipped += 1;
