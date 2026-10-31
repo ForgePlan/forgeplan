@@ -36,6 +36,16 @@ pub async fn run(
         .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
     let id = id.as_str();
 
+    // The file-first path has always refused an empty update; the legacy
+    // store path accepted it and rewrote the document for nothing. One
+    // answer on both layouts: say what to pass instead.
+    if status.is_none() && title.is_none() && depth.is_none() && body.is_none() {
+        anyhow::bail!(
+            "Nothing to update. Use --status, --title, --depth, or --body.\nFix: forgeplan update {} --status draft",
+            id
+        );
+    }
+
     // Verify artifact exists (keep original for old projection cleanup)
     let original = store.get_record(id).await?.ok_or_else(|| {
         anyhow::anyhow!(
