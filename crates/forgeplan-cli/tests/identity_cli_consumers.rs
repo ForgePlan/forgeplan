@@ -64,8 +64,15 @@ fn validate_by_canonical_key_checks_only_that_shared_alias_document() {
         .current_dir(temp.path())
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let payload: Value = serde_json::from_slice(&output.stdout).unwrap();
+    // The fixture documents carry no required sections, so validation reports
+    // errors and exits non-zero — what this checks is WHICH document it
+    // validated, not whether the document is good.
+    let payload: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "validate --json must still answer ({e}); stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
     let results = payload["results"].as_array().unwrap();
     assert_eq!(results.len(), 1, "exact-key validation must not include its alias sibling: {payload}");
     assert_eq!(results[0]["artifact_id"], "PRD-001");
@@ -149,6 +156,12 @@ async fn forced_import_replaces_two_equal_alias_documents_by_key_not_alias_or_ti
 #[test]
 fn repeated_and_cyrillic_memories_publish_distinct_keys_without_overwriting() {
     let temp = init_workspace();
+    // Count the delta, not the directory: the workspace may already hold a
+    // memory document before this test runs.
+    let memory_dir = temp.path().join(".forgeplan/memory");
+    let before: Vec<PathBuf> = std::fs::read_dir(&memory_dir)
+        .map(|entries| entries.map(|entry| entry.unwrap().path()).collect())
+        .unwrap_or_default();
     for text in ["same memory text", "same memory text", "Память о важном"] {
         let output = forgeplan()
             .args(["remember", text])
@@ -158,13 +171,18 @@ fn repeated_and_cyrillic_memories_publish_distinct_keys_without_overwriting() {
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     }
 
-    let workspace = temp.path().join(".forgeplan/memory");
+    let workspace = memory_dir.clone();
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&workspace)
         .unwrap()
         .map(|entry| entry.unwrap().path())
+        .filter(|path| !before.contains(path))
         .collect();
     paths.sort();
-    assert_eq!(paths.len(), 3, "each remember call must create a distinct document");
+    assert_eq!(
+        paths.len(),
+        3,
+        "each remember call must create exactly one new document"
+    );
     let mut keys = Vec::new();
     let mut bodies = Vec::new();
     for path in paths {
