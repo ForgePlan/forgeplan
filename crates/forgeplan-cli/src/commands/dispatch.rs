@@ -105,8 +105,11 @@ pub async fn run(
         {
             continue;
         }
-        if blocked_ids.contains(&summary.canonical_key) {
-            skipped_blocked.push(summary.canonical_key.clone());
+        // The blocking graph is read in the display-id namespace, so the
+        // blocked check stays there; the candidate id is the canonical key
+        // because that is what the claim set is keyed by.
+        if blocked_ids.contains(&summary.id) {
+            skipped_blocked.push(summary.id.clone());
             continue;
         }
         candidates.push(ArtifactCandidate {

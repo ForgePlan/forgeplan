@@ -10126,8 +10126,11 @@ impl ForgeplanServer {
                 skipped_blocked.push(summary.id.clone());
                 continue;
             }
+            // The claim set is keyed by the canonical key, so the candidate
+            // carries the key; the blocked check above stays on the display
+            // id, which is the namespace the blocking graph is read in.
             candidates.push(forgeplan_core::dispatch::ArtifactCandidate {
-                id: summary.id.clone(),
+                id: summary.canonical_key.clone(),
                 affected_files: fields.files,
                 domain: fields.domain,
             });
