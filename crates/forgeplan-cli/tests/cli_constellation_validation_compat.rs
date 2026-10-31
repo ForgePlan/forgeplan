@@ -210,7 +210,14 @@ async fn fixture(migrated: bool, sources: &[(&str, &str)]) -> Fixture {
         projection::sync_artifact_from_file(
             &MutationContext::new(&workspace, &guard, Some(&store)),
             &NewArtifact {
-                canonical_key: field("id").into(),
+                // The document's canonical key is the slug it declares; the
+                // display id is only the alias. A fixture that seeds the row
+                // with the id makes the document unreachable by its key.
+                canonical_key: fm
+                    .get("slug")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_else(|| field("id"))
+                    .to_string(),
                 id: field("id").into(),
                 kind: field("kind").into(),
                 status: field("status").into(),

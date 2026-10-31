@@ -328,6 +328,15 @@ pub fn frontmatter_map_with_links_from(
 
     let mut map = record.frontmatter_map();
     if relations.is_empty() {
+        // No edges in the relations table. The record's body still carries
+        // the document's own frontmatter, and that is where a link the
+        // document declares lives. Reading it here is what stops the rule
+        // from warning about a document that links exactly as it says.
+        if let Ok((body_fm, _)) = crate::artifact::frontmatter::parse_frontmatter(&record.body)
+            && let Some(links) = body_fm.get("links")
+        {
+            map.insert("links".to_string(), links.clone());
+        }
         return map;
     }
     let seq: Vec<Value> = relations
@@ -1914,7 +1923,16 @@ impl LanceStore {
         &self,
         record: &ArtifactRecord,
     ) -> BTreeMap<String, serde_yaml::Value> {
-        match self.get_relations(&record.id).await {
+        // The edges are held under the canonical key; the display id is an
+        // alias two documents may share. Reading them by the alias would give
+        // this rule an empty set and make it warn on a correctly linked
+        // document — the very failure #446 describes.
+        let key = if record.canonical_key.trim().is_empty() {
+            record.id.as_str()
+        } else {
+            record.canonical_key.as_str()
+        };
+        match self.get_relations(key).await {
             Ok(relations) => frontmatter_map_with_links_from(record, &relations),
             // Degrade to the link-less map rather than failing validation
             // outright — that restores the pre-#446 behaviour for this one
