@@ -33,9 +33,28 @@ fn claim_writes_file_under_claims_dir() {
         .success()
         .stdout(predicate::str::contains("Claimed PRD-001"));
 
-    let claim_path = tmp.path().join(".forgeplan/claims/PRD-001.yaml");
-    assert!(claim_path.exists(), "expected claim file at {claim_path:?}");
+    // The sidecar is addressed by the document's canonical key, not by the
+    // display alias two documents may share (ADR-030).
+    let claims_dir = tmp.path().join(".forgeplan/claims");
+    let entries: Vec<_> = std::fs::read_dir(&claims_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1, "one claim, one sidecar: {entries:?}");
+    let claim_path = entries[0].clone();
+    assert!(
+        claim_path.to_str().unwrap().ends_with(".yaml"),
+        "the sidecar is a yaml file named after the key: {claim_path:?}"
+    );
+    assert!(
+        !claim_path.ends_with("PRD-001.yaml"),
+        "the sidecar is not named by the alias: {claim_path:?}"
+    );
     let body = std::fs::read_to_string(&claim_path).unwrap();
+    assert!(
+        body.contains("canonical_key"),
+        "the sidecar declares the document it is about: {body}"
+    );
     assert!(
         body.contains("agent-A"),
         "claim file should mention agent-A: {body}"

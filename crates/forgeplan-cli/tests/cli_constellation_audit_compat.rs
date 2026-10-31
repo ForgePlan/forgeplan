@@ -207,11 +207,21 @@ fn assert_events(actual: &[Value], expected: &[Value]) {
         .iter()
         .map(|entry| {
             let mut entry = entry.as_object().unwrap().clone();
-            assert_eq!(
-                entry.len(),
-                8,
-                "the established history schema has eight columns"
+            // Nine columns now: the established eight plus the canonical
+            // key, which a receipt carries so two documents sharing an alias
+            // cannot be confused (#10). The key is identity metadata, not
+            // part of the event shape pinned below.
+            // The established eight columns, plus `canonical_key` when the
+            // receipt knows which document it is about. It is omitted when
+            // unknown (a legacy receipt), so both counts are legitimate; it
+            // is identity metadata either way, not part of the event shape
+            // pinned below.
+            assert!(
+                entry.len() == 8 || entry.len() == 9,
+                "eight established columns plus an optional canonical_key: {:?}",
+                entry.keys().collect::<Vec<_>>()
             );
+            entry.remove("canonical_key");
             let timestamp = entry.remove("timestamp").unwrap();
             chrono::DateTime::parse_from_rfc3339(timestamp.as_str().unwrap()).unwrap();
             Value::Object(entry)

@@ -511,9 +511,26 @@ fn seed_new_history(root: &Path, entries: &[ChangeLogEntry]) {
     });
 }
 
+/// The receipt's `canonical_key` is identity metadata the reader derives from
+/// the index; the pinned event shape below does not depend on it, and a
+/// legacy receipt has none. Drop it from both sides before comparing.
+fn without_identity(value: &mut serde_json::Value) {
+    if let Some(entries) = value.as_array_mut() {
+        for entry in entries {
+            if let Some(object) = entry.as_object_mut() {
+                object.remove("canonical_key");
+            }
+        }
+    }
+}
+
 fn assert_history(root: &Path, args: &[&str], expected: &[ChangeLogEntry]) {
     let payload = run_json(root, args);
-    assert_eq!(payload["entries"], serde_json::to_value(expected).unwrap());
+    let mut actual = payload["entries"].clone();
+    let mut wanted = serde_json::to_value(expected).unwrap();
+    without_identity(&mut actual);
+    without_identity(&mut wanted);
+    assert_eq!(actual, wanted);
     assert_eq!(
         payload["_next_action"],
         json!(

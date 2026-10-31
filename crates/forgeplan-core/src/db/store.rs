@@ -2363,8 +2363,16 @@ impl LanceStore {
         // id a person reads. A caller that named the document by its
         // canonical key gets the display id written, so one column holds one
         // kind of description and the event is never rewritten into a key.
+        // Best effort: an audit entry records what happened, so an id that is
+        // not a resolvable reference (a legacy name, a quoted value) is
+        // written as given rather than refusing to record the event.
         let mut recorded = entry.clone();
-        if let Some(display_id) = self.resolve_display_id(&entry.artifact_id).await? {
+        if let Some(display_id) = self
+            .resolve_display_id(&entry.artifact_id)
+            .await
+            .ok()
+            .flatten()
+        {
             recorded.artifact_id = display_id;
         }
         // The receipt also carries the identity: the display id is an alias
@@ -2373,7 +2381,11 @@ impl LanceStore {
         // from the index, and a document that is no longer there keeps no
         // key at all.
         if recorded.canonical_key.is_none()
-            && let Some(key) = self.resolve_canonical_key(&entry.artifact_id).await?
+            && let Some(key) = self
+                .resolve_canonical_key(&entry.artifact_id)
+                .await
+                .ok()
+                .flatten()
         {
             recorded.canonical_key = Some(key);
         }
