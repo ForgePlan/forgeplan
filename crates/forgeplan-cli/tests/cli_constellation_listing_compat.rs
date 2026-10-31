@@ -278,15 +278,15 @@ impl Pair {
 
 fn expected_summaries() -> Vec<Value> {
     vec![
-        json!({"id": "EVID-001", "kind": "evidence", "status": "active", "title": "Old run"}),
-        json!({"id": "EVID-002", "kind": "evidence", "status": "draft", "title": "Expired verification café résumé"}),
-        json!({"id": "EVID-003", "kind": "evidence", "status": "active", "title": "Future run"}),
-        json!({"id": "NOTE-001", "kind": "note", "status": "active", "title": "No checkboxes"}),
-        json!({"id": "NOTE-002", "kind": "note", "status": "draft", "title": "Incoming only"}),
-        json!({"id": "NOTE-1000", "kind": "note", "status": "draft", "title": "Invalid expiry"}),
-        json!({"id": "PRD-001", "kind": "prd", "status": "draft", "title": "Authentication rollout"}),
-        json!({"id": "PRD-002", "kind": "prd", "status": "active", "title": "Completed rollout"}),
-        json!({"id": "RFC-003", "kind": "rfc", "status": "draft", "title": "Dependency links"}),
+        json!({"id": "EVID-001", "canonical_key": "EVID-001", "kind": "evidence", "status": "active", "title": "Old run"}),
+        json!({"id": "EVID-002", "canonical_key": "EVID-002", "kind": "evidence", "status": "draft", "title": "Expired verification café résumé"}),
+        json!({"id": "EVID-003", "canonical_key": "EVID-003", "kind": "evidence", "status": "active", "title": "Future run"}),
+        json!({"id": "NOTE-001", "canonical_key": "NOTE-001", "kind": "note", "status": "active", "title": "No checkboxes"}),
+        json!({"id": "NOTE-002", "canonical_key": "NOTE-002", "kind": "note", "status": "draft", "title": "Incoming only"}),
+        json!({"id": "NOTE-1000", "canonical_key": "NOTE-1000", "kind": "note", "status": "draft", "title": "Invalid expiry"}),
+        json!({"id": "PRD-001", "canonical_key": "prd-authentication-rollout", "kind": "prd", "status": "draft", "title": "Authentication rollout"}),
+        json!({"id": "PRD-002", "canonical_key": "prd-completed-rollout", "kind": "prd", "status": "active", "title": "Completed rollout"}),
+        json!({"id": "RFC-003", "canonical_key": "rfc-dependency-links", "kind": "rfc", "status": "draft", "title": "Dependency links"}),
     ]
 }
 
