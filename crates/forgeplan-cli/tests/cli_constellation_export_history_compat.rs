@@ -479,6 +479,7 @@ fn entry(
     ChangeLogEntry {
         timestamp: timestamp.into(),
         artifact_id: artifact_id.into(),
+        canonical_key: None,
         action: action.into(),
         source: source.into(),
         field: field.map(str::to_string),

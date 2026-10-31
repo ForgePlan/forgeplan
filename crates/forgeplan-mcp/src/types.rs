@@ -395,7 +395,14 @@ pub struct ReleaseNotesParams {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ClaimDto {
+    /// The document's display alias — the name a person reads.
     pub id: String,
+    /// The document's canonical key — the identity the claim belongs to.
+    ///
+    /// The alias may repeat inside a workspace; the key does not. A caller
+    /// that holds the key addresses exactly one document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_key: Option<String>,
     pub agent_id: String,
     pub claimed_at: String,
     pub expires_at: String,
@@ -407,6 +414,7 @@ impl From<forgeplan_core::claim::Claim> for ClaimDto {
     fn from(c: forgeplan_core::claim::Claim) -> Self {
         Self {
             id: c.id,
+            canonical_key: c.canonical_key,
             agent_id: c.agent_id,
             claimed_at: c.claimed_at.to_rfc3339(),
             expires_at: c.expires_at.to_rfc3339(),

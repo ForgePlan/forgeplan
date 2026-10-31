@@ -881,6 +881,12 @@ impl LanceStore {
         let relations = db.open_table(&names.relations).execute().await?;
         let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
         let change_log = db.open_table("change_log").execute().await.ok();
+        // A workspace whose history predates the canonical-key column needs
+        // it before an entry is written: the batch carries the key, and a
+        // batch must match the table's schema.
+        if let Some(table) = change_log.as_ref() {
+            migrate::migrate_change_log(table).await?;
+        }
 
         Ok(Self {
             _db: db,
@@ -2373,6 +2379,16 @@ impl LanceStore {
         if let Some(display_id) = self.resolve_display_id(&entry.artifact_id).await? {
             recorded.artifact_id = display_id;
         }
+        // The receipt also carries the identity: the display id is an alias
+        // and may name two documents, the key names exactly one. A caller
+        // that already knows the key keeps it; one that does not gets it
+        // from the index, and a document that is no longer there keeps no
+        // key at all.
+        if recorded.canonical_key.is_none()
+            && let Some(key) = self.resolve_canonical_key(&entry.artifact_id).await?
+        {
+            recorded.canonical_key = Some(key);
+        }
         crate::db::auxiliary::change_log_append(table, &recorded).await
     }
 
@@ -2829,6 +2845,7 @@ pub(crate) fn extract_change_log_entry(
     Ok(ChangeLogEntry {
         timestamp: required_utf8(batch, row, "change_log", "timestamp")?.to_string(),
         artifact_id: required_utf8(batch, row, "change_log", "artifact_id")?.to_string(),
+        canonical_key: get_string(batch, "canonical_key", row),
         action: required_utf8(batch, row, "change_log", "action")?.to_string(),
         field: get_string(batch, "field", row),
         old_value: get_string(batch, "old_value", row),
@@ -2853,6 +2870,7 @@ pub(crate) fn empty_change_log_batch(
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // new_value (nullable)
             Arc::new(StringArray::from(Vec::<&str>::new())), // source
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // commit_hash (nullable)
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // canonical_key (nullable)
         ],
     )
 }

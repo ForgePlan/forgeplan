@@ -15,6 +15,7 @@ fn entry(timestamp: &str, artifact_id: &str, action: &str, source: &str) -> Chan
     ChangeLogEntry {
         timestamp: timestamp.into(),
         artifact_id: artifact_id.into(),
+        canonical_key: None,
         action: action.into(),
         field: None,
         old_value: None,

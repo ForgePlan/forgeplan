@@ -44,6 +44,7 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
             .map(|c| {
                 serde_json::json!({
                     "id": c.id,
+                    "canonical_key": c.canonical_key,
                     "agent_id": c.agent_id,
                     "claimed_at": c.claimed_at.to_rfc3339(),
                     "expires_at": c.expires_at.to_rfc3339(),
@@ -68,17 +69,24 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("{:<14}  {:<28}  {:<14}  NOTE", "ID", "AGENT", "EXPIRES IN");
-    let separator = "-".repeat(80);
+    println!(
+        "{:<14}  {:<44}  {:<28}  {:<14}  NOTE",
+        "ID", "KEY", "AGENT", "EXPIRES IN"
+    );
+    let separator = "-".repeat(110);
     println!("{separator}");
     let now = Utc::now();
     for c in &claims {
         let remaining = c.expires_at - now;
         let expires_in = humanize_remaining(remaining);
         let note = c.note.as_deref().unwrap_or("");
+        // The key is the identity the claim is filed under. The alias in the
+        // first column may be shared by another document; the key is not.
+        let key = c.canonical_key.as_deref().unwrap_or("-");
         println!(
-            "{:<14}  {:<28}  {:<14}  {}",
+            "{:<14}  {:<44}  {:<28}  {:<14}  {}",
             truncate(&c.id, 14),
+            truncate(key, 44),
             truncate(&c.agent_id, 28),
             expires_in,
             note

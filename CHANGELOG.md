@@ -34,6 +34,10 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ### Fixed
 
+- CLI selector refusals preserve their outcome: ambiguous aliases exit 5 and name candidates,
+  canonical-key collisions exit 4, and missing artifacts exit 3. `phase` now refuses a
+  missing artifact instead of treating its raw selector as an unknown phase record.
+
 - Фоновое обслуживание находит изменённые строки и после запуска сервера,
   даже если CLI уже согласовал текст, а заданий в очереди ещё нет. Готовый
   индекс не создаёт модельный worker; остановка runner достигает и первого

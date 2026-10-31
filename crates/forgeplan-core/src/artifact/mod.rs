@@ -7,6 +7,7 @@ pub mod identity;
 pub mod identity_repair;
 pub mod sanitize;
 pub mod sections;
+pub mod sidecar;
 pub mod store;
 pub mod types;
 pub mod validation;
@@ -31,3 +32,14 @@ pub use canonical_key::{
 // caller can write `forgeplan_core::artifact::workspace_candidates(...)`
 // the same way it writes `forgeplan_core::artifact::mint_artifact_key(...)`.
 pub use documents::{resolve_in_workspace, workspace_candidates, workspace_document_paths};
+
+// ADR-030 / SPEC-009 — the sidecar addressing rule: a per-document file
+// (a claim, a phase marker, a receipt) is named after the document's
+// canonical key, never after its display alias. Re-exported at module level
+// so a caller can write
+// `forgeplan_core::artifact::sidecar_path(...)` the same way it writes
+// `forgeplan_core::artifact::mint_artifact_key(...)`.
+pub use sidecar::{
+    legacy_sidecar_file_stems, legacy_sidecar_paths, resolve_sidecar_path, sidecar_file_stem,
+    sidecar_path,
+};

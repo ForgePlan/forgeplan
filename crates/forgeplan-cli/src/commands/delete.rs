@@ -16,10 +16,8 @@ pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
     // behind the bytes by definition after any hand edit.
     let (record, all_relations) = match &store {
         Some(store) => {
-            let id = store
-                .resolve_id(id)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+            let resolution = common::resolve_against_workspace(&ws, id).await?;
+            let (id, _) = common::require_found_identity(id, &resolution)?;
             let record = store.get_record(&id).await?.ok_or_else(|| {
                 anyhow::anyhow!(
                     "Artifact '{}' not found
@@ -31,9 +29,8 @@ Fix: forgeplan list",
         }
         None => {
             let read = common::workspace_read(&ws).await?;
-            let canonical = read
-                .resolve_id(id)
-                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+            let resolution = common::resolve_against_capture(&read, id);
+            let (canonical, _) = common::require_found_identity(id, &resolution)?;
             let record = read.get_record(&canonical).cloned().ok_or_else(|| {
                 anyhow::anyhow!(
                     "Artifact '{}' not found

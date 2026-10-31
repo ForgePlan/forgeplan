@@ -216,9 +216,42 @@ pub fn state_dir(workspace: &Path) -> PathBuf {
     workspace.join("state")
 }
 
-/// Absolute path of the state file for a given artifact id.
-pub fn state_path(workspace: &Path, artifact_id: &str) -> PathBuf {
-    state_dir(workspace).join(format!("{artifact_id}.yaml"))
+/// Absolute path of the state file for a given artifact.
+///
+/// The file is named after the document's **canonical key** — the identity,
+/// not the alias a second document may share. The key is escaped into
+/// exactly one path component (see
+/// [`crate::artifact::sidecar::sidecar_file_stem`]), so a key that carries
+/// a separator still names one file inside the state directory.
+pub fn state_path(workspace: &Path, canonical_key: &str) -> PathBuf {
+    crate::artifact::sidecar::sidecar_path(&state_dir(workspace), canonical_key, "yaml")
+}
+
+/// Validate a canonical key that is about to become a file name.
+///
+/// The key is escaped into exactly one path component, so whatever it holds
+/// cannot escape the state directory. The check only refuses what cannot be
+/// a key at all: an empty name, a name too long for a file, and a name with
+/// a NUL byte in it.
+///
+/// [`validate_artifact_id`] remains the guard for the *display id* — the
+/// alias a person reads, which is stored inside the state file rather than
+/// used as a path.
+pub fn validate_canonical_key(key: &str) -> anyhow::Result<()> {
+    if key.is_empty() {
+        anyhow::bail!("canonical key cannot be empty");
+    }
+    if key.len() > MAX_ARTIFACT_ID_LEN {
+        anyhow::bail!(
+            "canonical key too long: {} bytes (max: {})",
+            key.len(),
+            MAX_ARTIFACT_ID_LEN
+        );
+    }
+    if key.contains('\0') {
+        anyhow::bail!("canonical key contains a null byte");
+    }
+    Ok(())
 }
 
 /// Build a fresh `PhaseState` at `Shape` phase for a newly created artifact.

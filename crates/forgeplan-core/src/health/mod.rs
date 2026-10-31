@@ -727,22 +727,32 @@ async fn health_report_with_phase_from_records(
         // default for typical workspace sizes (≤300 active artifacts);
         // re-tune if benchmarks show contention.
         //
-        // Collect owned (id, title, status) tuples first so the async
+        // Collect owned (id, canonical key, title, status) tuples first so the async
         // closure does not need to borrow `&ArtifactRecord` across the
         // await point — closure-lifetime constraints от buffer_unordered
         // require 'static-ish bodies.
         use crate::phase::Phase;
-        let active_records: Vec<(String, String, String)> = all
+        let active_records: Vec<(String, String, String, String)> = all
             .iter()
             .filter(|r| r.status == "active")
-            .map(|r| (r.id.clone(), r.title.clone(), r.status.clone()))
+            .map(|r| {
+                // The phase state is named after the document's canonical
+                // key, so the scan reads it by that key. A row that carries
+                // no key falls back to its display id.
+                let key = if r.canonical_key.is_empty() {
+                    r.id.clone()
+                } else {
+                    r.canonical_key.clone()
+                };
+                (r.id.clone(), key, r.title.clone(), r.status.clone())
+            })
             .collect();
         let workspace_owned = workspace.to_path_buf();
         let results: Vec<(Option<PhaseMismatch>, bool)> = futures::stream::iter(active_records)
-            .map(|(id, title, status)| {
+            .map(|(id, canonical_key, title, status)| {
                 let ws = workspace_owned.clone();
                 async move {
-                    match crate::phase::store::read_phase(&ws, &id).await {
+                    match crate::phase::store::read_phase(&ws, &canonical_key).await {
                         Ok(Some(s)) => {
                             let early = matches!(
                                 s.current_phase,

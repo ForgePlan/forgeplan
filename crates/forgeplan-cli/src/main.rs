@@ -1170,7 +1170,19 @@ enum FpfCommands {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            std::process::ExitCode::from(
+                forgeplan::commands::common::resolution_exit_code(&error).unwrap_or(1),
+            )
+        }
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
     // Load .env from workspace first (.forgeplan/.env via walk-up from cwd),
     // then fall back to cwd .env. Neither call overrides shell env vars —
     // precedence: shell env > workspace .env > cwd .env.

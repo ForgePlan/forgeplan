@@ -17,14 +17,9 @@ use crate::commands::common;
 use crate::ui;
 
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (workspace, source) = common::open_read_source().await?;
 
-    // Resolve against the same source used for every part of this report.
-    let canonical = match &source {
-        common::ReadSource::Legacy(store) => store.resolve_id(id).await?,
-        common::ReadSource::Captured(read) => read.resolve_id(id),
-    }
-    .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+    let (canonical, _) = common::resolve_required_identity(&source, &workspace, id).await?;
     let id = canonical.as_str();
     let record: Cow<'_, ArtifactRecord> = match &source {
         common::ReadSource::Legacy(store) => store.get_record(id).await?.map(Cow::Owned),

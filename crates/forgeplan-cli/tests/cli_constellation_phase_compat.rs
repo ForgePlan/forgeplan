@@ -339,14 +339,18 @@ fn phase_show_advance_and_history_preserve_id_slug_and_display_resolution() {
 }
 
 #[test]
-fn missing_artifacts_keep_raw_advisory_reads_but_cannot_be_advanced() {
+fn missing_artifacts_are_not_resolved_from_raw_ids_or_sidecars() {
     for migrated in [false, true] {
         let fixture = Fixture::new(migrated);
         for reference in ["PRD-999", "untracked-phase"] {
-            assert_unknown(&fixture.json(&["phase", reference, "--json"]), reference, reference);
+            fixture.fails(
+                &["phase", reference, "--json"],
+                3,
+                &format!("Artifact '{reference}' not found"),
+            );
             fixture.fails(
                 &["phase-advance", reference, "--to", "code", "--json"],
-                1,
+                3,
                 &format!("Artifact '{reference}' not found"),
             );
         }
@@ -356,20 +360,14 @@ fn missing_artifacts_keep_raw_advisory_reads_but_cannot_be_advanced() {
             advanced_at: 2026-10-24T00:00:00Z\nschema_version: 1\nhistory:\n\
             - from: shape\n  to: code\n  at: 2026-10-24T00:00:00Z\n  reason: offline state\n";
         std::fs::write(&path, bytes).unwrap();
-        let payload = fixture.json(&["phase", "PRD-999", "--json"]);
-        assert_eq!(payload["artifact_id"], "PRD-999");
-        assert_eq!(payload["current_phase"], "code");
-        assert_eq!(
-            payload["_next_action"],
-            "forgeplan phase-advance PRD-999 --to test"
-        );
-        assert_eq!(
-            transitions(&payload),
-            json!([["shape", "code", "offline state"]])
+        fixture.fails(
+            &["phase", "PRD-999", "--json"],
+            3,
+            "Artifact 'PRD-999' not found",
         );
         fixture.fails(
             &["phase-advance", "PRD-999", "--to", "test", "--json"],
-            1,
+            3,
             "Artifact 'PRD-999' not found",
         );
         assert_eq!(std::fs::read(&path).unwrap(), bytes);

@@ -28,12 +28,16 @@ pub(super) async fn published_history_records(
     // One native scan at this exact descriptor/version, not N pinned gets
     // whose implementations each materialize the entire artifacts table.
     for record in facade::read_pinned_artifacts(&index_root, &descriptor).await? {
-        let id = record
-            .display_id
-            .as_ref()
-            .unwrap_or(&record.canonical_key)
-            .clone();
-        records.insert(id, record);
+        // The map is keyed by the canonical key — the identity. A display id
+        // is an alias, and two documents may share one: a map keyed by the
+        // alias would let the second of them hide the first, and the audit
+        // would report a change that never happened.
+        let key = if record.canonical_key.is_empty() {
+            record.display_id.clone().unwrap_or_default()
+        } else {
+            record.canonical_key.clone()
+        };
+        records.insert(key, record);
     }
     if storage::read_current(&index_root)?.as_ref() != Some(&descriptor) {
         anyhow::bail!("published generation changed while reading history before-image");
@@ -80,25 +84,27 @@ pub(super) async fn orphan_reason(
 async fn audit_captured_reindex(ws: &std::path::Path) -> anyhow::Result<()> {
     let previous = published_history_records(ws).await?;
     let current = common::workspace_read(ws).await?;
-    let mut changes = Vec::new();
+    // Every receipt names the document it is about twice: the display id a
+    // person reads, and the canonical key that names exactly one document.
+    let mut changes: Vec<(String, String, &str)> = Vec::new();
     for record in current.records() {
         let (_, body) = forgeplan_core::artifact::frontmatter::parse_frontmatter(&record.body)?;
-        match previous.get(&record.id) {
+        match previous.get(&record.canonical_key) {
             Some(old) => {
                 let old_body = old.body.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("published artifact {} has no body", record.id)
                 })?;
                 if old_body.trim() != body.trim() {
-                    changes.push((record.id.as_str(), "update"));
+                    changes.push((record.id.clone(), record.canonical_key.clone(), "update"));
                 }
             }
-            None => changes.push((record.id.as_str(), "create")),
+            None => changes.push((record.id.clone(), record.canonical_key.clone(), "create")),
         }
     }
-    for (id, record) in &previous {
+    for (key, record) in &previous {
         if orphan_reason(
             ws,
-            id,
+            &record.display_id.clone().unwrap_or_else(|| key.clone()),
             record.kind.as_deref().unwrap_or_default(),
             &record.title,
             &record.canonical_key,
@@ -106,15 +112,20 @@ async fn audit_captured_reindex(ws: &std::path::Path) -> anyhow::Result<()> {
         .await
         .is_some()
         {
-            changes.push((id.as_str(), "delete"));
+            changes.push((
+                record.display_id.clone().unwrap_or_else(|| key.clone()),
+                record.canonical_key.clone(),
+                "delete",
+            ));
         }
     }
     if changes.is_empty() {
         return Ok(());
     }
     let history = forgeplan_core::db::auxiliary::AuxiliaryStore::open_history_or_create(ws).await;
-    for (id, action) in changes {
-        let entry = forgeplan_core::changelog::ChangeLogEntry::new(id, action, "reindex");
+    for (id, canonical_key, action) in changes {
+        let entry = forgeplan_core::changelog::ChangeLogEntry::new(&id, action, "reindex")
+            .with_canonical_key(&canonical_key);
         let result = match &history {
             Ok(history) => history.log_change(&entry).await,
             Err(error) => {

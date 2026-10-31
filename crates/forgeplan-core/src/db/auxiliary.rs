@@ -95,6 +95,11 @@ impl AuxiliaryStore {
     ///
     /// A confirmed missing directory or table yields an empty history handle.
     /// Existing but unreadable or incompatible history is an error.
+    ///
+    /// The one migration this may run is the additive `canonical_key`
+    /// column: a workspace whose history predates it cannot be read
+    /// otherwise, and the column carries no data of its own — every
+    /// existing row keeps its description and gets a NULL key.
     pub async fn open_history_existing(workspace_path: &Path) -> anyhow::Result<Self> {
         let lance_dir = workspace_path.join("lance");
         if !path_present(&lance_dir).await? {
@@ -103,6 +108,7 @@ impl AuxiliaryStore {
         let db = connect(&lance_dir).await?;
         let change_log = open_optional_table(&db, &lance_dir, "change_log").await?;
         if let Some(table) = change_log.as_ref() {
+            crate::db::migrate::migrate_change_log(table).await?;
             validate_change_log_schema(table).await?;
         }
         Ok(Self {
@@ -114,14 +120,16 @@ impl AuxiliaryStore {
 
     /// Open history, creating only a missing `change_log` table.
     ///
-    /// The caller already holds the workspace lock. Existing rows and schema
-    /// are never migrated, replaced or cleared by this constructor.
+    /// The caller already holds the workspace lock. Existing rows are never
+    /// replaced or cleared by this constructor; the one schema change it
+    /// may run is the additive `canonical_key` column.
     pub async fn open_history_or_create(workspace_path: &Path) -> anyhow::Result<Self> {
         let lance_dir = workspace_path.join("lance");
         tokio::fs::create_dir_all(&lance_dir).await?;
         let db = connect(&lance_dir).await?;
         let change_log = match open_optional_table(&db, &lance_dir, "change_log").await? {
             Some(table) => {
+                crate::db::migrate::migrate_change_log(&table).await?;
                 validate_change_log_schema(&table).await?;
                 table
             }
@@ -535,6 +543,7 @@ pub(crate) async fn change_log_append(table: &Table, entry: &ChangeLogEntry) -> 
             Arc::new(StringArray::from(vec![entry.new_value.as_deref()])),
             Arc::new(StringArray::from(vec![entry.source.as_str()])),
             Arc::new(StringArray::from(vec![entry.commit_hash.as_deref()])),
+            Arc::new(StringArray::from(vec![entry.canonical_key.as_deref()])),
         ],
     )?;
 

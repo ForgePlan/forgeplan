@@ -10,6 +10,15 @@ pub struct ChangeLogEntry {
     /// The audit trail keeps the original description of the event: this is
     /// what a person reads and what the row said before the key existed.
     pub artifact_id: String,
+    /// The document's **canonical key** — the identity the entry is about.
+    ///
+    /// The display id is an alias, and an alias may name two documents: one
+    /// in this project, one in another. The key names exactly one, so a
+    /// receipt recorded under it says which document it describes. `None`
+    /// for an entry written before the key was recorded, and for an entry
+    /// about a document that is no longer in the index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_key: Option<String>,
     /// create, update, delete, link, unlink
     pub action: String,
     /// Which field changed (status, body, title, etc.)
@@ -30,6 +39,7 @@ impl ChangeLogEntry {
         Self {
             timestamp: chrono::Utc::now().to_rfc3339(),
             artifact_id: artifact_id.to_string(),
+            canonical_key: None,
             action: action.to_string(),
             field: None,
             old_value: None,
@@ -37,6 +47,15 @@ impl ChangeLogEntry {
             source: source.to_string(),
             commit_hash: None,
         }
+    }
+
+    /// Set the canonical key of the document the entry is about.
+    ///
+    /// The key travels beside the display id: the id is what a person
+    /// reads, the key is what names exactly one document.
+    pub fn with_canonical_key(mut self, canonical_key: &str) -> Self {
+        self.canonical_key = Some(canonical_key.to_string());
+        self
     }
 
     /// Set the field that changed.

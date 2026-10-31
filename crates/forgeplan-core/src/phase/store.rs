@@ -21,7 +21,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::{
     MAX_HISTORY_ENTRIES, Phase, PhaseState, PhaseTransition, initial_state, state_dir, state_path,
-    truncate_reason, validate_artifact_id,
+    truncate_reason, validate_artifact_id, validate_canonical_key,
 };
 
 /// Maximum bytes read from a state file before parsing. Prevents an
@@ -45,14 +45,52 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// not exist (FR-012 — missing state is not an error). Corrupt files
 /// are logged and also yield `None` to avoid breaking tool flow.
 ///
-/// Rejects invalid `artifact_id` (path traversal, non-ASCII, …) up-front
-/// because `state_path` would otherwise let a tampered id escape the
+/// The state file is named after the document's **canonical key** — the
+/// identity, not the alias a second document may share. A state written
+/// before the key was escaped keeps the raw name; it is still found, and
+/// the first read renames it to the keyed name.
+///
+/// Rejects a key that cannot be a key up front: the name is escaped into
+/// exactly one path component, so a tampered key cannot escape the
 /// workspace (audit Round 1 C-sec #1).
-pub async fn read_phase(workspace: &Path, artifact_id: &str) -> anyhow::Result<Option<PhaseState>> {
-    validate_artifact_id(artifact_id)?;
+pub async fn read_phase(
+    workspace: &Path,
+    canonical_key: &str,
+) -> anyhow::Result<Option<PhaseState>> {
+    validate_canonical_key(canonical_key)?;
 
-    let path = state_path(workspace, artifact_id);
-    if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+    let dir = state_dir(workspace);
+    let path =
+        crate::artifact::sidecar::resolve_sidecar_path(&dir, canonical_key, canonical_key, "yaml")
+            .await?;
+    read_phase_at(&path, canonical_key).await
+}
+
+/// Read the phase state of a document named by its canonical key, finding a
+/// state written before the key existed.
+///
+/// A state file written before the key existed is named after the document's
+/// display alias. It is still found — the first read renames it to the
+/// keyed name, in place.
+pub async fn read_phase_for(
+    workspace: &Path,
+    canonical_key: &str,
+    display_alias: &str,
+) -> anyhow::Result<Option<PhaseState>> {
+    validate_canonical_key(canonical_key)?;
+
+    let dir = state_dir(workspace);
+    let path =
+        crate::artifact::sidecar::resolve_sidecar_path(&dir, canonical_key, display_alias, "yaml")
+            .await?;
+    read_phase_at(&path, canonical_key).await
+}
+
+/// Read one state file, guarding against a symlinked target and an
+/// oversized one.
+async fn read_phase_at(path: &Path, canonical_key: &str) -> anyhow::Result<Option<PhaseState>> {
+    let artifact_id = canonical_key;
+    if !tokio::fs::try_exists(path).await.unwrap_or(false) {
         return Ok(None);
     }
 
@@ -171,17 +209,25 @@ pub async fn migrate_legacy_state(
         return Ok(false);
     }
     let dir = state_dir(workspace);
-    let legacy = state_path(workspace, legacy_id);
     let target = state_path(workspace, canonical_key);
-    if !tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
-        return Ok(false);
-    }
     if tokio::fs::try_exists(&target).await.unwrap_or(false) {
         return Ok(false);
     }
-    tokio::fs::create_dir_all(&dir).await?;
-    tokio::fs::rename(&legacy, &target).await?;
-    Ok(true)
+    // The pre-key names: the display alias as it was written, the alias
+    // upper-cased, and the raw (unescaped) key.
+    for legacy in
+        crate::artifact::sidecar::legacy_sidecar_paths(&dir, canonical_key, legacy_id, "yaml")
+    {
+        if legacy == target {
+            continue;
+        }
+        if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
+            tokio::fs::create_dir_all(&dir).await?;
+            tokio::fs::rename(&legacy, &target).await?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Atomically write phase state to disk. Creates the state directory
@@ -212,6 +258,7 @@ pub async fn write_phase(workspace: &Path, state: &PhaseState) -> anyhow::Result
         .canonical_key
         .as_deref()
         .unwrap_or(state.artifact_id.as_str());
+    validate_canonical_key(file_name)?;
     let target = state_path(workspace, file_name);
 
     // Symlink guard on the target file too: an attacker with write
@@ -388,7 +435,7 @@ async fn advance_phase_inner(
     allow_regression: bool,
 ) -> anyhow::Result<PhaseState> {
     validate_artifact_id(artifact_id)?;
-    validate_artifact_id(canonical_key)?;
+    validate_canonical_key(canonical_key)?;
 
     // Track whether state existed on disk — if no, we synthesized the
     // initial Shape in-memory; even when `to == Shape` we must persist
@@ -918,6 +965,96 @@ schema_version: 9999
         assert!(
             got.is_none(),
             "future-schema file must be refused, not silently accepted"
+        );
+    }
+
+    // ── ADR-030 — the state file is addressed by the canonical key ────────
+
+    #[tokio::test]
+    async fn two_documents_sharing_an_alias_keep_their_own_state() {
+        // The state file is named after the document's key, so two
+        // documents that share a display alias never share a state file.
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+
+        advance_phase_for(&ws, "prd-first-document", "PRD-001", Phase::Shape, None)
+            .await
+            .unwrap();
+        advance_phase_for(&ws, "prd-second-document", "PRD-001", Phase::Validate, None)
+            .await
+            .unwrap();
+
+        let dir = state_dir(&ws);
+        assert!(dir.join("prd-first-document.yaml").exists());
+        assert!(dir.join("prd-second-document.yaml").exists());
+        assert!(
+            !dir.join("PRD-001.yaml").exists(),
+            "the shared alias names no state file"
+        );
+
+        let first = read_phase_for(&ws, "prd-first-document", "PRD-001")
+            .await
+            .unwrap()
+            .unwrap();
+        let second = read_phase_for(&ws, "prd-second-document", "PRD-001")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.current_phase, Phase::Shape);
+        assert_eq!(second.current_phase, Phase::Validate);
+    }
+
+    #[tokio::test]
+    async fn a_legacy_state_file_is_found_and_migrated() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let dir = state_dir(&ws);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A state written before the key existed: named after the display
+        // alias.
+        std::fs::write(
+            dir.join("PRD-001.yaml"),
+            "artifact_id: PRD-001\nworkflow_type: greenfield\ncurrent_phase: validate\n\
+             advanced_at: 2026-04-18T00:00:00Z\nhistory: []\nschema_version: 1\n",
+        )
+        .unwrap();
+
+        let found = read_phase_for(&ws, "prd-auth-system", "PRD-001")
+            .await
+            .unwrap()
+            .expect("the legacy state is still found");
+        assert_eq!(found.current_phase, Phase::Validate);
+
+        assert!(
+            dir.join("prd-auth-system.yaml").exists(),
+            "the first read moved the file to its keyed name"
+        );
+        assert!(!dir.join("PRD-001.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn a_state_file_name_escapes_the_key_it_is_named_after() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+
+        advance_phase_for(
+            &ws,
+            "forgeplan/plugins/x--PRD-074",
+            "PRD-074",
+            Phase::Shape,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let dir = state_dir(&ws);
+        assert!(
+            dir.join("forgeplan%2Fplugins%2Fx--PRD-074.yaml").exists(),
+            "the key is escaped into one file name"
+        );
+        assert!(
+            !dir.join("forgeplan").exists(),
+            "no directory is created for the separator"
         );
     }
 }

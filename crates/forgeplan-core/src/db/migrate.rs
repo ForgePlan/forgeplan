@@ -132,6 +132,7 @@ pub async fn ensure_change_log(db: &lancedb::connection::Connection) -> anyhow::
                 Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
                 Arc::new(StringArray::from(Vec::<&str>::new())),
                 Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // commit_hash
+                Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // canonical_key
             ],
         )
         .map_err(|e: ArrowError| anyhow::anyhow!("Failed to create change_log batch: {}", e))?;
@@ -141,7 +142,13 @@ pub async fn ensure_change_log(db: &lancedb::connection::Connection) -> anyhow::
     Ok(())
 }
 
-/// Migrate existing change_log table to add commit_hash column (v2→v3).
+/// Migrate existing change_log table to add commit_hash column (v2→v3)
+/// and the canonical_key column (ADR-030).
+///
+/// The `canonical_key` column carries the identity of the document an entry
+/// is about: the display id in `artifact_id` is an alias and may name two
+/// documents, the key names exactly one. Existing rows keep their
+/// description and get a NULL key — a historical event is not rewritten.
 pub async fn migrate_change_log(table: &Table) -> anyhow::Result<()> {
     let schema = table.schema().await?;
     let field_names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
@@ -152,6 +159,19 @@ pub async fn migrate_change_log(table: &Table) -> anyhow::Result<()> {
             .add_columns(
                 NewColumnTransform::SqlExpressions(vec![(
                     "commit_hash".to_string(),
+                    "CAST(NULL AS STRING)".to_string(),
+                )]),
+                None,
+            )
+            .await?;
+    }
+
+    if !field_names.contains(&"canonical_key".to_string()) {
+        eprintln!("[migrate] Adding canonical_key column to change_log");
+        table
+            .add_columns(
+                NewColumnTransform::SqlExpressions(vec![(
+                    "canonical_key".to_string(),
                     "CAST(NULL AS STRING)".to_string(),
                 )]),
                 None,

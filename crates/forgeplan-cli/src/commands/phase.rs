@@ -20,15 +20,10 @@ use crate::commands::common;
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let (ws, source) = common::open_read_source().await?;
 
-    // Phase 2.5 (PROB-060) — accept slug or display id form. If the artifact
-    // exists, resolve to canonical id so state file lookup works for slug
-    // input (closes silent "unknown" false-positive). If the artifact does
-    // NOT exist, fall back to raw id: PRD-056 advisory contract requires
-    // `phase` to work on raw IDs and never error on missing artifacts.
-    let (canonical, display) = match common::resolve_identity(&source, &ws, id).await? {
-        Some(identity) => identity,
-        None => (id.to_string(), id.to_string()),
-    };
+    // Resolve to the canonical identity so ambiguity, key collisions, and
+    // absence remain distinct instead of falling through to an "unknown"
+    // advisory phase state.
+    let (canonical, display) = common::resolve_required_identity(&source, &ws, id).await?;
     // A state file written before the key existed carries the display id in
     // its name. The name resolved to exactly one document, so the file moves
     // to the key's name.

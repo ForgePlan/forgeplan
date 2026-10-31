@@ -1,8 +1,7 @@
 // PRD-056 (EPIC-005): integration tests for `forgeplan phase` CLI command.
 //
-// Verifies advisory phase read semantics: missing state is treated as
-// "unknown" (never an error), and after an advance the read surfaces
-// current_phase, history, and a "suggested next" hint.
+// Verifies advisory phase reads: an existing artifact with no state is
+// reported as "unknown", and after an advance the read surfaces state.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -33,10 +32,9 @@ fn create_prd(tmp: &TempDir) {
 fn phase_unknown_for_artifact_without_state() {
     let tmp = TempDir::new().unwrap();
     init_workspace(&tmp);
-    // Use a brand-new ID we know has no state file. We don't even create
-    // an artifact -- the phase command must work on raw IDs (advisory).
+    create_prd(&tmp);
     forgeplan()
-        .args(["phase", "PRD-999"])
+        .args(["phase", "PRD-001"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -48,8 +46,9 @@ fn phase_unknown_for_artifact_without_state() {
 fn phase_unknown_json_shape() {
     let tmp = TempDir::new().unwrap();
     init_workspace(&tmp);
+    create_prd(&tmp);
     let output = forgeplan()
-        .args(["phase", "PRD-999", "--json"])
+        .args(["phase", "PRD-001", "--json"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -58,7 +57,7 @@ fn phase_unknown_json_shape() {
         .clone();
     let v: serde_json::Value = serde_json::from_slice(&output).expect("valid json");
     assert_eq!(v["current_phase"], "unknown");
-    assert_eq!(v["artifact_id"], "PRD-999");
+    assert_eq!(v["artifact_id"], "PRD-001");
     assert!(v["history"].as_array().unwrap().is_empty());
 }
 

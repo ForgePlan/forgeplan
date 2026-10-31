@@ -200,6 +200,10 @@ pub fn change_log_schema() -> Arc<Schema> {
         Field::new("new_value", DataType::Utf8, true),
         Field::new("source", DataType::Utf8, false),
         Field::new("commit_hash", DataType::Utf8, true),
+        // The document's canonical key — the identity the entry is about.
+        // The display id in `artifact_id` is an alias and may name two
+        // documents; the key names exactly one.
+        Field::new("canonical_key", DataType::Utf8, true),
     ]))
 }
 

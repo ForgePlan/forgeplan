@@ -838,24 +838,16 @@ pub struct WorkspaceResolution {
     pub candidates: Vec<ArtifactCandidate>,
 }
 
-/// The identity a selector names: the canonical key and the display id.
+/// Resolve a selector when a caller treats absence as an optional result.
 ///
-/// The two names answer different questions. The canonical key is the
-/// identity — the phase state file is named after it, and a document that
-/// shares its display id with another is still named exactly. The display
-/// id is what a reader knows the document by, so a report carries it.
-///
-/// A selector that names no document keeps its own bytes for both: the
-/// caller decides what to do with that, not this helper.
+/// This is retained for commands whose behavior explicitly supports
+/// unresolved selectors. Commands that require one existing artifact use
+/// [`resolve_required_identity`] instead.
 pub async fn resolve_identity(
     source: &ReadSource,
     workspace: &Path,
     input: &str,
 ) -> anyhow::Result<Option<(String, String)>> {
-    // The document set is the Markdown, not the index: the index holds a
-    // legacy row whose key is the display id, while the document declares
-    // the slug a caller may use. The shared resolver decides over the
-    // documents, so every route a caller may use answers the same way.
     let candidates = match source {
         ReadSource::Legacy(_) => {
             forgeplan_core::artifact::documents::workspace_candidates(workspace).await?
@@ -871,19 +863,45 @@ pub async fn resolve_identity(
                 resolved.identity.display_id,
             )),
             Ok(None) => None,
-            // An unusable selector is not a broken workspace: the advisory
-            // surfaces keep working on raw names and never error on a
-            // document that is not there.
             Err(forgeplan_core::artifact::canonical_key::ResolveError::InvalidSelector {
                 ..
             }) => None,
             Err(problem) => {
-                anyhow::bail!(
-                    "the document set could not be read in full: {problem}"
-                );
+                anyhow::bail!("the document set could not be read in full: {problem}");
             }
         },
     )
+}
+
+/// Resolve a selector that must name exactly one existing document.
+
+pub async fn resolve_required_identity(
+    source: &ReadSource,
+    workspace: &Path,
+    input: &str,
+) -> anyhow::Result<(String, String)> {
+    let resolution = match source {
+        ReadSource::Legacy(_) => resolve_against_workspace(workspace, input).await?,
+        ReadSource::Captured(read) => resolve_against_capture(read, input),
+    };
+    require_found_identity(input, &resolution)
+}
+
+pub(crate) fn require_found_identity(
+    input: &str,
+    resolution: &WorkspaceResolution,
+) -> anyhow::Result<(String, String)> {
+    match &resolution.outcome {
+        Resolution::Found(found) => Ok((
+            found.identity.canonical_key.clone(),
+            found.identity.display_id.clone(),
+        )),
+        other => Err(refuse_resolution(
+            input,
+            other,
+            &resolution.candidates,
+        )),
+    }
 }
 
 /// Resolve one artifact reference against a workspace's own documents.
@@ -1100,7 +1118,36 @@ pub fn print_resolution_failure(failure: &ResolutionFailure) {
 /// ambiguity, a contested key, an unusable selector and an incomplete
 /// document set are refusals, and none of them is "not found".
 pub fn resolution_failure_error(failure: &ResolutionFailure) -> anyhow::Error {
-    anyhow::anyhow!("{}", failure.message)
+    let exit_code = match failure.code {
+        "not_found" => 3,
+        "conflicting_canonical_key" => 4,
+        "ambiguous" => 5,
+        _ => 1,
+    };
+    anyhow::Error::new(ResolutionFailureError {
+        exit_code,
+        message: failure.message.clone(),
+    })
+}
+
+#[derive(Debug)]
+struct ResolutionFailureError {
+    exit_code: u8,
+    message: String,
+}
+
+impl std::fmt::Display for ResolutionFailureError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ResolutionFailureError {}
+
+pub fn resolution_exit_code(error: &anyhow::Error) -> Option<u8> {
+    error
+        .downcast_ref::<ResolutionFailureError>()
+        .map(|failure| failure.exit_code)
 }
 
 /// Refuse a reference the shared resolver did not accept.
@@ -1378,5 +1425,29 @@ mod tests {
     fn extract_plain_text_no_frontmatter() {
         let body = "Just plain text here.";
         assert_eq!(extract_plain_text(body), "Just plain text here.");
+    }
+    #[test]
+    fn resolution_failures_keep_their_process_exit_codes() {
+        for (code, expected) in [
+            ("not_found", 3),
+            ("conflicting_canonical_key", 4),
+            ("ambiguous", 5),
+            ("invalid_selector", 1),
+            ("incomplete_capture", 1),
+        ] {
+            let failure = ResolutionFailure {
+                code,
+                input: "selector".to_string(),
+                candidates: Vec::new(),
+                message: "resolution refused".to_string(),
+            };
+            let error = resolution_failure_error(&failure);
+            assert_eq!(
+                resolution_exit_code(&error),
+                Some(expected),
+                "resolution code {code} must map to process exit {expected}"
+            );
+            assert_eq!(error.to_string(), "resolution refused");
+        }
     }
 }

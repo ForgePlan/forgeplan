@@ -44,6 +44,11 @@ pub async fn run(
     // Resolve from the owning source: the legacy store before cutover, one
     // captured canonical read after it. An unknown forward-reference remains
     // claimable under its raw input in either layout.
+    //
+    // The claim file itself is named after the document's canonical key, so
+    // the store resolves the selector again with the shared algorithm: a
+    // display alias and the canonical key of one document address one and
+    // the same claim, and two documents that share an alias keep their own.
     let (ws, store) = common::open_store_tolerating_constellation().await?;
     let (id_owned, ref_form) = if let Some(lance) = store.as_ref() {
         let id = lance
@@ -117,6 +122,7 @@ pub async fn run(
             if json {
                 let body = serde_json::json!({
                     "id": claim.id,
+                    "canonical_key": claim.canonical_key,
                     "agent_id": claim.agent_id,
                     "claimed_at": claim.claimed_at.to_rfc3339(),
                     "expires_at": claim.expires_at.to_rfc3339(),
@@ -127,6 +133,11 @@ pub async fn run(
                 println!("{}", serde_json::to_string_pretty(&body)?);
             } else {
                 println!("Claimed {} for {}", claim.id, claim.agent_id);
+                // The key is the identity the claim is filed under; the alias
+                // above may be shared by another document.
+                if let Some(key) = claim.canonical_key.as_deref() {
+                    println!("  Key:     {key}");
+                }
                 println!("  Expires: {}", claim.expires_at.to_rfc3339());
                 if let Some(n) = &claim.note {
                     println!("  Note:    {n}");

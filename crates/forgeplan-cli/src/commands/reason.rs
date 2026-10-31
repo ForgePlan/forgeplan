@@ -33,32 +33,27 @@ async fn fpf_context_for(
 /// Resolve the artifact and all graph-derived prompt metadata from one read source.
 async fn artifact_context_for(
     source: &ReadSource,
+    workspace: &std::path::Path,
     input: &str,
     architecture_hint: String,
 ) -> anyhow::Result<(ArtifactRecord, ArtifactContext)> {
-    let (record, raw_relations) =
-        match source {
-            ReadSource::Legacy(store) => {
-                let id = store.resolve_id(input).await?.ok_or_else(|| {
-                    anyhow::anyhow!("Artifact '{input}' not found\nFix: forgeplan list")
-                })?;
-                let record = store.get_record(&id).await?.ok_or_else(|| {
-                    anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list")
-                })?;
-                let relations = store.get_relations(&record.id).await.unwrap_or_default();
-                (record, relations)
-            }
-            ReadSource::Captured(read) => {
-                let id = read.resolve_id(input).ok_or_else(|| {
-                    anyhow::anyhow!("Artifact '{input}' not found\nFix: forgeplan list")
-                })?;
-                let record = read.get_record(&id).cloned().ok_or_else(|| {
-                    anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list")
-                })?;
-                let relations = read.get_relations(&record.id);
-                (record, relations)
-            }
-        };
+    let (id, _) = common::resolve_required_identity(source, workspace, input).await?;
+    let (record, raw_relations) = match source {
+        ReadSource::Legacy(store) => {
+            let record = store.get_record(&id).await?.ok_or_else(|| {
+                anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list")
+            })?;
+            let relations = store.get_relations(&record.id).await.unwrap_or_default();
+            (record, relations)
+        }
+        ReadSource::Captured(read) => {
+            let record = read.get_record(&id).cloned().ok_or_else(|| {
+                anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list")
+            })?;
+            let relations = read.get_relations(&record.id);
+            (record, relations)
+        }
+    };
 
     let mut relations = Vec::with_capacity(raw_relations.len());
     for (target_id, rel_type) in raw_relations {
@@ -123,6 +118,12 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
     // helper like every other mutator.
     let (ws, read_source) = common::open_read_source().await?;
 
+    // Resolve slug/display identity, relation titles and bounded context from
+    // the same source. A refusal must take precedence over provider setup so
+    // callers can distinguish absence from ambiguity and a key collision.
+    let (record, artifact_context) =
+        artifact_context_for(&read_source, &ws, id, load_architecture_hint()).await?;
+
     // PRD-071 hint contract + PRD-077 FR-008: when LLM is unavailable, emit a
     // structured `Fix:` line so the agent has a deterministic next step.
     //
@@ -142,11 +143,6 @@ pub async fn run(id: &str, json: bool, save: bool, fpf: bool) -> anyhow::Result<
             anyhow::bail!("LLM not configured");
         }
     };
-    // Resolve slug/display identity, relation titles and bounded context from
-    // the same capture. No recapture can mix a changed title or graph into the
-    // record that is about to be sent to the provider.
-    let (record, artifact_context) =
-        artifact_context_for(&read_source, id, load_architecture_hint()).await?;
 
     // Build FPF context if requested
     let fpf_context = if fpf {
@@ -533,6 +529,7 @@ mod tests {
 
         let (record, context) = artifact_context_for(
             &source,
+            &ws,
             "prd-trust-context",
             "Architecture input".to_string(),
         )
@@ -560,7 +557,7 @@ mod tests {
 
         let fresh = ReadSource::Captured(common::workspace_read(&ws).await.unwrap());
         let (_, context) =
-            artifact_context_for(&fresh, "PRD-017", "Architecture input".to_string())
+            artifact_context_for(&fresh, &ws, "PRD-017", "Architecture input".to_string())
                 .await
                 .unwrap();
         assert_eq!(context.status, "active");
@@ -632,11 +629,11 @@ mod tests {
         let captured = ReadSource::Captured(read);
         for id in ["PRD-017", "prd-17", "prd-trust-context"] {
             let (legacy_record, legacy_context) =
-                artifact_context_for(&legacy, id, "Architecture input".to_string())
+                artifact_context_for(&legacy, &ws, id, "Architecture input".to_string())
                     .await
                     .unwrap();
             let (captured_record, captured_context) =
-                artifact_context_for(&captured, id, "Architecture input".to_string())
+                artifact_context_for(&captured, &ws, id, "Architecture input".to_string())
                     .await
                     .unwrap();
             assert_eq!(legacy_record.id, "PRD-017");
@@ -654,11 +651,11 @@ mod tests {
             );
         }
         for source in [&legacy, &captured] {
-            let error = artifact_context_for(source, "PRD-404", String::new())
+            let error = artifact_context_for(source, &ws, "PRD-404", String::new())
                 .await
                 .unwrap_err();
             assert!(error.to_string().contains("Artifact 'PRD-404' not found"));
-            assert!(error.to_string().contains("Fix: forgeplan list"));
+            assert_eq!(common::resolution_exit_code(&error), Some(3));
         }
     }
 

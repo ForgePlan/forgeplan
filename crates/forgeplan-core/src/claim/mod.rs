@@ -30,6 +30,13 @@ const MAX_AGENT_LEN: usize = IDENTITY_MAX_FIELD_LEN;
 /// `get` / `list_active` deserialization. R1-audit security finding.
 const MAX_CLAIM_FILE_BYTES: u64 = 65_536;
 
+/// Upper bound on the canonical key a claim file may be named after.
+///
+/// The key is escaped into a file name, so the escaped form is what has to
+/// fit a file system: 255 bytes on ext4, less on other file systems. The
+/// cap leaves room for the escape expansion and the `.yaml` extension.
+const MAX_CANONICAL_KEY_LEN: usize = 128;
+
 /// Minimum permitted TTL — claims shorter than this would churn more than
 /// they coordinate. Orchestrators can still force-release earlier.
 pub const MIN_TTL: Duration = Duration::seconds(60);
@@ -47,7 +54,19 @@ pub const DEFAULT_TTL: Duration = Duration::minutes(30);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claim {
     /// Artifact being claimed (e.g. `PRD-057`). Uppercased on disk.
+    ///
+    /// This is the document's **display alias** — the name a person reads.
+    /// The alias is not the claim's address: two documents may share one
+    /// alias, so the address is the canonical key below.
     pub id: String,
+    /// The document's **canonical key** — the identity this claim belongs to.
+    ///
+    /// The sidecar file is named after this key, so two documents that share
+    /// a display alias never share a claim. `None` for a claim written
+    /// before the key was recorded; such a file is named after the alias and
+    /// is migrated to its keyed name on the first read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_key: Option<String>,
     /// Caller identity — typically `AgentIdentity::as_frontmatter_value()`
     /// ("name/version"), but kept as a free-form string so orchestrator
     /// tools can inject synthetic names like `worker-1`.
@@ -97,6 +116,13 @@ pub enum ClaimError {
         "artifact id contains invalid characters (allowed: A-Z, a-z, 0-9, '-', '_'; must start with a letter): {0:?}"
     )]
     InvalidId(String),
+    #[error(
+        "the display alias {selector:?} names more than one document — address one by its canonical key"
+    )]
+    AmbiguousAlias {
+        /// The alias the caller wrote.
+        selector: String,
+    },
     #[error("agent id must be non-empty")]
     EmptyAgent,
     #[error(
@@ -141,6 +167,26 @@ fn validate_id(id: &str) -> Result<(), ClaimError> {
     // but explicit rejection of traversal sequences is cheap insurance.
     if id.contains("..") || id.contains('/') || id.contains('\\') || id.contains('\0') {
         return Err(ClaimError::InvalidId(id.to_string()));
+    }
+    Ok(())
+}
+
+/// Validate a canonical key that is about to become a file name.
+///
+/// The key is escaped into exactly one path component (see
+/// [`crate::artifact::sidecar::sidecar_file_stem`]), so whatever it holds
+/// cannot escape the claims directory. The check only refuses what cannot
+/// be a key at all: an empty name, a name too long for a file, and a name
+/// with a NUL byte in it.
+fn validate_canonical_key(key: &str) -> Result<(), ClaimError> {
+    if key.is_empty() {
+        return Err(ClaimError::EmptyId);
+    }
+    if key.len() > MAX_CANONICAL_KEY_LEN {
+        return Err(ClaimError::InvalidId(key.to_string()));
+    }
+    if key.contains('\0') {
+        return Err(ClaimError::InvalidId(key.to_string()));
     }
     Ok(())
 }
@@ -260,23 +306,115 @@ async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// On-disk claim store rooted at `<workspace>/claims/`.
+///
+/// Every claim file is named after the document's **canonical key** — the
+/// identity — and never after its display alias. `PRD-001` is a name two
+/// documents may share; a claim named after it would give those two
+/// documents one row, and one agent's claim would silently block the
+/// other's work. The canonical key is unique, so a claim named after the key
+/// belongs to exactly one document.
+///
+/// A claim written before the key existed is named after the alias. It is
+/// still found — the first read renames it to its keyed name, in place.
 #[derive(Debug, Clone)]
 #[must_use = "ClaimStore is a lightweight handle — bind it before calling methods"]
 pub struct ClaimStore {
+    /// `<workspace>/claims/` — where the claim files live.
     dir: PathBuf,
+    /// The `.forgeplan/` directory the store belongs to. Read to learn the
+    /// canonical key of a document a caller names by its alias.
+    root: PathBuf,
 }
 
 impl ClaimStore {
     /// `workspace` is the `.forgeplan/` directory. The store creates
     /// `<workspace>/claims/` lazily on first write.
     pub fn new(workspace: impl AsRef<Path>) -> Self {
+        let root = workspace.as_ref().to_path_buf();
         Self {
-            dir: workspace.as_ref().join("claims"),
+            dir: root.join("claims"),
+            root,
         }
     }
 
-    fn path_for(&self, id: &str) -> PathBuf {
-        self.dir.join(format!("{}.yaml", id.to_uppercase()))
+    /// The path of a document's claim file, named after its canonical key.
+    ///
+    /// The name is the escaped key — see
+    /// [`crate::artifact::sidecar::sidecar_file_stem`] — so a key that
+    /// carries a separator still names exactly one file inside the claims
+    /// directory.
+    fn path_for(&self, canonical_key: &str) -> PathBuf {
+        crate::artifact::sidecar::sidecar_path(&self.dir, canonical_key, "yaml")
+    }
+
+    /// The claim file of a document, migrating a pre-key file to its keyed
+    /// name.
+    ///
+    /// A claim written before the key existed is named after the display
+    /// alias. The first read of such a file renames it to the keyed name,
+    /// in place, so the alias and the key address one and the same row.
+    async fn sidecar_path_for(&self, canonical_key: &str, display_alias: &str) -> PathBuf {
+        crate::artifact::sidecar::resolve_sidecar_path(
+            &self.dir,
+            canonical_key,
+            display_alias,
+            "yaml",
+        )
+        .await
+        .unwrap_or_else(|_| self.path_for(canonical_key))
+    }
+
+    /// The identity a selector names: the canonical key of the document, and
+    /// the display alias it is known by.
+    ///
+    /// The selector may be a display alias (`PRD-001`) or a canonical key
+    /// (`prd-auth-system`); both name the same document and therefore the
+    /// same claim file. A selector that names no document keeps the pre-key
+    /// naming — the alias upper-cased — so a forward reference lands where
+    /// the old code put it and an old workspace stays readable.
+    ///
+    /// An alias several documents share is refused: the claim would belong
+    /// to one of them, and which one is not the store's decision.
+    async fn resolve_identity(&self, selector: &str) -> Result<(String, String), ClaimError> {
+        let fallback = || (selector.to_uppercase(), selector.to_string());
+        let candidates = match crate::artifact::documents::workspace_candidates(&self.root).await {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                // The document set could not be read in full. A claim is
+                // advisory, so the store keeps the pre-key naming rather
+                // than refusing to record the caller's intent.
+                tracing::warn!(
+                    error = %error,
+                    "claim store could not read the workspace document set — \
+                     the claim is addressed by the selector as written"
+                );
+                return Ok(fallback());
+            }
+        };
+        match crate::artifact::canonical_key::resolve_artifact(selector, &candidates) {
+            Ok(Some(resolved)) => Ok((
+                resolved.identity.canonical_key,
+                resolved.identity.display_id,
+            )),
+            // No document answers to the selector — a forward reference.
+            Ok(None) => Ok(fallback()),
+            // The selector is not a usable reference at all.
+            Err(crate::artifact::canonical_key::ResolveError::InvalidSelector { .. }) => {
+                Ok(fallback())
+            }
+            // Several documents answer to the alias: the claim would belong
+            // to one of them, and which one is not the store's decision.
+            Err(crate::artifact::canonical_key::ResolveError::Ambiguous { .. }) => {
+                Err(ClaimError::AmbiguousAlias {
+                    selector: selector.to_string(),
+                })
+            }
+            // A contested canonical key, or a document set that could not be
+            // read in full: both mean the workspace itself is inconsistent.
+            // The pre-key naming keeps the claim addressable while the
+            // workspace is repaired.
+            Err(_) => Ok(fallback()),
+        }
     }
 
     /// Ensure the claims directory exists. Called before any write.
@@ -288,14 +426,36 @@ impl ClaimStore {
     /// Read a claim if present AND not expired. Expired claims are treated
     /// as absent so downstream logic can acquire without a separate purge
     /// step (AC-3).
+    ///
+    /// The selector may be a display alias or a canonical key: both name
+    /// the same document, so both read the same claim file.
     pub async fn get(&self, id: &str) -> Result<Option<Claim>, ClaimError> {
         validate_id(id)?;
-        let path = self.path_for(id);
+        let (canonical_key, display_alias) = self.resolve_identity(id).await?;
+        self.get_for(&canonical_key, &display_alias).await
+    }
+
+    /// Read the claim of a document named by its canonical key.
+    ///
+    /// The display alias is only used to find a claim written before the key
+    /// existed; the file itself is addressed by the key.
+    pub async fn get_for(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+    ) -> Result<Option<Claim>, ClaimError> {
+        validate_canonical_key(canonical_key)?;
+        let path = self.sidecar_path_for(canonical_key, display_alias).await;
         let raw = match read_bounded(&path).await? {
             Some(s) => s,
             None => return Ok(None),
         };
-        let claim: Claim = serde_yaml::from_str(&raw)?;
+        let mut claim: Claim = serde_yaml::from_str(&raw)?;
+        if claim.canonical_key.is_none() {
+            // A claim written before the key was recorded still belongs to
+            // the document the key names.
+            claim.canonical_key = Some(canonical_key.to_string());
+        }
         if claim.is_expired() {
             Ok(None)
         } else {
@@ -306,10 +466,26 @@ impl ClaimStore {
     /// Raw get without TTL filtering. Exposed for diagnostics (`--include-expired`).
     pub async fn get_including_expired(&self, id: &str) -> Result<Option<Claim>, ClaimError> {
         validate_id(id)?;
-        let path = self.path_for(id);
+        let (canonical_key, display_alias) = self.resolve_identity(id).await?;
+        self.get_including_expired_for(&canonical_key, &display_alias)
+            .await
+    }
+
+    /// Raw get of a document named by its canonical key, without TTL
+    /// filtering.
+    pub async fn get_including_expired_for(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+    ) -> Result<Option<Claim>, ClaimError> {
+        validate_canonical_key(canonical_key)?;
+        let path = self.sidecar_path_for(canonical_key, display_alias).await;
         match read_bounded(&path).await? {
             Some(raw) => {
-                let claim: Claim = serde_yaml::from_str(&raw)?;
+                let mut claim: Claim = serde_yaml::from_str(&raw)?;
+                if claim.canonical_key.is_none() {
+                    claim.canonical_key = Some(canonical_key.to_string());
+                }
                 Ok(Some(claim))
             }
             None => Ok(None),
@@ -322,6 +498,9 @@ impl ClaimStore {
     /// - file exists, is live, and is held by `agent` (renewed)
     ///
     /// Fails with `AlreadyHeld` otherwise (AC-2).
+    ///
+    /// The selector may be a display alias or a canonical key: both name
+    /// the same document, so both take the same claim.
     ///
     /// Callers should already hold the workspace lock (`workspace::lock`)
     /// to make the read-modify-write atomic across sub-agents sharing the
@@ -346,6 +525,31 @@ impl ClaimStore {
             return Err(ClaimError::TtlOutOfRange(ttl));
         }
 
+        let (canonical_key, display_alias) = self.resolve_identity(id).await?;
+        self.claim_for(&canonical_key, &display_alias, agent, ttl, note)
+            .await
+    }
+
+    /// Attempt to take a claim on a document named by its canonical key.
+    ///
+    /// The claim file is named after the key, so two documents that share a
+    /// display alias never share a claim. The display alias is kept inside
+    /// the file for the humans who read it, and is used to find a claim
+    /// written before the key existed.
+    pub async fn claim_for(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+        agent: &str,
+        ttl: Duration,
+        note: Option<String>,
+    ) -> Result<Claim, ClaimError> {
+        validate_canonical_key(canonical_key)?;
+        validate_agent_id_relaxed(agent)?;
+        if ttl < MIN_TTL || ttl > MAX_TTL {
+            return Err(ClaimError::TtlOutOfRange(ttl));
+        }
+
         // Persist the trimmed form — validate_agent_id accepted ` foo ` as
         // equivalent to `foo`, so the on-disk value must reflect that
         // canonicalisation. Otherwise `is_held_by(agent)` round-trips break
@@ -354,9 +558,13 @@ impl ClaimStore {
 
         self.ensure_dir().await?;
 
-        // Check for live claim by a different agent.
-        if let Some(existing) = self.get(id).await?
+        // A claim written before the key existed is read through the alias
+        // and migrated to the keyed name, so a renewal lands on the same
+        // row the old claim occupies.
+        let existing_path = self.sidecar_path_for(canonical_key, display_alias).await;
+        if let Some(existing) = read_claim_at(&existing_path).await?
             && !existing.is_held_by(agent)
+            && !existing.is_expired()
         {
             return Err(ClaimError::AlreadyHeld {
                 id: existing.id,
@@ -367,7 +575,8 @@ impl ClaimStore {
 
         let now = Utc::now();
         let claim = Claim {
-            id: id.to_uppercase(),
+            id: display_alias.to_uppercase(),
+            canonical_key: Some(canonical_key.to_string()),
             agent_id: agent.to_string(),
             claimed_at: now,
             expires_at: now + ttl,
@@ -375,7 +584,7 @@ impl ClaimStore {
         };
 
         let yaml = serde_yaml::to_string(&claim)?;
-        atomic_write(&self.path_for(id), yaml.as_bytes()).await?;
+        atomic_write(&self.path_for(canonical_key), yaml.as_bytes()).await?;
         Ok(claim)
     }
 
@@ -387,6 +596,9 @@ impl ClaimStore {
     ///   a confirmed-dead agent (R-4 mitigation).
     ///
     /// Missing claim is a no-op (not an error) to make release idempotent.
+    ///
+    /// The selector may be a display alias or a canonical key: both name
+    /// the same document, so both release the same claim.
     pub async fn release(&self, id: &str, agent: &str, force: bool) -> Result<(), ClaimError> {
         validate_id(id)?;
         // R2 audit HIGH #2 (rust-pro): the empty-agent guard must run BEFORE
@@ -407,9 +619,32 @@ impl ClaimStore {
         // pass `" foo "` against a stored `foo` consistently.
         let agent = agent.trim();
 
-        let path = self.path_for(id);
+        let (canonical_key, display_alias) = self.resolve_identity(id).await?;
+        self.release_for(&canonical_key, &display_alias, agent, force)
+            .await
+    }
+
+    /// Remove the claim of a document named by its canonical key.
+    ///
+    /// The claim file is named after the key. A claim written before the key
+    /// existed is found through the display alias and removed as well, so a
+    /// release never leaves the claim behind under its old name.
+    pub async fn release_for(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+        agent: &str,
+        force: bool,
+    ) -> Result<(), ClaimError> {
+        validate_canonical_key(canonical_key)?;
+        if !force {
+            validate_agent_id_relaxed(agent)?;
+        }
+        let agent = agent.trim();
+
+        let path = self.sidecar_path_for(canonical_key, display_alias).await;
         if !force
-            && let Some(existing) = self.get_including_expired(id).await?
+            && let Some(existing) = read_claim_at(&path).await?
             && !existing.is_held_by(agent)
             && !existing.is_expired()
         {
@@ -420,11 +655,22 @@ impl ClaimStore {
             });
         }
 
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(ClaimError::Io(e)),
+        // The keyed name is where the claim lives after the migration; the
+        // pre-key name is removed too, so a release never leaves the claim
+        // behind under the name it was written with.
+        let mut candidates = vec![path];
+        let keyed = self.path_for(canonical_key);
+        if !candidates.contains(&keyed) {
+            candidates.push(keyed);
         }
+        for candidate in candidates {
+            match tokio::fs::remove_file(&candidate).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(ClaimError::Io(e)),
+            }
+        }
+        Ok(())
     }
 
     /// List every live claim in the workspace, sorted by `expires_at`
@@ -489,8 +735,67 @@ impl ClaimStore {
                 }
             }
         }
+        self.migrate_legacy_claims(&mut out).await;
         out.sort_by_key(|c| c.expires_at);
         Ok((out, skipped))
+    }
+
+    /// Rename the claims written before the key was recorded.
+    ///
+    /// A claim file written before the key existed is named after the
+    /// display alias. The first read moves it to the keyed name, in place,
+    /// so every later read finds it directly. A claim whose alias several
+    /// documents share is left alone: it belongs to no single document
+    /// until the workspace is repaired.
+    async fn migrate_legacy_claims(&self, claims: &mut [Claim]) {
+        if claims.iter().all(|c| c.canonical_key.is_some()) {
+            // Nothing to migrate — the common case, and the one that must
+            // not pay for reading the document set.
+            return;
+        }
+        let keys = self.alias_keys().await;
+        for claim in claims.iter_mut() {
+            if claim.canonical_key.is_some() {
+                continue;
+            }
+            let Some(key) = keys.get(&claim.id.to_uppercase()) else {
+                continue;
+            };
+            let legacy = self.dir.join(format!("{}.yaml", claim.id));
+            let keyed = self.path_for(key);
+            if legacy != keyed
+                && tokio::fs::try_exists(&legacy).await.unwrap_or(false)
+                && !tokio::fs::try_exists(&keyed).await.unwrap_or(false)
+            {
+                let _ = tokio::fs::rename(&legacy, &keyed).await;
+            }
+            claim.canonical_key = Some(key.clone());
+        }
+    }
+
+    /// The canonical key of the document each display alias names, when
+    /// exactly one document answers to it.
+    ///
+    /// An alias several documents share is left out: it names neither of
+    /// them, and a claim filed under it would belong to no single
+    /// document.
+    async fn alias_keys(&self) -> BTreeMap<String, String> {
+        let Ok(candidates) = crate::artifact::documents::workspace_candidates(&self.root).await
+        else {
+            return BTreeMap::new();
+        };
+        let mut keys: BTreeMap<String, String> = BTreeMap::new();
+        for candidate in candidates {
+            let alias = candidate.display_id.to_uppercase();
+            if keys.contains_key(&alias) {
+                keys.insert(alias, String::new());
+            } else {
+                keys.insert(alias, candidate.canonical_key.clone());
+            }
+        }
+        keys.into_iter()
+            .filter(|(_, key)| !key.is_empty())
+            .collect()
     }
 }
 
@@ -514,6 +819,18 @@ async fn read_bounded(path: &Path) -> Result<Option<String>, ClaimError> {
     }
 }
 
+/// Read the claim stored at a path, expired or not.
+///
+/// A missing file is `None`; a file that does not parse is an error, the
+/// same way [`read_bounded`] reports an oversized one. The caller decides
+/// what an expired claim means.
+async fn read_claim_at(path: &Path) -> Result<Option<Claim>, ClaimError> {
+    match read_bounded(path).await? {
+        Some(raw) => Ok(Some(serde_yaml::from_str::<Claim>(&raw)?)),
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,6 +844,7 @@ mod tests {
     fn claim_is_expired_matches_now() {
         let past = Claim {
             id: "PRD-001".into(),
+            canonical_key: None,
             agent_id: "a/1".into(),
             claimed_at: Utc::now() - Duration::minutes(10),
             expires_at: Utc::now() - Duration::minutes(1),
@@ -545,6 +863,7 @@ mod tests {
     fn is_held_by_exact_match() {
         let c = Claim {
             id: "PRD-001".into(),
+            canonical_key: None,
             agent_id: "orchestrator/1.0".into(),
             claimed_at: Utc::now(),
             expires_at: Utc::now() + Duration::minutes(30),
@@ -623,6 +942,7 @@ mod tests {
 
         let past = Claim {
             id: "PRD-005".into(),
+            canonical_key: None,
             agent_id: "dead-agent".into(),
             claimed_at: Utc::now() - Duration::minutes(20),
             expires_at: Utc::now() - Duration::minutes(5),
@@ -683,6 +1003,7 @@ mod tests {
         store.ensure_dir().await.unwrap();
         let past = Claim {
             id: "PRD-405".into(),
+            canonical_key: None,
             agent_id: "x".into(),
             claimed_at: Utc::now() - Duration::hours(1),
             expires_at: Utc::now() - Duration::seconds(1),
@@ -763,6 +1084,7 @@ mod tests {
         store.ensure_dir().await.unwrap();
         let past = Claim {
             id: "PRD-013".into(),
+            canonical_key: None,
             agent_id: "ghost".into(),
             claimed_at: Utc::now() - Duration::hours(2),
             expires_at: Utc::now() - Duration::minutes(5),
@@ -819,6 +1141,7 @@ mod tests {
 
         let expired = Claim {
             id: "PRD-031".into(),
+            canonical_key: None,
             agent_id: "stale/1".into(),
             claimed_at: Utc::now() - Duration::hours(2),
             expires_at: Utc::now() - Duration::seconds(1),
@@ -1141,5 +1464,190 @@ mod tests {
         // The original claim is still on disk — release was refused before
         // any filesystem mutation.
         assert!(store.get("PRD-067").await.unwrap().is_some());
+    }
+
+    // ── ADR-030 — the claim is addressed by the canonical key ──────────────
+
+    /// A workspace holding the given documents, and the temp directory that
+    /// holds it.
+    ///
+    /// The documents are what the resolver reads, so a claim written against
+    /// one of them is addressed by that document's canonical key.
+    fn workspace_with(documents: &[(&str, &str)]) -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let dir = ws.join("prds");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, body) in documents {
+            std::fs::write(dir.join(name), body).unwrap();
+        }
+        (tmp, ws)
+    }
+
+    /// One document, as the projection writes it.
+    fn document(id: &str, slug: Option<&str>) -> String {
+        let slug_line = slug.map(|s| format!("slug: {s}\n")).unwrap_or_default();
+        format!("---\nid: {id}\n{slug_line}kind: prd\ntitle: Doc\nstatus: draft\n---\n\nBody.\n")
+    }
+
+    #[tokio::test]
+    async fn two_documents_sharing_an_alias_keep_their_own_claim() {
+        // The pilot corpus holds documents that share one number across two
+        // projects. A claim named after the alias gave those two documents
+        // one row, so one agent's claim blocked the other's work.
+        let (_tmp, ws) = workspace_with(&[
+            ("a.md", &document("PRD-001", Some("prd-first-document"))),
+            ("b.md", &document("PRD-001", Some("prd-second-document"))),
+        ]);
+        let store = ClaimStore::new(&ws);
+
+        store
+            .claim_for("prd-first-document", "PRD-001", "a/1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        store
+            .claim_for("prd-second-document", "PRD-001", "b/1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+
+        let claims = ws.join("claims");
+        assert!(
+            claims.join("prd-first-document.yaml").exists(),
+            "the first document's claim is filed under its own key"
+        );
+        assert!(
+            claims.join("prd-second-document.yaml").exists(),
+            "the second document's claim is filed under its own key"
+        );
+        assert!(
+            !claims.join("PRD-001.yaml").exists(),
+            "the shared alias names no claim file"
+        );
+
+        // The two claims are independent: the second holder does not block
+        // the first document.
+        let err = store
+            .claim_for("prd-second-document", "PRD-001", "c/1", DEFAULT_TTL, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ClaimError::AlreadyHeld { .. }), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn the_alias_and_the_key_address_one_claim() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let store = ClaimStore::new(&ws);
+
+        let by_alias = store
+            .claim("PRD-001", "a/1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        let by_key = store
+            .claim("prd-auth-system", "a/1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            by_alias.canonical_key.as_deref(),
+            Some("prd-auth-system"),
+            "the claim records the document's key"
+        );
+        assert_eq!(by_alias.canonical_key, by_key.canonical_key);
+        assert_eq!(by_alias.id, by_key.id);
+
+        let claims = ws.join("claims");
+        assert!(claims.join("prd-auth-system.yaml").exists());
+        assert_eq!(
+            std::fs::read_dir(&claims).unwrap().count(),
+            1,
+            "one document, one claim row"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_legacy_claim_file_is_found_and_migrated() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let claims = ws.join("claims");
+        std::fs::create_dir_all(&claims).unwrap();
+        // A claim written by the old code: named after the display alias.
+        std::fs::write(
+            claims.join("PRD-001.yaml"),
+            "id: PRD-001\nagent_id: old/1\nclaimed_at: 2026-01-01T00:00:00+00:00\n\
+             expires_at: 2099-01-01T00:00:00+00:00\n",
+        )
+        .unwrap();
+
+        let store = ClaimStore::new(&ws);
+        let found = store
+            .get("PRD-001")
+            .await
+            .unwrap()
+            .expect("the legacy claim is still found");
+        assert_eq!(found.agent_id, "old/1");
+        assert_eq!(
+            found.canonical_key.as_deref(),
+            Some("prd-auth-system"),
+            "the claim names the document it belongs to"
+        );
+
+        assert!(
+            claims.join("prd-auth-system.yaml").exists(),
+            "the first read moved the file to its keyed name"
+        );
+        assert!(!claims.join("PRD-001.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn a_legacy_claim_file_is_found_by_its_key_too() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let claims = ws.join("claims");
+        std::fs::create_dir_all(&claims).unwrap();
+        std::fs::write(
+            claims.join("PRD-001.yaml"),
+            "id: PRD-001\nagent_id: old/1\nclaimed_at: 2026-01-01T00:00:00+00:00\n\
+             expires_at: 2099-01-01T00:00:00+00:00\n",
+        )
+        .unwrap();
+
+        let store = ClaimStore::new(&ws);
+        let found = store
+            .get("prd-auth-system")
+            .await
+            .unwrap()
+            .expect("the legacy claim is found under the key too");
+        assert_eq!(found.agent_id, "old/1");
+        assert!(claims.join("prd-auth-system.yaml").exists());
+        assert!(!claims.join("PRD-001.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn a_claim_file_name_is_never_built_from_the_alias_alone() {
+        // The file name carries the key, escaped. A key that carries a
+        // separator still names exactly one file inside the claims
+        // directory.
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let store = ClaimStore::new(&ws);
+        store
+            .claim_for(
+                "forgeplan/plugins/x--PRD-074",
+                "PRD-074",
+                "a/1",
+                DEFAULT_TTL,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let claims = ws.join("claims");
+        assert!(
+            claims
+                .join("forgeplan%2Fplugins%2Fx--PRD-074.yaml")
+                .exists(),
+            "the key is escaped into one file name"
+        );
+        assert!(
+            !claims.join("forgeplan").exists(),
+            "no directory is created for the separator"
+        );
     }
 }

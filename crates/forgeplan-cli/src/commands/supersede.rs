@@ -15,17 +15,15 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
         return run_file_first(ws, _lock, id, by).await;
     };
 
-    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    // The source must resolve (it's the artifact being marked superseded);
-    // the `--by` target may not exist yet (forward-reference cross-PR), so
-    // we fall back to the raw input mirroring `link` semantics.
-    let id = store
-        .resolve_id(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    // Both references must name one document. Ambiguous aliases and
+    // contested keys are refusals, and an absent successor is not a forward
+    // reference on this command.
+    let resolution = common::resolve_against_workspace(&ws, id).await?;
+    let (id, _) = common::require_found_identity(id, &resolution)?;
+    let resolution = common::resolve_against_workspace(&ws, by).await?;
+    let (by, _) = common::require_found_identity(by, &resolution)?;
     let id = id.as_str();
-    let by_canonical = store.resolve_id(by).await?;
-    let by = by_canonical.as_deref().unwrap_or(by);
+    let by = by.as_str();
 
     let old_status = store
         .get_record(id)
@@ -102,11 +100,9 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
         }
     }
 
-    // PRD-071: verify the new successor exists and is in good shape.
-    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
-    // id post-merge for the successor `forgeplan get` hint. If the target
-    // can't be loaded (forward-reference cross-PR), the raw input is the
-    // safest fallback the agent can re-run.
+    // PRD-071: verify the resolved successor exists and is in good shape.
+    // Use its slug pre-merge or display id post-merge for the `forgeplan get`
+    // hint; the fallback is the canonical key already resolved above.
     let by_ref_form = match store.get_record(by).await? {
         Some(rec) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id),
         None => by.to_string(),
@@ -134,16 +130,14 @@ async fn run_file_first(
     by: &str,
 ) -> anyhow::Result<()> {
     let read = common::workspace_read(&ws).await?;
-    let canonical = read
-        .resolve_id(id)
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let resolution = common::resolve_against_capture(&read, id);
+    let (canonical, _) = common::require_found_identity(id, &resolution)?;
+    let resolution = common::resolve_against_capture(&read, by);
+    let (by_canonical, _) = common::require_found_identity(by, &resolution)?;
     let old_status = read
         .get_record(&canonical)
         .map(|r| r.status.as_str())
         .unwrap_or("active");
-    // The `--by` target may not exist yet (forward-reference cross-PR), so an
-    // unresolvable input is passed through verbatim — same as `link`.
-    let by_canonical = read.resolve_id(by).unwrap_or_else(|| by.to_string());
 
     // Scoped so the context's borrow of the lock guard ends before the
     // reconcile pass below — that pass re-acquires the same lock.
@@ -189,13 +183,13 @@ async fn run_file_first(
         }
     }
 
-    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display id
-    // post-merge for the successor hint; raw input when the successor is not
-    // resolvable yet.
+    // Use the resolved successor's slug pre-merge or display id post-merge.
+    // If the captured record is unavailable, keep its canonical key as the
+    // usable reference rather than reverting to an unchecked selector.
     let by_ref_form = read
         .get_record(&by_canonical)
         .map(|rec| forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id))
-        .unwrap_or_else(|| by.to_string());
+        .unwrap_or_else(|| by_canonical.clone());
     let next_hints: Vec<Hint> = vec![
         Hint::info(format!("Superseded by {} — verify successor", by_ref_form))
             .with_action(format!("forgeplan get {}", by_ref_form)),

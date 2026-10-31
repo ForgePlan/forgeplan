@@ -67,9 +67,7 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
     // file named by canonical id; without resolver slug input creates
     // a NEW state file at .forgeplan/state/<slug>.yaml instead of updating
     // existing canonical one — silent state divergence.
-    let (canonical, display) = common::resolve_identity(&source, &ws, id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found"))?;
+    let (canonical, display) = common::resolve_required_identity(&source, &ws, id).await?;
     // A state file written before the key existed carries the display id in
     // its name. The name resolved to exactly one document, so the file moves
     // to the key's name.
