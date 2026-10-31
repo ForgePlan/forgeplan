@@ -418,7 +418,22 @@ pub async fn resolve_in_legacy_index(
     workspace: &std::path::Path,
     input: &str,
 ) -> anyhow::Result<Resolution> {
-    if let Some(canonical_key) = store.resolve_canonical_key(input).await? {
+    let resolved = match store.resolve_canonical_key(input).await {
+        Ok(found) => found,
+        // The index refused: it named no single row. That refusal is
+        // classified below, from the rows themselves, so the surface answers
+        // with the taxonomy's own code instead of a generic error — the CLI
+        // route does the same.
+        Err(error)
+            if error
+                .downcast_ref::<forgeplan_core::artifact::canonical_key::ResolveError>()
+                .is_some() =>
+        {
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(canonical_key) = resolved {
         let summary = store.get_artifact(&canonical_key).await?;
         let display_id = summary
             .as_ref()
