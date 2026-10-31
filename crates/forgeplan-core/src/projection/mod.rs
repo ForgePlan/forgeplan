@@ -1981,6 +1981,20 @@ async fn create_artifact_projection(
         // it, exactly as the shared creator does. Without this the document
         // existed on disk and nowhere else, and every read said 'not found'.
         if let Some(store) = store {
+            // Replace, don't collide: this path is reached by an import that
+            // has decided to overwrite, so a row already filed under the key
+            // is removed before the new one is written.
+            if store
+                .get_record(&key)
+                .await
+                .map_err(MutationError::StoreFatal)?
+                .is_some()
+            {
+                store
+                    .delete_artifact(&key)
+                    .await
+                    .map_err(MutationError::StoreFatal)?;
+            }
             let mut row = creation_row(artifact);
             row.canonical_key = key;
             store
