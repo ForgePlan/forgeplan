@@ -42,7 +42,7 @@ const SELECTOR_COMMANDS: &[&[&str]] = &[
     &["delete", "PRD-001"],
     &["phase", "PRD-001"],
     &["phase-advance", "PRD-001", "--to", "shape"],
-    &["supersede", "PRD-001", "PRD-002"],
+    &["supersede", "--by", "PRD-002", "PRD-001"],
 ];
 
 #[test]
