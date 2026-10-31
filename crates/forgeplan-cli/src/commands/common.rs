@@ -1077,7 +1077,12 @@ pub fn resolution_failure(
 /// their canonical key, their title and their workspace-relative path, so
 /// the operator can open the file and address the document by its key.
 pub fn print_resolution_failure(failure: &ResolutionFailure) {
-    eprintln!("error: {}", failure.message);
+    // The message is NOT printed here: `resolution_failure_error` returns it
+    // as the command's error, and the top level already prints it as
+    // `Error:` with its single `Fix:` line (PROB-071 pins exactly one).
+    // Printing it here too produced two `Fix:` markers on stderr, one from
+    // the resolver and one from the handler. What the error cannot carry —
+    // the candidate lines — is what this prints.
     for candidate in failure.candidate_lines() {
         eprintln!("  {candidate}");
     }
