@@ -3,7 +3,7 @@
 ## Состояние
 
 Ветка `feat/artifact-identity`, дерево чистое, последний коммит `8d59a9c7`.
-Полный прогон `cargo test -p forgeplan`: **72 бинарника зелёные, 9 красных** (перед последней серией правок).
+Полный прогон `cargo test -p forgeplan`: **77 бинарников зелёные, 4 красных** (HEAD 2bad603c).
 
 ## Закрыто в этой серии (проверено прогоном)
 
@@ -43,11 +43,11 @@
 
 ## Осталось красным
 
-- `cli_uncovered_coverage`: `remember_creates_memory_artifact` и
-  `recall_after_remember_returns_memory` ждут прежнюю форму — тест берёт
-  первый файл из `.forgeplan/memory` и требует `mem-` в выводе `recall`.
-  Живьём: файл по ключу, slug `mem-…`, `recall` показывает `MEM-001`;
-  сверять ожидания с новой идентичностью, а не менять поведение.
+- `cli_constellation_validation_compat`: `validate` на отсутствующем
+  документе сейчас отказывает (`Artifact 'NOTE-001' not found`), а два
+  теста ждут JSON-результат; и `an_explicit_ci_target` — подкоманда `ci`
+  отсутствует (`unrecognized subcommand`), надо сверить с фактической
+  поверхностью. `adversarial_findings…` — та же причина (нет JSON).
 - Импорт: семейство закрыто (`cli_resolver_wiring` 26/26), кроме
   `import_rejects_kind_mismatch_on_force` — проверить форму отказа.
 - `absent_selector_exits_three_in_each_command` — регрессия в моём же наборе
