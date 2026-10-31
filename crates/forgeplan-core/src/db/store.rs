@@ -327,16 +327,19 @@ pub fn frontmatter_map_with_links_from(
     use serde_yaml::{Mapping, Value};
 
     let mut map = record.frontmatter_map();
+    // The document's own frontmatter is the source of truth for what it
+    // declares. Its `links` are written in the ids a reader knows, while the
+    // relations table holds the same edges under canonical keys — comparing
+    // one against the other reported a drift that does not exist. The
+    // declaration wins; the table is the fallback for a record whose body
+    // carries no frontmatter at all.
+    if let Ok((body_fm, _)) = crate::artifact::frontmatter::parse_frontmatter(&record.body)
+        && let Some(links) = body_fm.get("links")
+    {
+        map.insert("links".to_string(), links.clone());
+        return map;
+    }
     if relations.is_empty() {
-        // No edges in the relations table. The record's body still carries
-        // the document's own frontmatter, and that is where a link the
-        // document declares lives. Reading it here is what stops the rule
-        // from warning about a document that links exactly as it says.
-        if let Ok((body_fm, _)) = crate::artifact::frontmatter::parse_frontmatter(&record.body)
-            && let Some(links) = body_fm.get("links")
-        {
-            map.insert("links".to_string(), links.clone());
-        }
         return map;
     }
     let seq: Vec<Value> = relations
