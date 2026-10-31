@@ -462,14 +462,9 @@ async fn max_number_in_tree(dir: &Path, kind: &ArtifactKind) -> anyhow::Result<u
             if let Some(num) = number_from_file_name(&name, &prefix) {
                 max_num = max_num.max(num);
             }
-            let content = match tokio::fs::read_to_string(&path).await {
-                Ok(c) => c,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => {
-                    return Err(anyhow::anyhow!("could not read {}: {e}", path.display()));
-                }
-            };
-            if let Some(num) = number_from_frontmatter(&content, &prefix) {
+            let num = number_from_frontmatter(&content, &prefix)
+                .with_context(|| format!("could not account for frontmatter in {}", path.display()))?;
+            if let Some(num) = num {
                 max_num = max_num.max(num);
             }
         }
@@ -486,8 +481,8 @@ fn number_from_file_name(name: &str, prefix: &str) -> Option<u32> {
 }
 
 /// The number a document's canonical frontmatter claims.
-fn number_from_frontmatter(content: &str, prefix: &str) -> Option<u32> {
-    let (fm, _body) = parse_frontmatter(content).ok()?;
+fn number_from_frontmatter(content: &str, prefix: &str) -> anyhow::Result<Option<u32>> {
+    let (fm, _body) = parse_frontmatter(content)?;
     let mut max_num: Option<u32> = None;
     let mut take = |n: u32| {
         max_num = Some(match max_num {
@@ -509,7 +504,7 @@ fn number_from_frontmatter(content: &str, prefix: &str) -> Option<u32> {
             take(n);
         }
     }
-    max_num
+    Ok(max_num)
 }
 
 /// The roots of every worktree that shares the git common directory of
@@ -536,20 +531,10 @@ async fn linked_worktree_roots(workspace: &Path) -> anyhow::Result<Vec<PathBuf>>
     .context("git worktree list task panicked")?;
     let output = match output {
         Ok(output) => output,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "linked worktrees are not scanned — `git worktree list` did not run"
-            );
-            return Ok(Vec::new());
-        }
+        Err(e) => return Err(e).context("could not discover linked worktrees"),
     };
     if !output.status.success() {
-        tracing::warn!(
-            status = %output.status,
-            "linked worktrees are not scanned — `git worktree list` failed"
-        );
-        return Ok(Vec::new());
+        anyhow::bail!("git worktree list failed with {}", output.status);
     }
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let mut roots: Vec<PathBuf> = Vec::new();
@@ -1398,5 +1383,22 @@ mod tests {
             "id-PRD.json",
             "ledger file name must carry the kind"
         );
+    }
+    #[tokio::test]
+    async fn malformed_document_frontmatter_aborts_allocation_accounting() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let dir = ws.join(ArtifactKind::Prd.dir_name());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("imported.md"),
+            "---\nid: PRD-900\nkind: prd\nslug: prd-imported-k0123456789abcdef0123456789abcdef\n",
+        )
+        .unwrap();
+
+        let error = compute_max_display_number(&ws, None, &ArtifactKind::Prd)
+            .await
+            .expect_err("a malformed source must not be omitted from accounting");
+        assert!(error.to_string().contains("could not account for frontmatter"));
     }
 }

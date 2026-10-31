@@ -618,15 +618,39 @@ pub async fn federated_get(
         } else {
             match capture_source(&CaptureRequest::new(&canonical), CaptureLimits::default()).await {
                 Ok(captured) => {
-                    if let Some(artifact) = captured
+                    if !captured.is_complete() {
+                        return Err(ConstellationError::Io {
+                            detail: format!(
+                                "source {} was only partially captured; selector resolution is unsafe",
+                                canonical.display()
+                            ),
+                        });
+                    }
+                    let candidates: Vec<_> = captured
                         .artifacts
                         .iter()
-                        .find(|a| {
-                            a.canonical_key.eq_ignore_ascii_case(key_or_id)
-                                || a.display_id.eq_ignore_ascii_case(key_or_id)
+                        .map(|artifact| crate::artifact::canonical_key::ArtifactCandidate {
+                            canonical_key: artifact.canonical_key.clone(),
+                            display_id: artifact.display_id.clone(),
+                            title: artifact.title.clone(),
+                            relative_path: artifact.relative_path.clone(),
                         })
-                        .cloned()
-                    {
+                        .collect();
+                    let selected = crate::artifact::canonical_key::resolve_artifact(
+                        key_or_id,
+                        &candidates,
+                    )
+                    .map_err(|error| ConstellationError::Io {
+                        detail: error.to_string(),
+                    })?;
+                    if let Some(resolved) = selected {
+                        if let Some(artifact) = captured
+                            .artifacts
+                            .iter()
+                            .find(|artifact| {
+                                artifact.canonical_key == resolved.identity.canonical_key
+                            })
+                        {
                         let source = SourceRef {
                             source_id: source_id_for(&canonical),
                             path: canonical.display().to_string(),
@@ -648,6 +672,7 @@ pub async fn federated_get(
                             },
                         ));
                     }
+                }
                 }
                 Err(e) => {
                     let failure = SourceFailure {
@@ -950,6 +975,37 @@ mod tests {
                 assert_ne!(sources[0].source_id, sources[1].source_id);
             }
             other => panic!("two claimers must be ambiguous, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn markdown_get_refuses_a_shared_alias_but_accepts_each_key() {
+        let first = "---\nid: PRD-001\nslug: prd-alpha\nkind: prd\nstatus: draft\ntitle: Alpha\n---\n\nalpha body\n";
+        let second = "---\nid: PRD-001\nslug: prd-beta\nkind: prd\nstatus: draft\ntitle: Beta\n---\n\nbeta body\n";
+        let source = workspace_with(&[
+            ("prds", "alpha.md", first),
+            ("prds", "beta.md", second),
+        ]);
+        let specs = [SourceSpec::new(source.path())];
+
+        assert!(
+            federated_get(&specs, "PRD-001", QueryMode::Strict)
+                .await
+                .is_err(),
+            "the display alias cannot select the first document"
+        );
+
+        for (key, body) in [("prd-alpha", "alpha body"), ("prd-beta", "beta body")] {
+            let result = federated_get(&specs, key, QueryMode::Strict)
+                .await
+                .unwrap();
+            match result {
+                FederatedGet::Found(artifact) => {
+                    assert_eq!(artifact.canonical_key, key);
+                    assert_eq!(artifact.body.trim(), body);
+                }
+                other => panic!("canonical key must select one document: {other:?}"),
+            }
         }
     }
 

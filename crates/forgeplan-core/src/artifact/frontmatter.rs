@@ -221,17 +221,22 @@ pub fn declared_canonical_keys(content: &str) -> Vec<String> {
 /// declares another key is replaced. An ordinary update never comes here —
 /// it goes through [`refuse_canonical_key_change`].
 pub fn ensure_canonical_key(content: &str, canonical_key: &str) -> anyhow::Result<String> {
-    let trimmed = content.trim_start();
+    let leading_len = content.len() - content.trim_start().len();
+    let trimmed = &content[leading_len..];
     if !trimmed.starts_with("---") {
         return Ok(format!("---\nslug: {canonical_key}\n---\n\n{content}"));
     }
-    let (mut fm, body) = parse_frontmatter_slice(trimmed)?;
+    let after_first = &trimmed[3..];
+    let end = after_first
+        .find("\n---")
+        .ok_or_else(|| anyhow::anyhow!("No closing --- found for frontmatter"))?;
+    let (mut fm, _) = parse_frontmatter_slice(trimmed)?;
     fm.insert(
         "slug".to_string(),
         serde_yaml::Value::String(canonical_key.to_string()),
     );
     let yaml = serde_yaml::to_string(&fm)?;
-    Ok(format!("---\n{yaml}---\n\n{body}"))
+    Ok(format!("---\n{yaml}---{}", &after_first[end + 4..]))
 }
 
 /// Refuse an ordinary update that would change the document's canonical key.
@@ -523,6 +528,18 @@ mod tests {
         .unwrap();
         let (fm, _body) = parse_frontmatter(&replaced).unwrap();
         assert_eq!(fm.get("slug").and_then(|v| v.as_str()), Some(key));
+    }
+    #[test]
+    fn ensure_canonical_key_preserves_body_separator_and_bytes() {
+        let input = "---\nid: PRD-001\nkind: prd\n---\n\n\n## Body\n\n";
+        let body_suffix = "\n\n\n## Body\n\n";
+        let output = ensure_canonical_key(
+            input,
+            "prd-body-k0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+
+        assert!(output.ends_with(body_suffix));
     }
 
     #[test]

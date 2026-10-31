@@ -85,8 +85,15 @@ pub async fn apply_restore_with_target(
     // Delete recreates an absent artifact rather than transitioning it.
     let current_status = if normalized_target.is_some() {
         let canonical_status =
-            match crate::artifact::store::resolve_artifact_path(workspace, &receipt.snapshot.id)
-                .await
+            match super::resolve_projection_path(
+                workspace,
+                receipt
+                    .snapshot
+                    .canonical_key
+                    .as_deref()
+                    .unwrap_or(&receipt.snapshot.id),
+            )
+            .await?
             {
                 Some(path) => {
                     let content = tokio::fs::read_to_string(path).await?;
@@ -99,8 +106,13 @@ pub async fn apply_restore_with_target(
             Some(status) => Some(status),
             None => match store {
                 Some(store) => store
-                    .get_record(&receipt.snapshot.id)
-                    .await?
+                    .get_record(
+                        receipt
+                            .snapshot
+                            .canonical_key
+                            .as_deref()
+                            .unwrap_or(&receipt.snapshot.id),
+                    )
                     .map(|record| record.status),
                 None => None,
             },
@@ -155,10 +167,15 @@ async fn apply_restore_with_sink(
     target_status: Option<&str>,
 ) -> anyhow::Result<RestoreReport> {
     let id = &receipt.snapshot.id;
+    let canonical_key = receipt
+        .snapshot
+        .canonical_key
+        .clone()
+        .unwrap_or_else(|| canonical_key_from_document(id, &receipt.snapshot.body));
     let restored_status = target_status.unwrap_or(&receipt.snapshot.status);
-    let existing_path = crate::artifact::store::resolve_artifact_path(workspace, id).await;
+    let existing_path = super::resolve_projection_path(workspace, &canonical_key).await?;
     let existing_record = match sink {
-        Some(store) => store.get_record(id).await?,
+        Some(store) => store.get_record(&canonical_key).await?,
         None => None,
     };
 
@@ -249,7 +266,7 @@ async fn apply_restore_with_sink(
     if let Some(store) = sink {
         if existing_record.is_some() {
             store
-                .update_artifact(id, Some(restored_status), Some(&receipt.snapshot.title))
+                .update_artifact(&canonical_key, Some(restored_status), Some(&receipt.snapshot.title))
                 .await?;
         } else {
             store
@@ -260,7 +277,7 @@ async fn apply_restore_with_sink(
             && let Some(replacement) = &receipt.replacement
         {
             store
-                .delete_relation(id, replacement, "supersedes")
+                .delete_relation(&canonical_key, replacement, "supersedes")
                 .await
                 .with_context(|| {
                     format!("could not drop legacy supersede link {id}→{replacement}")
@@ -317,12 +334,13 @@ async fn apply_restore_with_sink(
 /// happened.
 fn snapshot_artifact(receipt: &Receipt, status: &str) -> NewArtifact {
     NewArtifact {
-        // ADR-030: the canonical key of a document is the slug its
-        // frontmatter declares, and its display id when it declares none.
-        canonical_key: canonical_key_from_document(
-            &receipt.snapshot.id,
-            &receipt.snapshot.body,
-        ),
+        canonical_key: receipt
+            .snapshot
+            .canonical_key
+            .clone()
+            .unwrap_or_else(|| {
+                canonical_key_from_document(&receipt.snapshot.id, &receipt.snapshot.body)
+            }),
         id: receipt.snapshot.id.clone(),
         kind: receipt.snapshot.kind.clone(),
         status: status.to_string(),
@@ -453,8 +471,8 @@ async fn participant_exists(
     workspace: &Path,
     id: &str,
 ) -> anyhow::Result<bool> {
-    if crate::artifact::store::resolve_artifact_path(workspace, id)
-        .await
+    if super::resolve_projection_path(workspace, id)
+        .await?
         .is_some()
     {
         return Ok(true);
@@ -476,8 +494,8 @@ async fn replay_relation(
     target: &str,
     relation: &str,
 ) -> anyhow::Result<()> {
-    let path = crate::artifact::store::resolve_artifact_path(workspace, source)
-        .await
+    let path = super::resolve_projection_path(workspace, source)
+        .await?
         .ok_or_else(|| anyhow::anyhow!("source artifact '{source}' not found"))?;
     match crate::link::add_link_verbatim(&path, target, relation).await {
         Err(error)
@@ -626,6 +644,7 @@ mod tests {
                 relations: vec![],
                 projection_path: String::new(),
                 slug: None,
+                canonical_key: None,
             },
             reason: None,
             replacement: None,
@@ -934,6 +953,7 @@ mod tests {
                 relations: vec![],
                 projection_path: original.display().to_string(),
                 slug: None,
+                canonical_key: None,
             },
             reason: None,
             replacement: None,
@@ -1009,6 +1029,7 @@ mod tests {
                 // ATTACKER-CONTROLLED: tries to write outside workspace.
                 projection_path: evil_target.display().to_string(),
                 slug: None,
+                canonical_key: None,
             },
             reason: None,
             replacement: None,
@@ -1113,6 +1134,7 @@ mod tests {
                 relations: vec![],
                 projection_path: String::new(),
                 slug: None,
+                canonical_key: None,
             },
             reason: None,
             replacement: Some("PRD-999".into()),

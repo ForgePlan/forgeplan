@@ -1522,8 +1522,7 @@ fn render_markdown_with_extras(
         }
     }
 
-    let yaml = serde_yaml::to_string(&fm)?;
-    Ok(format!("---\n{}---\n\n{}\n", yaml, body))
+    Ok(format!("---\n{}---\n\n{}", yaml, body))
 }
 
 fn same_tag_set(source: &Frontmatter, tags: &[String]) -> bool {
@@ -1856,6 +1855,18 @@ pub async fn create_artifact_with_canonical_key(
             "refusing to publish canonical key '{}': {} already exists",
             artifact.canonical_key,
             filepath.display()
+        )));
+    }
+    let existing_documents = crate::artifact::documents::workspace_candidates(workspace)
+        .await
+        .map_err(MutationError::StoreFatal)?;
+    if existing_documents
+        .iter()
+        .any(|document| document.canonical_key == artifact.canonical_key)
+    {
+        return Err(MutationError::StoreFatal(anyhow::anyhow!(
+            "refusing to publish canonical key '{}': an existing document already declares it",
+            artifact.canonical_key
         )));
     }
 
@@ -2842,48 +2853,13 @@ pub async fn update_metadata_file_first(
         rendered.push('\n');
     }
 
-    // Title change → the canonical filename follows the NEW slug — unless
-    // the document is published under its canonical key. A document filed
-    // under its key keeps that path: a title change renames nothing and
-    // changes no key.
-    let mut final_path = artifact_path.to_path_buf();
-    if let Some(t) = title {
-        let id = fm.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
-            anyhow::anyhow!(
-                "cannot rename {}: frontmatter has no `id:` field",
-                artifact_path.display()
-            )
-        })?;
-        let canonical_key =
-            crate::artifact::canonical_key::canonical_key_from_document(id, &content);
-        let published_under_key = artifact_path
-            .file_stem()
-            .is_some_and(|stem| stem.to_string_lossy() == canonical_key);
-        if !published_under_key {
-            let candidate = artifact_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(format!("{id}-{}.md", projection_slug(t)));
-            if candidate != artifact_path {
-                final_path = candidate;
-            }
-        }
-    }
-
-    if final_path == artifact_path && rendered == content {
+    // A title is metadata, not identity. Preserve the document's existing
+    // path even when it uses the historical `{id}-{title}.md` convention.
+    if rendered == content {
         return Ok(artifact_path.to_path_buf());
     }
-    if final_path == artifact_path {
-        atomic_markdown_write(&final_path, rendered.as_bytes()).await?;
-    } else {
-        atomic_markdown_create(&final_path, rendered.as_bytes()).await?;
-        anyhow::ensure!(
-            tokio::fs::read_to_string(artifact_path).await? == content,
-            "artifact changed while renaming; both files are preserved"
-        );
-        tokio::fs::remove_file(artifact_path).await?;
-    }
-    Ok(final_path)
+    atomic_markdown_write(artifact_path, rendered.as_bytes()).await?;
+    Ok(artifact_path.to_path_buf())
 }
 
 /// Replace an artifact's body — the no-store sibling of
@@ -7262,18 +7238,18 @@ mod file_first_sink_tests {
         assert_eq!(fm_string(&fm, "status").as_deref(), Some("active"));
     }
 
-    /// A title change must rename to the canonical slug with no sink, and the
-    /// following body update must land on the NEW file — the sequence
-    /// `forgeplan update --title … --body …` performs.
+    /// A title change updates a historical projection in place.
     #[tokio::test]
-    async fn a_title_change_renames_and_the_next_update_uses_the_new_file() {
+    async fn a_title_change_preserves_the_historical_file_path() {
         let (_tmp, ws, lock) = migrated_fixture().await;
-        create_artifact_with_projection(
+        let original = create_artifact_with_projection(
             &MutationContext::new(&ws, &lock, None),
             &art("PRD-102", "prd", "Old Title"),
         )
         .await
         .unwrap();
+        let historical = ws.join("prds/PRD-102-old-title.md");
+        tokio::fs::rename(original, &historical).await.unwrap();
 
         update_metadata_with_projection(
             &MutationContext::new(&ws, &lock, None),
@@ -7284,32 +7260,79 @@ mod file_first_sink_tests {
         .await
         .unwrap();
 
+        assert!(historical.exists(), "the historical path must remain");
+        assert!(!ws.join("prds/PRD-102-new-title.md").exists());
         let path = crate::artifact::store::resolve_artifact_path(&ws, "PRD-102")
             .await
-            .expect("artifact must still resolve after rename");
-        assert_eq!(
-            path.file_name().unwrap().to_string_lossy(),
-            "PRD-102-new-title.md",
-            "the canonical filename follows the new slug"
-        );
-        assert!(
-            !ws.join("prds/PRD-102-old-title.md").exists(),
-            "the old-slug file must be gone, not left as a phantom source"
-        );
-
-        // The body update that follows must write to the renamed file.
-        update_body_with_projection(
+            .expect("artifact must still resolve at its existing path");
+        assert_eq!(path, historical);
+        let (fm, _) = read_doc(&ws, "PRD-102").await;
+        assert_eq!(fm_string(&fm, "title").as_deref(), Some("New Title"));
+    }
+    #[tokio::test]
+    async fn creation_preserves_supplied_body_bytes_without_a_final_newline() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let body = "\n\n## Summary\n\nexact bytes";
+        let artifact = crate::db::store::NewArtifact {
+            canonical_key: "prd-exact-k0123456789abcdef0123456789abcdef".into(),
+            id: "PRD-103".into(),
+            kind: "prd".into(),
+            status: "draft".into(),
+            title: "Exact body".into(),
+            body: body.into(),
+            depth: "standard".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![],
+        };
+        let path = create_artifact_with_canonical_key(
             &MutationContext::new(&ws, &lock, None),
-            "PRD-102",
-            "## Fresh\n\nrewritten.",
+            &artifact,
         )
         .await
         .unwrap();
-        let (_, body) = read_doc(&ws, "PRD-102").await;
-        assert!(
-            body.contains("rewritten"),
-            "the body update must land on the renamed file, got: {body}"
-        );
+        let content = tokio::fs::read_to_string(path).await.unwrap();
+        assert!(content.ends_with(body), "creation must retain body bytes exactly");
+    }
+
+    #[tokio::test]
+    async fn creation_refuses_key_already_owned_by_historical_path() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let key = "prd-owned-k0123456789abcdef0123456789abcdef";
+        let claimant = ws.join("prds/PRD-009-imported-name.md");
+        tokio::fs::create_dir_all(claimant.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &claimant,
+            format!("---\nid: PRD-009\nkind: prd\nslug: {key}\n---\nexisting\n"),
+        )
+        .await
+        .unwrap();
+        let original = tokio::fs::read(&claimant).await.unwrap();
+        let artifact = crate::db::store::NewArtifact {
+            canonical_key: key.into(),
+            id: "PRD-010".into(),
+            kind: "prd".into(),
+            status: "draft".into(),
+            title: "Duplicate key".into(),
+            body: "new document".into(),
+            depth: "standard".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![],
+        };
+
+        assert!(create_artifact_with_canonical_key(
+            &MutationContext::new(&ws, &lock, None),
+            &artifact
+        )
+        .await
+        .is_err());
+        assert_eq!(tokio::fs::read(claimant).await.unwrap(), original);
+        assert!(!ws.join("prds").join(format!("{key}.md")).exists());
     }
 
     /// The new body's own `status:` still propagates into the projection

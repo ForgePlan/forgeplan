@@ -45,10 +45,9 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// not exist (FR-012 — missing state is not an error). Corrupt files
 /// are logged and also yield `None` to avoid breaking tool flow.
 ///
-/// The state file is named after the document's **canonical key** — the
-/// identity, not the alias a second document may share. A state written
-/// before the key was escaped keeps the raw name; it is still found, and
-/// the first read renames it to the keyed name.
+/// state written before the key was escaped keeps the raw key name. Alias-
+/// named legacy files are read only when a complete workspace scan proves
+/// that the alias has exactly one owner; reads never migrate sidecars.
 ///
 /// Rejects a key that cannot be a key up front: the name is escaped into
 /// exactly one path component, so a tampered key cannot escape the
@@ -66,12 +65,9 @@ pub async fn read_phase(
     read_phase_at(&path, canonical_key).await
 }
 
-/// Read the phase state of a document named by its canonical key, finding a
-/// state written before the key existed.
-///
-/// A state file written before the key existed is named after the document's
-/// display alias. It is still found — the first read renames it to the
-/// keyed name, in place.
+/// Read the phase state of a document named by its canonical key, finding an
+/// alias-named legacy state only after the full workspace scan proves unique
+/// ownership. This is a read-only lookup; it does not rename the file.
 pub async fn read_phase_for(
     workspace: &Path,
     canonical_key: &str,
@@ -192,14 +188,9 @@ async fn read_phase_at(path: &Path, canonical_key: &str) -> anyhow::Result<Optio
     }
 }
 
-/// Migrate a phase state file that is named after the display id.
-///
-/// The phase state is keyed by the canonical key (ADR-030), so a state file
-/// written before the key existed carries the display id in its name. When
-/// exactly one document answers to that display id, the file is moved to the
-/// key's name — the caller has already resolved the name to one document,
-/// so this never guesses. A state file already named by the key is left
-/// alone, and a display id no document answers to is left alone too.
+/// Migrate a legacy alias-named phase file only after revalidating its unique
+/// owner under the workspace mutation lock. The keyed name is published with
+/// `hard_link`, which fails rather than replacing a concurrently created file.
 pub async fn migrate_legacy_state(
     workspace: &Path,
     legacy_id: &str,
@@ -208,23 +199,40 @@ pub async fn migrate_legacy_state(
     if legacy_id == canonical_key {
         return Ok(false);
     }
+    let _lock = crate::workspace::lock::acquire_workspace_lock(workspace).await?;
+    let candidates = crate::artifact::documents::workspace_candidates(workspace).await?;
+    let resolved = crate::artifact::canonical_key::resolve_artifact(legacy_id, &candidates)?;
+    let Some(resolved) = resolved else {
+        return Ok(false);
+    };
+    if resolved.identity.canonical_key != canonical_key {
+        anyhow::bail!(
+            "legacy phase alias {legacy_id:?} does not uniquely identify canonical key {canonical_key:?}"
+        );
+    }
+
     let dir = state_dir(workspace);
     let target = state_path(workspace, canonical_key);
-    if tokio::fs::try_exists(&target).await.unwrap_or(false) {
+    if tokio::fs::try_exists(&target).await? {
         return Ok(false);
     }
-    // The pre-key names: the display alias as it was written, the alias
-    // upper-cased, and the raw (unescaped) key.
     for legacy in
         crate::artifact::sidecar::legacy_sidecar_paths(&dir, canonical_key, legacy_id, "yaml")
     {
-        if legacy == target {
+        if legacy == target || !tokio::fs::try_exists(&legacy).await? {
             continue;
         }
-        if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
-            tokio::fs::create_dir_all(&dir).await?;
-            tokio::fs::rename(&legacy, &target).await?;
-            return Ok(true);
+        let meta = tokio::fs::symlink_metadata(&legacy).await?;
+        if meta.file_type().is_symlink() {
+            anyhow::bail!("refusing to migrate symlinked phase state {}", legacy.display());
+        }
+        match tokio::fs::hard_link(&legacy, &target).await {
+            Ok(()) => {
+                tokio::fs::remove_file(&legacy).await?;
+                return Ok(true);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(error) => return Err(error.into()),
         }
     }
     Ok(false)
@@ -1005,31 +1013,89 @@ schema_version: 9999
     }
 
     #[tokio::test]
-    async fn a_legacy_state_file_is_found_and_migrated() {
+    async fn a_read_does_not_attribute_or_migrate_an_alias_state_file() {
         let tmp = TempDir::new().unwrap();
         let ws = ws(&tmp);
         let dir = state_dir(&ws);
         std::fs::create_dir_all(&dir).unwrap();
-        // A state written before the key existed: named after the display
-        // alias.
-        std::fs::write(
-            dir.join("PRD-001.yaml"),
-            "artifact_id: PRD-001\nworkflow_type: greenfield\ncurrent_phase: validate\n\
-             advanced_at: 2026-04-18T00:00:00Z\nhistory: []\nschema_version: 1\n",
-        )
-        .unwrap();
+        let legacy = "artifact_id: PRD-001\nworkflow_type: greenfield\ncurrent_phase: validate\n\
+             advanced_at: 2026-04-18T00:00:00Z\nhistory: []\nschema_version: 1\n";
+        std::fs::write(dir.join("PRD-001.yaml"), legacy).unwrap();
 
         let found = read_phase_for(&ws, "prd-auth-system", "PRD-001")
             .await
-            .unwrap()
-            .expect("the legacy state is still found");
-        assert_eq!(found.current_phase, Phase::Validate);
+            .unwrap();
+        assert!(found.is_none());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("PRD-001.yaml")).unwrap(),
+            legacy
+        );
+        assert!(!dir.join("prd-auth-system.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn legacy_phase_migration_refuses_shared_alias_without_mutation() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let dir = state_dir(&ws);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prds = ws.join("prds");
+        std::fs::create_dir_all(&prds).unwrap();
+        for (filename, slug) in [
+            ("alpha.md", "prd-alpha-k11111111111111111111111111111111"),
+            ("beta.md", "prd-beta-k22222222222222222222222222222222"),
+        ] {
+            std::fs::write(
+                prds.join(filename),
+                format!("---\nid: PRD-001\nslug: {slug}\ntitle: {slug}\nkind: prd\n---\n"),
+            )
+            .unwrap();
+        }
+        let legacy_path = dir.join("PRD-001.yaml");
+        let bytes = b"legacy-state-bytes";
+        std::fs::write(&legacy_path, bytes).unwrap();
 
         assert!(
-            dir.join("prd-auth-system.yaml").exists(),
-            "the first read moved the file to its keyed name"
+            migrate_legacy_state(
+                &ws,
+                "PRD-001",
+                "prd-alpha-k11111111111111111111111111111111",
+            )
+            .await
+            .is_err()
         );
-        assert!(!dir.join("PRD-001.yaml").exists());
+        assert_eq!(std::fs::read(&legacy_path).unwrap(), bytes);
+        assert!(
+            !state_path(&ws, "prd-alpha-k11111111111111111111111111111111").exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_phase_migration_moves_only_a_uniquely_owned_alias() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let dir = state_dir(&ws);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prds = ws.join("prds");
+        std::fs::create_dir_all(&prds).unwrap();
+        std::fs::write(
+            prds.join("alpha.md"),
+            "---\nid: PRD-001\nslug: prd-alpha-k11111111111111111111111111111111\n\
+             title: Alpha\nkind: prd\n---\n",
+        )
+        .unwrap();
+        let legacy_path = dir.join("PRD-001.yaml");
+        let bytes = b"legacy-state-bytes";
+        std::fs::write(&legacy_path, bytes).unwrap();
+        let canonical_key = "prd-alpha-k11111111111111111111111111111111";
+
+        assert!(
+            migrate_legacy_state(&ws, "PRD-001", canonical_key)
+                .await
+                .unwrap()
+        );
+        assert_eq!(std::fs::read(state_path(&ws, canonical_key)).unwrap(), bytes);
+        assert!(!legacy_path.exists());
     }
 
     #[tokio::test]

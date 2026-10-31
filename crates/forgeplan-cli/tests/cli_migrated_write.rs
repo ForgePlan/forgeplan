@@ -305,7 +305,7 @@ fn remember_on_a_migrated_workspace_writes_markdown_and_no_legacy_table() {
     let ws = legacy_workspace(tmp.path(), &home);
     migrate_in_place(&ws, &home);
 
-    home_env(
+    let remembered = home_env(
         forgeplan().args([
             "remember",
             "the constellation cutover owns the derived index",
@@ -313,8 +313,17 @@ fn remember_on_a_migrated_workspace_writes_markdown_and_no_legacy_table() {
         &home,
     )
     .current_dir(&ws)
-    .assert()
-    .success();
+    .output()
+    .unwrap();
+    assert!(remembered.status.success(), "{}", String::from_utf8_lossy(&remembered.stderr));
+    let remembered = String::from_utf8_lossy(&remembered.stdout);
+    let id = remembered
+        .split_once("Remembered: ")
+        .unwrap()
+        .1
+        .split_once(" — ")
+        .unwrap()
+        .0;
 
     let bytes = workspace_bytes(&ws);
     assert!(
@@ -330,16 +339,12 @@ fn remember_on_a_migrated_workspace_writes_markdown_and_no_legacy_table() {
     // `get` reads the pinned index on this layout — so the memory is not only
     // on disk, it is reachable through the surface an operator actually uses.
     //
-    // The id is `mem-<slug>` over the first 50 characters of the text
-    // (`remember::run_remember`), so it is predictable without a store
-    // counter. The text is 48 characters, so the 50-character cut does NOT
-    // fire and the whole string is slugged — which is why the id ends in
-    // `-index`. A previous draft truncated the literal mid-word and asserted
-    // an id `remember` never mints.
+    // The command reports the display alias assigned by the shared allocator;
+    // use that exact alias to verify the document is readable.
     home_env(
         forgeplan().args([
             "get",
-            "mem-the-constellation-cutover-owns-the-derived-index",
+            id,
         ]),
         &home,
     )
@@ -358,20 +363,29 @@ fn forget_on_a_migrated_workspace_removes_the_markdown_and_no_legacy_table() {
     let ws = legacy_workspace(tmp.path(), &home);
     migrate_in_place(&ws, &home);
 
-    home_env(
+    let remembered = home_env(
         forgeplan().args(["remember", "forgettable cutover note"]),
         &home,
     )
     .current_dir(&ws)
-    .assert()
-    .success();
+    .output()
+    .unwrap();
+    assert!(remembered.status.success(), "{}", String::from_utf8_lossy(&remembered.stderr));
+    let remembered = String::from_utf8_lossy(&remembered.stdout);
+    let id = remembered
+        .split_once("Remembered: ")
+        .unwrap()
+        .1
+        .split_once(" — ")
+        .unwrap()
+        .0;
     assert!(
         workspace_bytes(&ws).contains("forgettable cutover note"),
         "fixture precondition: the memory existed before the forget"
     );
 
     home_env(
-        forgeplan().args(["remember", "--forget", "mem-forgettable-cutover-note"]),
+        forgeplan().args(["remember", "--forget", id]),
         &home,
     )
     .current_dir(&ws)

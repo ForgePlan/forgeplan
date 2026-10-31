@@ -7,7 +7,7 @@
 //! drops candidates blocked by structural dependencies, skips already-claimed
 //! artifacts, and returns N buckets plus a serial queue of leftover work.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use forgeplan_core::artifact::types::{ArtifactKind, slugify};
 use forgeplan_core::claim::ClaimStore;
@@ -69,10 +69,13 @@ pub async fn run(
         common::ReadSource::Legacy(store) => store.get_all_relations().await?,
         common::ReadSource::Captured(read) => read.get_all_relations(),
     };
-    let resolved_ids = common::resolved_ids(records);
-    // The relations are stored under the canonical key; the blocking graph
-    // is read in the namespace the records answer to.
-    let relations = common::relations_by_display_id(&relations, records);
+    let resolved_ids: HashSet<String> = records
+        .iter()
+        .filter(|record| {
+            record.status == "active" || record.status == "deprecated" || record.status == "superseded"
+        })
+        .map(|record| record.canonical_key.clone())
+        .collect();
     let topo = topological::kahn_sort(&relations, &resolved_ids);
     let blocked_ids: HashSet<String> = topo.blocked.iter().map(|(id, _)| id.clone()).collect();
 
@@ -102,12 +105,12 @@ pub async fn run(
         {
             continue;
         }
-        if blocked_ids.contains(&summary.id) {
-            skipped_blocked.push(summary.id.clone());
+        if blocked_ids.contains(&summary.canonical_key) {
+            skipped_blocked.push(summary.canonical_key.clone());
             continue;
         }
         candidates.push(ArtifactCandidate {
-            id: summary.id.clone(),
+            id: summary.canonical_key.clone(),
             affected_files: fields.files,
             domain: fields.domain,
         });
@@ -160,6 +163,23 @@ pub async fn run(
             &relations,
             &skipped_blocked,
         ));
+    let display_by_key: HashMap<&str, &str> = records
+        .iter()
+        .map(|record| (record.canonical_key.as_str(), record.id.as_str()))
+        .collect();
+    let mut alias_counts: HashMap<&str, usize> = HashMap::new();
+    for record in records {
+        *alias_counts.entry(record.id.as_str()).or_default() += 1;
+    }
+    let display_id = |key: &str| display_by_key.get(key).copied().unwrap_or(key);
+    let display_label = |key: &str| {
+        let display = display_id(key);
+        if alias_counts.get(display).copied().unwrap_or(0) > 1 {
+            format!("{display} [{key}]")
+        } else {
+            display.to_string()
+        }
+    };
 
     // Hint: pick the first non-empty bucket's first artifact to show
     // exactly what the agent should claim next; if every bucket is empty
@@ -170,8 +190,11 @@ pub async fn run(
         // Concrete claim command — agent identity uses the CLI default,
         // matching the run-time fallback in `claim::run`.
         hint_list.push(
-            Hint::info(format!("Claim first parallel-safe artifact {}", first_id))
-                .with_action(format!("forgeplan claim {} --agent agent-0", first_id)),
+            Hint::info(format!(
+                "Claim first parallel-safe artifact {}",
+                display_label(first_id)
+            ))
+            .with_action(format!("forgeplan claim {} --agent agent-0", first_id)),
         );
     } else {
         hint_list.push(
@@ -181,9 +204,26 @@ pub async fn run(
     }
 
     if json {
+        let presentation_buckets: Vec<Vec<String>> = plan
+            .buckets
+            .iter()
+            .map(|bucket| bucket.iter().map(|key| display_id(key).to_string()).collect())
+            .collect();
+        let presentation_serial: Vec<_> = plan
+            .serial_queue
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "id": display_id(&entry.id),
+                    "canonical_key": entry.id,
+                    "reason": entry.reason,
+                })
+            })
+            .collect();
         let body = serde_json::json!({
-            "buckets": plan.buckets,
-            "serial_queue": plan.serial_queue,
+            "buckets": presentation_buckets,
+            "canonical_buckets": plan.buckets,
+            "serial_queue": presentation_serial,
             "reasoning": plan.reasoning,
             "generated_at": plan.generated_at,
             "agent_count": plan.agent_count,
@@ -216,7 +256,8 @@ pub async fn run(
         if bucket.is_empty() {
             println!("  agent {i}: (idle)");
         } else {
-            println!("  agent {i}: {}", bucket.join(", "));
+            let labels: Vec<_> = bucket.iter().map(|key| display_label(key)).collect();
+            println!("  agent {i}: {}", labels.join(", "));
         }
     }
 
@@ -230,7 +271,7 @@ pub async fn run(
         // so agents see the cause of deferral inline — no need to cross-
         // reference `reasoning[]`.
         for entry in &plan.serial_queue {
-            println!("  {}", entry.id);
+            println!("  {}", display_label(&entry.id));
             println!("    reason: {}", entry.reason);
         }
     }

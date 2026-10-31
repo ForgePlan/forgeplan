@@ -17,8 +17,7 @@ use bm25::{DefaultTokenizer, Document, LanguageMode, SearchEngineBuilder};
 
 /// BM25 index wrapping the `bm25` crate's SearchEngine.
 ///
-/// Built once per search from the full record corpus, then queried per-record.
-/// Uses String document IDs to match ArtifactRecord::id.
+/// Uses canonical keys as document IDs; display aliases may repeat.
 pub struct Bm25Index {
     /// The underlying search engine from the `bm25` crate.
     engine: bm25::SearchEngine<String>,
@@ -36,7 +35,7 @@ impl Bm25Index {
             .iter()
             .map(|r| {
                 let clean_body = strip_indexing_noise(&r.body);
-                Document::new(r.id.clone(), format!("{} {}", r.title, clean_body))
+                Document::new(r.canonical_key.clone(), format!("{} {}", r.title, clean_body))
             })
             .collect();
 
@@ -70,7 +69,7 @@ impl Bm25Index {
         let results = self.engine.search(query, usize::MAX);
         results
             .iter()
-            .find(|r| r.document.id == record.id)
+            .find(|r| r.document.id == record.canonical_key)
             .map(|r| r.score as f64)
             .unwrap_or(0.0)
     }
@@ -210,6 +209,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn shared_display_aliases_keep_independent_canonical_search_hits() {
+        let mut alpha = mk("PRD-001", "Alpha authentication", "alpha-only-token");
+        alpha.canonical_key = "prd-alpha-k11111111111111111111111111111111".into();
+        let mut beta = mk("PRD-001", "Beta authentication", "beta-only-token");
+        beta.canonical_key = "prd-beta-k22222222222222222222222222222222".into();
+        let records = vec![alpha, beta];
+        let index = Bm25Index::build(&records);
+
+        assert!(index.score(&records[0], "alpha-only-token") > 0.0);
+        assert!(index.score(&records[1], "beta-only-token") > 0.0);
+        let hits = index.search_scores("authentication", 10);
+        let keys: std::collections::BTreeSet<_> =
+            hits.into_iter().map(|(key, _)| key).collect();
+        assert_eq!(
+            keys,
+            [
+                "prd-alpha-k11111111111111111111111111111111".to_string(),
+                "prd-beta-k22222222222222222222222222222222".to_string(),
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
     fn mk(id: &str, title: &str, body: &str) -> ArtifactRecord {
         ArtifactRecord {
             canonical_key: id.to_string(),

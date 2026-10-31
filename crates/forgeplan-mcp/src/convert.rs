@@ -126,6 +126,7 @@ impl From<ArtifactRecord> for ArtifactRecordDto {
         let identity = identity_from_record(&r.id, &r.kind, &r.body);
         Self {
             id: r.id,
+            canonical_key: r.canonical_key,
             kind: r.kind,
             status: r.status,
             title: r.title,

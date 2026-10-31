@@ -69,6 +69,8 @@ pub struct ArtifactLinksDto {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactRecordDto {
     pub id: String,
+    /// Stable identity key, separate from the display alias in `id`.
+    pub canonical_key: String,
     pub kind: String,
     pub status: String,
     pub title: String,
@@ -152,6 +154,8 @@ pub struct NewArtifactResponse {
     // EXISTING FIELDS — order preserved for JSON-schema/back-compat
     // (CD-2 binding: pre-Phase-2.4 callers must keep working).
     pub id: String,
+    /// Stable identity key for the created document.
+    pub canonical_key: String,
     pub kind: String,
     pub title: String,
     pub filepath: String,
@@ -176,9 +180,8 @@ pub struct NewArtifactResponse {
     // practice (server.rs populates them from the augmented frontmatter),
     // but the optional shape leaves room for legacy import paths /
     // future tools that don't compute the identity triple up front.
-    /// Canonical slug (`prd-auth-system`) computed from kind+title at
-    /// create time. Used in commit `Refs:` lines and cross-artifact links
-    /// until the CI bot assigns a number on merge.
+    /// Canonical identity key stored in the document's `slug` frontmatter
+    /// field. Matches `canonical_key` and `id_canonical`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
     /// Local prediction at create time — `max(assigned)+1`. Drives the `?`

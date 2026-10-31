@@ -4586,24 +4586,56 @@ pub async fn get_pinned_artifact(
     .await?;
     let batches = table.query_batches().await?;
 
-    let wanted = key_or_id.to_lowercase();
-    for batch in &batches {
+    let mut candidates = Vec::new();
+    for (batch_index, batch) in batches.iter().enumerate() {
         for row in 0..batch.num_rows() {
             let key = pinned_artifact_string(batch, "canonical_key", row).unwrap_or_default();
-            let display = pinned_artifact_string(batch, "id", row);
-            if key.to_lowercase() != wanted
-                && display.as_deref().map(str::to_lowercase).as_deref() != Some(wanted.as_str())
-            {
+            let Some(display_id) = pinned_artifact_string(batch, "id", row) else {
                 continue;
-            }
-            return Ok(Some((
-                pinned_artifact_from_row(batch, row, key, display),
-                manifest.generation_id.clone(),
-                artifacts_version,
-            )));
+            };
+            let title = pinned_artifact_string(batch, "title", row).unwrap_or_default();
+            candidates.push((
+                crate::artifact::canonical_key::ArtifactCandidate {
+                    canonical_key: key,
+                    display_id,
+                    title,
+                    relative_path: std::path::PathBuf::new(),
+                },
+                batch_index,
+                row,
+            ));
         }
     }
-    Ok(None)
+    let resolver_candidates: Vec<_> = candidates
+        .iter()
+        .map(|(candidate, _, _)| candidate.clone())
+        .collect();
+    let Some(resolved) =
+        crate::artifact::canonical_key::resolve_artifact(key_or_id, &resolver_candidates)
+            .map_err(|error| ConstellationError::Io {
+                detail: error.to_string(),
+            })?
+    else {
+        return Ok(None);
+    };
+    let Some((_, batch_index, row)) = candidates
+        .iter()
+        .find(|(candidate, _, _)| candidate.canonical_key == resolved.identity.canonical_key)
+    else {
+        return Ok(None);
+    };
+    let batch = &batches[*batch_index];
+    let display = pinned_artifact_string(batch, "id", *row);
+    Ok(Some((
+        pinned_artifact_from_row(
+            batch,
+            *row,
+            resolved.identity.canonical_key,
+            display,
+        ),
+        manifest.generation_id.clone(),
+        artifacts_version,
+    )))
 }
 
 /// The inner object store the publisher's tracking store wraps.
@@ -5746,6 +5778,46 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn pinned_get_keeps_shared_aliases_ambiguous_and_keys_exact() {
+        resume_admission();
+        let tmp = linked_workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::write(
+            root.join("prds/PRD-003-alpha.md"),
+            "---\nid: PRD-001\nslug: prd-alpha-k11111111111111111111111111111111\n\
+             kind: prd\nstatus: active\ntitle: Alpha\n---\n\nAlpha body.\n",
+        )
+        .unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root);
+        let (published, _) = maintain_index(
+            &capability,
+            CaptureLimits::default(),
+            std::time::Instant::now() + std::time::Duration::from_secs(120),
+        )
+        .await
+        .unwrap();
+
+        let ambiguity = get_pinned_artifact(capability.index_root(), "PRD-001")
+            .await
+            .unwrap_err();
+        assert!(matches!(ambiguity, ConstellationError::Io { .. }));
+        let (alpha, _, _) = get_pinned_artifact(
+            capability.index_root(),
+            "prd-alpha-k11111111111111111111111111111111",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(alpha.title, "Alpha");
+        assert_eq!(alpha.canonical_key, "prd-alpha-k11111111111111111111111111111111");
+
+        let (_, _, _) = get_pinned_artifact(capability.index_root(), "ADR-002")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!published.descriptor.generation_id.is_empty());
+    }
     #[tokio::test]
     async fn bulk_artifacts_match_single_get_and_keep_the_supplied_native_snapshot() {
         fn assert_same_fields(expected: &PinnedArtifact, actual: &PinnedArtifact) {

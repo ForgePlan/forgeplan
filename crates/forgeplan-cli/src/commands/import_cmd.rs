@@ -129,50 +129,49 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             continue;
         }
 
-        // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — bulk resolve each id in
-        // the payload. Hand-edited JSON exports may carry slugs instead of
-        // display ids; resolve_id maps them onto the canonical DB form.
-        // Resolver returning None just means the id is novel — fall back
-        // to the raw input so the new artifact gets created as-is.
-        //
-        // On a migrated workspace the same question is asked of the
-        // canonical markdown through the file-first resolver, and the
-        // "does it already exist / what kind is it" answer comes from the
-        // same file — never from re-opening the retired legacy store.
-        let resolved_id: Option<String>;
-        let existing: Option<forgeplan_core::db::store::ArtifactRecord> = match &store {
+        let raw_body = art["body"].as_str().unwrap_or("");
+        let canonical_key = art["canonical_key"]
+            .as_str()
+            .or_else(|| art["slug"].as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| canonical_key_from_document(raw_id, raw_body));
+        let (existing, resolved_id): (
+            Option<forgeplan_core::db::store::ArtifactRecord>,
+            Option<String>,
+        ) = match &store {
             Some(store) => {
-                let canonical = store.resolve_id(raw_id).await?;
-                let id_owned: String;
-                let id: &str = if let Some(c) = canonical {
-                    id_owned = c;
-                    id_owned.as_str()
-                } else {
-                    raw_id
-                };
-                let existing = store.get_record(id).await?;
-                resolved_id = Some(id.to_string());
-                existing
+                let matches: Vec<_> = store
+                    .list_records(None)
+                    .await?
+                    .into_iter()
+                    .filter(|record| record.canonical_key == canonical_key)
+                    .collect();
+                if matches.len() > 1 {
+                    anyhow::bail!("Canonical key '{}' is claimed by multiple artifacts", canonical_key);
+                }
+                let existing = matches.into_iter().next();
+                let id = existing.as_ref().map(|record| record.id.clone());
+                (existing, id)
             }
-            None => match forgeplan_core::artifact::store::resolve_artifact_path(&ws, raw_id).await
-            {
-                Some(path) => {
-                    let content = tokio::fs::read_to_string(&path).await?;
-                    let (fm, _) =
-                        forgeplan_core::artifact::frontmatter::parse_frontmatter(&content)?;
-                    let canonical = fm
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(raw_id)
-                        .to_string();
-                    resolved_id = Some(canonical);
-                    Some(record_from_projection_file(raw_id, &content))
+            None => {
+                let documents =
+                    forgeplan_core::artifact::documents::workspace_candidates(&ws).await?;
+                let matches: Vec<_> = documents
+                    .into_iter()
+                    .filter(|document| document.canonical_key == canonical_key)
+                    .collect();
+                if matches.len() > 1 {
+                    anyhow::bail!("Canonical key '{}' is claimed by multiple artifacts", canonical_key);
                 }
-                None => {
-                    resolved_id = None;
-                    None
+                if let Some(document) = matches.into_iter().next() {
+                    let path = ws.join(&document.relative_path);
+                    let content = tokio::fs::read_to_string(path).await?;
+                    let record = record_from_projection_file(&document.display_id, &content);
+                    (Some(record), Some(document.display_id))
+                } else {
+                    (None, None)
                 }
-            },
+            }
         };
         let id: &str = resolved_id.as_deref().unwrap_or(raw_id);
 
@@ -210,7 +209,7 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             // and stops — the derived row retires on reconcile.
             projection::delete_artifact_with_projection(
                 &projection::MutationContext::new(&ws, &lock, store.as_ref()),
-                id,
+                &canonical_key,
             )
             .await?;
         }
@@ -272,9 +271,7 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
         };
 
         let new_artifact = NewArtifact {
-            // ADR-030: no minted key yet — the imported document declares no
-            // slug, so its canonical key is its display id.
-            canonical_key: id.to_string(),
+            canonical_key: canonical_key.clone(),
             id: id.to_string(),
             kind: kind_str.to_string(),
             status: final_status,

@@ -63,8 +63,8 @@ pub struct Claim {
     ///
     /// The sidecar file is named after this key, so two documents that share
     /// a display alias never share a claim. `None` for a claim written
-    /// before the key was recorded; such a file is named after the alias and
-    /// is migrated to its keyed name on the first read.
+    /// before the key was recorded; its legacy alias path is read only when
+    /// the workspace scan proves that alias has a unique owner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_key: Option<String>,
     /// Caller identity — typically `AgentIdentity::as_frontmatter_value()`
@@ -137,6 +137,8 @@ pub enum ClaimError {
     Io(#[from] std::io::Error),
     #[error("yaml error: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    #[error("artifact selector could not be resolved: {0}")]
+    Resolution(String),
 }
 
 /// Validate an artifact ID is safe for filesystem use.
@@ -314,8 +316,8 @@ async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// other's work. The canonical key is unique, so a claim named after the key
 /// belongs to exactly one document.
 ///
-/// A claim written before the key existed is named after the alias. It is
-/// still found — the first read renames it to its keyed name, in place.
+/// An alias-named file is read without mutation only after the workspace scan
+/// proves that the alias belongs to exactly one canonical key.
 #[derive(Debug, Clone)]
 #[must_use = "ClaimStore is a lightweight handle — bind it before calling methods"]
 pub struct ClaimStore {
@@ -350,9 +352,8 @@ impl ClaimStore {
     /// The claim file of a document, migrating a pre-key file to its keyed
     /// name.
     ///
-    /// A claim written before the key existed is named after the display
-    /// alias. The first read of such a file renames it to the keyed name,
-    /// in place, so the alias and the key address one and the same row.
+    /// Alias-named legacy files are read only when a complete scan proves the
+    /// alias has one owner. This read never migrates or renames sidecars.
     async fn sidecar_path_for(&self, canonical_key: &str, display_alias: &str) -> PathBuf {
         crate::artifact::sidecar::resolve_sidecar_path(
             &self.dir,
@@ -375,45 +376,27 @@ impl ClaimStore {
     ///
     /// An alias several documents share is refused: the claim would belong
     /// to one of them, and which one is not the store's decision.
+    /// Resolve a selector without failing open on an incomplete workspace.
     async fn resolve_identity(&self, selector: &str) -> Result<(String, String), ClaimError> {
         let fallback = || (selector.to_uppercase(), selector.to_string());
-        let candidates = match crate::artifact::documents::workspace_candidates(&self.root).await {
-            Ok(candidates) => candidates,
-            Err(error) => {
-                // The document set could not be read in full. A claim is
-                // advisory, so the store keeps the pre-key naming rather
-                // than refusing to record the caller's intent.
-                tracing::warn!(
-                    error = %error,
-                    "claim store could not read the workspace document set — \
-                     the claim is addressed by the selector as written"
-                );
-                return Ok(fallback());
-            }
-        };
+        let candidates = crate::artifact::documents::workspace_candidates(&self.root)
+            .await
+            .map_err(|error| ClaimError::Io(std::io::Error::other(error)))?;
         match crate::artifact::canonical_key::resolve_artifact(selector, &candidates) {
             Ok(Some(resolved)) => Ok((
                 resolved.identity.canonical_key,
                 resolved.identity.display_id,
             )),
-            // No document answers to the selector — a forward reference.
             Ok(None) => Ok(fallback()),
-            // The selector is not a usable reference at all.
             Err(crate::artifact::canonical_key::ResolveError::InvalidSelector { .. }) => {
                 Ok(fallback())
             }
-            // Several documents answer to the alias: the claim would belong
-            // to one of them, and which one is not the store's decision.
             Err(crate::artifact::canonical_key::ResolveError::Ambiguous { .. }) => {
                 Err(ClaimError::AmbiguousAlias {
                     selector: selector.to_string(),
                 })
             }
-            // A contested canonical key, or a document set that could not be
-            // read in full: both mean the workspace itself is inconsistent.
-            // The pre-key naming keeps the claim addressable while the
-            // workspace is repaired.
-            Err(_) => Ok(fallback()),
+            Err(problem) => Err(ClaimError::Resolution(problem.to_string())),
         }
     }
 
@@ -680,14 +663,13 @@ impl ClaimStore {
         Ok(self.list_active_with_stats().await?.0)
     }
 
-    /// Map view of `list_active` — keyed by claim ID uppercased. O(1)
-    /// lookups when joining against a large artifact graph (Inc 4
-    /// dispatcher needs `claims.get(id)` per artifact; iterating a Vec
-    /// would be `O(artifacts × claims)`).
+    /// Map view of `list_active`, keyed by canonical key for identity-safe
+    /// joins. Legacy claims without a stored key use their historical ID.
     pub async fn list_active_map(&self) -> Result<BTreeMap<String, Claim>, ClaimError> {
         let mut out = BTreeMap::new();
         for c in self.list_active().await? {
-            out.insert(c.id.clone(), c);
+            let key = c.canonical_key.clone().unwrap_or_else(|| c.id.clone());
+            out.insert(key, c);
         }
         Ok(out)
     }
@@ -735,68 +717,12 @@ impl ClaimStore {
                 }
             }
         }
-        self.migrate_legacy_claims(&mut out).await;
+        // Listing claims is read-only. Legacy migration must be performed by
+        // a locked owner-aware operation, never as a read side effect.
         out.sort_by_key(|c| c.expires_at);
         Ok((out, skipped))
     }
 
-    /// Rename the claims written before the key was recorded.
-    ///
-    /// A claim file written before the key existed is named after the
-    /// display alias. The first read moves it to the keyed name, in place,
-    /// so every later read finds it directly. A claim whose alias several
-    /// documents share is left alone: it belongs to no single document
-    /// until the workspace is repaired.
-    async fn migrate_legacy_claims(&self, claims: &mut [Claim]) {
-        if claims.iter().all(|c| c.canonical_key.is_some()) {
-            // Nothing to migrate — the common case, and the one that must
-            // not pay for reading the document set.
-            return;
-        }
-        let keys = self.alias_keys().await;
-        for claim in claims.iter_mut() {
-            if claim.canonical_key.is_some() {
-                continue;
-            }
-            let Some(key) = keys.get(&claim.id.to_uppercase()) else {
-                continue;
-            };
-            let legacy = self.dir.join(format!("{}.yaml", claim.id));
-            let keyed = self.path_for(key);
-            if legacy != keyed
-                && tokio::fs::try_exists(&legacy).await.unwrap_or(false)
-                && !tokio::fs::try_exists(&keyed).await.unwrap_or(false)
-            {
-                let _ = tokio::fs::rename(&legacy, &keyed).await;
-            }
-            claim.canonical_key = Some(key.clone());
-        }
-    }
-
-    /// The canonical key of the document each display alias names, when
-    /// exactly one document answers to it.
-    ///
-    /// An alias several documents share is left out: it names neither of
-    /// them, and a claim filed under it would belong to no single
-    /// document.
-    async fn alias_keys(&self) -> BTreeMap<String, String> {
-        let Ok(candidates) = crate::artifact::documents::workspace_candidates(&self.root).await
-        else {
-            return BTreeMap::new();
-        };
-        let mut keys: BTreeMap<String, String> = BTreeMap::new();
-        for candidate in candidates {
-            let alias = candidate.display_id.to_uppercase();
-            if keys.contains_key(&alias) {
-                keys.insert(alias, String::new());
-            } else {
-                keys.insert(alias, candidate.canonical_key.clone());
-            }
-        }
-        keys.into_iter()
-            .filter(|(_, key)| !key.is_empty())
-            .collect()
-    }
 }
 
 /// Read a file with the MAX_CLAIM_FILE_BYTES cap enforced. Returns
@@ -1291,6 +1217,71 @@ mod tests {
         assert!(map.contains_key("PRD-301"));
         assert_eq!(map["PRD-300"].agent_id, "a/1");
     }
+    #[tokio::test]
+    async fn conflicting_canonical_keys_refuse_claim_without_writing_sidecars() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = ws(&tmp);
+        let prds = workspace.join("prds");
+        tokio::fs::create_dir_all(&prds).await.unwrap();
+        for (name, id) in [("first.md", "PRD-001"), ("second.md", "PRD-002")] {
+            tokio::fs::write(
+                prds.join(name),
+                format!(
+                    "---\nid: {id}\nslug: repeated-key\ntitle: {id}\nkind: prd\n---\nbody\n"
+                ),
+            )
+            .await
+            .unwrap();
+        }
+        let store = ClaimStore::new(workspace.clone());
+
+        let error = store
+            .claim("repeated-key", "agent", DEFAULT_TTL, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ClaimError::Resolution(_)));
+        assert!(!workspace.join("claims").exists());
+    }
+
+    #[tokio::test]
+    async fn incomplete_document_scan_refuses_claim_without_writing_sidecars() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = ws(&tmp);
+        let prds = workspace.join("prds");
+        tokio::fs::create_dir_all(&prds).await.unwrap();
+        tokio::fs::write(prds.join("broken.md"), "not frontmatter")
+            .await
+            .unwrap();
+        let store = ClaimStore::new(workspace.clone());
+
+        let error = store
+            .claim("PRD-001", "agent", DEFAULT_TTL, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ClaimError::Io(_)));
+        assert!(!workspace.join("claims").exists());
+    }
+
+    #[tokio::test]
+    async fn list_active_map_keeps_shared_alias_claims_by_canonical_key() {
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        let alpha = "prd-alpha-k11111111111111111111111111111111";
+        let beta = "prd-beta-k22222222222222222222222222222222";
+        store
+            .claim_for(alpha, "PRD-001", "alpha-agent", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        store
+            .claim_for(beta, "PRD-001", "beta-agent", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+
+        let map = store.list_active_map().await.unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[alpha].agent_id, "alpha-agent");
+        assert_eq!(map[beta].agent_id, "beta-agent");
+    }
 
     #[tokio::test]
     async fn atomic_write_leaves_no_temp_files_on_success() {
@@ -1565,7 +1556,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_legacy_claim_file_is_found_and_migrated() {
+    async fn a_legacy_claim_file_is_read_without_migration() {
         let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
         let claims = ws.join("claims");
         std::fs::create_dir_all(&claims).unwrap();
@@ -1590,15 +1581,12 @@ mod tests {
             "the claim names the document it belongs to"
         );
 
-        assert!(
-            claims.join("prd-auth-system.yaml").exists(),
-            "the first read moved the file to its keyed name"
-        );
-        assert!(!claims.join("PRD-001.yaml").exists());
+        assert!(!claims.join("prd-auth-system.yaml").exists());
+        assert!(claims.join("PRD-001.yaml").exists());
     }
 
     #[tokio::test]
-    async fn a_legacy_claim_file_is_found_by_its_key_too() {
+    async fn a_legacy_claim_file_is_found_by_its_key_without_migration() {
         let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
         let claims = ws.join("claims");
         std::fs::create_dir_all(&claims).unwrap();
@@ -1616,8 +1604,8 @@ mod tests {
             .unwrap()
             .expect("the legacy claim is found under the key too");
         assert_eq!(found.agent_id, "old/1");
-        assert!(claims.join("prd-auth-system.yaml").exists());
-        assert!(!claims.join("PRD-001.yaml").exists());
+        assert!(!claims.join("prd-auth-system.yaml").exists());
+        assert!(claims.join("PRD-001.yaml").exists());
     }
 
     #[tokio::test]

@@ -14,7 +14,9 @@ use lancedb::query::{ExecutableQuery, QueryBase, Select};
 
 use crate::projection::MutationError;
 
-use crate::artifact::canonical_key::{ArtifactCandidate, canonical_key_from_document, resolve_artifact};
+use crate::artifact::canonical_key::{
+    ArtifactCandidate, canonical_key_from_document, resolve_artifact,
+};
 use crate::artifact::store::ArtifactSummary;
 use crate::changelog::ChangeLogEntry;
 use crate::db::auxiliary::verify_table_manifests;
@@ -1295,22 +1297,15 @@ impl LanceStore {
     /// agree on which document a selector names — including the rule that a
     /// numeric-shaped key does not outrank a competing display alias.
     ///
-    /// `Ok(None)` means the selector names no row **or** names more than
-    /// one. An ambiguity is never resolved into a winner: the caller gets
-    /// "not found", and the reason is logged.
+    /// `Ok(None)` means that no row matches. Resolver refusals remain errors
+    /// carrying their `ResolveError` type, so ambiguity and key collisions
+    /// cannot be reported as absence.
     pub async fn resolve_canonical_key(&self, selector: &str) -> anyhow::Result<Option<String>> {
         let candidates = self.alias_candidates().await?;
         match resolve_artifact(selector, &candidates) {
             Ok(Some(resolved)) => Ok(Some(resolved.identity.canonical_key)),
             Ok(None) => Ok(None),
-            Err(problem) => {
-                tracing::warn!(
-                    selector = %selector,
-                    problem = ?problem,
-                    "selector does not name exactly one artifact; no row was chosen"
-                );
-                Ok(None)
-            }
+            Err(problem) => Err(anyhow::Error::new(problem)),
         }
     }
 
@@ -1326,14 +1321,7 @@ impl LanceStore {
         match resolve_artifact(selector, &candidates) {
             Ok(Some(resolved)) => Ok(Some(resolved.identity.display_id)),
             Ok(None) => Ok(None),
-            Err(problem) => {
-                tracing::warn!(
-                    selector = %selector,
-                    problem = ?problem,
-                    "selector does not name exactly one artifact; no description was chosen"
-                );
-                Ok(None)
-            }
+            Err(problem) => Err(anyhow::Error::new(problem)),
         }
     }
 
@@ -5666,11 +5654,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            store.resolve_canonical_key("PRD-001").await.unwrap(),
-            None,
-            "an alias that names two rows must not resolve to a winner"
-        );
+        let error = store.resolve_canonical_key("PRD-001").await.unwrap_err();
+        let refusal = error
+            .downcast_ref::<crate::artifact::canonical_key::ResolveError>()
+            .expect("the resolver refusal remains typed in the error chain");
+        match refusal {
+            crate::artifact::canonical_key::ResolveError::Ambiguous { candidates, .. } => {
+                assert_eq!(candidates.len(), 2)
+            }
+            other => panic!("expected an ambiguity refusal, got {other:?}"),
+        }
         assert_eq!(
             store.resolve_canonical_key("prd-beta").await.unwrap(),
             Some("prd-beta".to_string()),

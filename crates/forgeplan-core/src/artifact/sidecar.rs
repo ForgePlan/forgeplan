@@ -35,9 +35,9 @@
 //!
 //! A sidecar written before the key existed is named after the display alias,
 //! and one written after the key existed but before the key was escaped is
-//! named after the key itself. Both are still found — see
-//! [`resolve_sidecar_path`], which migrates the first one it finds to the
-//! keyed name.
+//! named after the key itself. Both are still found when ownership is clear:
+//! [`resolve_sidecar_path`] reads an alias-named file only after a complete
+//! workspace scan proves the alias has a unique owner. Reads never migrate it.
 
 use std::path::{Path, PathBuf};
 
@@ -109,18 +109,12 @@ pub fn legacy_sidecar_paths(
         .collect()
 }
 
-/// The sidecar of one document, migrating a pre-key file to its keyed name.
+/// Locate a sidecar without mutating the workspace.
 ///
-/// The keyed name wins. When no file is there, the pre-key names are tried
-/// in order and the first one found is renamed to the keyed name — so the
-/// first read of an old workspace migrates the file in place, and every
-/// later read finds it directly.
-///
-/// The returned path is the file that holds the document's sidecar *right
-/// now*: the keyed path when it exists (or when a pre-key file was
-/// migrated to it), and the pre-key path itself when the rename could not
-/// be performed. A caller that writes uses [`sidecar_path`] — the keyed
-/// path — so a failed rename never loses the state.
+/// Reads may discover a legacy file, but they must not migrate it: migration
+/// needs the workspace mutation lock and a complete identity revalidation.
+/// Alias-named files are deliberately not attributed here because an exact
+/// key match does not prove that the alias has only one owner.
 pub async fn resolve_sidecar_path(
     dir: &Path,
     canonical_key: &str,
@@ -128,22 +122,24 @@ pub async fn resolve_sidecar_path(
     extension: &str,
 ) -> std::io::Result<PathBuf> {
     let keyed = sidecar_path(dir, canonical_key, extension);
-    if tokio::fs::try_exists(&keyed).await.unwrap_or(false) {
+    if tokio::fs::try_exists(&keyed).await? {
         return Ok(keyed);
     }
-    for legacy in legacy_sidecar_paths(dir, canonical_key, display_alias, extension) {
-        if legacy == keyed {
-            continue;
-        }
-        if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
-            // The keyed name is free (checked above), so the rename cannot
-            // clobber a file.
-            return match tokio::fs::rename(&legacy, &keyed).await {
-                Ok(()) => Ok(keyed),
-                // The rename failed — the pre-key file stays where it is and
-                // is still found on the next read.
-                Err(_) => Ok(legacy),
-            };
+
+    // Alias-named legacy state is readable only when the full workspace scan
+    // proves that this alias has exactly one owner, and that owner is this key.
+    let workspace = dir.parent().unwrap_or(dir);
+    if let Ok(candidates) = crate::artifact::documents::workspace_candidates(workspace).await {
+        let owners: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| candidate.display_id.eq_ignore_ascii_case(display_alias))
+            .collect();
+        if owners.len() == 1 && owners[0].canonical_key == canonical_key {
+            for legacy in legacy_sidecar_paths(dir, canonical_key, display_alias, extension) {
+                if legacy != keyed && tokio::fs::try_exists(&legacy).await? {
+                    return Ok(legacy);
+                }
+            }
         }
     }
     Ok(keyed)
@@ -226,10 +222,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pre_key_file_is_found_and_migrated_to_its_keyed_name() {
+    async fn a_read_uses_unique_alias_state_without_moving_it() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join("claims");
         tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::create_dir_all(tmp.path().join("prds"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            tmp.path().join("prds/alpha.md"),
+            "---\nid: PRD-001\nslug: prd-auth-system\ntitle: Alpha\nkind: prd\n---\n",
+        )
+        .await
+        .unwrap();
         tokio::fs::write(dir.join("PRD-001.yaml"), "legacy")
             .await
             .unwrap();
@@ -237,13 +242,43 @@ mod tests {
         let path = resolve_sidecar_path(&dir, "prd-auth-system", "PRD-001", "yaml")
             .await
             .unwrap();
-        assert_eq!(path, sidecar_path(&dir, "prd-auth-system", "yaml"));
-        assert!(dir.join("prd-auth-system.yaml").exists());
-        assert!(!dir.join("PRD-001.yaml").exists());
-        assert_eq!(
-            tokio::fs::read_to_string(&path).await.unwrap(),
-            "legacy".to_string()
-        );
+        assert_eq!(path, dir.join("PRD-001.yaml"));
+        assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), "legacy");
+        assert!(!sidecar_path(&dir, "prd-auth-system", "yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn a_shared_alias_sidecar_is_not_assigned_to_either_key() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("claims");
+        let prds = tmp.path().join("prds");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::create_dir_all(&prds).await.unwrap();
+        for (filename, slug) in [
+            ("alpha.md", "prd-alpha-k11111111111111111111111111111111"),
+            ("beta.md", "prd-beta-k22222222222222222222222222222222"),
+        ] {
+            tokio::fs::write(
+                prds.join(filename),
+                format!("---\nid: PRD-001\nslug: {slug}\ntitle: {slug}\nkind: prd\n---\n"),
+            )
+            .await
+            .unwrap();
+        }
+        let legacy = dir.join("PRD-001.yaml");
+        tokio::fs::write(&legacy, "shared legacy state").await.unwrap();
+
+        for key in [
+            "prd-alpha-k11111111111111111111111111111111",
+            "prd-beta-k22222222222222222222222222222222",
+        ] {
+            let resolved = resolve_sidecar_path(&dir, key, "PRD-001", "yaml")
+                .await
+                .unwrap();
+            assert_eq!(resolved, sidecar_path(&dir, key, "yaml"));
+            assert!(!resolved.exists());
+        }
+        assert_eq!(tokio::fs::read_to_string(legacy).await.unwrap(), "shared legacy state");
     }
 
     #[tokio::test]

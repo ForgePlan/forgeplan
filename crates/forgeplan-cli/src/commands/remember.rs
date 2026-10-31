@@ -1,8 +1,7 @@
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::artifact::canonical_key::canonical_key_from_document;
-use forgeplan_core::artifact::types::slugify;
+use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
 use forgeplan_core::git::author::resolve_author;
 use forgeplan_core::hints::{self, Hint};
@@ -34,11 +33,6 @@ pub async fn run(
 async fn run_remember(text: &str, category: &str) -> Result<()> {
     let (workspace, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
-    // Generate slug from first 50 chars
-    let slug_source: String = text.chars().take(50).collect();
-    let slug = slugify(&slug_source);
-    let id = format!("mem-{}", slug);
-
     // Title = first 80 chars
     let title: String = text.chars().take(80).collect();
 
@@ -60,43 +54,43 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
     // way the previous unquoted `author: cli` line would have.
     let author = resolve_author(&workspace, None).await;
 
-    let body = format!(
-        "---\nid: \"{}\"\nkind: memory\ncategory: {}\nstatus: active\ndepth: tactical\ntitle: \"{}\"\ncreated: {}\nauthor: \"{}\"\n---\n\n{}",
-        id,
-        category,
-        title.replace('"', "\\\""),
-        now,
-        author,
-        text
-    );
-
-    // Create in LanceDB
-    let artifact = NewArtifact {
-        // ADR-030: the canonical key of a document is the slug its
-        // frontmatter declares, and its display id when it declares none.
-        canonical_key: canonical_key_from_document(&id, &body),
-        id: id.clone(),
-        kind: "memory".to_string(),
-        status: "active".to_string(),
-        title: title.clone(),
-        body: body.clone(),
-        depth: "tactical".to_string(),
-        // Same value as the frontmatter above — single resolution, no drift.
-        author: Some(author.clone()),
-        parent_epic: None,
-        valid_until: None,
-        // C1: memory artifacts have no tags at creation; users add via `forgeplan tag`.
-        tags: Vec::new(),
+    let build = |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
+        let body = format!(
+            "---\nid: \"{}\"\nslug: {}\nkind: memory\ncategory: {}\nstatus: active\ndepth: tactical\ntitle: \"{}\"\ncreated: {}\nauthor: \"{}\"\n---\n\n{}",
+            id,
+            canonical_key,
+            category,
+            title.replace('"', "\\\""),
+            now,
+            author,
+            text
+        );
+        Ok(NewArtifact {
+            canonical_key: canonical_key.to_string(),
+            id: id.to_string(),
+            kind: "memory".to_string(),
+            status: "active".to_string(),
+            title: title.clone(),
+            body,
+            depth: "tactical".to_string(),
+            author: Some(author.clone()),
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        })
     };
-    // PRD-073 file-first: helper writes file first, then syncs to LanceDB.
-    // On a constellation-migrated workspace the same helper is called with a
-    // `None` sink: the canonical markdown write IS the mutation and the
-    // reconcile pass below publishes the derived row.
-    projection::create_artifact_with_projection(
-        &projection::MutationContext::new(&workspace, &lock, store.as_ref()),
-        &artifact,
+    let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+        &workspace,
+        &lock,
+        store.as_ref(),
+        &ArtifactKind::Memory,
+        3,
+        &title,
+        &build,
     )
     .await?;
+    let id = created.id;
+    let canonical_key = created.canonical_key;
 
     if store.is_none() {
         common::note_constellation_owns_index();
@@ -107,6 +101,7 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
     }
 
     println!("  Remembered: {} — \"{}\"", style(&id).bold(), title);
+    println!("  Key: {}", canonical_key);
 
     // PRD-071: list memories so the agent can immediately confirm storage
     // or chain into recall.

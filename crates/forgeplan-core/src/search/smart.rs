@@ -24,7 +24,10 @@ pub const GRAPH_EXPANSION_MAX_PER_RESULT: usize = 3;
 /// A search result with combined score and signal breakdown.
 #[derive(Debug, Clone)]
 pub struct SmartSearchResult {
+    /// Display alias kept for user-facing output.
     pub id: String,
+    /// Stable identity used for joins, deduplication and follow-up selection.
+    pub canonical_key: String,
     pub title: String,
     pub kind: String,
     pub status: String,
@@ -142,7 +145,10 @@ pub fn smart_search(
         .iter()
         .filter(|r| filter.map(|f| f.matches(r)).unwrap_or(true))
         .filter_map(|record| {
-            let raw_bm25 = bm25_scores.get(&record.id).copied().unwrap_or(0.0);
+            let raw_bm25 = bm25_scores
+                .get(&record.canonical_key)
+                .copied()
+                .unwrap_or(0.0);
             let bm25_norm = Bm25Index::normalize(raw_bm25);
             // PROB-030 fix: BM25 is token-based — queries like "auth" don't
             // match the "authentication" token. Users expect grep-like prefix
@@ -157,7 +163,7 @@ pub fn smart_search(
                 .copied()
                 .unwrap_or(0.0);
             let centrality = graph
-                .map(|g| g.degree_centrality(&record.id))
+                .map(|g| g.degree_centrality(&record.canonical_key))
                 .unwrap_or(0.0);
             let is_active = record.status.eq_ignore_ascii_case("active");
             let score = combined_score(
@@ -171,6 +177,7 @@ pub fn smart_search(
             if score > 0.0 {
                 Some(SmartSearchResult {
                     id: record.id.clone(),
+                    canonical_key: record.canonical_key.clone(),
                     title: record.title.clone(),
                     kind: record.kind.clone(),
                     status: record.status.clone(),
@@ -192,7 +199,7 @@ pub fn smart_search(
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.id.cmp(&b.id))
+            .then(a.canonical_key.cmp(&b.canonical_key))
     });
     results.truncate(limit);
 
@@ -213,9 +220,8 @@ pub fn smart_search(
 
 /// Expand top results with 1-hop graph neighbors.
 ///
-/// For each top result we look up its neighbors in `graph`, attach decayed
-/// scores, dedupe against direct hits, and merge. Direct hits always win
-/// over expansion hits with the same ID.
+/// For each top result, look up its neighbors, attach decayed scores, and
+/// deduplicate by canonical key. Direct hits always win for the same document.
 pub fn expand_with_graph_neighbors(
     top_results: &[SmartSearchResult],
     graph: &KnowledgeGraph,
@@ -224,35 +230,28 @@ pub fn expand_with_graph_neighbors(
     max_expansions_per_result: usize,
     limit: usize,
 ) -> Vec<SmartSearchResult> {
-    let mut by_id: HashMap<String, SmartSearchResult> = HashMap::new();
-    for r in top_results {
-        by_id.insert(r.id.clone(), r.clone());
+    let mut by_key: HashMap<String, SmartSearchResult> = HashMap::new();
+    for result in top_results {
+        by_key.insert(result.canonical_key.clone(), result.clone());
     }
-    let direct_ids: HashSet<String> = top_results.iter().map(|r| r.id.clone()).collect();
-
-    // The graph is keyed by the canonical key (ADR-030); the results carry the
-    // display id. Both directions are resolved here, so the neighbour is looked
-    // up by its key and reported by its display id.
-    let key_by_id: HashMap<&str, &str> = all_records
+    let direct_keys: HashSet<String> = top_results
         .iter()
-        .map(|r| (r.id.as_str(), r.canonical_key.as_str()))
+        .map(|result| result.canonical_key.clone())
         .collect();
+
     let display_by_key: HashMap<&str, &str> = all_records
         .iter()
-        .map(|r| (r.canonical_key.as_str(), r.id.as_str()))
+        .map(|record| (record.canonical_key.as_str(), record.id.as_str()))
         .collect();
 
     // Index records by canonical key for fast lookup.
     let record_by_key: HashMap<&str, &ArtifactRecord> = all_records
         .iter()
-        .map(|r| (r.canonical_key.as_str(), r))
+        .map(|record| (record.canonical_key.as_str(), record))
         .collect();
 
     for parent in top_results {
-        let Some(parent_key) = key_by_id.get(parent.id.as_str()).copied() else {
-            continue;
-        };
-        let neighbors = graph.neighbors(parent_key);
+        let neighbors = graph.neighbors(&parent.canonical_key);
         let mut added = 0usize;
         for n in neighbors {
             if added >= max_expansions_per_result {
@@ -265,12 +264,12 @@ pub fn expand_with_graph_neighbors(
                 .copied()
                 .unwrap_or(n.id.as_str())
                 .to_string();
-            if direct_ids.contains(&display_id) {
+            if direct_keys.contains(&n.id) {
                 continue; // direct hit wins
             }
             let neighbor_score = parent.score * decay_factor;
             // Skip if we already have this neighbor with a higher score.
-            if let Some(existing) = by_id.get(&display_id)
+            if let Some(existing) = by_key.get(&n.id)
                 && existing.score >= neighbor_score
             {
                 continue;
@@ -281,7 +280,8 @@ pub fn expand_with_graph_neighbors(
                 None => (n.id.clone(), n.status.clone(), 0.0),
             };
             let entry = SmartSearchResult {
-                id: display_id.clone(),
+                id: display_id,
+                canonical_key: n.id.clone(),
                 title,
                 kind: n.kind.clone(),
                 status,
@@ -293,17 +293,17 @@ pub fn expand_with_graph_neighbors(
                 graph_centrality: graph.degree_centrality(&n.id),
                 expanded_from: Some(parent.id.clone()),
             };
-            by_id.insert(display_id, entry);
+            by_key.insert(n.id.clone(), entry);
             added += 1;
         }
     }
 
-    let mut merged: Vec<SmartSearchResult> = by_id.into_values().collect();
+    let mut merged: Vec<SmartSearchResult> = by_key.into_values().collect();
     merged.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.id.cmp(&b.id))
+            .then(a.canonical_key.cmp(&b.canonical_key))
     });
     merged.truncate(limit);
     merged
@@ -333,6 +333,28 @@ mod tests {
             body_hash: None,
             embedding: None,
         }
+    }
+
+    #[test]
+    fn smart_search_keeps_shared_alias_hits_separate_by_key() {
+        let mut alpha = make_record("PRD-001", "Authentication alpha", "", "active", 0.0);
+        alpha.canonical_key = "prd-alpha-k11111111111111111111111111111111".into();
+        let mut beta = make_record("PRD-001", "Authentication beta", "", "active", 0.0);
+        beta.canonical_key = "prd-beta-k22222222222222222222222222222222".into();
+
+        let hits = smart_search(&[alpha, beta], "authentication", None, None, None, 10);
+        assert_eq!(hits.len(), 2);
+        let keys: std::collections::BTreeSet<_> =
+            hits.into_iter().map(|hit| hit.canonical_key).collect();
+        assert_eq!(
+            keys,
+            [
+                "prd-alpha-k11111111111111111111111111111111".to_string(),
+                "prd-beta-k22222222222222222222222222222222".to_string(),
+            ]
+            .into_iter()
+            .collect()
+        );
     }
 
     // ── keyword_score ───────────────────────────────────────────────

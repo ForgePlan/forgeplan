@@ -10,9 +10,9 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const AUTHOR: &str = "Ada Lovelace <ada@example.invalid>";
-const ALPHA: &str = "mem-alpha-postgresql-bodyneedle";
-const BETA: &str = "mem-beta-sqlite-bodyneedle";
-const GAMMA: &str = "mem-gamma-read-only";
+const ALPHA: &str = "MEM-001";
+const BETA: &str = "MEM-002";
+const GAMMA: &str = "MEM-003";
 
 struct Workspace {
     _temp: TempDir,
@@ -275,7 +275,7 @@ fn remember_listing_keeps_id_order_columns_counts_and_author_shortening() {
         }
         let rows: Vec<_> = listed
             .lines()
-            .filter(|line| line.starts_with("mem-"))
+            .filter(|line| line.starts_with("MEM-"))
             .collect();
         assert_eq!(rows.len(), 3, "{listed}");
         for (row, (id, category, text)) in rows.iter().zip([
@@ -314,7 +314,7 @@ fn remember_recall_forget_round_trip_keeps_literal_body_and_consumer_fields() {
             .split_once(" — ")
             .unwrap()
             .0;
-        assert!(id.starts_with("mem-"), "{remembered}");
+        assert!(id.starts_with("MEM-"), "{remembered}");
         let files: Vec<_> = std::fs::read_dir(workspace.ws().join("memory"))
             .unwrap()
             .map(|entry| entry.unwrap().path())

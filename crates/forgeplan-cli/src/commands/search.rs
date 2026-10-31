@@ -164,17 +164,14 @@ async fn run_constellation(
         let mut rows = Vec::with_capacity(outcome.hits.len().min(limit));
         for hit in outcome.hits.into_iter().take(limit) {
             let key = hit.parent_key.as_deref().unwrap_or(&hit.canonical_key);
-            let resolved = read
-                .resolve_id(key)
-                .ok_or_else(|| anyhow::anyhow!("Search hit {key} has no captured identity"))?;
             let record = read
-                .get_record(&resolved)
+                .get_record_by_key(key)
                 .ok_or_else(|| anyhow::anyhow!("Search hit {key} has no captured artifact"))?;
             rows.push(serde_json::json!({
                 "id": record.id, "title": record.title, "kind": record.kind,
                 "status": record.status, "similarity": hit.similarity,
                 "score": hit.similarity, "distance": 1.0 - hit.similarity,
-                "canonical_key": hit.canonical_key, "document_key": key,
+                "canonical_key": record.canonical_key, "document_key": key,
                 "mode": "semantic",
             }));
         }
@@ -334,6 +331,7 @@ async fn run_keyword(
             .map(|r| {
                 serde_json::json!({
                     "id": r.id,
+                    "canonical_key": r.canonical_key,
                     "kind": r.kind,
                     "status": r.status,
                     "title": r.title,
@@ -492,6 +490,7 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
                 .map(|h| {
                     serde_json::json!({
                         "id": h.record.id,
+                        "canonical_key": h.record.canonical_key,
                         "kind": h.record.kind,
                         "status": h.record.status,
                         "title": h.record.title,
@@ -605,6 +604,34 @@ async fn run_smart(
         }
         None => get_semantic_scores(store.as_ref().expect("legacy source was opened"), query).await,
     };
+    let semantic_scores = match (read, semantic_scores) {
+        (None, Some(scores)) => {
+            let mut key_by_alias: std::collections::HashMap<&str, Option<&str>> =
+                std::collections::HashMap::with_capacity(records.len());
+            for record in records {
+                match key_by_alias.entry(record.id.as_str()) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(Some(record.canonical_key.as_str()));
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        entry.insert(None);
+                    }
+                }
+            }
+            Some(
+                scores
+                    .into_iter()
+                    .filter_map(|(alias, score)| {
+                        key_by_alias
+                            .get(alias.as_str())
+                            .and_then(|key| key.map(|key| (key.to_string(), score)))
+                    })
+                    .collect(),
+            )
+        }
+        (_, scores) => scores,
+    };
+
 
     // Build knowledge graph for centrality booster + neighbor expansion.
     // --no-expand disables expansion (graph passed as None) AND drops the
@@ -619,9 +646,18 @@ async fn run_smart(
             .ok()
     };
 
-    // Run smart search with composite filter pushed down into core.
+    // The core scorer currently uses its `id` field as the result-map key.
+    // Give it canonical identities so shared display aliases remain separate.
+    let keyed_records: Vec<_> = records
+        .iter()
+        .cloned()
+        .map(|mut record| {
+            record.id.clone_from(&record.canonical_key);
+            record
+        })
+        .collect();
     let results = smart::smart_search(
-        records,
+        &keyed_records,
         query,
         graph.as_ref(),
         semantic_scores.as_ref(),
@@ -659,8 +695,14 @@ async fn run_smart(
         let json_data: Vec<_> = results
             .iter()
             .map(|r| {
+                let display_id = records
+                    .iter()
+                    .find(|record| record.canonical_key == r.id)
+                    .map(|record| record.id.as_str())
+                    .unwrap_or(&r.id);
                 serde_json::json!({
-                    "id": r.id,
+                    "id": display_id,
+                    "canonical_key": r.id,
                     "kind": r.kind,
                     "status": r.status,
                     "title": r.title,
@@ -689,6 +731,11 @@ async fn run_smart(
             query
         );
         for r in &results {
+            let display_id = records
+                .iter()
+                .find(|record| record.canonical_key == r.id)
+                .map(|record| record.id.as_str())
+                .unwrap_or(&r.id);
             // PROB-032 fix: pre-fix displayed `r.keyword_score` (substring
             // match) but `combined_score` actually uses
             // `max(bm25_score, keyword_score)`. When a query matched via BM25
@@ -708,7 +755,7 @@ async fn run_smart(
             println!(
                 "  {:.2}  {} [{}|{}] \"{}\"",
                 r.score,
-                r.id,
+                display_id,
                 r.kind,
                 r.status,
                 sanitize_for_hint(&r.title)

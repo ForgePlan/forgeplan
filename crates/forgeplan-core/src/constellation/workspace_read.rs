@@ -411,6 +411,31 @@ impl WorkspaceRead {
     /// A partial document set answers nothing: a read that could not see every
     /// document cannot say which of them a name belongs to.
     pub fn resolve_artifact(&self, input: &str) -> Result<Option<ResolvedArtifact>, ResolveError> {
+        let contested: Vec<_> = self
+            .captured
+            .unusable
+            .iter()
+            .filter(|source| {
+                source.code == super::capture::DiagnosticCode::IdentityCollision
+                    && source
+                        .canonical_key
+                        .as_deref()
+                        .is_some_and(|key| key.eq_ignore_ascii_case(input.trim()))
+            })
+            .collect();
+        if contested.len() > 1 {
+            let key = input.trim().to_string();
+            let candidates = contested
+                .into_iter()
+                .map(|source| ArtifactCandidate {
+                    canonical_key: source.canonical_key.clone().unwrap_or_default(),
+                    display_id: String::new(),
+                    title: String::new(),
+                    relative_path: PathBuf::from(&source.relative_path),
+                })
+                .collect();
+            return Err(ResolveError::ConflictingCanonicalKey { key, candidates });
+        }
         if !self.captured.is_complete() {
             return Err(ResolveError::IncompleteCapture {
                 message: self.incomplete_capture_message(),

@@ -17,9 +17,7 @@ use forgeplan_core::artifact::frontmatter::{
     Frontmatter, augment_frontmatter_with_id_fields, parse_frontmatter,
 };
 use forgeplan_core::artifact::identity::AgentIdentity;
-use forgeplan_core::artifact::types::{
-    ArtifactKind, Mode, render_display_id, slug_from_kind_title,
-};
+use forgeplan_core::artifact::types::{ArtifactKind, Mode, render_display_id};
 use forgeplan_core::db::store::{ArtifactFilter, ArtifactRecord, LanceStore, NewArtifact};
 use forgeplan_core::estimate::{
     calculator, confidence, domain, extractor, overrides, scorer, types::*,
@@ -241,7 +239,7 @@ impl ReadSource {
 
     /// Resolve an artifact reference to the one document it names.
     ///
-    /// `Ok(Some(display_id))` — exactly one document answers.
+    /// `Ok(Some(canonical_key))` — exactly one document answers.
     /// `Ok(None)` — no document answers: a plain miss, which the caller
     /// words with its own remediation.
     /// `Err(tool_error)` — the reference was REFUSED: an ambiguity, a
@@ -263,7 +261,7 @@ impl ReadSource {
             .map_err(|e| safe_err_result("resolve reference: ", e))?;
         match resolution {
             crate::convert::Resolution::Found(found) => {
-                Ok(Some(found.identity.display_id))
+                Ok(Some(found.identity.canonical_key))
             }
             crate::convert::Resolution::NotFound => Ok(None),
             other => Err(resolution_error(input, &other)),
@@ -3225,19 +3223,12 @@ impl ForgeplanServer {
         };
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
-        let slug = slug_from_kind_title(&artifact_kind, &p.title).unwrap_or_else(|_| {
-            format!(
-                "{}-document",
-                artifact_kind.prefix().trim_end_matches('-')
-            )
-        });
 
         // PROB-067 build closure: re-rendered for each retry attempt.
         let title_owned = p.title.clone();
         let today_owned = today.clone();
         let template_key_owned = template_key.to_string();
         let template_owned: String = template.to_string();
-        let slug_owned = slug.clone();
         let artifact_kind_owned = artifact_kind.clone();
         let build = move |id: &str, number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
             let nnn = id
@@ -3255,7 +3246,7 @@ impl ForgeplanServer {
             vars.insert("Title".into(), title_owned.clone());
             let mut rendered = render_template(&template_owned, &vars);
             rendered = rendered.replace("YYYY-MM-DD", &today_owned);
-            rendered = augment_frontmatter_with_id_fields(&rendered, &slug_owned, number)
+            rendered = augment_frontmatter_with_id_fields(&rendered, canonical_key, number)
                 .map_err(|e| anyhow::anyhow!("failed to augment frontmatter for {id}: {e}"))?;
             let heading_pattern = format!("# {prefix}-{nnn}: ");
             if let Some(pos) = rendered.find(&heading_pattern) {
@@ -3298,9 +3289,10 @@ impl ForgeplanServer {
         )
         .await
         .map_err(|e| safe_mcp_error(anyhow::anyhow!("Create failed (canonical-key): {e}")))?;
+        let canonical_key = allocated.canonical_key;
+        let slug = canonical_key.clone();
         let id = allocated.id;
         let predicted_number = allocated.number;
-        let filepath = allocated.filepath;
         // PROB-067: rendered body carries the augmented frontmatter
         // (slug / predicted_number / assigned_number) needed for
         // response-shape derivation below — the on-disk projection
@@ -3315,7 +3307,7 @@ impl ForgeplanServer {
 
         // PRD-056: initialize advisory phase state to `shape`. Advisory
         // only — a failure here is logged and does not break creation.
-        maybe_init_phase(&ws, &id, "forgeplan_new").await;
+        maybe_init_phase(&ws, &canonical_key, "forgeplan_new").await;
 
         // Issue #295: auto-link evidence → parent via `informs` when
         // `parent_id` supplied. Closes the 3-step EVID flow (new →
@@ -3439,6 +3431,7 @@ impl ForgeplanServer {
         // captured at the start of this handler, before `resolved` was moved.
         let base_response = serde_json::to_value(&NewArtifactResponse {
             id,
+            canonical_key,
             kind: template_key.into(),
             title: p.title,
             filepath: filepath.display().to_string(),
@@ -3694,7 +3687,7 @@ impl ForgeplanServer {
                 // PRD-056: auto-advance phase on PASS (shape → validate).
                 maybe_advance_phase(
                     &ws,
-                    &record.id,
+                    &record.canonical_key,
                     forgeplan_core::phase::Phase::Validate,
                     "forgeplan_validate PASS",
                 )
@@ -4032,8 +4025,10 @@ impl ForgeplanServer {
             Ok(resolution) => resolution,
             Err(error) => return Ok(safe_err_result("resolve source: ", error)),
         };
-        let source_id = match &source_resolution {
-            crate::convert::Resolution::Found(resolved) => resolved.identity.display_id.clone(),
+        let source_key = match &source_resolution {
+            crate::convert::Resolution::Found(resolved) => {
+                resolved.identity.canonical_key.clone()
+            }
             other => return Ok(resolution_error(&p.source, other)),
         };
 
@@ -4041,7 +4036,7 @@ impl ForgeplanServer {
         // document in ANOTHER workspace: it is not a local selector, so the
         // local resolver must not judge it. It stays verbatim.
         let target_is_qualified = p.target.contains('@');
-        let target_id = if target_is_qualified {
+        let target_key = if target_is_qualified {
             p.target.clone()
         } else {
             let candidates = match read.resolve(&ws, &p.target).await {
@@ -4049,7 +4044,9 @@ impl ForgeplanServer {
                 Err(error) => return Ok(safe_err_result("resolve target: ", error)),
             };
             match &candidates {
-                crate::convert::Resolution::Found(resolved) => resolved.identity.display_id.clone(),
+                crate::convert::Resolution::Found(resolved) => {
+                    resolved.identity.canonical_key.clone()
+                }
                 // A miss is a legal forward reference.
                 crate::convert::Resolution::NotFound => p.target.clone(),
                 // An ambiguity, a contested key, an unusable selector, an
@@ -4057,8 +4054,8 @@ impl ForgeplanServer {
                 other => return Ok(resolution_error(&p.target, other)),
             }
         };
-        let source_id = source_id.as_str();
-        let target_id = target_id.as_str();
+        let source_id = source_key.as_str();
+        let target_id = target_key.as_str();
 
         // ADR-003 / PROB-048 / PRD-073: pre-sync canonical participants into
         // the derived index, then render only the changed outgoing source.
@@ -4499,15 +4496,9 @@ impl ForgeplanServer {
         //
         // Mirror the CLI `forgeplan get` resolver wiring (Phase 1.5b precedent
         // commit `4c37ddd` — 6 commands wired). Without this, slug input like
-        // `prd-auth-system` would miss the direct `id` column lookup and yield
-        // "artifact not found" even though the artifact exists. Resolver
-        // accepts both display id (`PRD-074`) and slug (`prd-auth-system`)
-        // and returns the canonical DB id.
-        //
-        // Order: resolve → get_record. The resolver accepts both a display
-        // id (`PRD-074`) and a canonical key (`prd-auth-system-k0123…`),
-        // and it returns the display id of the ONE document the reference
-        // names.
+        // A direct alias lookup would miss a canonical-key selector, while
+        // resolving returns the selected document's key. Keeping that key
+        // through the read avoids a second, ambiguous alias lookup.
         //
         // A name two documents answer to is a REFUSAL, not a miss: the
         // error names every candidate instead of reporting "not found" and
@@ -7732,6 +7723,7 @@ impl ForgeplanServer {
             .map(|r| {
                 serde_json::json!({
                     "id": r.id,
+                    "canonical_key": r.canonical_key,
                     "kind": r.kind,
                     "status": r.status,
                     "title": r.title,
@@ -7867,32 +7859,34 @@ impl ForgeplanServer {
             if id.is_empty() {
                 continue;
             }
+            let canonical_key = art["canonical_key"].as_str().unwrap_or(id);
 
-            let existing = read
-                .get_record(id)
-                .await
-                .map_err(|e| safe_mcp_error_anyhow(&e))?;
-            if existing.is_some() && !force {
+            // Imported identity, not display alias, determines whether this
+            // document already exists. A legacy bundle without a key falls
+            // back to its id, and an ambiguous legacy alias is refused by the
+            // same shared resolver as other selectors.
+            let existing_key = match read.resolve_artifact(&ws, canonical_key).await {
+                Ok(Some(key)) => Some(key),
+                Ok(None) => None,
+                Err(result) => return Ok(result),
+            };
+            if existing_key.is_some() && !force {
                 skipped += 1;
                 continue;
             }
 
-            if existing.is_some() {
-                // PRD-073 audit H3: helper removes file + relations + DB row
-                // in lockstep so re-import via force=true doesn't strand
-                // the OLD markdown file.
+            if let Some(existing_key) = existing_key {
+                // Remove only the document with this canonical identity.
                 projection::delete_artifact_with_projection(
                     &projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref()),
-                    id,
+                    &existing_key,
                 )
                 .await
                 .map_err(|e| safe_mcp_error_anyhow(&anyhow::Error::new(e)))?;
             }
 
             let new_art = NewArtifact {
-                // ADR-030: no minted key yet — the imported document declares
-                // no slug, so its canonical key is its display id.
-                canonical_key: id.to_string(),
+                canonical_key: canonical_key.to_string(),
                 id: id.to_string(),
                 kind: art["kind"].as_str().unwrap_or("note").to_string(),
                 status: art["status"].as_str().unwrap_or("draft").to_string(),
@@ -9502,15 +9496,17 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<PhaseReadParams>,
     ) -> Result<CallToolResult, McpError> {
-        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
-        // no lock). No store needed by this handler.
-        let ws = match self.resolve_workspace_read(p.workspace.as_deref()).await {
-            Ok(r) => r.workspace_dir,
+        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
+            Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
+        let canonical_key = match read.resolve_artifact(&ws, &p.id).await {
+            Ok(Some(key)) => key,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(error) => return Ok(error),
+        };
         let safe_id = sanitize_for_hint(&p.id);
-
-        match forgeplan_core::phase::store::read_phase(&ws, &p.id).await {
+        match forgeplan_core::phase::store::read_phase(&ws, &canonical_key).await {
             Ok(Some(mut state)) => {
                 // Audit Round 1 H-sec #2: `reason` is user-controlled and
                 // was stored verbatim at write time. Sanitize before the
@@ -9582,10 +9578,15 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<PhaseAdvanceParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Path-only: phase markers are YAML files under `.forgeplan/state/`.
-        let (ws, resolved_via) = self
-            .resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::Strict)
-            .await?;
+        let (ws, resolved_via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
+            Ok(r) => r,
+            Err(e) => return Ok(safe_err_result("", e)),
+        };
+        let canonical_key = match read.resolve_artifact(&ws, &p.id).await {
+            Ok(Some(key)) => key,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(error) => return Ok(error),
+        };
         let _trace = WorkspaceTrace::new(&ws, &resolved_via);
 
         // Round 2 audit M-sec #2: boundary-layer reason cap. Rejects
@@ -9615,7 +9616,7 @@ impl ForgeplanServer {
         // two surfaces disagree about what the same operation means.
         match forgeplan_core::phase::store::advance_phase_unchecked(
             &ws,
-            &p.id,
+            &canonical_key,
             target,
             p.reason.clone(),
         )
@@ -14441,7 +14442,7 @@ mod claim_mcp_tests {
                 forgeplan_core::artifact::frontmatter::parse_frontmatter(&text).unwrap();
             assert_eq!(
                 frontmatter
-                    .get("canonical_key")
+                    .get("slug")
                     .and_then(serde_yaml::Value::as_str),
                 Some(document.canonical_key.as_str())
             );
@@ -14540,16 +14541,21 @@ mod prob060_response_shape_tests {
 
         // EXISTING fields preserved.
         assert!(body["id"].as_str().is_some(), "id must remain populated");
+        assert!(
+            body["canonical_key"].as_str().is_some_and(|key| !key.is_empty()),
+            "new response must expose the stored canonical identity"
+        );
         assert_eq!(body["kind"].as_str(), Some("prd"));
         assert_eq!(body["title"].as_str(), Some("Auth System"));
         assert!(body["filepath"].as_str().is_some());
         assert!(body["_next_action"].as_str().is_some());
 
-        // NEW: slug derived from kind + title.
+        let canonical_key = body["canonical_key"].as_str().unwrap();
+        assert_eq!(body["slug"].as_str(), Some(canonical_key));
         assert_eq!(
-            body["slug"].as_str(),
-            Some("prd-auth-system"),
-            "slug must equal slug_from_kind_title(prd, \"Auth System\")"
+            body["id_canonical"].as_str(),
+            Some(canonical_key),
+            "creation identity fields must reflect the allocated canonical key"
         );
         // predicted_number is a u32, derived from id suffix (PRD-001 → 1).
         let predicted = body["predicted_number"].as_u64().expect("predicted u64");
@@ -14560,8 +14566,6 @@ mod prob060_response_shape_tests {
             assigned, predicted,
             "Phase 1.x: assigned_number mirrors predicted_number"
         );
-        // Canonical id is the slug; display id is uppercase + zero-padded.
-        assert_eq!(body["id_canonical"].as_str(), Some("prd-auth-system"));
         let display = body["id_display"].as_str().expect("id_display string");
         assert!(
             display.starts_with("PRD-"),
@@ -14571,12 +14575,9 @@ mod prob060_response_shape_tests {
             !display.ends_with('?'),
             "Phase 1.x assigned form has no `?`: {display}"
         );
-        // Hint must mention the slug for commit refs guidance.
+        // Hint must mention the minted key rather than a title-derived slug.
         let hint = body["hint"].as_str().expect("hint string");
-        assert!(
-            hint.contains("prd-auth-system"),
-            "hint should reference the canonical slug for commit Refs guidance, got: {hint}"
-        );
+        assert!(hint.contains(canonical_key));
     }
 
     #[tokio::test]
@@ -14598,6 +14599,7 @@ mod prob060_response_shape_tests {
             .unwrap();
         let new_body = body_value(&new_resp);
         let id = new_body["id"].as_str().unwrap().to_string();
+        let expected_key = new_body["canonical_key"].as_str().unwrap().to_string();
         let expected_slug = new_body["slug"].as_str().unwrap().to_string();
         let expected_display = new_body["id_display"].as_str().unwrap().to_string();
 
@@ -14611,6 +14613,7 @@ mod prob060_response_shape_tests {
         let get_body = body_value(&get_resp);
 
         // Existing fields still present.
+        assert_eq!(get_body["canonical_key"].as_str(), Some(expected_key.as_str()));
         assert_eq!(get_body["id"].as_str(), Some(id.as_str()));
         assert_eq!(get_body["kind"].as_str(), Some("prd"));
         assert!(get_body["body"].as_str().is_some());
@@ -14627,6 +14630,144 @@ mod prob060_response_shape_tests {
         );
         assert!(get_body["predicted_number"].as_u64().is_some());
         assert!(get_body["assigned_number"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
+    async fn shared_alias_get_and_link_keep_canonical_identity() {
+        let (server, _tmp) = fresh_server().await;
+        let key_a = "prd-alpha-k0123456789abcdef0123456789abcdef";
+        let key_b = "prd-beta-k1123456789abcdef0123456789abcdef";
+        let key_source = "note-link-source-k2123456789abcdef0123456789abcdef";
+        let bundle = serde_json::json!({
+            "artifacts": [
+                {"id":"PRD-001", "canonical_key":key_a, "kind":"prd", "title":"Alpha", "body":"Alpha body"},
+                {"id":"PRD-001", "canonical_key":key_b, "kind":"prd", "title":"Beta", "body":"Beta body"},
+                {"id":"NOTE-001", "canonical_key":key_source, "kind":"note", "title":"Source", "body":"Source body"}
+            ],
+            "relations": []
+        });
+        let imported = server
+            .forgeplan_import(Parameters(ImportParams {
+                data: bundle.to_string(),
+                force: None,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        assert_ne!(imported.is_error, Some(true));
+
+        let exported = server
+            .forgeplan_export(Parameters(ExportParams {
+                output: None,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        let exported_artifacts = body_value(&exported)["artifacts"].as_array().unwrap().clone();
+        assert!(exported_artifacts.iter().any(|artifact| {
+            artifact["id"] == "PRD-001" && artifact["canonical_key"] == key_a
+        }));
+        assert!(exported_artifacts.iter().any(|artifact| {
+            artifact["id"] == "PRD-001" && artifact["canonical_key"] == key_b
+        }));
+
+        for (key, title) in [(key_a, "Alpha"), (key_b, "Beta")] {
+            let result = server
+                .forgeplan_get(Parameters(GetParams {
+                    id: key.to_string(),
+                    workspace: None,
+                }))
+                .await
+                .unwrap();
+            let body = body_value(&result);
+            assert_eq!(body["canonical_key"].as_str(), Some(key));
+            assert_eq!(body["title"].as_str(), Some(title));
+        }
+
+        let linked = server
+            .forgeplan_link(Parameters(LinkParams {
+                source: key_source.to_string(),
+                target: key_b.to_string(),
+                relation: RelationKind::Informs,
+                replace: false,
+                auto_activate_source_if_complete: false,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        assert_ne!(linked.is_error, Some(true));
+        let advanced = server
+            .forgeplan_phase_advance(Parameters(PhaseAdvanceParams {
+                id: key_a.to_string(),
+                to: PhaseArg::Audit,
+                reason: Some("identity-specific transition".to_string()),
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        assert_ne!(advanced.is_error, Some(true));
+        let ws = server.default_workspace.read().await.clone().unwrap();
+        let state = forgeplan_core::phase::store::read_phase(&ws, key_a)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.current_phase, forgeplan_core::phase::Phase::Audit);
+        let phase_read = server
+            .forgeplan_phase(Parameters(PhaseReadParams {
+                id: key_a.to_string(),
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(body_value(&phase_read)["current_phase"].as_str(), Some("audit"));
+
+        let ambiguous_read = server
+            .forgeplan_phase(Parameters(PhaseReadParams {
+                id: "PRD-001".to_string(),
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(ambiguous_read.is_error, Some(true));
+
+        let ambiguous = server
+            .forgeplan_phase_advance(Parameters(PhaseAdvanceParams {
+                id: "PRD-001".to_string(),
+                to: PhaseArg::Done,
+                reason: None,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(ambiguous.is_error, Some(true));
+        assert!(
+            forgeplan_core::phase::store::read_phase(&ws, "PRD-001")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let missing = server
+            .forgeplan_phase_advance(Parameters(PhaseAdvanceParams {
+                id: "PRD-999".to_string(),
+                to: PhaseArg::Done,
+                reason: None,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(missing.is_error, Some(true));
+        assert!(
+            forgeplan_core::phase::store::read_phase(&ws, "PRD-999")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let (_ws, _via, read) = server.resolve_read_source(None).await.unwrap();
+        let relations = read.get_relations(key_source).await.unwrap();
+        assert_eq!(relations, vec![(key_b.to_string(), "informs".to_string())]);
     }
 
     #[tokio::test]
@@ -14648,9 +14789,9 @@ mod prob060_response_shape_tests {
             .await
             .unwrap();
         let new_body = body_value(&new_resp);
-        let id_display = new_body["id"].as_str().unwrap().to_string();
+        let canonical_key = new_body["canonical_key"].as_str().unwrap().to_string();
         let slug = new_body["slug"].as_str().unwrap().to_string();
-        assert_eq!(slug, "rfc-identity-resolver");
+        assert_eq!(slug, canonical_key);
 
         // 1. Look up via display id form (e.g. RFC-001).
         let by_display = server

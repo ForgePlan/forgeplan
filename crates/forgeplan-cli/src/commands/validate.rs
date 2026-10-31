@@ -35,9 +35,9 @@ pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> a
         // no document.
         let upper_input = target_id.to_uppercase();
         match common::resolve_identity(&source, &ws, target_id).await? {
-            Some((canonical_key, display_id)) => all_records
+            Some((canonical_key, _display_id)) => all_records
                 .iter()
-                .filter(|r| r.id == display_id || r.canonical_key == canonical_key)
+                .filter(|r| r.canonical_key == canonical_key)
                 .collect(),
             None => all_records
                 .iter()

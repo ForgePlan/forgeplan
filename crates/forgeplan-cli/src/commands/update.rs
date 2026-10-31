@@ -45,14 +45,7 @@ Fix: forgeplan list",
         )
     })?;
 
-    if status.is_none() && title.is_none() && depth.is_none() && body.is_none() {
-        // PRD-071: Error pairs with concrete Fix: command (use --status as the
-        // most-common operation; agent picks the right flag from the example).
-        anyhow::bail!(
-            "Nothing to update. Use --status, --title, --depth, or --body.\nFix: forgeplan update {} --status draft",
-            id
-        );
-    }
+    let body_content = prepare_body_update(body, &original.canonical_key).await?;
 
     // Block direct status change to "active" — must go through lifecycle gates.
     // PRD-071 contract: pair `Error:` with a structured `Fix:` line that the
@@ -117,25 +110,7 @@ Fix: forgeplan list",
     }
 
     // Update body
-    if let Some(b) = body {
-        let raw_content = if let Some(path) = b.strip_prefix('@') {
-            tokio::fs::read_to_string(path)
-                .await
-                .map_err(|e| anyhow::anyhow!("Cannot read '{}': {}", path, e))?
-        } else {
-            b.to_string()
-        };
-
-        // Strip YAML frontmatter if present (when reading from @file.md)
-        let body_content = if raw_content.starts_with("---") {
-            use forgeplan_core::artifact::frontmatter;
-            match frontmatter::parse_frontmatter(&raw_content) {
-                Ok((_fm, body)) => body.to_string(),
-                Err(_) => raw_content,
-            }
-        } else {
-            raw_content
-        };
+    if let Some(body_content) = body_content.as_deref() {
 
         // Safety check: warn if new body is significantly shorter than existing.
         // Re-read after the metadata mutation above may have synced file→DB.
@@ -152,7 +127,7 @@ Fix: forgeplan list",
             );
         }
 
-        projection::update_body_with_projection(&ctx, id, &body_content).await?;
+        projection::update_body_with_projection(&ctx, id, body_content).await?;
     }
 
     // PRD-073 audit M1 fix: clean up OLD slug AFTER the new file is in place
@@ -269,6 +244,9 @@ async fn run_file_first(
         .map(|s| s.to_string())
         .unwrap_or_else(|| id.to_string());
     let id = id_owned.as_str();
+    let current_key =
+        forgeplan_core::artifact::canonical_key::canonical_key_from_document(id, &content);
+    let body_content = prepare_body_update(body, &current_key).await?;
 
     if status.is_none() && title.is_none() && depth.is_none() && body.is_none() {
         anyhow::bail!(
@@ -317,25 +295,7 @@ async fn run_file_first(
             projection::update_metadata_file_first(&artifact_path, status, title, depth).await?;
     }
 
-    if let Some(b) = body {
-        let raw_content = if let Some(path) = b.strip_prefix('@') {
-            tokio::fs::read_to_string(path)
-                .await
-                .map_err(|e| anyhow::anyhow!("Cannot read '{}': {}", path, e))?
-        } else {
-            b.to_string()
-        };
-
-        // Strip YAML frontmatter if present (when reading from @file.md)
-        let body_content = if raw_content.starts_with("---") {
-            use forgeplan_core::artifact::frontmatter;
-            match frontmatter::parse_frontmatter(&raw_content) {
-                Ok((_fm, body)) => body.to_string(),
-                Err(_) => raw_content,
-            }
-        } else {
-            raw_content
-        };
+    if let Some(body_content) = body_content.as_deref() {
 
         // Same short-body warning as the store path, measured on the file's
         // own body portion.
@@ -351,7 +311,7 @@ async fn run_file_first(
             );
         }
 
-        projection::update_body_file_first(&final_path, &body_content).await?;
+        projection::update_body_file_first(&final_path, body_content).await?;
     }
 
     if let Some(s) = status {
@@ -416,4 +376,29 @@ async fn run_file_first(
     print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())
+}
+async fn prepare_body_update(
+    body: Option<&str>,
+    current_key: &str,
+) -> anyhow::Result<Option<String>> {
+    let Some(body) = body else {
+        return Ok(None);
+    };
+    let raw_content = if let Some(path) = body.strip_prefix('@') {
+        tokio::fs::read_to_string(path)
+            .await
+            .map_err(|error| anyhow::anyhow!("Cannot read '{}': {}", path, error))?
+    } else {
+        body.to_string()
+    };
+    forgeplan_core::artifact::frontmatter::refuse_canonical_key_change(current_key, &raw_content)?;
+    let content = if raw_content.starts_with("---") {
+        match forgeplan_core::artifact::frontmatter::parse_frontmatter(&raw_content) {
+            Ok((_frontmatter, body)) => body.to_string(),
+            Err(_) => raw_content,
+        }
+    } else {
+        raw_content
+    };
+    Ok(Some(content))
 }

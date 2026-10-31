@@ -87,117 +87,19 @@ pub fn canonical_filename(canonical_key: &str) -> anyhow::Result<String> {
 }
 
 
-/// Normalize a display-id input (`prd-74`, `Prd-074`) to canonical
-/// `PREFIX-NNN` form. Mirrors `LanceStore::resolve_id` Path 1: alpha prefix +
-/// all-digit suffix + a real artifact-kind prefix. Returns `None` for
-/// slug-shaped and literal (`mem-*`) inputs — those are not display ids.
-fn normalize_display_id(input: &str) -> Option<String> {
-    let (prefix, rest) = input.split_once('-')?;
-    if prefix.is_empty()
-        || rest.is_empty()
-        || !rest.chars().all(|c| c.is_ascii_digit())
-        || !prefix.chars().all(|c| c.is_ascii_alphabetic())
-        || ArtifactKind::from_slug_prefix(&prefix.to_ascii_lowercase()).is_none()
-    {
-        return None;
-    }
-    let num: u32 = rest.parse().ok()?;
-    Some(format!("{}-{num:03}", prefix.to_uppercase()))
-}
 
-/// File-first counterpart of `LanceStore::resolve_id`: resolve an artifact
-/// reference — display id (`PRD-074`, `prd-74`), slug (`prd-auth-system`), or
-/// literal id (`mem-my-note`) — to its markdown path inside the workspace,
-/// WITHOUT touching LanceDB. This is the resolver mutations on
-/// constellation-migrated workspaces use, where the legacy store is retired
-/// and markdown (ADR-003) is the only index input.
+/// File-first counterpart to the indexed resolver.
+/// Resolve a local selector through the shared complete-document-set resolver.
 ///
-/// Pass 1 matches the filename stem: `{ID}.md` exactly, or `{ID}-*.md`
-/// (case-insensitive) — the same `{id}-{slug}` convention the projection
-/// renderer writes. The `{ID}-*` prefix match only applies to display-id
-/// input (`KIND-<digits>`): for `mem-*` ids the whole stem IS the id, so a
-/// prefix match would bind `mem-auth` to `mem-auth-system.md`, a different
-/// artifact.
-///
-/// Pass 2 parses frontmatter and compares `id:` / `slug:` — the two fields
-/// `parse_artifact_file` (constellation capture) reads for `canonical_key`,
-/// so this resolves exactly the set reconcile can see.
-///
-/// Scans [`crate::workspace::ARTIFACT_DIRS`] — deliberately the same list
-/// the capture scanner walks, not `ArtifactKind::dir_name()`, so a file the
-/// index cannot see never resolves here either.
-///
-/// Returns `None` for empty input, unresolvable refs, and qualified
-/// `KEY@qualifier` targets (foreign by definition — they must never resolve
-/// to a local file).
+/// This compatibility wrapper returns `None` for every refusal, so mutation
+/// callers fail closed rather than choosing a filesystem iteration winner.
+/// Callers that need to distinguish refusal reasons should use
+/// `artifact::documents::resolve_in_workspace`.
 pub async fn resolve_artifact_path(workspace: &Path, id: &str) -> Option<PathBuf> {
-    let input = id.trim();
-    if input.is_empty() || input.contains('@') {
-        return None;
-    }
-    let normalized = normalize_display_id(input);
-    let needle = normalized.as_deref().unwrap_or(input);
-    // `{ID}-` prefix for stem matching — display ids only (see doc above).
-    let stem_prefix = normalized
-        .as_ref()
-        .map(|n| format!("{}-", n.to_uppercase()));
-
-    let mut candidates = Vec::new();
-    for dir_name in crate::workspace::ARTIFACT_DIRS {
-        let dir = workspace.join(dir_name);
-        let Ok(mut read_dir) = tokio::fs::read_dir(&dir).await else {
-            continue;
-        };
-        while let Ok(Some(entry)) = read_dir.next_entry().await {
-            let path = entry.path();
-            if path.extension().is_none_or(|e| e != "md") {
-                continue;
-            }
-            let stem = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if stem.eq_ignore_ascii_case(needle)
-                || stem_prefix
-                    .as_ref()
-                    .is_some_and(|p| stem.to_uppercase().starts_with(p))
-            {
-                return Some(path);
-            }
-            candidates.push(path);
-        }
-    }
-
-    // Pass 2 — frontmatter `id` / `slug` match. Covers slug-form input
-    // (`prd-auth-system` → `slug:` field), literal ids with non-slug
-    // filenames, and `id:` fields whose filename drifted (hand-renames).
-    // `slug:` lives in the BODY frontmatter (the artifact file's second
-    // `---` block — the projection block owns only the outer block), so the
-    // inner block gets parsed too; `id:` is accepted from either block.
-    for path in candidates {
-        let Ok(content) = tokio::fs::read_to_string(&path).await else {
-            continue;
-        };
-        let Ok((fm, body)) = frontmatter::parse_frontmatter(&content) else {
-            continue;
-        };
-        let id_hit = fm
-            .get("id")
-            .and_then(|v| v.as_str())
-            .is_some_and(|v| v.eq_ignore_ascii_case(input) || v.eq_ignore_ascii_case(needle));
-        let slug_hit = frontmatter::slug_from_frontmatter(&fm)
-            .is_some_and(|s| s.eq_ignore_ascii_case(input))
-            || frontmatter::parse_frontmatter(&body)
-                .ok()
-                .and_then(|(inner, _)| {
-                    frontmatter::slug_from_frontmatter(&inner).map(|s| s.to_string())
-                })
-                .is_some_and(|s| s.eq_ignore_ascii_case(input));
-        if id_hit || slug_hit {
-            return Some(path);
-        }
-    }
-    None
+    let resolved = crate::artifact::documents::resolve_in_workspace(workspace, id)
+        .await
+        .ok()??;
+    Some(workspace.join(resolved.relative_path))
 }
 
 /// List all artifacts in the workspace, reading only frontmatter.
@@ -269,9 +171,15 @@ mod tests {
         let d = ws.join(dir);
         std::fs::create_dir_all(&d).unwrap();
         let path = d.join(name);
+        let stem = path.file_stem().unwrap().to_string_lossy();
+        let id = if stem.as_bytes().get(3) == Some(&b'-') {
+            stem.splitn(3, '-').take(2).collect::<Vec<_>>().join("-")
+        } else {
+            "X".to_string()
+        };
         std::fs::write(
             &path,
-            format!("---\nid: X\ntitle: t\nkind: prd\n{fm_extra}---\nbody\n"),
+            format!("---\nid: {id}\ntitle: t\nkind: prd\n{fm_extra}---\nbody\n"),
         )
         .unwrap();
         path
@@ -357,5 +265,28 @@ mod tests {
         );
         assert_eq!(resolve_artifact_path(tmp.path(), "PRD-999").await, None);
         assert_eq!(resolve_artifact_path(tmp.path(), "").await, None);
+    }
+    #[tokio::test]
+    async fn ambiguous_display_alias_does_not_select_a_mutation_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let first = tmp.path().join("prds/PRD-001-first.md");
+        let second = tmp.path().join("prds/PRD-001-second.md");
+        std::fs::create_dir_all(first.parent().unwrap()).unwrap();
+        std::fs::write(
+            &first,
+            "---\nid: PRD-001\nkind: prd\nslug: prd-first-k00000000000000000000000000000001\n---\nfirst\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &second,
+            "---\nid: PRD-001\nkind: prd\nslug: prd-second-k00000000000000000000000000000002\n---\nsecond\n",
+        )
+        .unwrap();
+        let before_first = std::fs::read(&first).unwrap();
+        let before_second = std::fs::read(&second).unwrap();
+
+        assert_eq!(resolve_artifact_path(tmp.path(), "PRD-001").await, None);
+        assert_eq!(std::fs::read(first).unwrap(), before_first);
+        assert_eq!(std::fs::read(second).unwrap(), before_second);
     }
 }

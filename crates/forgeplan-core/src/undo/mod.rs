@@ -100,13 +100,14 @@ pub struct ArtifactSnapshot {
     /// Absolute path where the markdown projection lived before the
     /// destructive op. Restore writes the body back to this path.
     pub projection_path: String,
-    /// Canonical slug from frontmatter (PROB-060 Phase 2.5 closure).
-    /// Captured at soft-delete time so `restore <slug>` can locate the
-    /// receipt after the artifact has been removed from the main store.
-    /// `None` for legacy pre-Phase-1.5 artifacts that never had a slug
-    /// (lookup falls back to display id form only).
+    /// Canonical slug from frontmatter, used to locate the receipt after
+    /// the artifact has been removed from the main store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
+    /// Canonical document identity captured before deletion. Missing only
+    /// on receipts written before canonical identity was introduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_key: Option<String>,
 }
 
 /// A soft-delete receipt — one JSON file per destructive operation.
@@ -144,6 +145,22 @@ pub struct Receipt {
 /// Path to the trash directory inside a workspace.
 pub fn trash_dir(workspace: &Path) -> PathBuf {
     workspace.join("trash")
+}
+
+/// Resolve an artifact path by document identity, never by filename prefix or
+/// first matching display alias.
+async fn resolve_projection_path(
+    workspace: &Path,
+    selector: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let candidates = crate::artifact::documents::workspace_candidates(workspace).await?;
+    let Some(resolved) =
+        crate::artifact::canonical_key::resolve_artifact(selector, &candidates)
+            .map_err(anyhow::Error::new)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(workspace.join(resolved.relative_path)))
 }
 
 /// Compose a unique receipt file path inside the trash directory.
@@ -339,14 +356,39 @@ pub async fn list_receipts(workspace: &Path) -> anyhow::Result<Vec<Receipt>> {
 }
 
 /// Find the most recent non-consumed receipt for a given artifact ID.
+/// Find the most recent non-consumed receipt by canonical key. A display
+/// alias is accepted only for legacy receipts that have no canonical key.
 pub async fn find_latest_for(
     workspace: &Path,
-    artifact_id: &str,
+    selector: &str,
 ) -> anyhow::Result<Option<Receipt>> {
     let all = list_receipts(workspace).await?;
-    Ok(all
+    if let Some(receipt) = all.iter().find(|receipt| {
+        !receipt.consumed
+            && receipt
+                .snapshot
+                .canonical_key
+                .as_deref()
+                .is_some_and(|key| key.eq_ignore_ascii_case(selector))
+    }) {
+        return Ok(Some(receipt.clone()));
+    }
+    let matching: Vec<_> = all
         .into_iter()
-        .find(|r| r.snapshot.id == artifact_id && !r.consumed))
+        .filter(|receipt| {
+            !receipt.consumed && receipt.snapshot.id.eq_ignore_ascii_case(selector)
+        })
+        .collect();
+    let identities: std::collections::BTreeSet<_> = matching
+        .iter()
+        .map(|receipt| receipt.snapshot.canonical_key.clone())
+        .collect();
+    if identities.len() > 1 {
+        anyhow::bail!(
+            "display alias {selector:?} matches multiple receipts; use a canonical key"
+        );
+    }
+    Ok(matching.into_iter().next())
 }
 
 /// Find the most recent non-consumed receipt by canonical slug (PROB-060
@@ -493,7 +535,7 @@ pub async fn soft_delete_capture_with_relations(
     // title metadata. A missing Delete source must not become a successful
     // receipt whose file was never moved.
     let projection_path =
-        match crate::artifact::store::resolve_artifact_path(workspace, &record.id).await {
+        match resolve_projection_path(workspace, &record.canonical_key).await? {
             Some(path) => path,
             None if matches!(op, DestructiveOp::Delete) => {
                 anyhow::bail!(
@@ -528,6 +570,7 @@ pub async fn soft_delete_capture_with_relations(
 
     let snapshot = ArtifactSnapshot {
         id: record.id.clone(),
+        canonical_key: Some(record.canonical_key.clone()),
         kind: record.kind.clone(),
         status: record.status.clone(),
         title: record.title.clone(),
@@ -605,6 +648,7 @@ mod tests {
             }],
             projection_path: format!("/ws/.forgeplan/prds/{id}-sample.md"),
             slug: None,
+            canonical_key: None,
         }
     }
 
@@ -697,6 +741,40 @@ mod tests {
         let found = find_latest_for(&ws, "PRD-001").await.unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().receipt_id, "prd-PRD-001-222-bbbb");
+    }
+
+    #[tokio::test]
+    async fn receipts_with_shared_display_ids_resolve_by_canonical_key() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let mut alpha = sample_receipt("PRD-001");
+        alpha.receipt_id = "alpha-1".into();
+        alpha.snapshot.canonical_key = Some("prd-alpha-k11111111111111111111111111111111".into());
+        alpha.ts = "2026-04-18T10:00:00.000Z".into();
+        let mut beta = sample_receipt("PRD-001");
+        beta.receipt_id = "beta-1".into();
+        beta.snapshot.canonical_key = Some("prd-beta-k22222222222222222222222222222222".into());
+        beta.ts = "2026-04-18T09:00:00.000Z".into();
+        write_receipt(&ws, &alpha).await.unwrap();
+        write_receipt(&ws, &beta).await.unwrap();
+
+        assert_eq!(
+            find_latest_for(&ws, "prd-alpha-k11111111111111111111111111111111")
+                .await
+                .unwrap()
+                .unwrap()
+                .receipt_id,
+            "alpha-1"
+        );
+        assert_eq!(
+            find_latest_for(&ws, "prd-beta-k22222222222222222222222222222222")
+                .await
+                .unwrap()
+                .unwrap()
+                .receipt_id,
+            "beta-1"
+        );
+        assert!(find_latest_for(&ws, "PRD-001").await.is_err());
     }
 
     #[tokio::test]
