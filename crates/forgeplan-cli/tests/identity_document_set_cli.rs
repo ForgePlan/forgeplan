@@ -410,12 +410,14 @@ async fn cli_new_publishes_distinct_canonical_key_files_for_duplicate_titles() {
         let text = std::fs::read_to_string(workspace.join(&document.relative_path)).unwrap();
         let (frontmatter, _) =
             forgeplan_core::artifact::frontmatter::parse_frontmatter(&text).unwrap();
+        // The document contract stores its identity in `slug`; that is the
+        // field the renderer writes and the field every reader looks for.
         assert_eq!(
             frontmatter
-                .get("canonical_key")
+                .get("slug")
                 .and_then(serde_yaml::Value::as_str),
             Some(document.canonical_key.as_str()),
-            "the stored document carries its minted key"
+            "the stored document carries its minted key in `slug`"
         );
     }
 }
