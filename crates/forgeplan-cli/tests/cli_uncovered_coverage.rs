@@ -278,20 +278,30 @@ fn git_sync_announces_the_index_migration() {
         .assert()
         .success();
 
-    forgeplan()
+    // #540 — an ordinary sync does NOT migrate. The command states that
+    // decision where it is made: reconciling a legacy workspace here would
+    // change the layout as a side effect of `git pull`, which is not what the
+    // operator asked for. Migration is the explicit `forgeplan index`, which
+    // has its own scenario.
+    let out = forgeplan()
         .args(["git-sync", "--since", "HEAD"])
         .current_dir(tmp.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            "migrated to constellation protocol",
-        ))
-        .stdout(predicate::str::contains("legacy-backup"));
-
-    // The migration the notice names actually happened.
-    assert!(lance.join("CURRENT.json").exists());
-    assert!(lance.join("artifacts.legacy-backup.lance").exists());
-    assert!(!lance.join("artifacts.lance").exists());
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("migrated to constellation protocol"),
+        "an ordinary sync must not migrate: {stdout}"
+    );
+    // The legacy layout is exactly as it was.
+    assert!(lance.join("artifacts.lance").exists());
+    assert!(!lance.join("CURRENT.json").exists());
+    assert!(!lance.join("artifacts.legacy-backup.lance").exists());
 }
 
 // ---------------------------------------------------------------------------
