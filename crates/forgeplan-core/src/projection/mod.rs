@@ -180,7 +180,6 @@ pub async fn render_projection(
         parent_epic,
         valid_until,
         body,
-        None,
         links,
         &[],
         false,
@@ -360,7 +359,6 @@ pub async fn render_projection_with_body(
         parent_epic,
         valid_until,
         body,
-        None,
         links,
         &[],
         true,
@@ -384,11 +382,6 @@ async fn render_projection_inner(
     parent_epic: Option<&str>,
     valid_until: Option<&str>,
     body: &str,
-    // Metadata the caller already holds for a document that does not exist
-    // yet — a rendered template's frontmatter, augmented with the allocator's
-    // fields. It seeds the frontmatter rendered here so the document has
-    // exactly one block. `None` on update paths: the file is read instead.
-    seed_fm: Option<&Frontmatter>,
     links: &[(String, String)],
     tags: &[String],
     force_body: bool,
@@ -455,22 +448,17 @@ async fn render_projection_inner(
     // under. An existing document keeps the key it already carries — the
     // canonical key is immutable through ordinary updates, and the
     // preserved frontmatter is where it survives a re-render.
-    let preserved_fm = match preserved_fm.or_else(|| seed_fm.cloned()) {
+    let preserved_fm = match preserved_fm {
         Some(fm) => Some(fm),
-        None => canonical_key.map(|_| Frontmatter::new()),
+        None => canonical_key.map(|key| {
+            let mut fm = Frontmatter::new();
+            fm.insert(
+                "slug".to_string(),
+                serde_yaml::Value::String(key.to_string()),
+            );
+            fm
+        }),
     };
-    // Whatever the block came from — a file, a template, or nothing — the key
-    // it declares is the canonical key. `slug` keeps its historical meaning
-    // for readers that already look for it; `canonical_key` names the same
-    // value without that history.
-    let preserved_fm = preserved_fm.map(|mut fm| {
-        if let Some(key) = declared_canonical_key(canonical_key) {
-            for field in ["slug", "canonical_key"] {
-                fm.insert(field.to_string(), serde_yaml::Value::String(key.to_string()));
-            }
-        }
-        fm
-    });
 
     let content = render_markdown_with_extras(
         id,
@@ -1871,15 +1859,13 @@ pub async fn create_artifact_with_canonical_key(
         )));
     }
 
-    // A creation body arrives carrying a frontmatter block: the rendered
-    // template's own, augmented with the allocator's fields. That block is
-    // the document's metadata, not its content. It seeds the frontmatter the
-    // projection renders, and the body is published without it — otherwise
-    // the document opens with a second `---` block above its own heading.
-    let (seed_fm, body) = match crate::artifact::frontmatter::parse_frontmatter(&artifact.body) {
-        Ok((fm, rest)) => (Some(fm), rest),
-        Err(_) => (None, artifact.body.clone()),
-    };
+    // The document declares the key it is filed under — the file, the row
+    // and the file name then name one identity.
+    let body = crate::artifact::frontmatter::ensure_canonical_key(
+        &artifact.body,
+        &artifact.canonical_key,
+    )
+    .map_err(MutationError::StoreFatal)?;
 
     let path = render_projection_inner(
         workspace,
@@ -1892,7 +1878,6 @@ pub async fn create_artifact_with_canonical_key(
         artifact.parent_epic.as_deref(),
         artifact.valid_until.as_deref(),
         &body,
-        seed_fm.as_ref(),
         &[],
         &artifact.tags,
         true,
@@ -1971,7 +1956,6 @@ async fn create_artifact_projection(
         artifact.parent_epic.as_deref(),
         artifact.valid_until.as_deref(),
         &artifact.body,
-        None,
         &[],
         &artifact.tags,
         true,
