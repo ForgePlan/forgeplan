@@ -36,6 +36,28 @@ fn run(root: &Path, args: &[&str]) -> std::process::Output {
         .expect("forgeplan runs")
 }
 
+/// Replace the artifact selector in `args` — the first positional argument
+/// that is not an option or an option value — keeping `--by`, `--to` and their
+/// values intact. `supersede --by PRD-002 PRD-001` selects `PRD-001`, not the
+/// argument after the command name.
+fn select(args: &[&str], selector: &str) -> Vec<String> {
+    let mut out: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    let mut skip_value = false;
+    for value in out.iter_mut().skip(1) {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if value.starts_with("--") {
+            skip_value = true;
+            continue;
+        }
+        *value = selector.to_string();
+        return out;
+    }
+    panic!("no artifact selector in {args:?}");
+}
+
 const SELECTOR_COMMANDS: &[&[&str]] = &[
     &["reason", "PRD-001"],
     &["context", "PRD-001"],
@@ -70,13 +92,9 @@ fn canonical_key_collision_exits_four_and_names_both_claimants_in_each_command()
     ]);
 
     for args in SELECTOR_COMMANDS {
-        let mut selected = args.to_vec();
-        if selected[0] == "supersede" {
-            selected[1] = "prd-shared";
-        } else {
-            selected[1] = "prd-shared";
-        }
-        let output = run(root.path(), &selected);
+        let selected = select(args, "prd-shared");
+        let refs: Vec<&str> = selected.iter().map(String::as_str).collect();
+        let output = run(root.path(), &refs);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(4), "{selected:?}: {stderr}");
         for expected in ["First claimant", "Second claimant"] {
@@ -95,9 +113,9 @@ fn absent_selector_exits_three_in_each_command() {
     )]);
 
     for args in SELECTOR_COMMANDS {
-        let mut selected = args.to_vec();
-        selected[1] = "PRD-404";
-        let output = run(root.path(), &selected);
+        let selected = select(args, "PRD-404");
+        let refs: Vec<&str> = selected.iter().map(String::as_str).collect();
+        let output = run(root.path(), &refs);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(3), "{selected:?}: {stderr}");
         assert!(stderr.contains("Artifact 'PRD-404' not found"), "{selected:?}: {stderr}");
