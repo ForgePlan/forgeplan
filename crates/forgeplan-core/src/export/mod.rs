@@ -42,7 +42,17 @@ pub async fn import_all(
     let mut skipped = 0usize;
 
     for record in &data.artifacts {
-        let exists = store.get_record(&record.id).await?.is_some();
+        // A bundle carries the document's identity. Two records can share a
+        // display id (the alias is not unique), so the key — not the id —
+        // decides which document exists, which one is replaced, and what the
+        // projected file is called. A legacy bundle without a key falls back
+        // to the id, which is what it always used.
+        let canonical_key = if record.canonical_key.trim().is_empty() {
+            record.id.clone()
+        } else {
+            record.canonical_key.clone()
+        };
+        let exists = store.get_record(&canonical_key).await?.is_some();
 
         if exists && !force {
             skipped += 1;
@@ -51,13 +61,13 @@ pub async fn import_all(
 
         if exists {
             // force: delete existing, then re-create
-            store.delete_artifact(&record.id).await?;
+            store.delete_artifact(&canonical_key).await?;
         }
 
         let new = NewArtifact {
             // ADR-030: no minted key yet — the artifact declares no slug, so
             // its canonical key is its display id.
-            canonical_key: record.id.clone(),
+            canonical_key: canonical_key.clone(),
             id: record.id.clone(),
             kind: record.kind.clone(),
             status: record.status.clone(),

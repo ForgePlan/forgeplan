@@ -1790,10 +1790,15 @@ pub async fn import_artifact_with_projection(
 /// workspace for one document, and that document would then read as an
 /// ambiguous alias.
 fn creation_row(artifact: &crate::db::store::NewArtifact) -> crate::db::store::NewArtifact {
-    let canonical_key = crate::artifact::canonical_key::canonical_key_from_document(
-        &artifact.id,
-        &artifact.body,
-    );
+    // The caller's key wins: an import or a migration carries the identity
+    // the document already has, and recomputing it here would file the row
+    // under a fresh key while the file is published under the supplied one.
+    // Only a caller that supplies no key gets one derived from the document.
+    let canonical_key = if artifact.canonical_key.trim().is_empty() {
+        crate::artifact::canonical_key::canonical_key_from_document(&artifact.id, &artifact.body)
+    } else {
+        artifact.canonical_key.clone()
+    };
     crate::db::store::NewArtifact {
         id: artifact.id.clone(),
         canonical_key,
