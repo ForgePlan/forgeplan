@@ -130,9 +130,14 @@ pub async fn run(
         let author = common::resolve_display_author(r.author.as_deref(), &r.body)
             .map(|a| common::shorten_author(&a, common::AUTHOR_COL_MAX))
             .unwrap_or_else(|| common::AUTHOR_MISSING.to_string());
+        // The row names the memory by the id a reader knows AND by the key
+        // that names it exactly — two memories never share a key.
+        let key = common::extract_frontmatter_field(&r.body, "slug")
+            .unwrap_or_else(|| r.id.clone());
         println!(
-            "{}  {}  {}  {}  {}",
+            "{}  {}  {}  {}  {}  {}",
             style(&r.id).bold(),
+            style(&key).dim(),
             style(format!("[{}]", category)).dim(),
             style(&author).dim(),
             style(&date).dim(),

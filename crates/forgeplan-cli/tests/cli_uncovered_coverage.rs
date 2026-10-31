@@ -663,12 +663,13 @@ fn remember_creates_memory_artifact() {
         .unwrap()
         .0;
     assert!(id.starts_with("MEM-"), "{stdout}");
+    // `.gitkeep` sits in the directory before any document exists; the
+    // memory is the one markdown file.
     let path = std::fs::read_dir(tmp.path().join(".forgeplan/memory"))
         .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .find(|path| path.extension().is_some_and(|extension| extension == "md"))
+        .expect("a memory document");
     let content = std::fs::read_to_string(path).unwrap();
     let (frontmatter, _) =
         forgeplan_core::artifact::frontmatter::parse_frontmatter(&content).unwrap();
