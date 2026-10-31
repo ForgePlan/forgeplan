@@ -251,6 +251,16 @@ pub fn validate_canonical_key(key: &str) -> anyhow::Result<()> {
     if key.contains('\0') {
         anyhow::bail!("canonical key contains a null byte");
     }
+    // A minted key starts with an ASCII letter and names one document. A
+    // selector that climbs out of the workspace — `../../etc/passwd` — is not
+    // a key, and the sidecar paths escape `/`, so without this guard the
+    // escaping would turn a traversal into a harmless-looking file name.
+    if !key.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        anyhow::bail!("canonical key must start with an ASCII letter: {key}");
+    }
+    if key.split('/').any(|segment| segment == ".." || segment.starts_with('.')) {
+        anyhow::bail!("canonical key contains a path traversal segment: {key}");
+    }
     Ok(())
 }
 
@@ -260,7 +270,9 @@ pub fn initial_state(artifact_id: &str, reason: Option<String>) -> PhaseState {
     let now = Utc::now();
     PhaseState {
         artifact_id: artifact_id.to_string(),
-        canonical_key: None,
+        // A state is written by the key the document is addressed by, so it
+        // can say which document it describes even when two share an alias.
+        canonical_key: Some(artifact_id.to_string()),
         workflow_type: WorkflowType::Greenfield,
         current_phase: Phase::Shape,
         advanced_at: now,
