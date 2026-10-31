@@ -904,6 +904,34 @@ pub(crate) fn require_found_identity(
     }
 }
 
+/// Resolve a reference for the ADVISORY layer — phase tracking.
+///
+/// PROB-056: `phase` works on a raw id and never fails because the document is
+/// missing; the marker is advisory and may exist before the document does.
+/// Ambiguity and a key collision are a different matter — attaching a phase to
+/// whichever of two documents came first is exactly the bug this work removes —
+/// so those still refuse.
+pub async fn resolve_advisory_identity(
+    source: &ReadSource,
+    workspace: &Path,
+    input: &str,
+) -> anyhow::Result<(String, String)> {
+    let resolution = match source {
+        ReadSource::Legacy(_) => resolve_against_workspace(workspace, input).await?,
+        ReadSource::Captured(read) => resolve_against_capture(read, input),
+    };
+    match &resolution.outcome {
+        Resolution::Found(found) => Ok((
+            found.identity.canonical_key.clone(),
+            found.identity.display_id.clone(),
+        )),
+        Resolution::NotFound | Resolution::InvalidSelector { .. } => {
+            Ok((input.to_string(), input.to_string()))
+        }
+        other => Err(refuse_resolution(input, other, &resolution.candidates)),
+    }
+}
+
 /// Resolve one artifact reference against a workspace's own documents.
 ///
 /// The document set is the workspace's markdown, read by the ONE workspace

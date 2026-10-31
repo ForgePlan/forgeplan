@@ -23,7 +23,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     // Resolve to the canonical identity so ambiguity, key collisions, and
     // absence remain distinct instead of falling through to an "unknown"
     // advisory phase state.
-    let (canonical, display) = common::resolve_required_identity(&source, &ws, id).await?;
+    let (canonical, display) = common::resolve_advisory_identity(&source, &ws, id).await?;
     // A state file written before the key existed carries the display id in
     // its name. The name resolved to exactly one document, so the file moves
     // to the key's name.
