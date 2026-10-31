@@ -94,7 +94,13 @@ fn get_json(root: &Path, home: &Path, id: &str) -> serde_json::Value {
         .output()
         .expect("get --json");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("get --json not JSON ({e}):\n{stdout}"))
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "get {id} --json not JSON ({e}); status={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            out.status.code()
+        )
+    })
 }
 
 /// The `.md` file under `<root>/.forgeplan/<dir>/` that declares `<id>`.

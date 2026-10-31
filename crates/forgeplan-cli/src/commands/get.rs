@@ -88,9 +88,14 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         // key beside it.
         let mut relations: Vec<(String, String, String)> = Vec::new();
         for (target, relation) in store.get_relations(&record.id).await? {
+            // A qualified or forward reference (`ADR-001@ws-b`) is not a
+            // selector in this workspace. It stays verbatim: one unresolved
+            // edge must not make the whole document unreadable.
             let display = store
                 .resolve_display_id(&target)
-                .await?
+                .await
+                .ok()
+                .flatten()
                 .unwrap_or_else(|| target.clone());
             relations.push((display, target, relation));
         }
@@ -98,7 +103,9 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         for (source, relation) in store.get_incoming_relations(&record.id).await? {
             let display = store
                 .resolve_display_id(&source)
-                .await?
+                .await
+                .ok()
+                .flatten()
                 .unwrap_or_else(|| source.clone());
             incoming.push((display, source, relation));
         }
