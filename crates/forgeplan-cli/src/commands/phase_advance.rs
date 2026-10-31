@@ -71,7 +71,7 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
     // A state file written before the key existed carries the display id in
     // its name. The name resolved to exactly one document, so the file moves
     // to the key's name.
-    phase::store::migrate_legacy_state(&ws, &display, &canonical).await?;
+    phase::store::migrate_legacy_state_held(&ws, Some(&_lock), &display, &canonical).await?;
 
     let target: Phase = to.into();
     let state =

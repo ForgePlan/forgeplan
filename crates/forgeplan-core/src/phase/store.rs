@@ -196,10 +196,32 @@ pub async fn migrate_legacy_state(
     legacy_id: &str,
     canonical_key: &str,
 ) -> anyhow::Result<bool> {
+    migrate_legacy_state_held(workspace, None, legacy_id, canonical_key).await
+}
+
+/// The same migration for a caller that ALREADY holds the workspace lock.
+///
+/// The CLI takes the lock before it resolves a phase command, and the lock is
+/// not reentrant: acquiring it again inside the migration deadlocked the
+/// command until its 30 s timeout. Passing the held guard keeps one lock for
+/// the whole read-modify-write.
+pub async fn migrate_legacy_state_held(
+    workspace: &Path,
+    held: Option<&crate::workspace::lock::WorkspaceLock>,
+    legacy_id: &str,
+    canonical_key: &str,
+) -> anyhow::Result<bool> {
     if legacy_id == canonical_key {
         return Ok(false);
     }
-    let _lock = crate::workspace::lock::acquire_workspace_lock(workspace).await?;
+    let _acquired;
+    let _lock = match held {
+        Some(guard) => guard,
+        None => {
+            _acquired = crate::workspace::lock::acquire_workspace_lock(workspace).await?;
+            &_acquired
+        }
+    };
     let candidates = crate::artifact::documents::workspace_candidates(workspace).await?;
     let resolved = crate::artifact::canonical_key::resolve_artifact(legacy_id, &candidates)?;
     let Some(resolved) = resolved else {

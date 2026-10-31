@@ -24,10 +24,9 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     // absence remain distinct instead of falling through to an "unknown"
     // advisory phase state.
     let (canonical, display) = common::resolve_advisory_identity(&source, &ws, id).await?;
-    // A state file written before the key existed carries the display id in
-    // its name. The name resolved to exactly one document, so the file moves
-    // to the key's name.
-    phase::store::migrate_legacy_state(&ws, &display, &canonical).await?;
+    // A read does not migrate: the keyed reader finds a state file written
+    // before the key existed and answers from it, and renaming it belongs to
+    // the writer that holds the workspace lock.
 
     match phase::store::read_phase(&ws, &canonical).await? {
         Some(state) => print_state(&state, &display, &canonical, json),

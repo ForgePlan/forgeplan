@@ -49,6 +49,10 @@ pub async fn run(
     // the store resolves the selector again with the shared algorithm: a
     // display alias and the canonical key of one document address one and
     // the same claim, and two documents that share an alias keep their own.
+    // The store resolves the selector itself with the shared algorithm; it
+    // must receive what the caller wrote, not the display id resolved below —
+    // two documents can share that display id.
+    let selector = id.to_string();
     let (ws, store) = common::open_store_tolerating_constellation().await?;
     let (id_owned, ref_form) = if let Some(lance) = store.as_ref() {
         let id = lance
@@ -105,7 +109,7 @@ pub async fn run(
 
     let store = ClaimStore::new(&ws);
     match store
-        .claim(id, &agent_str, ttl, note.map(|s| s.to_string()))
+        .claim(&selector, &agent_str, ttl, note.map(|s| s.to_string()))
         .await
     {
         Ok(claim) => {
