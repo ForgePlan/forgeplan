@@ -1929,9 +1929,6 @@ async fn create_artifact_projection(
     // otherwise composes is for a caller that supplies no key; an import or a
     // migration always does, and two documents that share a title must not
     // land on one path.
-    if !artifact.canonical_key.trim().is_empty() {
-        return create_artifact_with_canonical_key(ctx, artifact).await;
-    }
     // Audit 2026-05-01 #1 (security CRITICAL): validate id BEFORE composing
     // it into a filesystem path. Without this, a JSON import with
     // `"id": "../../etc/evil"` would write outside the workspace via
@@ -1948,6 +1945,51 @@ async fn create_artifact_projection(
                 reason: e.to_string(),
             },
         )?;
+
+    if !artifact.canonical_key.trim().is_empty() {
+        // Same keyed destination as the shared creator, but WITHOUT its
+        // create-only guard: this path is the import/migration writer, whose
+        // caller has already decided to replace (it deletes the row first).
+        // Refusing here made a re-import fail on the file the first import
+        // wrote.
+        let key = artifact.canonical_key.clone();
+        let filename = crate::artifact::store::canonical_filename(&key)
+            .map_err(MutationError::StoreFatal)?;
+        let path = workspace.join(artifact_kind.dir_name()).join(&filename);
+        let published = render_projection_inner(
+            workspace,
+            &artifact.id,
+            &artifact.kind,
+            &artifact.title,
+            &artifact.status,
+            &artifact.depth,
+            artifact.author.as_deref(),
+            artifact.parent_epic.as_deref(),
+            artifact.valid_until.as_deref(),
+            &artifact.body,
+            &[],
+            &artifact.tags,
+            true,
+            body_mode,
+            Some(&key),
+            Some(path),
+            false,
+        )
+        .await
+        .map_err(MutationError::StoreFatal)?;
+        // The markdown is the source of truth; the legacy index row follows
+        // it, exactly as the shared creator does. Without this the document
+        // existed on disk and nowhere else, and every read said 'not found'.
+        if let Some(store) = store {
+            let mut row = creation_row(artifact);
+            row.canonical_key = key;
+            store
+                .create_artifact(&row)
+                .await
+                .map_err(MutationError::StoreFatal)?;
+        }
+        return Ok(published);
+    }
 
     // PRD-073 Phase 3c CRITICAL fix (R1 audit): the slug-fallback rule for
     // non-ASCII titles (Cyrillic, CJK, emoji) lives entirely inside
