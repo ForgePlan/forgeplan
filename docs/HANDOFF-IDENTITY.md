@@ -3,7 +3,7 @@
 ## Состояние
 
 Ветка `feat/artifact-identity`, дерево чистое, последний коммит `8d59a9c7`.
-Полный прогон `cargo test -p forgeplan`: **68 бинарников зелёные, 13 красных**.
+Полный прогон `cargo test -p forgeplan`: **71 бинарник зелёный, 10 красных**.
 
 ## Закрыто в этой серии (проверено прогоном)
 
@@ -30,14 +30,13 @@
 
 ## Осталось красным
 
-- `legacy_compat_e2e`: 8 смоук-тестов падают на проверке «slug для легаси
-  документа равен null». Живьём контракт держится (`slug: null`,
-  `canonical_key` присутствует), значит причина в фикстуре или в `get_json`
-  этого файла — разобрать отдельно, не переписывая контракт.
-- Семейство импорта: `import_accepts_display_id_in_payload`,
-  `import_accepts_slug_in_payload`, `import_accepts_matching_kind_on_force`,
-  `import_rejects_kind_mismatch_on_force` — сверить ожидания с новой
-  идентичностью (импорт теперь идёт по ключу).
+- `cli_uncovered_coverage`: `remember_creates_memory_artifact` и
+  `recall_after_remember_returns_memory` ждут прежнюю форму — тест берёт
+  первый файл из `.forgeplan/memory` и требует `mem-` в выводе `recall`.
+  Живьём: файл по ключу, slug `mem-…`, `recall` показывает `MEM-001`;
+  сверять ожидания с новой идентичностью, а не менять поведение.
+- Импорт: семейство закрыто (`cli_resolver_wiring` 26/26), кроме
+  `import_rejects_kind_mismatch_on_force` — проверить форму отказа.
 - `absent_selector_exits_three_in_each_command` — регрессия в моём же наборе
   после правок фазы; проверить, какая команда теперь отвечает иначе.
 - `claim_and_release_on_a_migrated_workspace_use_canonical_records`,
