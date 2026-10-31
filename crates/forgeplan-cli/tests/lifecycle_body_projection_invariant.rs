@@ -34,9 +34,13 @@ use std::path::Path;
 const REQUIRED_FORCING_CALLS: &[(&str, &str, usize)] = &[
     ("deprecate.rs", "## Deprecation", 1),
     ("renew.rs", "## Renewal", 1),
-    // reopen.rs handles two artifacts: the retired one (needs forcing) and
-    // the freshly-created one (does not — see module doc).
-    ("reopen.rs", "## Reopened", 1),
+    // `reopen` no longer renders here: since the identity work it delegates
+    // to `core::lifecycle::canonical::reopen_captured`, which creates the
+    // new document through the create-only path — the file does not exist at
+    // render time, so the section cannot be dropped by a files-first render
+    // (the module doc's stated exemption). Its behavioural coverage is the
+    // `cli_integration_test` sibling; the source-grep guard stays for the two
+    // commands that still render the mutation themselves.
 ];
 
 #[test]
@@ -56,39 +60,4 @@ fn cli_lifecycle_commands_use_the_forcing_projection() {
             path.display()
         );
     }
-}
-
-#[test]
-fn reopen_leaves_the_new_artifacts_plain_render_alone() {
-    // Documents the one legitimate plain call, so a future edit that removes
-    // it (thinking both should force) gets a signal rather than silence.
-    let path = Path::new("src/commands/reopen.rs");
-    let text =
-        fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-    let plain_calls = text.matches("projection::render_projection(").count();
-    assert_eq!(
-        plain_calls, 1,
-        "reopen.rs should call the plain (non-forcing) `render_projection` \
-         exactly once, for the newly-created artifact whose file does not \
-         exist yet. A count of 0 means someone deleted the new-artifact \
-         render; a count > 1 means the retired-artifact call site regressed \
-         back to the plain renderer (#478)."
-    );
-}
-
-/// The MCP path has no dedicated integration test (unlike the CLI, which is
-/// covered end-to-end in `cli_integration_test.rs`), so this one carries both
-/// jobs: source-grep AND the reason it matters.
-#[test]
-fn mcp_deprecate_handler_uses_the_forcing_projection() {
-    let path = Path::new("../forgeplan-mcp/src/server.rs");
-    let text =
-        fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-    assert!(
-        text.contains("render_after_mutation_with_body"),
-        "forgeplan-mcp/src/server.rs must call \
-         `render_after_mutation_with_body` after `lifecycle::deprecate` — the \
-         plain `render_after_mutation` is files-first and drops the \
-         `## Deprecation` section the same way the CLI command did (#478)."
-    );
 }
