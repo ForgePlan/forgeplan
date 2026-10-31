@@ -1924,6 +1924,14 @@ async fn create_artifact_projection(
 ) -> MutationResult<PathBuf> {
     let workspace = ctx.workspace;
     let store = ctx.legacy_sink;
+    // A document that carries its identity is published under its key, the
+    // same path the shared creator uses. The title-derived name this helper
+    // otherwise composes is for a caller that supplies no key; an import or a
+    // migration always does, and two documents that share a title must not
+    // land on one path.
+    if !artifact.canonical_key.trim().is_empty() {
+        return create_artifact_with_canonical_key(ctx, artifact).await;
+    }
     // Audit 2026-05-01 #1 (security CRITICAL): validate id BEFORE composing
     // it into a filesystem path. Without this, a JSON import with
     // `"id": "../../etc/evil"` would write outside the workspace via
