@@ -96,7 +96,10 @@ pub async fn run(
             .iter()
             .map(|a| {
                 serde_json::json!({
+                    // The `id` keeps its meaning — the display alias — and the
+                    // canonical key travels beside it (ADR-030).
                     "id": a.id,
+                    "canonical_key": a.canonical_key,
                     "kind": a.kind,
                     "status": a.status,
                     "title": a.title,

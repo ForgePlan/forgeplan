@@ -108,6 +108,7 @@ impl From<ArtifactSummary> for ArtifactSummaryDto {
         let id_display = s.id.clone();
         Self {
             id: s.id,
+            canonical_key: s.canonical_key.clone(),
             kind: s.kind,
             status: s.status,
             title: s.title,
@@ -156,6 +157,10 @@ impl From<ArtifactRecord> for ArtifactSummaryDto {
         let identity = identity_from_record(&r.id, &r.kind, &r.body);
         Self {
             id: r.id,
+            // The key travels beside the alias (ADR-030): a caller that
+            // already holds `PRD-074` must not lose it when the document
+            // is later known by its canonical namespace.
+            canonical_key: r.canonical_key.clone(),
             kind: r.kind,
             status: r.status,
             title: r.title,

@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactSummaryDto {
+    /// The display alias (`PRD-074`) — the id a caller already used.
     pub id: String,
+    /// The document's canonical key, beside the id (ADR-030).
+    pub canonical_key: String,
     pub kind: String,
     pub status: String,
     pub title: String,
@@ -601,7 +604,10 @@ pub struct SearchCoverage {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SearchResultDto {
+    /// The display alias (`PRD-074`) — the id a caller already used.
     pub id: String,
+    /// The document's canonical key, beside the id (ADR-030).
+    pub canonical_key: String,
     pub kind: String,
     pub title: String,
     #[serde(default)]

@@ -6900,6 +6900,7 @@ impl ForgeplanServer {
                     );
                     SearchResultDto {
                         id: record.id.clone(),
+                        canonical_key: record.canonical_key.clone(),
                         kind: record.kind.clone(),
                         title: record.title.clone(),
                         matched_lines,
@@ -6995,18 +6996,25 @@ impl ForgeplanServer {
         let dtos: Vec<SearchResultDto> = results
             .into_iter()
             .map(|r| {
-                let identity = match by_id.get(&r.id) {
-                    Some(rec) => {
-                        crate::convert::identity_from_record(&rec.id, &rec.kind, &rec.body)
-                    }
+                let (identity, canonical_key) = match by_id.get(&r.id) {
+                    Some(rec) => (
+                        crate::convert::identity_from_record(&rec.id, &rec.kind, &rec.body),
+                        rec.canonical_key.clone(),
+                    ),
                     // Defensive: if the smart layer emits an id we no longer
                     // have a record for (shouldn't happen — same source list)
                     // fall back to a no-frontmatter view rather than dropping
-                    // the hit entirely.
-                    None => crate::convert::identity_from_record(&r.id, &r.kind, ""),
+                    // the hit entirely. Without a record there is no key to
+                    // report, so the canonical form of the id is the best
+                    // answer available and is never a fabricated one.
+                    None => (
+                        crate::convert::identity_from_record(&r.id, &r.kind, ""),
+                        r.id.to_ascii_lowercase(),
+                    ),
                 };
                 SearchResultDto {
                     id: r.id,
+                    canonical_key,
                     kind: r.kind,
                     title: r.title,
                     matched_lines: Vec::new(),
