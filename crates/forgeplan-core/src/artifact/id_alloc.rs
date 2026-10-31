@@ -462,6 +462,11 @@ async fn max_number_in_tree(dir: &Path, kind: &ArtifactKind) -> anyhow::Result<u
             if let Some(num) = number_from_file_name(&name, &prefix) {
                 max_num = max_num.max(num);
             }
+            let content = tokio::fs::read_to_string(&path)
+                .await
+                .with_context(|| {
+                    format!("could not read {} for number accounting", path.display())
+                })?;
             let num = number_from_frontmatter(&content, &prefix)
                 .with_context(|| format!("could not account for frontmatter in {}", path.display()))?;
             if let Some(num) = num {

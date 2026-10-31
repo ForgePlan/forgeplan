@@ -171,13 +171,21 @@ pub async fn run(
     for record in records {
         *alias_counts.entry(record.id.as_str()).or_default() += 1;
     }
-    let display_id = |key: &str| display_by_key.get(key).copied().unwrap_or(key);
+    // Both closures own their strings: `display_by_key` and the caller's key
+    // have different lifetimes, so a `&str` borrowed from either cannot be
+    // returned by one closure.
+    let display_id = |key: &str| -> String {
+        display_by_key
+            .get(key)
+            .map(|display| (*display).to_string())
+            .unwrap_or_else(|| key.to_string())
+    };
     let display_label = |key: &str| {
         let display = display_id(key);
-        if alias_counts.get(display).copied().unwrap_or(0) > 1 {
+        if alias_counts.get(display.as_str()).copied().unwrap_or(0) > 1 {
             format!("{display} [{key}]")
         } else {
-            display.to_string()
+            display
         }
     };
 

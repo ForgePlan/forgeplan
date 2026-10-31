@@ -113,6 +113,9 @@ pub async fn apply_restore_with_target(
                             .as_deref()
                             .unwrap_or(&receipt.snapshot.id),
                     )
+                    .await
+                    .ok()
+                    .flatten()
                     .map(|record| record.status),
                 None => None,
             },

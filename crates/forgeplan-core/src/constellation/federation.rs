@@ -633,7 +633,7 @@ pub async fn federated_get(
                             canonical_key: artifact.canonical_key.clone(),
                             display_id: artifact.display_id.clone(),
                             title: artifact.title.clone(),
-                            relative_path: artifact.relative_path.clone(),
+                            relative_path: artifact.relative_path.clone().into(),
                         })
                         .collect();
                     let selected = crate::artifact::canonical_key::resolve_artifact(

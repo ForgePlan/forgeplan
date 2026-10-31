@@ -1522,6 +1522,7 @@ fn render_markdown_with_extras(
         }
     }
 
+    let yaml = serde_yaml::to_string(&fm)?;
     Ok(format!("---\n{}---\n\n{}", yaml, body))
 }
 

@@ -3434,7 +3434,7 @@ impl ForgeplanServer {
             canonical_key,
             kind: template_key.into(),
             title: p.title,
-            filepath: filepath.display().to_string(),
+            filepath: allocated.filepath.display().to_string(),
             _next_action: Some(next_hint),
             warnings,
             slug: Some(slug),

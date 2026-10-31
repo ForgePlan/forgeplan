@@ -416,7 +416,7 @@ impl WorkspaceRead {
             .unusable
             .iter()
             .filter(|source| {
-                source.code == super::capture::DiagnosticCode::IdentityCollision
+                source.code == crate::constellation::DiagnosticCode::IdentityCollision
                     && source
                         .canonical_key
                         .as_deref()
