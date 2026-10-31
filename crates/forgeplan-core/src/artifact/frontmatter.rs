@@ -223,13 +223,21 @@ pub fn declared_canonical_keys(content: &str) -> Vec<String> {
 pub fn ensure_canonical_key(content: &str, canonical_key: &str) -> anyhow::Result<String> {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
-        return Ok(format!("---\nslug: {canonical_key}\n---\n\n{content}"));
+        return Ok(format!(
+            "---\nslug: {canonical_key}\ncanonical_key: {canonical_key}\n---\n\n{content}"
+        ));
     }
     let (mut fm, body) = parse_frontmatter_slice(trimmed)?;
-    fm.insert(
-        "slug".to_string(),
-        serde_yaml::Value::String(canonical_key.to_string()),
-    );
+    // `slug` keeps its historical meaning for every reader that already looks
+    // for it; `canonical_key` names the same value without the reader having
+    // to know that history. A document that cannot say which key it carries
+    // is exactly the ambiguity this feature removes.
+    for field in ["slug", "canonical_key"] {
+        fm.insert(
+            field.to_string(),
+            serde_yaml::Value::String(canonical_key.to_string()),
+        );
+    }
     let yaml = serde_yaml::to_string(&fm)?;
     Ok(format!("---\n{yaml}---\n\n{body}"))
 }
