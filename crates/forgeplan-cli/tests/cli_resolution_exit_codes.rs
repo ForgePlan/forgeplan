@@ -117,14 +117,6 @@ fn absent_selector_exits_three_in_each_command() {
         let refs: Vec<&str> = selected.iter().map(String::as_str).collect();
         let output = run(root.path(), &refs);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // The phase marker is advisory (PROB-056): it may exist before the
-        // document does, so absence is not an error there. It still refuses
-        // ambiguity and a key collision — that is what the two tests above
-        // check on the same commands.
-        if matches!(selected[0].as_str(), "phase" | "phase-advance") {
-            assert_eq!(output.status.code(), Some(0), "{selected:?}: {stderr}");
-            continue;
-        }
         assert_eq!(output.status.code(), Some(3), "{selected:?}: {stderr}");
         assert!(stderr.contains("Artifact 'PRD-404' not found"), "{selected:?}: {stderr}");
     }

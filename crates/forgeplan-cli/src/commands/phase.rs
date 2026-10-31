@@ -23,7 +23,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     // Resolve to the canonical identity so ambiguity, key collisions, and
     // absence remain distinct instead of falling through to an "unknown"
     // advisory phase state.
-    let (canonical, display) = common::resolve_advisory_identity(&source, &ws, id).await?;
+    let (canonical, display) = common::resolve_required_identity(&source, &ws, id).await?;
     // A read does not migrate: the keyed reader finds a state file written
     // before the key existed and answers from it, and renaming it belongs to
     // the writer that holds the workspace lock.

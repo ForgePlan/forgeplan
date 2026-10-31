@@ -404,20 +404,22 @@ fn invalid_phase_input_preserves_exit_codes_and_the_existing_state() {
             1,
             "reason too long: 4097 bytes (max: 4096)",
         );
+        // The wording for a malformed selector belongs to the ONE shared
+        // resolver — the CLI does not keep a second, older message.
         fixture.fails(
             &["phase", "PRD/001", "--json"],
             1,
-            "artifact_id contains invalid character",
+            "not a valid artifact reference",
         );
         fixture.fails(
             &["phase", "../escape", "--json"],
             1,
-            "artifact_id must start with an ASCII letter",
+            "not a valid artifact reference",
         );
         fixture.fails(
             &["phase-advance", "PRD/001", "--to", "code", "--json"],
             1,
-            "Artifact 'PRD/001' not found",
+            "not a valid artifact reference",
         );
         assert_eq!(std::fs::read(fixture.state_path()).unwrap(), before);
         fixture.assert_index_unchanged();
