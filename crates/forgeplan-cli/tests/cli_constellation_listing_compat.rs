@@ -592,7 +592,7 @@ fn fresh_unindexed_sources_keep_nonempty_terminal_and_checkbox_free_reports() {
     let out = pair.ok(&["list", "--json"]);
     assert_eq!(
         json_output(&out),
-        json!([{"id": "NOTE-001", "kind": "note", "status": "active", "title": "No checkboxes"}])
+        json!([{"id": "NOTE-001", "canonical_key": "NOTE-001", "kind": "note", "status": "active", "title": "No checkboxes"}])
     );
     assert_eq!(
         json_output(&pair.ok(&["progress", "--json"])),
