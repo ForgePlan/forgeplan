@@ -438,6 +438,15 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 - Локальная сборка `0.39.0+constellation.s1.1` проверена по описанной локальной матрице на macOS (EVID-183, снимок `s1-local-v0396`); четыре оговорки предыдущего среза закрыты исполнением: (a) `constellation pack` отвечает `InsufficientBudget { budget_tokens, smallest_unit_tokens }`, когда бюджет меньше самой маленькой подходящей строки, и сериализует `payload_bytes` при нормальном бюджете; (b) `constellation impact` и `graph` принимают `KEY@src:<hash>` / `@<segment>` / `@<suffix>` и сужают walk к указанному источнику; (c) `constellation_open` запоминает `source_set_digest` каждого источника, а scope-чтения возвращают `snapshot_expired` вместо тихой выдачи новых байт — трёхпроектный федеративный probe: 25/25 PASS, 3 OBSERVED; (d) векторы покрывают всё тело через непрерывные окна секций (реальный документ с 3290-символьным телом получил 4 ready rows и хвостовой токен найден со score 0.541). Дополнительно `--semantic` пропускает model load, когда `count_eligible_semantic` возвращает 0 (CLI без опубликованных векторов отвечает за 0.01 с). Инференс остаётся per-process; daemon — отдельная задача. Матрица v0396: оба feature-режима, 5683 кейса + 10 doctests, 0 падений; fingerprints unchanged между прогонами. Это исторический результат EVID-183, а не повторная приёмка в рамках документационной проверки.
 
 
+### Added
+
+- **Необязательный reasoning effort для `codex-cli`**: `llm.effort`
+  принимает `none`, `minimal`, `low`, `medium`, `high`, `xhigh` и передаётся
+  через `-c model_reasoning_effort="<value>"`. Без поля или с `null`
+  аргументы запуска не меняются. Read-only sandbox сохранён; другие
+  провайдеры поле не используют. Добавлены тесты аргументов и конфигурации.
+  Успех запроса не считается подтверждением effective effort провайдера.
+
 ## [0.38.0] - 2026-10-12
 
 Sprint headline: **Use the AI subscription you already have — without turning
