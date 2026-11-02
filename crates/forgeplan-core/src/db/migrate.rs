@@ -4047,7 +4047,7 @@ mod tests {
         assert!(db.open_table("artifacts").execute().await.unwrap().schema().await.unwrap().field_with_name("canonical_key").is_err());
         drop(store);
 
-        let report = run_identity_v5_migration(&ws, &lock).await.unwrap();
+        let report = crate::db::store::LanceStore::migrate_identity_v5(&ws, &lock).await.unwrap();
         assert!(report.published);
         assert_eq!(report.evidence_count, 1);
         assert_eq!(report.relation_count, 1);

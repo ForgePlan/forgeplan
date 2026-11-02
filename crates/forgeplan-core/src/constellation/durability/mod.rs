@@ -952,6 +952,20 @@ fn tracked_filesystem_path(key: &str) -> Result<std::path::PathBuf, Constellatio
     let path = object_store::path::Path::parse(key).map_err(|error| {
         ConstellationError::DurabilityUnavailable { detail: format!("invalid tracked path {key}: {error}") }
     })?;
+    // ObjectStore represents the drive root as `C:` (without a trailing
+    // separator). Passing that key to LocalFileSystem reaches url's Windows
+    // conversion with a drive-relative path and can panic in debug builds.
+    let key = path.as_ref();
+    let bytes = key.as_bytes();
+    match bytes {
+        [drive, b':'] if drive.is_ascii_alphabetic() => {
+            return Ok(std::path::PathBuf::from(format!("{}:\\", *drive as char)));
+        }
+        [drive, b':', b'/', ..] if drive.is_ascii_alphabetic() => {}
+        _ => return Err(ConstellationError::DurabilityUnavailable {
+            detail: format!("tracked path {key} is not an absolute local drive path"),
+        }),
+    }
     object_store::local::LocalFileSystem::new()
         .path_to_filesystem(&path)
         .map_err(|error| ConstellationError::DurabilityUnavailable {
@@ -1033,6 +1047,45 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Test double for tracker ordering, not a Windows directory durability
+    /// primitive. On POSIX the real directory fsync is still exercised.
+    #[derive(Debug, Default)]
+    struct RecordingBarrier {
+        directories: std::sync::Mutex<Vec<std::path::PathBuf>>,
+    }
+
+    impl PlatformDurability for RecordingBarrier {
+        fn adapter_name(&self) -> &'static str { "test-recording-barrier" }
+
+        fn sync_file(&self, path: &Path) -> Result<(), ConstellationError> {
+            #[cfg(windows)]
+            { windows::WindowsNtfsDurability.sync_file(path) }
+            #[cfg(not(windows))]
+            { PosixDurability.sync_file(path) }
+        }
+
+        fn sync_dir(&self, path: &Path) -> Result<(), ConstellationError> {
+            let metadata = std::fs::symlink_metadata(path).map_err(|error| io_error("stat test directory", path, error))?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(ConstellationError::DurabilityUnavailable {
+                    detail: format!("test directory {} is not a real directory", path.display()),
+                });
+            }
+            #[cfg(not(windows))]
+            PosixDurability.sync_dir(path)?;
+            self.directories.lock().unwrap().push(path.to_path_buf());
+            Ok(())
+        }
+
+        fn ensure_dir(&self, _dir: &Path) -> Result<(), ConstellationError> {
+            Err(ConstellationError::DurabilityUnavailable { detail: "unexpected test ensure_dir".into() })
+        }
+
+        fn replace_atomically(&self, _src: &Path, _dest: &Path) -> Result<(), ConstellationError> {
+            Err(ConstellationError::DurabilityUnavailable { detail: "unexpected test replace".into() })
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_confinement_accepts_verbatim_drives_but_not_sibling_or_case_alias() {
@@ -1042,6 +1095,17 @@ mod tests {
         assert!(!path_is_within(Path::new(r"C:\data\stage\file"), Path::new(r"C:\Data\stage")));
         assert!(!path_is_within(Path::new(r"D:\Data\stage\file"), Path::new(r"C:\Data\stage")));
         assert!(!path_is_within(Path::new(r"C:\Data\stage\..\outside"), Path::new(r"C:\Data\stage")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tracked_drive_root_is_absolute_and_malformed_keys_are_refused() {
+        assert_eq!(tracked_filesystem_path("D:").unwrap(), Path::new(r"D:\"));
+        assert_eq!(tracked_filesystem_path("D:/").unwrap(), Path::new(r"D:\"));
+        assert_eq!(tracked_filesystem_path("D:/dir/file").unwrap(), Path::new(r"D:\dir\file"));
+        for invalid in ["", "D", "D:relative", r"D:\relative", "данные"] {
+            assert!(tracked_filesystem_path(invalid).is_err(), "{invalid:?}");
+        }
     }
 
     #[cfg(windows)]
@@ -1161,10 +1225,8 @@ mod tests {
     /// are filesystem-root-relative (`abs/path` without the leading `/`),
     /// never index-root-relative. Fixtures must record keys in that shape.
     fn fs_key(index_root: &Path, relative: &str) -> String {
-        index_root
-            .join(relative)
-            .to_string_lossy()
-            .trim_start_matches('/')
+        object_store::path::Path::from_absolute_path(index_root.join(relative))
+            .unwrap()
             .to_string()
     }
 
@@ -1205,8 +1267,9 @@ mod tests {
         std::fs::write(tmp.path().join("t/final.lance"), b"data").unwrap();
 
         let set = tracker.finish_writes().unwrap();
+        let barrier = RecordingBarrier::default();
         let stage = tracker
-            .sync_written_set(&set, tmp.path(), &PosixDurability)
+            .sync_written_set(&set, tmp.path(), &barrier)
             .unwrap();
         assert_eq!(stage.files_synced, 1);
     }
@@ -1225,9 +1288,10 @@ mod tests {
         tracker.register_intent(&fs_key(tmp.path(), "t/data/nested/a.arrow"));
         tracker.record_write(&fs_key(tmp.path(), "t/data/nested/a.arrow"));
         let set = tracker.finish_writes().unwrap();
+        let barrier = RecordingBarrier::default();
 
         let stage = tracker
-            .sync_written_set(&set, tmp.path(), &PosixDurability)
+            .sync_written_set(&set, tmp.path(), &barrier)
             .unwrap();
         assert_eq!(stage.files_synced, 1);
         assert_eq!(
@@ -1235,6 +1299,13 @@ mod tests {
             "nested, data, t and the index root itself are all changed \
              directories — the fs-root-relative key records every ancestor              inside the root"
         );
+        assert_eq!(*barrier.directories.lock().unwrap(), vec![
+            tmp.path().join("t/data/nested"),
+            tmp.path().join("t/data"),
+            tmp.path().join("t"),
+            tmp.path().to_path_buf(),
+            tmp.path().to_path_buf(),
+        ]);
     }
 
     #[test]
@@ -1267,10 +1338,12 @@ mod tests {
         tracker.begin_stage(1);
         let set = tracker.finish_writes().unwrap();
         assert!(set.is_empty());
+        let barrier = RecordingBarrier::default();
         let stage = tracker
-            .sync_written_set(&set, tmp.path(), &PosixDurability)
+            .sync_written_set(&set, tmp.path(), &barrier)
             .unwrap();
         assert_eq!(stage.files_synced, 0);
+        assert_eq!(*barrier.directories.lock().unwrap(), vec![tmp.path().to_path_buf()]);
     }
 
     #[test]

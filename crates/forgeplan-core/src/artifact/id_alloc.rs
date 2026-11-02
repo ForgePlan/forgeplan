@@ -182,7 +182,9 @@ async fn open_and_lock(
             match f.try_lock_exclusive() {
                 Ok(()) => return Ok(f),
                 Err(e) => {
-                    let transient = e.kind() == std::io::ErrorKind::WouldBlock;
+                    let transient = e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.raw_os_error().zip(fs2::lock_contended_error().raw_os_error())
+                            .is_some_and(|(actual, expected)| actual == expected);
                     if !transient {
                         return Err(anyhow::anyhow!(
                             "could not acquire id-alloc lock on {}: {e}",

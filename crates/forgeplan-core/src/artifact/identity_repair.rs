@@ -4268,6 +4268,17 @@ pub fn detect_git_identity(forgeplan_dir: &Path) -> Result<Option<GitIdentity>> 
 fn detect_git_identity_with(forgeplan_dir: &Path, git: &std::ffi::OsStr) -> Result<Option<GitIdentity>> {
     let workspace = fs::canonicalize(forgeplan_dir)
         .with_context(|| format!("resolve workspace {}", forgeplan_dir.display()))?;
+    let mut nearest_boundary = None;
+    for ancestor in workspace.ancestors() {
+        match fs::symlink_metadata(ancestor.join(".git")) {
+            Ok(_) => {
+                nearest_boundary = Some(ancestor);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("inspect Git repository marker"),
+        }
+    }
     let run = |args: &[&str]| -> Result<std::process::Output> {
         std::process::Command::new(git)
             .arg("-C")
@@ -4289,22 +4300,35 @@ fn detect_git_identity_with(forgeplan_dir: &Path, git: &std::ffi::OsStr) -> Resu
         if no_explicit_git
             && stderr.trim() == "fatal: not a git repository (or any of the parent directories): .git"
         {
-            let mut marker_found = false;
-            for ancestor in workspace.ancestors() {
-                match fs::symlink_metadata(ancestor.join(".git")) {
-                    Ok(_) => {
-                        marker_found = true;
-                        break;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error).context("inspect Git repository marker"),
-                }
-            }
-            if !marker_found {
+            if nearest_boundary.is_none() {
                 return Ok(None);
             }
         }
         bail!("Git repository discovery failed: {}", stderr.trim());
+    }
+    // Git may skip a malformed nested .git and discover an enclosing
+    // repository. Compare its reported worktree root to the nearest physical
+    // boundary; Git itself resolves ordinary .git files and linked worktrees.
+    if let Some(boundary) = nearest_boundary {
+        let root = run(&["rev-parse", "--path-format=absolute", "--show-toplevel"])?;
+        if !root.status.success() {
+            bail!("Git worktree root lookup failed: {}", String::from_utf8_lossy(&root.stderr).trim());
+        }
+        let root_output = std::str::from_utf8(&root.stdout).context("Git worktree root is not UTF-8")?;
+        let root_text = root_output.strip_suffix('\n').unwrap_or(root_output);
+        let root_text = root_text.strip_suffix('\r').unwrap_or(root_text);
+        if root_text.is_empty() {
+            bail!("Git returned an empty worktree root");
+        }
+        let root = fs::canonicalize(root_text).with_context(|| format!("resolve Git worktree root {root_text}"))?;
+        #[cfg(windows)]
+        let same_root = root.to_str().ok_or_else(|| anyhow::anyhow!("Git worktree root is not UTF-8"))?.to_lowercase()
+            == boundary.to_str().ok_or_else(|| anyhow::anyhow!("Git repository boundary is not UTF-8"))?.to_lowercase();
+        #[cfg(not(windows))]
+        let same_root = root.as_path() == boundary;
+        if !same_root {
+            bail!("Git discovered worktree {} beyond the nearest repository boundary {}", root.display(), boundary.display());
+        }
     }
 
     let common = run(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
@@ -6128,24 +6152,47 @@ mod tests {
     #[test]
     fn committed_git_identity_is_bound_and_broken_head_blocks_apply() {
         let workspace = colliding_workspace();
-        let forgeplan = workspace.path().join(".forgeplan");
+        let inner = workspace.path().join("inner");
+        fs::create_dir(&inner).unwrap();
+        fs::rename(workspace.path().join(".forgeplan"), inner.join(".forgeplan")).unwrap();
+        let forgeplan = inner.join(".forgeplan");
+        for dir in [workspace.path(), inner.as_path()] {
+            let git = |args: &[&str]| {
+                assert!(std::process::Command::new("git").args(args)
+                    .current_dir(dir).status().unwrap().success());
+            };
+            git(&["init", "-q"]);
+            git(&["-c", "user.name=Eli Rum", "-c", "user.email=eli.rum@example.com",
+                "commit", "--allow-empty", "-qm", "initial"]);
+        }
+        let census = census_workspace(&forgeplan).unwrap();
+        let plan = build_repair_plan(&forgeplan, &census, &decision_for_second_prd()).unwrap();
+        let identity = plan.git.as_ref().expect("Git identity");
+        assert!(!identity.head.is_empty());
+        assert_eq!(Path::new(&identity.common_dir), fs::canonicalize(inner.join(".git")).unwrap());
+        let before = fs::read(forgeplan.join("prds/PRD-001-a.md")).unwrap();
+        fs::write(inner.join(".git/HEAD"), "broken HEAD\n").unwrap();
+        assert!(detect_git_identity(&forgeplan).is_err());
+        assert!(apply_repair_plan(&forgeplan, &plan).is_err());
+        assert_eq!(fs::read(forgeplan.join("prds/PRD-001-a.md")).unwrap(), before);
+    }
+    #[test]
+    fn linked_worktree_git_file_uses_its_own_root_and_shared_common_directory() {
+        let workspace = colliding_workspace();
+        let inner = workspace.path().join("linked");
         let git = |args: &[&str]| {
             assert!(std::process::Command::new("git").args(args)
                 .current_dir(workspace.path()).status().unwrap().success());
         };
         git(&["init", "-q"]);
-        git(&["-c", "user.name=Test", "-c", "user.email=test@example.com",
+        git(&["-c", "user.name=Eli Rum", "-c", "user.email=eli.rum@example.com",
             "commit", "--allow-empty", "-qm", "initial"]);
-        let census = census_workspace(&forgeplan).unwrap();
-        let plan = build_repair_plan(&forgeplan, &census, &decision_for_second_prd()).unwrap();
-        let identity = plan.git.as_ref().expect("Git identity");
+        git(&["worktree", "add", "--detach", "linked"]);
+        fs::rename(workspace.path().join(".forgeplan"), inner.join(".forgeplan")).unwrap();
+        assert!(inner.join(".git").is_file());
+        let identity = detect_git_identity(&inner.join(".forgeplan")).unwrap().unwrap();
         assert!(!identity.head.is_empty());
         assert_eq!(Path::new(&identity.common_dir), fs::canonicalize(workspace.path().join(".git")).unwrap());
-        let before = fs::read(forgeplan.join("prds/PRD-001-a.md")).unwrap();
-        fs::write(workspace.path().join(".git/HEAD"), "broken HEAD\n").unwrap();
-        assert!(detect_git_identity(&forgeplan).is_err());
-        assert!(apply_repair_plan(&forgeplan, &plan).is_err());
-        assert_eq!(fs::read(forgeplan.join("prds/PRD-001-a.md")).unwrap(), before);
     }
     #[test]
     fn nested_collision_reference_apply_and_rollback_preserve_exact_preimages() {

@@ -116,6 +116,23 @@ impl PlatformDurability for WindowsNtfsDurability {
     fn sync_file(&self, path: &Path) -> Result<(), ConstellationError> {
         let name = wide(path);
 
+        // A write-only CreateFileW cannot reliably open directories on
+        // Windows. Classify obvious non-files before that open, and retain the
+        // handle-based checks below for changes between classification/open.
+        let attributes = unsafe { GetFileAttributesW(name.as_ptr()) };
+        if attributes != INVALID_FILE_ATTRIBUTES {
+            if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(ConstellationError::DurabilityUnavailable {
+                    detail: format!("{} is a reparse point; the index will not flush through an alias", path.display()),
+                });
+            }
+            if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+                return Err(ConstellationError::DurabilityUnavailable {
+                    detail: format!("{} is a directory, not a final regular file", path.display()),
+                });
+            }
+        }
+
         // GENERIC_WRITE: `FlushFileBuffers` is only meaningful on a handle
         // opened for writing; on a read-only handle it has nothing to push.
         //
@@ -143,7 +160,7 @@ impl PlatformDurability for WindowsNtfsDurability {
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 std::ptr::null(),
                 OPEN_EXISTING,
-                FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT,
+                FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
                 std::ptr::null_mut(),
             )
         };

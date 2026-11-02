@@ -16,6 +16,7 @@ env:
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
   CARGO_BUILD_JOBS: '2'
+  RUST_BACKTRACE: '1'
 
 jobs:
   identity-windows:
@@ -49,8 +50,55 @@ jobs:
           $volume = Get-Volume -DriveLetter $drive -ErrorAction Stop
           if ($volume.FileSystem -ne 'NTFS') { throw "Expected NTFS, got $($volume.FileSystem)" }
           if ($volume.SizeRemaining -lt 15GB) { throw 'Insufficient free disk space before build' }
-          $temp = Join-Path $env:GITHUB_WORKSPACE 'ci-temp'
+          $temp = Join-Path $env:RUNNER_TEMP 'forgeplan-identity-fixtures'
           New-Item -ItemType Directory -Force $temp | Out-Null
+          $temp = (Resolve-Path -LiteralPath $temp).ProviderPath
+          "Fixture TEMP/TMP: $temp" | Tee-Object ci-logs/fixture-path.txt
+
+          # Reject reparse points so the ancestor and volume checks refer to
+          # the physical location rather than an apparently unrelated path.
+          for ($dir = Get-Item -LiteralPath $temp; $null -ne $dir; $dir = $dir.Parent) {
+            if ($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+              throw "Fixture path contains a reparse point: $($dir.FullName)"
+            }
+            if (Test-Path -LiteralPath (Join-Path $dir.FullName '.git')) {
+              throw "Fixture path is inside a Git boundary: $($dir.FullName)"
+            }
+          }
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class FixtureVolume {
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern bool GetVolumePathName(string path, StringBuilder volume, int length);
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern bool GetVolumeNameForVolumeMountPoint(string path, StringBuilder volume, int length);
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern bool GetVolumeInformation(string root, StringBuilder name, int nameLength,
+                  out uint serial, out uint maxComponent, out uint flags, StringBuilder filesystem, int filesystemLength);
+          }
+          '@
+          $volumeIds = @()
+          foreach ($path in @($env:GITHUB_WORKSPACE, $temp)) {
+            $root = [Text.StringBuilder]::new(32768)
+            $id = [Text.StringBuilder]::new(32768)
+            $fs = [Text.StringBuilder]::new(256)
+            $serial = [uint32]0; $maxComponent = [uint32]0; $flags = [uint32]0
+            if (-not [FixtureVolume]::GetVolumePathName($path, $root, $root.Capacity) -or
+                -not [FixtureVolume]::GetVolumeNameForVolumeMountPoint($root.ToString(), $id, $id.Capacity) -or
+                -not [FixtureVolume]::GetVolumeInformation($root.ToString(), $null, 0, [ref]$serial, [ref]$maxComponent, [ref]$flags, $fs, $fs.Capacity)) {
+              throw "Cannot identify volume for $path (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"
+            }
+            if ($fs.ToString() -ne 'NTFS') { throw "Expected NTFS for $path, got $fs" }
+            $volumeIds += $id.ToString()
+          }
+          if ($volumeIds[0] -ne $volumeIds[1]) { throw 'Fixture path and checkout must be on the same volume' }
+          $PSNativeCommandUseErrorActionPreference = $false
+          $gitProbe = git -C $temp rev-parse --is-inside-work-tree 2>&1
+          if ($LASTEXITCODE -ne 128 -or "$gitProbe" -notmatch '^fatal: not a git repository') {
+            throw "Fixture path is not proven outside Git: $gitProbe"
+          }
           "TEMP=$temp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TMP=$temp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Check workspace default configuration

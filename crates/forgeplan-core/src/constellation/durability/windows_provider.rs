@@ -29,7 +29,20 @@ impl ObjectStoreProvider for WindowsFileObjectStoreProvider {
         }
         let suffix = url.as_str().strip_prefix("file-object-store:")
             .ok_or_else(|| lance::Error::invalid_input("expected file-object-store URL".to_string()))?;
-        let file_url = Url::parse(&format!("file:{suffix}"))
+        // `file:///C:` names a drive-relative path to url 2.5.8 and its
+        // `to_file_path` debug assertion panics. A bare drive in a URL denotes
+        // the absolute volume root, which needs its trailing separator.
+        let path = url.path().as_bytes();
+        let is_drive_root = matches!(path,
+            [b'/', drive, b':'] if drive.is_ascii_alphabetic())
+            || matches!(path,
+                [b'/', drive, b'%', b'3', colon] if drive.is_ascii_alphabetic() && (*colon == b'a' || *colon == b'A'));
+        let file_uri = if is_drive_root {
+            format!("file:{suffix}/")
+        } else {
+            format!("file:{suffix}")
+        };
+        let file_url = Url::parse(&file_uri)
             .map_err(|error| lance::Error::invalid_input(format!("invalid local file URL: {error}")))?;
         let path = file_url.to_file_path().map_err(|_| {
             lance::Error::invalid_input("wrapped URL is not an absolute local file path".to_string())
@@ -78,6 +91,10 @@ mod tests {
         assert_eq!(provider.calculate_object_store_prefix(&url, None).unwrap(), "file-object-store");
         let question = Url::parse("file-object-store:///C:/x%3Fy%23z%25").unwrap();
         assert_eq!(provider.extract_path(&question).unwrap().as_ref(), "C:/x?y#z%");
+        for uri in ["file-object-store:///C:", "file-object-store:///C%3A"] {
+            let root = provider.extract_path(&Url::parse(uri).unwrap()).unwrap();
+            assert_eq!(root, ObjectPath::from_absolute_path(r"C:\").unwrap());
+        }
         for invalid in [
             "file-object-store://server/share/path",
             "file-object-store:///C:/path?query",

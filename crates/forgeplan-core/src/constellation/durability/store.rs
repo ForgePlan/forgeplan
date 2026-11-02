@@ -118,7 +118,12 @@ impl DurabilityTrackingStore {
         #[cfg(windows)]
         if let Some((root, platform)) = &self.private_stage {
             let result = (|| {
-                let path = object_store::local::LocalFileSystem::new().path_to_filesystem(location)?;
+                let path = super::tracked_filesystem_path(location.as_ref()).map_err(|error| {
+                    object_store::Error::Generic {
+                        store: "DurabilityTrackingStore",
+                        source: Box::new(std::io::Error::other(error.to_string())),
+                    }
+                })?;
                 if !super::path_is_within(&path, root) {
                     return Err(object_store::Error::Generic {
                         store: "DurabilityTrackingStore",
@@ -550,6 +555,18 @@ mod tests {
         assert!(root.join("nested").is_dir());
         let outside = ObjectPath::from_absolute_path(tmp.path().join("outside")).unwrap();
         assert!(store.prepare_destination(&outside).is_err());
+        assert!(tracker.is_poisoned());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn private_stage_rejects_drive_root_without_url_panic() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tracker = Arc::new(StageTracker::default());
+        let store = DurabilityTrackingStore::for_private_stage(
+            tmp.path(), Arc::clone(&tracker), Arc::new(super::super::WindowsNtfsDurability),
+        );
+        assert!(store.prepare_destination(&ObjectPath::from("D:")).is_err());
         assert!(tracker.is_poisoned());
     }
 

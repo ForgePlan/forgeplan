@@ -959,6 +959,14 @@ impl LanceStore {
         })
     }
 
+    /// Migrate an existing legacy index under the caller's workspace guard.
+    pub async fn migrate_identity_v5(
+        workspace: &Path,
+        guard: &WorkspaceLock,
+    ) -> anyhow::Result<migrate::IdentityV5Report> {
+        migrate::run_identity_v5_migration(workspace, guard).await
+    }
+
     /// Prepare a legacy index under the caller's workspace lock and return a
     /// freshly opened v5 handle. A missing legacy index is not a new workspace.
     pub async fn open_for_write(
