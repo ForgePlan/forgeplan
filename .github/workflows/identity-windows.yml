@@ -99,6 +99,8 @@ jobs:
           if ($LASTEXITCODE -ne 128 -or "$gitProbe" -notmatch '^fatal: not a git repository') {
             throw "Fixture path is not proven outside Git: $gitProbe"
           }
+          # The expected negative Git probe must not become the step exit code.
+          $global:LASTEXITCODE = 0
           "TEMP=$temp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TMP=$temp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Check workspace default configuration
