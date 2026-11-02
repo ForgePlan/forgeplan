@@ -26,11 +26,10 @@
 //!
 //! ## Boundaries (red-line #11)
 //!
-//! The new file content this command writes goes **only** through the
-//! `forgeplan_core::artifact::frontmatter` helpers + atomic file ops — no
-//! direct `Edit`/`Write` on artifact bodies. LanceDB is never touched
-//! (ADR-003); callers who care about the index downstream should run
-//! `forgeplan scan-import` after applying fixes.
+//! The ordinary drift repair writes artifact content through the frontmatter
+//! helpers and atomic file operations. Identity repair additionally invokes
+//! the owning index reconciler after canonical publication; ordinary access
+//! stays blocked until the repair journal reaches a verified terminal state.
 //!
 //! ## Exit codes
 //!
@@ -90,12 +89,13 @@ use forgeplan_core::artifact::frontmatter::{
     predicted_number_from_frontmatter, render_frontmatter, slug_from_frontmatter,
 };
 use forgeplan_core::artifact::identity_repair::{
-    PILOT_REFERENCE_DECISIONS, OperationState, PlannedReference, ReferenceDecision, RepairJournal,
-    RepairPlan, apply_repair_plan, build_repair_plan, census_workspace, journal_digest_matches,
+    JournalStatus, PILOT_REFERENCE_DECISIONS, OperationState, PlannedReference, ReferenceDecision, RepairPlan,
+    apply_repair_plan, build_repair_plan, census_workspace, inspect_repair_journal,
     merge_decisions, read_decision_file, read_plan_json, repair_journal_dir, repair_journal_root,
     rollback_repair, write_plan_json,
 };
 use forgeplan_core::artifact::types::{ArtifactKind, is_canonical_key};
+use forgeplan_core::constellation::facade::RepairReconcileOutcome;
 use serde::Serialize;
 
 /// CLI arguments for `forgeplan reconcile-ids`.
@@ -134,14 +134,26 @@ pub struct ReconcileIdsArgs {
     #[arg(long, value_name = "FILE")]
     pub apply_plan: Option<PathBuf>,
 
+    /// Link a new plan or an explicit rollback recovery to a blocked transaction.
+    #[arg(long, value_name = "TXN")]
+    pub after_blocked: Option<String>,
+
     /// Recover an identity-repair transaction by its identifier. With
     /// `--rollback` the transaction's preimages are restored.
     #[arg(long, value_name = "TXN")]
     pub recover: Option<String>,
 
+    /// Publish a fully prepared staged journal before explicit recovery.
+    #[arg(long)]
+    pub publish_prepared: bool,
+
     /// Roll the recovered transaction back to its preimages.
     #[arg(long)]
     pub rollback: bool,
+
+    /// Retry owner-specific index reconciliation for a pending repair.
+    #[arg(long)]
+    pub reconcile_index: bool,
 }
 
 /// Same kind list as `migrate-dry-run` — `Memory` is excluded from
@@ -1231,6 +1243,18 @@ pub fn run(args: ReconcileIdsArgs) -> Result<i32> {
         eprintln!("Error: --rollback needs --recover <transaction-id>");
         return Ok(2);
     }
+    if args.reconcile_index && (args.recover.is_none() || args.rollback) {
+        eprintln!("Error: --reconcile-index needs --recover <transaction-id> and cannot be combined with --rollback");
+        return Ok(2);
+    }
+    if args.after_blocked.is_some() && args.apply_plan.is_none() && !(args.recover.is_some() && args.rollback) {
+        eprintln!("Error: --after-blocked needs --apply-plan <file> or --recover <transaction-id> --rollback");
+        return Ok(2);
+    }
+    if args.publish_prepared && (args.recover.is_none() || args.reconcile_index) {
+        eprintln!("Error: --publish-prepared needs --recover <transaction-id> and cannot be combined with --reconcile-index");
+        return Ok(2);
+    }
     if args.plan_out.is_some() {
         return run_plan_out(&args);
     }
@@ -1246,6 +1270,17 @@ pub fn run(args: ReconcileIdsArgs) -> Result<i32> {
         Err(e) => {
             eprintln!("Error: {e}");
             return Ok(2);
+        }
+    };
+    let _guard = if args.check_only {
+        None
+    } else {
+        match forgeplan_core::workspace::lock::acquire_workspace_lock_blocking(&forgeplan_dir) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                eprintln!("Error: {error:#}");
+                return Ok(2);
+            }
         }
     };
     let (records, scan_errors) = match discover_artifacts(&forgeplan_dir) {
@@ -1327,7 +1362,13 @@ fn run_plan_out(args: &ReconcileIdsArgs) -> Result<i32> {
             return Ok(2);
         }
     };
-    let decisions = load_reviewed_decisions(&forgeplan_dir);
+    let decisions = match load_reviewed_decisions(&forgeplan_dir) {
+        Ok(decisions) => decisions,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            return Ok(2);
+        }
+    };
     let plan = match build_repair_plan(&forgeplan_dir, &census, &decisions) {
         Ok(plan) => plan,
         Err(error) => {
@@ -1365,6 +1406,7 @@ fn run_plan_out(args: &ReconcileIdsArgs) -> Result<i32> {
             "sources": plan.sources.len(),
             "references": plan.references.len(),
             "unresolved": unresolved.len(),
+            "sidecar_conflicts": plan.sidecar_conflicts,
             "unresolved_references": unresolved
                 .iter()
                 .map(|reference| serde_json::json!({
@@ -1383,9 +1425,90 @@ fn run_plan_out(args: &ReconcileIdsArgs) -> Result<i32> {
             render_plan_human(&plan, plan_path, unresolved.len())
         );
     }
-    // An unresolved reference is the owner's to settle, not the tool's to
-    // guess: the command says so and exits non-zero.
-    Ok(if unresolved.is_empty() { 0 } else { 1 })
+    Ok(if unresolved.is_empty() && plan.sidecar_conflicts.is_empty() { 0 } else { 1 })
+}
+
+enum ReconciliationOutcome {
+    Constellation(RepairReconcileOutcome),
+    Legacy,
+}
+
+/// This command is synchronous but the CLI already runs in a Tokio runtime.
+/// A separate thread owns the runtime for the async owner-specific workflow.
+fn reconcile_repair_index(
+    workspace: &Path,
+    transaction_id: &str,
+    expected: JournalStatus,
+) -> Result<(JournalStatus, ReconciliationOutcome)> {
+    let workspace = fs::canonicalize(workspace)?;
+    let thread_workspace = workspace.clone();
+    let id = transaction_id.to_string();
+    let thread_id = id.clone();
+    let worker = std::thread::Builder::new()
+        .name("identity-repair-index".to_string())
+        .spawn(move || -> std::result::Result<ReconciliationOutcome, String> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().map_err(|error| error.to_string())?;
+            runtime.block_on(async {
+                if forgeplan_core::constellation::facade::workspace_is_migrated(&thread_workspace) {
+                    let capability = forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(thread_workspace);
+                    forgeplan_core::constellation::facade::reconcile_identity_repair(
+                        &capability, &thread_id,
+                        std::time::Instant::now() + std::time::Duration::from_secs(120),
+                    ).await.map(ReconciliationOutcome::Constellation)
+                        .map_err(|error| format!("{error:#}"))
+                } else {
+                    forgeplan_core::db::store::LanceStore::reconcile_legacy_repair(
+                        &thread_workspace, &thread_id,
+                    ).await.map(|()| ReconciliationOutcome::Legacy)
+                        .map_err(|error| format!("{error:#}"))
+                }
+            })
+        })?;
+    let outcome = worker.join().map_err(|_| anyhow::anyhow!("identity index reconciliation thread panicked"))?
+        .map_err(|error| anyhow::anyhow!("identity index reconciliation failed: {error}"))?;
+    let journal = inspect_repair_journal(&workspace, &id)?;
+    if journal.status != expected {
+        anyhow::bail!("identity reconciliation returned an unexpected journal status: {:?}", journal.status);
+    }
+    if matches!(&outcome, ReconciliationOutcome::Constellation(RepairReconcileOutcome::RollbackDiagnostic { .. }))
+        && expected != JournalStatus::RolledBack
+    {
+        anyhow::bail!("a diagnostic rollback result cannot complete an apply");
+    }
+    Ok((journal.status, outcome))
+}
+
+fn reconciliation_fields(outcome: &ReconciliationOutcome) -> Result<serde_json::Value> {
+    Ok(match outcome {
+        ReconciliationOutcome::Legacy => serde_json::json!({
+            "index_rebuilt": true, "index_state": "healthy", "ready": true,
+        }),
+        ReconciliationOutcome::Constellation(RepairReconcileOutcome::Healthy(proof)) => serde_json::json!({
+            "index_rebuilt": true, "index_state": "healthy", "ready": true, "proof": proof,
+        }),
+        ReconciliationOutcome::Constellation(RepairReconcileOutcome::RollbackDiagnostic { proof, conflicts, semantic }) => serde_json::json!({
+            "restored": true,
+            "index_rebuilt": true,
+            "index_state": "diagnostic_identity_conflicts",
+            "ready": false,
+            "semantic": semantic,
+            "conflict_documents": conflicts,
+            "proof": proof,
+        }),
+    })
+}
+
+fn extend_report(report: &mut serde_json::Value, outcome: &ReconciliationOutcome) -> Result<()> {
+    let fields = reconciliation_fields(outcome)?;
+    let object = report.as_object_mut().ok_or_else(|| anyhow::anyhow!("recovery report is not an object"))?;
+    let fields = fields.as_object().ok_or_else(|| anyhow::anyhow!("recovery fields are not an object"))?;
+    object.extend(fields.iter().map(|(key, value)| (key.clone(), value.clone())));
+    Ok(())
+}
+
+fn is_healthy(outcome: &ReconciliationOutcome) -> bool {
+    matches!(outcome, ReconciliationOutcome::Legacy | ReconciliationOutcome::Constellation(RepairReconcileOutcome::Healthy(_)))
 }
 
 /// Apply an identity-repair plan.
@@ -1405,40 +1528,81 @@ fn run_apply_plan(args: &ReconcileIdsArgs) -> Result<i32> {
             return Ok(2);
         }
     };
-    // After a crash the next mutation refuses to proceed until the
-    // unfinished transaction is recovered explicitly.
-    if let Some(transaction_id) = find_unfinished_transaction(&forgeplan_dir) {
-        eprintln!(
-            "Error: the repair transaction {transaction_id} is unfinished — recover it with `--recover {transaction_id} --rollback` before repairing again"
-        );
-        return Ok(2);
-    }
-    let outcome = match apply_repair_plan(&forgeplan_dir, &plan) {
+    let apply_result = if let Some(old_id) = &args.after_blocked {
+        let workspace = forgeplan_dir.clone();
+        let old_id = old_id.clone();
+        let worker = std::thread::Builder::new().name("identity-repair-linked-apply".to_owned())
+            .spawn(move || -> Result<_> {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+                runtime.block_on(forgeplan_core::artifact::identity_repair::apply_repair_plan_after_blocked(
+                    &workspace, &plan, &old_id,
+                ))
+            })?;
+        worker.join().map_err(|_| anyhow::anyhow!("linked identity repair thread panicked"))?
+    } else {
+        apply_repair_plan(&forgeplan_dir, &plan)
+    };
+    let outcome = match apply_result {
         Ok(outcome) => outcome,
         Err(error) => {
             eprintln!("Error: {error:#}");
             return Ok(2);
         }
     };
+    // apply_repair_plan has released its workspace guard before the owner is acquired.
+    let reconciliation = reconcile_repair_index(&forgeplan_dir, &outcome.transaction_id, JournalStatus::CanonicalCommitted);
+    let observed = match &reconciliation {
+        Ok((status, _)) => Some(*status),
+        Err(_) => match inspect_repair_journal(&forgeplan_dir, &outcome.transaction_id) {
+            Ok(journal) => Some(journal.status),
+            Err(error) => {
+                eprintln!("Cannot inspect repair journal after reconciliation: {error:#}");
+                None
+            }
+        },
+    };
+    let error = reconciliation.as_ref().err().map(|error| format!("{error:#}"));
+    if let Some(error) = &error { eprintln!("Index reconciliation was not confirmed: {error}"); }
     if args.json {
-        let report = serde_json::json!({
+        let mut report = serde_json::json!({
             "schema_version": 1,
             "mode": "apply",
             "transaction_id": outcome.transaction_id,
             "journal_dir": outcome.journal_dir.display().to_string(),
             "published": outcome.published.clone(),
-            "status": outcome.status,
+            "observed_status": observed,
+            "reconciliation_confirmed": reconciliation.is_ok(),
+            "reconciliation_error": error,
         });
+        if let Ok((_, result)) = &reconciliation { extend_report(&mut report, result)?; }
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!(
-            "Repair committed: transaction {}\n  published: {} document(s)\n  journal: {}\n  the derived index is behind — run `forgeplan index` to refresh it",
+            "Canonical repair committed: transaction {}\n  published: {} document(s)\n  journal: {}\n  index status: {:?}",
             outcome.transaction_id,
             outcome.published.len(),
-            outcome.journal_dir.display()
+            outcome.journal_dir.display(),
+            observed
         );
     }
-    Ok(0)
+    Ok(if reconciliation.is_ok() { 0 } else { 1 })
+}
+
+fn inspect_linked_statuses(workspace: &Path, old_id: &str, new_id: &str) -> Result<(JournalStatus, JournalStatus)> {
+    let workspace = workspace.to_path_buf();
+    let old_id = old_id.to_owned();
+    let new_id = new_id.to_owned();
+    std::thread::Builder::new().name("identity-repair-linked-inspect".to_owned())
+        .spawn(move || -> Result<_> {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            let (old, new) = runtime.block_on(
+                forgeplan_core::artifact::identity_repair::inspect_linked_repair_journals(
+                    &workspace, &old_id, &new_id,
+                ),
+            )?;
+            Ok((old.status, new.status))
+        })?
+        .join().map_err(|_| anyhow::anyhow!("linked inspection thread panicked"))?
 }
 
 /// Report — or roll back — an identity-repair transaction.
@@ -1451,6 +1615,93 @@ fn run_recover(args: &ReconcileIdsArgs) -> Result<i32> {
         }
     };
     let transaction_id = args.recover.as_ref().expect("recover is set");
+    if args.publish_prepared {
+        if let Err(error) = forgeplan_core::artifact::identity_repair::recover_prepared_repair(&forgeplan_dir, transaction_id) {
+            eprintln!("Prepared journal publication was not confirmed: {error:#}");
+            return Ok(1);
+        }
+        if !args.rollback {
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "schema_version": 1, "mode": "publish_prepared",
+                    "transaction_id": transaction_id,
+                    "journal_published": true, "ready": false,
+                }))?);
+            } else {
+                eprintln!("Prepared journal {transaction_id} published; explicit rollback or recovery remains required.");
+            }
+            return Ok(1);
+        }
+    }
+    if let Some(old_id) = &args.after_blocked {
+        let (_, status) = inspect_linked_statuses(&forgeplan_dir, old_id, transaction_id)?;
+        if matches!(status, JournalStatus::InProgress | JournalStatus::Conflict | JournalStatus::CanonicalCommittedIndexPending) {
+            let workspace = forgeplan_dir.clone();
+            let old = old_id.clone();
+            let new = transaction_id.clone();
+            let worker = std::thread::Builder::new().name("identity-repair-linked-rollback".to_owned())
+                .spawn(move || -> Result<_> {
+                    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+                    runtime.block_on(forgeplan_core::artifact::identity_repair::rollback_linked_repair(
+                        &workspace, &old, &new,
+                    ))
+                })?;
+            let result = worker.join().map_err(|_| anyhow::anyhow!("linked rollback thread panicked"))?;
+            let observed = inspect_linked_statuses(&forgeplan_dir, old_id, transaction_id);
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "schema_version": 1, "mode": "recover_linked_rollback",
+                    "transaction_id": transaction_id, "predecessor_id": old_id,
+                    "canonical_preimages_restored": result.is_ok(),
+                    "observed_status": observed.as_ref().ok().map(|(_, status)| status),
+                    "error": result.as_ref().err().map(|error| format!("{error:#}")),
+                    "ready": false,
+                }))?);
+            } else {
+                eprintln!("Linked rollback index reconciliation remains unconfirmed; observed status: {:?}",
+                    observed.as_ref().ok().map(|(_, status)| status));
+                if let Err(error) = &result { eprintln!("{error:#}"); }
+                if let Err(error) = &observed { eprintln!("Cannot inspect successor journal: {error:#}"); }
+            }
+            return Ok(1);
+        }
+        if status != JournalStatus::RolledBackIndexBlocked {
+            eprintln!("Error: this successor status does not permit linked rollback recovery");
+            return Ok(2);
+        }
+        let workspace = forgeplan_dir.clone();
+        let old = old_id.clone();
+        let new = transaction_id.clone();
+        let worker = std::thread::Builder::new().name("identity-repair-linked-finish".to_owned())
+            .spawn(move || -> Result<()> {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+                runtime.block_on(forgeplan_core::artifact::identity_repair::finish_blocked_linked_repair(
+                    &workspace, &old, &new,
+                ))
+            })?;
+        let result = worker.join().map_err(|_| anyhow::anyhow!("linked recovery thread panicked"))?;
+        let observed = inspect_linked_statuses(&forgeplan_dir, old_id, transaction_id);
+        let confirmed = result.is_ok()
+            && observed.as_ref().is_ok_and(|(old, new)| *old == JournalStatus::RolledBack && *new == JournalStatus::RolledBackIndexBlocked);
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": 1, "mode": "recover_linked_rollback",
+                "transaction_id": transaction_id, "predecessor_id": old_id,
+                "predecessor_observed_status": observed.as_ref().ok().map(|(old, _)| old),
+                "observed_status": observed.as_ref().ok().map(|(_, new)| new),
+                "link_finish_confirmed": confirmed,
+                "error": result.err().map(|error| format!("{error:#}")),
+                "ready": false,
+            }))?);
+        } else if confirmed {
+            eprintln!("Linked rollback resolved predecessor {old_id}; successor {transaction_id} remains blocked and requires a new repair.");
+        } else {
+            eprintln!("Linked rollback completion is unconfirmed; inspect both journals before retrying.");
+            if let Err(error) = result { eprintln!("{error:#}"); }
+            if let Err(error) = observed { eprintln!("Cannot inspect linked journals: {error:#}"); }
+        }
+        return Ok(1);
+    }
     if args.rollback {
         let outcome = match rollback_repair(&forgeplan_dir, transaction_id) {
             Ok(outcome) => outcome,
@@ -1459,35 +1710,125 @@ fn run_recover(args: &ReconcileIdsArgs) -> Result<i32> {
                 return Ok(2);
             }
         };
+        // rollback_repair has released its workspace guard before owner acquisition.
+        let reconciliation = reconcile_repair_index(&forgeplan_dir, transaction_id, JournalStatus::RolledBack);
+        let observed = match &reconciliation {
+            Ok((status, _)) => Some(*status),
+            Err(_) => match inspect_repair_journal(&forgeplan_dir, transaction_id) {
+                Ok(journal) => Some(journal.status),
+                Err(error) => {
+                    eprintln!("Cannot inspect repair journal after reconciliation: {error:#}");
+                    None
+                }
+            },
+        };
+        let error = reconciliation.as_ref().err().map(|error| format!("{error:#}"));
+        if let Some(error) = &error { eprintln!("Index reconciliation was not confirmed: {error}"); }
         if args.json {
-            let report = serde_json::json!({
+            let mut report = serde_json::json!({
                 "schema_version": 1,
                 "mode": "recover",
-                "rolled_back": true,
+                "canonical_preimages_restored": true,
+                "reconciliation_confirmed": reconciliation.is_ok(),
+                "reconciliation_error": error,
                 "transaction_id": outcome.transaction_id,
                 "journal_dir": outcome.journal_dir.display().to_string(),
-                "restored": outcome.restored.clone(),
+                "restored_paths": outcome.restored.clone(),
                 "conflicts": outcome.conflicts.clone(),
-                "status": outcome.status,
+                "observed_status": observed,
             });
+            if let Ok((_, result)) = &reconciliation { extend_report(&mut report, result)?; }
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
             println!(
-                "Rolled back {}: {} document(s) restored",
+                "Canonical preimages restored for {}: {} document(s); index status: {:?}",
                 outcome.transaction_id,
-                outcome.restored.len()
+                outcome.restored.len(),
+                observed
             );
+            if let Ok((_, ReconciliationOutcome::Constellation(RepairReconcileOutcome::RollbackDiagnostic { conflicts, .. }))) = &reconciliation {
+                eprintln!("Rollback completed with {} conflicting documents; semantic indexing is blocked. Create a new identity repair plan.", conflicts.len());
+                for candidate in conflicts {
+                    eprintln!("  {}: {} ({})", candidate.canonical_key, candidate.relative_path, candidate.display_id);
+                }
+            }
         }
-        return Ok(0);
+        return Ok(if reconciliation.as_ref().is_ok_and(|(_, result)| is_healthy(result)) { 0 } else { 1 });
     }
 
-    let journal = match read_journal(&forgeplan_dir, transaction_id) {
+    let journal = match inspect_repair_journal(&forgeplan_dir, transaction_id) {
         Ok(journal) => journal,
         Err(error) => {
             eprintln!("Error: {error:#}");
             return Ok(2);
         }
     };
+    if args.reconcile_index {
+        let expected = match journal.status {
+            JournalStatus::CanonicalCommittedIndexPending => JournalStatus::CanonicalCommitted,
+            JournalStatus::RolledBackIndexPending => JournalStatus::RolledBack,
+            JournalStatus::RolledBackIndexBlocked => {
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "schema_version": 1, "mode": "reconcile_index",
+                        "transaction_id": transaction_id,
+                        "observed_status": journal.status,
+                        "index_state": "diagnostic_identity_conflicts",
+                        "ready": false, "semantic": "blocked_by_identity_conflicts",
+                    }))?);
+                } else {
+                    eprintln!("Error: transaction {transaction_id} has a blocked legacy diagnostic index; ordinary reads and writes remain blocked. A linked identity repair is required.");
+                }
+                return Ok(1);
+            }
+            _ => {
+                eprintln!("Error: transaction {transaction_id} is not awaiting index reconciliation ({:?})", journal.status);
+                return Ok(2);
+            }
+        };
+        return match reconcile_repair_index(&forgeplan_dir, transaction_id, expected) {
+            Ok((status, result)) => {
+                let ready = is_healthy(&result);
+                if args.json {
+                    let mut report = serde_json::json!({
+                        "schema_version": 1, "mode": "reconcile_index",
+                        "transaction_id": transaction_id, "observed_status": status,
+                        "reconciliation_confirmed": true,
+                    });
+                    extend_report(&mut report, &result)?;
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else if let ReconciliationOutcome::Constellation(RepairReconcileOutcome::RollbackDiagnostic { conflicts, .. }) = &result {
+                    eprintln!("Rollback completed with {} conflicting documents; semantic indexing is blocked. Create a new identity repair plan.", conflicts.len());
+                    for candidate in conflicts {
+                        eprintln!("  {}: {} ({})", candidate.canonical_key, candidate.relative_path, candidate.display_id);
+                    }
+                } else {
+                    println!("Transaction {transaction_id}: index reconciliation completed ({status:?})");
+                }
+                Ok(if ready { 0 } else { 1 })
+            }
+            Err(error) => {
+                eprintln!("Index reconciliation was not confirmed: {error:#}");
+                let observed = match inspect_repair_journal(&forgeplan_dir, transaction_id) {
+                    Ok(journal) => Some(journal.status),
+                    Err(inspect_error) => {
+                        eprintln!("Cannot inspect repair journal after reconciliation: {inspect_error:#}");
+                        None
+                    }
+                };
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "schema_version": 1, "mode": "reconcile_index",
+                        "transaction_id": transaction_id, "observed_status": observed,
+                        "reconciliation_confirmed": false, "error": format!("{error:#}"),
+                    }))?);
+                } else {
+                    eprintln!("Observed journal status: {observed:?}; durability is not confirmed");
+                }
+                Ok(1)
+            }
+        };
+    }
     if args.json {
         let report = serde_json::json!({
             "schema_version": 1,
@@ -1513,8 +1854,9 @@ fn run_recover(args: &ReconcileIdsArgs) -> Result<i32> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!(
-            "Transaction {}: {} operation(s), {} published, {} pending\n  journal: {}",
+            "Transaction {} ({:?}): {} operation(s), {} published, {} pending\n  journal: {}",
             journal.transaction_id,
+            journal.status,
             journal.operations.len(),
             journal
                 .operations
@@ -1532,64 +1874,18 @@ fn run_recover(args: &ReconcileIdsArgs) -> Result<i32> {
     Ok(0)
 }
 
-/// The reviewed decisions the plan is built on.
-///
-/// The pilot review record is the built-in default. A workspace may add
-/// or override decisions in `.forgeplan/identity-repair/decisions.json`;
-/// the file's entries win over the built-in ones.
-fn load_reviewed_decisions(forgeplan_dir: &Path) -> Vec<ReferenceDecision> {
+/// Load explicit reviewed decisions. Historical built-ins lack occurrence
+/// and source hashes and therefore cannot resolve references on their own.
+fn load_reviewed_decisions(forgeplan_dir: &Path) -> Result<Vec<ReferenceDecision>> {
     let path = repair_journal_root(forgeplan_dir).join("decisions.json");
-    let extra = if path.is_file() {
-        match read_decision_file(&path) {
-            Ok(file) => file.decisions,
-            Err(error) => {
-                eprintln!("Warning: {error:#}");
-                Vec::new()
-            }
-        }
-    } else {
-        Vec::new()
+    let extra = match fs::symlink_metadata(&path) {
+        Ok(_) => read_decision_file(&path)?.decisions,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
     };
-    merge_decisions(&PILOT_REFERENCE_DECISIONS, &extra)
+    Ok(merge_decisions(&PILOT_REFERENCE_DECISIONS, &extra))
 }
 
-/// The identifier of an unfinished repair transaction, when there is one.
-fn find_unfinished_transaction(forgeplan_dir: &Path) -> Option<String> {
-    let root = repair_journal_root(forgeplan_dir);
-    let entries = fs::read_dir(root).ok()?;
-    for entry in entries.flatten() {
-        let manifest = entry.path().join("manifest.json");
-        if !manifest.is_file() {
-            continue;
-        }
-        let Ok(bytes) = fs::read(&manifest) else {
-            continue;
-        };
-        let Ok(journal) = serde_json::from_slice::<RepairJournal>(&bytes) else {
-            continue;
-        };
-        if journal.is_unfinished() {
-            return Some(journal.transaction_id);
-        }
-    }
-    None
-}
-
-/// The recovery journal of one transaction.
-fn read_journal(forgeplan_dir: &Path, transaction_id: &str) -> Result<RepairJournal> {
-    let manifest_path = repair_journal_dir(forgeplan_dir, transaction_id).join("manifest.json");
-    let bytes = fs::read(&manifest_path)
-        .with_context(|| format!("read the recovery journal {}", manifest_path.display()))?;
-    let journal: RepairJournal = serde_json::from_slice(&bytes)
-        .with_context(|| format!("parse the recovery journal {}", manifest_path.display()))?;
-    if !journal_digest_matches(&journal) {
-        anyhow::bail!(
-            "the recovery journal {} does not match its digest",
-            manifest_path.display()
-        );
-    }
-    Ok(journal)
-}
 
 /// The human-readable summary of a repair plan.
 fn render_plan_human(plan: &RepairPlan, plan_path: &Path, unresolved: usize) -> String {
@@ -1603,9 +1899,13 @@ fn render_plan_human(plan: &RepairPlan, plan_path: &Path, unresolved: usize) -> 
         plan.references.len()
     ));
     out.push_str(&format!("Unresolved references: {unresolved}\n"));
-    if unresolved > 0 {
+    out.push_str(&format!("Sidecar conflicts: {}\n", plan.sidecar_conflicts.len()));
+    for conflict in &plan.sidecar_conflicts {
+        out.push_str(&format!("  {conflict}\n"));
+    }
+    if unresolved > 0 || !plan.sidecar_conflicts.is_empty() {
         out.push_str(
-            "The plan cannot be applied until every reference is attributed by a review.\n",
+            "The plan cannot be applied until all references and sidecar conflicts are reviewed.\n",
         );
     }
     out.push_str("Nothing in the workspace was changed.\n");
@@ -1621,6 +1921,46 @@ mod repair_tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn diagnostic_rollback_reports_every_candidate_and_is_not_ready() {
+        use forgeplan_core::constellation::facade::{RepairIndexProof, SemanticRecoveryState};
+        use forgeplan_core::constellation::manifest::{ConflictSource, TableVersions};
+        let proof = RepairIndexProof {
+            generation_id: "gen-1".into(),
+            source_set_digest: "source-digest".into(),
+            config_digest: "config-digest".into(),
+            table_versions: TableVersions::new(1, 2, 3),
+            transaction_id: "repair-1".into(),
+            journal_digest: "journal-digest".into(),
+        };
+        let candidate = |path: &str, title: &str| ConflictSource {
+            relative_path: path.into(),
+            canonical_key: "prd:shared".into(),
+            display_id: "PRD-001".into(),
+            title: title.into(),
+            source_digest: format!("digest-{title}"),
+            declared_outgoing: vec![],
+        };
+        let outcome = ReconciliationOutcome::Constellation(RepairReconcileOutcome::RollbackDiagnostic {
+            proof,
+            conflicts: vec![candidate("prds/a.md", "A"), candidate("prds/b.md", "B")],
+            semantic: SemanticRecoveryState::BlockedByIdentityConflicts,
+        });
+        let mut report = serde_json::json!({"observed_status": JournalStatus::RolledBack});
+        extend_report(&mut report, &outcome).unwrap();
+        assert!(!is_healthy(&outcome));
+        assert_eq!(report["observed_status"], "rolled_back");
+        assert_eq!(report["restored"], true);
+        assert_eq!(report["index_rebuilt"], true);
+        assert_eq!(report["ready"], false);
+        assert_eq!(report["index_state"], "diagnostic_identity_conflicts");
+        assert_eq!(report["semantic"], "blocked_by_identity_conflicts");
+        assert_eq!(report["conflict_documents"].as_array().unwrap().len(), 2);
+        assert_eq!(report["conflict_documents"][0]["relative_path"], "prds/a.md");
+        assert_eq!(report["conflict_documents"][1]["relative_path"], "prds/b.md");
+        assert_eq!(report["proof"]["transaction_id"], "repair-1");
+    }
 
     /// A document with a display id and a title, and no slug.
     fn document(id: &str, kind: &str, title: &str) -> String {
@@ -1659,6 +1999,31 @@ mod repair_tests {
         .expect("write");
         dir
     }
+    #[test]
+    fn sidecar_only_conflict_blocks_both_plan_modes() {
+        let workspace = colliding_workspace();
+        let forgeplan = workspace.path().join(".forgeplan");
+        fs::remove_file(forgeplan.join("evidence/EVID-001.md")).unwrap();
+        fs::create_dir_all(forgeplan.join("claims")).unwrap();
+        fs::write(forgeplan.join("claims/PRD-001.yaml"), "id: PRD-001\nagent_id: test\n").unwrap();
+        let census = census_workspace(&forgeplan).unwrap();
+        let plan = build_repair_plan(&forgeplan, &census, &[]).unwrap();
+        assert!(plan.references.is_empty());
+        assert!(!plan.sidecar_conflicts.is_empty());
+        assert!(render_plan_human(&plan, Path::new("plan.json"), 0).contains(&plan.sidecar_conflicts[0]));
+        for json in [false, true] {
+            let args = ReconcileIdsArgs {
+                workspace: Some(workspace.path().to_path_buf()),
+                plan_out: Some(workspace.path().join("plan.json")),
+                json,
+                ..Default::default()
+            };
+            assert_eq!(run(args).unwrap(), 1);
+            let written = read_plan_json(&workspace.path().join("plan.json")).unwrap();
+            assert!(!written.sidecar_conflicts.is_empty());
+        }
+    }
+
 
     #[test]
     fn plan_out_writes_the_plan_and_changes_nothing_in_the_workspace() {
@@ -1709,10 +2074,6 @@ mod repair_tests {
             2
         );
         assert_eq!(plan["digest"].as_str().expect("digest").len(), 64);
-        assert_eq!(
-            plan["inventory_digest"].as_str().expect("inventory").len(),
-            64
-        );
         assert!(
             plan["workspace_path"]
                 .as_str()
@@ -1760,7 +2121,7 @@ mod repair_tests {
             json: false,
             ..Default::default()
         };
-        assert_eq!(run(args).expect("run"), 0);
+        assert_eq!(run(args).expect("run"), 1);
 
         // The documents carry their new keys, and their display numbers
         // and bodies are untouched.
@@ -1808,7 +2169,7 @@ mod repair_tests {
             json: false,
             ..Default::default()
         };
-        assert_eq!(run(args).expect("run"), 0);
+        assert_eq!(run(args).expect("run"), 1);
         let restored = fs::read_to_string(forgeplan.join("prds/PRD-001-b.md")).expect("read");
         assert!(!restored.contains("slug:"), "the rollback must restore");
         assert!(restored.contains("id: PRD-001"));
@@ -1863,6 +2224,32 @@ mod repair_tests {
             ..Default::default()
         };
         assert_eq!(run(args).expect("run"), 2);
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            reconcile_index: true,
+            ..Default::default()
+        };
+        assert_eq!(run(args).expect("run"), 2);
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            recover: Some("repair-1".to_string()),
+            rollback: true,
+            reconcile_index: true,
+            ..Default::default()
+        };
+        assert_eq!(run(args).expect("run"), 2);
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            after_blocked: Some("repair-old".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(run(args).expect("run"), 2);
+        let args = ReconcileIdsArgs {
+            workspace: Some(workspace.path().to_path_buf()),
+            publish_prepared: true,
+            ..Default::default()
+        };
+        assert_eq!(run(args).expect("run"), 2);
     }
 
     #[test]
@@ -1876,6 +2263,23 @@ mod repair_tests {
             ..Default::default()
         };
         assert_eq!(run(args).expect("run"), 2);
+    }
+
+    #[test]
+    fn recovery_report_rejects_traversal_and_corrupt_manifests() {
+        let workspace = colliding_workspace();
+        let forgeplan = workspace.path().join(".forgeplan");
+        let transaction = forgeplan.join("identity-repair/repair-damaged");
+        fs::create_dir_all(&transaction).unwrap();
+        fs::write(transaction.join("manifest.json"), b"{damaged").unwrap();
+        for id in ["../escape", "repair-damaged"] {
+            let args = ReconcileIdsArgs {
+                workspace: Some(workspace.path().to_path_buf()),
+                recover: Some(id.to_string()),
+                ..Default::default()
+            };
+            assert_eq!(run(args).unwrap(), 2);
+        }
     }
 
     #[test]
@@ -2107,6 +2511,23 @@ mod tests {
                 .join(".forgeplan/prds/PRD-007-real-title.md")
                 .exists()
         );
+    }
+
+    #[test]
+    fn damaged_repair_journal_blocks_legacy_mutations() {
+        let content = fm_full("PRD-007", "Real title", "prd-real-title", 7, Some(7));
+        let ws = temp_workspace(&[("prds", "PRD-007-wrong-name.md", &content)]);
+        let forgeplan = ws.path().join(".forgeplan");
+        let transaction = forgeplan.join("identity-repair/repair-damaged");
+        fs::create_dir_all(&transaction).unwrap();
+        fs::write(transaction.join("manifest.json"), b"{damaged").unwrap();
+        let args = ReconcileIdsArgs {
+            workspace: Some(ws.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert_eq!(run(args).unwrap(), 2);
+        assert_eq!(fs::read_to_string(forgeplan.join("prds/PRD-007-wrong-name.md")).unwrap(), content);
+        assert!(!forgeplan.join("prds/PRD-007-real-title.md").exists());
     }
 
     #[test]

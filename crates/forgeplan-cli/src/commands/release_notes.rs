@@ -43,7 +43,7 @@ pub async fn run(
 ) -> Result<()> {
     let format = parse_output(output)?;
 
-    let (ws, source) = common::open_read_source().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
 
     // `find_workspace` returns the `.forgeplan/` directory; git commands run
     // against the parent (the actual repo root).
@@ -57,7 +57,7 @@ pub async fn run(
     // retired table instead of going through the shared open.
     let notes = match &source {
         common::ReadSource::Legacy(store) => {
-            release_notes::generate(store, repo_root, since, until, draft).await?
+            release_notes::generate(store, &_read_guard, repo_root, since, until, draft).await?
         }
         common::ReadSource::Captured(read) => {
             release_notes::generate_captured(read, repo_root, since, until, draft).await?

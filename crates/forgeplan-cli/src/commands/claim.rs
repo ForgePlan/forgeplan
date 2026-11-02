@@ -39,45 +39,15 @@ pub async fn run(
     workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id so
-    // operators / agents can claim with whichever form they have on hand.
-    // Resolve from the owning source: the legacy store before cutover, one
-    // captured canonical read after it. An unknown forward-reference remains
-    // claimable under its raw input in either layout.
-    //
-    // The claim file itself is named after the document's canonical key, so
-    // the store resolves the selector again with the shared algorithm: a
-    // display alias and the canonical key of one document address one and
-    // the same claim, and two documents that share an alias keep their own.
-    // The store resolves the selector itself with the shared algorithm; it
-    // must receive what the caller wrote, not the display id resolved below —
-    // two documents can share that display id.
-    let selector = id.to_string();
-    let (ws, store) = common::open_store_tolerating_constellation().await?;
-    let (id_owned, ref_form) = if let Some(lance) = store.as_ref() {
-        let id = lance
-            .resolve_id(id)
-            .await?
-            .unwrap_or_else(|| id.to_string());
-        let ref_form = match lance.get_record(&id).await? {
-            Some(rec) => {
-                forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id)
-            }
-            None => id.clone(),
-        };
-        (id, ref_form)
-    } else {
-        let read = common::workspace_read(&ws).await?;
-        let id = read.resolve_id(id).unwrap_or_else(|| id.to_string());
-        let ref_form = read
-            .get_record(&id)
-            .map(|rec| {
-                forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id)
-            })
-            .unwrap_or_else(|| id.clone());
-        (id, ref_form)
+    let (ws, source, _read_guard) = common::open_read_source().await?;
+    let resolution = match &source {
+        common::ReadSource::Legacy(_) => common::resolve_against_workspace(&ws, id).await?,
+        common::ReadSource::Captured(read) => common::resolve_against_capture(read, id),
     };
-    let id = id_owned.as_str();
+    let (selector, ref_form) = match &resolution.outcome {
+        forgeplan_mcp::convert::Resolution::NotFound => (id.to_string(), id.to_string()),
+        _ => common::require_found_identity(id, &resolution)?,
+    };
 
     let agent_str = match agent.map(str::trim).filter(|a| !a.is_empty()) {
         Some(a) => a.to_string(),
@@ -107,9 +77,26 @@ pub async fn run(
         None => DEFAULT_TTL,
     };
 
+    drop(source);
+    drop(_read_guard);
+    let _lock = workspace::lock::acquire_workspace_lock(&ws).await?;
+    let locked_source = common::read_source_for(&ws, &_lock).await?;
+    let locked_resolution = match &locked_source {
+        common::ReadSource::Legacy(_) => common::resolve_against_workspace(&ws, id).await?,
+        common::ReadSource::Captured(read) => common::resolve_against_capture(read, id),
+    };
+    let locked_identity = match &locked_resolution.outcome {
+        forgeplan_mcp::convert::Resolution::NotFound => (id.to_string(), id.to_string()),
+        _ => common::require_found_identity(id, &locked_resolution)?,
+    };
+    if locked_identity != (selector.clone(), ref_form.clone()) {
+        anyhow::bail!("claim selector changed while acquiring workspace lock");
+    }
+    common::ensure_ordinary_mutation_allowed(&ws)?;
+
     let store = ClaimStore::new(&ws);
     match store
-        .claim(&selector, &agent_str, ttl, note.map(|s| s.to_string()))
+        .claim_for(&selector, &ref_form, &agent_str, ttl, note.map(|s| s.to_string()))
         .await
     {
         Ok(claim) => {

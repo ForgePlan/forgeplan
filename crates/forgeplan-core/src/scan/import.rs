@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context as _;
 
-use crate::artifact::canonical_key::canonical_key_from_document;
 use crate::artifact::types::ArtifactKind;
 use crate::db::store::{LanceStore, NewArtifact};
 use crate::scan::detect::{DetectionResult, DetectionTier, detect_kind_with_path};
 use crate::scan::discovery::{DiscoveredFile, discover_markdown_files};
 use crate::scan::status_map::map_external_status;
+use crate::workspace::lock::WorkspaceReadPermit;
 
 /// Author recorded for a document whose frontmatter declares none. Keeps the
 /// import auditable ("this row came from a scan") without overwriting a
@@ -114,6 +113,181 @@ pub fn find_duplicate_ids(entries: &[ScanImportEntry]) -> Vec<DuplicateIdGroup> 
         .collect()
 }
 
+/// Read-only scan plan, including the exact source snapshot and identities
+/// selected for the whole batch under the workspace lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanImportPlan {
+    snapshot: Vec<(PathBuf, String)>,
+    ids: BTreeMap<PathBuf, (String, bool)>,
+    parents: BTreeMap<PathBuf, String>,
+    identities: Vec<(String, String, Vec<(String, String)>)>,
+    existing: std::collections::BTreeSet<PathBuf>,
+}
+
+fn scan_root(project_root: &Path, options: &ScanImportOptions) -> anyhow::Result<PathBuf> {
+    if let Some(custom) = &options.custom_path {
+        let candidate = project_root.join(custom);
+        let canonical = candidate.canonicalize()?;
+        let canonical_root = project_root.canonicalize()?;
+        if !canonical.starts_with(&canonical_root) {
+            anyhow::bail!("Scan path '{}' is outside project root. Path traversal rejected.", custom);
+        }
+        Ok(candidate)
+    } else {
+        Ok(project_root.to_path_buf())
+    }
+}
+
+/// Discover the kinds whose cross-worktree allocator locks a scan needs.
+pub fn scan_import_kinds(project_root: &Path, options: &ScanImportOptions) -> anyhow::Result<Vec<ArtifactKind>> {
+    let files = discover_markdown_files(&scan_root(project_root, options)?)?;
+    let mut kinds = Vec::new();
+    for file in files {
+        let filename = file.path.file_name().and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("scan source path is not valid UTF-8"))?;
+        if let Some(detection) = detect_kind_with_path(filename, Some(&file.relative_path), &file.content) {
+            kinds.push(detection.kind);
+        }
+    }
+    Ok(kinds)
+}
+
+/// Compute every generated id, canonical key, and link without mutating
+/// files or indexes. The caller holds the workspace lock throughout planning,
+/// migration, re-planning, and execution.
+pub async fn plan_scan_import(
+    project_root: &Path,
+    workspace: &Path,
+    guard: &crate::workspace::lock::WorkspaceLock,
+    allocation: &crate::artifact::id_alloc::AllocationGuard,
+    legacy: Option<&LanceStore>,
+    options: &ScanImportOptions,
+) -> anyhow::Result<ScanImportPlan> {
+    plan_scan_import_inner(project_root, workspace, Some(guard), Some((guard, allocation)), legacy, options).await
+}
+
+async fn plan_scan_import_inner(
+    project_root: &Path,
+    workspace: &Path,
+    permit: Option<&dyn WorkspaceReadPermit>,
+    locked: Option<(&crate::workspace::lock::WorkspaceLock, &crate::artifact::id_alloc::AllocationGuard)>,
+    legacy: Option<&LanceStore>,
+    options: &ScanImportOptions,
+) -> anyhow::Result<ScanImportPlan> {
+    use crate::artifact::canonical_key::ArtifactCandidate;
+    use std::collections::BTreeSet;
+    if let Some(permit) = permit {
+        permit.matches_workspace(workspace)?;
+    }
+
+    let root = scan_root(project_root, options)?;
+    let mut files = discover_markdown_files(&root)?;
+    files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    let snapshot = files.iter().map(|f| (f.relative_path.clone(), f.content.clone())).collect();
+    let mut candidates = crate::artifact::documents::workspace_candidates(workspace).await?;
+    let mut ids = BTreeMap::new();
+    let mut identities = Vec::new();
+    let mut parents = Vec::new();
+    let mut bumps = BTreeMap::<String, u32>::new();
+    let mut existing_paths = BTreeSet::new();
+    let mut batch_keys = BTreeSet::new();
+    files.sort_by_key(|file| {
+        let filename = file.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        let has_id = detect_kind_with_path(filename, Some(&file.relative_path), &file.content)
+            .and_then(|detection| detection.suggested_id)
+            .is_some_and(|id| is_safe_artifact_id(&id.to_uppercase()));
+        !has_id
+    });
+    for file in &files {
+        let filename = file.path.file_name().and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("scan source path is not valid UTF-8"))?;
+        let Some(detection) = detect_kind_with_path(filename, Some(&file.relative_path), &file.content) else {
+            continue;
+        };
+        let suggested = detection.suggested_id.as_ref().map(|id| id.to_uppercase())
+            .filter(|id| is_safe_artifact_id(id));
+        let generated = suggested.is_none();
+        let id = if let Some(id) = suggested {
+            id
+        } else {
+            let prefix = detection.kind.prefix().to_ascii_uppercase();
+            if let Some((guard, allocation)) = locked {
+                crate::artifact::id_alloc::preview_display_number(
+                    workspace, guard, allocation, legacy, &detection.kind, 3, bumps.get(&prefix).copied(),
+                ).await?.0
+            } else {
+                let max = match permit {
+                    Some(permit) => crate::artifact::id_alloc::compute_max_display_number(workspace, permit, legacy, &detection.kind).await?,
+                    None => unlocked_max_display_number(workspace, &detection.kind).await?,
+                };
+                let number = max.max(bumps.get(&prefix).copied().unwrap_or(0)).checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("display number for kind {prefix} overflows u32"))?;
+                format!("{}-{number:03}", prefix.trim_end_matches('-'))
+            }
+        };
+        let document = parse_document(file, &detection, &mut Vec::new());
+        let key = canonical_key_for_import(&id, &document);
+        if !batch_keys.insert(key.clone()) {
+            anyhow::bail!("scan batch has duplicate identity {key}");
+        }
+        let canonical_exists = canonical_key_exists(&key, &candidates)?;
+        if canonical_exists {
+            existing_paths.insert(file.relative_path.clone());
+        }
+        if let Some(store) = legacy {
+            let permit = permit.ok_or_else(|| anyhow::anyhow!("legacy preview needs a read permit"))?;
+            let count = store.list_artifacts(permit, None).await?.into_iter().filter(|row| row.canonical_key == key).count();
+            if count > 1 {
+                anyhow::bail!("scan identity {key} has duplicate rows in the existing index");
+            }
+            if (count == 1) != canonical_exists {
+                anyhow::bail!("scan identity {key} disagrees with the existing index");
+            }
+        }
+        if !canonical_exists {
+            if let Some(number) = id.rsplit('-').next().and_then(|part| part.parse::<u32>().ok()) {
+                let prefix = detection.kind.prefix().to_ascii_uppercase();
+                let bump = bumps.entry(prefix).or_default();
+                *bump = (*bump).max(number);
+            }
+        }
+        if !canonical_exists {
+            candidates.push(ArtifactCandidate {
+                canonical_key: key.clone(),
+                display_id: id.clone(),
+                title: document.title.clone(),
+                relative_path: file.relative_path.clone(),
+            });
+        }
+        ids.insert(file.relative_path.clone(), (id.clone(), generated));
+        if let Some(parent) = document.frontmatter.get("parent_epic").and_then(|v| v.as_str()) {
+            parents.push((file.relative_path.clone(), parent.to_string()));
+        }
+        identities.push((id, key, document.links));
+    }
+    for (_, _, links) in &identities {
+        for (target, _) in links {
+            crate::db::store::validate_link_target(target)?;
+            if !target.contains('@') {
+                crate::artifact::canonical_key::resolve_structural_target(target, &candidates)?;
+            }
+        }
+    }
+    let mut resolved_parents = BTreeMap::new();
+    for (path, parent) in parents {
+        crate::db::store::validate_link_target(&parent)?;
+        let resolved = if parent.contains('@') {
+            parent
+        } else {
+            crate::artifact::canonical_key::resolve_structural_target(&parent, &candidates)?
+                .map(|found| found.identity.canonical_key)
+                .unwrap_or(parent)
+        };
+        resolved_parents.insert(path, resolved);
+    }
+    Ok(ScanImportPlan { snapshot, ids, parents: resolved_parents, identities, existing: existing_paths })
+}
+
 /// Canonical-first scan-import: discover external documents, detect their
 /// kind, and write each accepted one into `.forgeplan/` as canonical Markdown.
 ///
@@ -133,45 +307,94 @@ pub fn find_duplicate_ids(entries: &[ScanImportEntry]) -> Vec<DuplicateIdGroup> 
 ///
 /// `workspace` is the `.forgeplan/` directory, not the project root.
 ///
-/// `guard` is the caller's already-held
-/// [`WorkspaceLock`](crate::workspace::lock::WorkspaceLock), and it is `None`
-/// **only** for a dry run. A dry run must not take the lock: acquiring it
-/// creates `.forgeplan/.lock`, so a preview would mutate a workspace it claims
-/// not to touch. A mutating run with no guard is refused here rather than
-/// writing canonical Markdown outside the workspace serialization every other
-/// mutation uses. The caller must release the guard before reconciling, since
-/// the reconcile re-acquires it per storage commit.
+/// A mutating import requires the caller's exclusive `guard`. A dry run
+/// without a legacy projection needs no workspace lock. A legacy dry run
+/// requires a caller-owned `read_permit` (or the exclusive `guard`) for all
+/// projection reads. This function never acquires a nested workspace lock.
+/// Release the guard before a subsequent reconcile, which acquires its own.
 pub async fn scan_and_import_to_workspace(
     project_root: &Path,
     workspace: &Path,
     guard: Option<&crate::workspace::lock::WorkspaceLock>,
+    read_permit: Option<&dyn WorkspaceReadPermit>,
     legacy: Option<&LanceStore>,
     options: &ScanImportOptions,
+) -> anyhow::Result<ScanImportResult> {
+    let permit: Option<&dyn WorkspaceReadPermit> =
+        guard.map(|held| held as &dyn WorkspaceReadPermit).or(read_permit);
+    if legacy.is_some() && permit.is_none() {
+        anyhow::bail!("scan-import of a legacy projection requires a workspace read permit");
+    }
+    if let Some(permit) = permit {
+        permit.matches_workspace(workspace)?;
+    }
+    if options.dry_run {
+        let plan = plan_scan_import_inner(project_root, workspace, permit, None, legacy, options).await?;
+        return scan_import_impl(project_root, workspace, guard, permit, legacy, options, Some(&plan), None).await;
+    }
+    let guard = guard.ok_or_else(|| anyhow::anyhow!("scan-import needs the workspace lock for a mutating run"))?;
+    let kinds = scan_import_kinds(project_root, options)?;
+    let allocation = crate::artifact::id_alloc::acquire_allocation_guard(workspace, guard, &kinds).await?;
+    let plan = plan_scan_import(project_root, workspace, guard, &allocation, legacy, options).await?;
+    scan_import_impl(project_root, workspace, Some(guard), Some(guard), legacy, options, Some(&plan), Some(&allocation)).await
+}
+
+/// Execute the exact plan that was checked before and after reopening the
+/// index; rediscovery must match its complete source snapshot before writes.
+pub async fn execute_scan_import_plan(
+    project_root: &Path,
+    workspace: &Path,
+    guard: &crate::workspace::lock::WorkspaceLock,
+    allocation: &crate::artifact::id_alloc::AllocationGuard,
+    legacy: Option<&LanceStore>,
+    options: &ScanImportOptions,
+    plan: &ScanImportPlan,
+) -> anyhow::Result<ScanImportResult> {
+    if options.dry_run {
+        anyhow::bail!("a mutating scan plan cannot be executed as a dry run");
+    }
+    if plan_scan_import(project_root, workspace, guard, allocation, legacy, options).await? != *plan {
+        anyhow::bail!("scan identities or sources changed after planning; nothing was imported");
+    }
+    scan_import_impl(project_root, workspace, Some(guard), Some(guard), legacy, options, Some(plan), Some(allocation)).await
+}
+
+async fn scan_import_impl(
+    project_root: &Path,
+    workspace: &Path,
+    guard: Option<&crate::workspace::lock::WorkspaceLock>,
+    permit: Option<&dyn WorkspaceReadPermit>,
+    legacy: Option<&LanceStore>,
+    options: &ScanImportOptions,
+    plan: Option<&ScanImportPlan>,
+    allocation: Option<&crate::artifact::id_alloc::AllocationGuard>,
 ) -> anyhow::Result<ScanImportResult> {
     if !options.dry_run && guard.is_none() {
         anyhow::bail!(
             "scan-import needs the workspace lock for a mutating run; a dry run may pass none"
         );
     }
-    // Discover files — with path traversal protection
-    let scan_root = if let Some(custom) = &options.custom_path {
-        let candidate = project_root.join(custom);
-        let canonical = candidate.canonicalize().unwrap_or(candidate.clone());
-        let canonical_root = project_root
-            .canonicalize()
-            .unwrap_or(project_root.to_path_buf());
-        if !canonical.starts_with(&canonical_root) {
-            anyhow::bail!(
-                "Scan path '{}' is outside project root. Path traversal rejected.",
-                custom
-            );
+    if let Some(permit) = permit {
+        permit.matches_workspace(workspace)?;
+    } else if legacy.is_some() {
+        anyhow::bail!("scan-import of a legacy projection requires a workspace read permit");
+    }
+    let root = scan_root(project_root, options)?;
+    let mut files = discover_markdown_files(&root)?;
+    files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    if let Some(plan) = plan {
+        let snapshot: Vec<_> = files.iter().map(|f| (f.relative_path.clone(), f.content.clone())).collect();
+        if snapshot != plan.snapshot {
+            anyhow::bail!("scan sources changed after planning; nothing was imported");
         }
-        candidate
-    } else {
-        project_root.to_path_buf()
-    };
-
-    let files = discover_markdown_files(&scan_root)?;
+    }
+    files.sort_by_key(|file| {
+        let filename = file.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        let has_id = detect_kind_with_path(filename, Some(&file.relative_path), &file.content)
+            .and_then(|detection| detection.suggested_id)
+            .is_some_and(|id| is_safe_artifact_id(&id.to_uppercase()));
+        !has_id
+    });
     let total_found = files.len();
 
     let mut entries = Vec::with_capacity(total_found);
@@ -191,7 +414,8 @@ pub async fn scan_and_import_to_workspace(
 
         let entry = match detection {
             Some(det) => {
-                process_detected_file(file, &det, workspace, guard, legacy, options.dry_run).await
+                let planned_id = plan.and_then(|p| p.ids.get(&file.relative_path));
+                process_detected_file(file, &det, workspace, guard, legacy, options.dry_run, planned_id, plan.is_some_and(|p| p.existing.contains(&file.relative_path)), plan.and_then(|p| p.parents.get(&file.relative_path)), allocation).await
             }
             None => {
                 unknown += 1;
@@ -247,6 +471,16 @@ struct ParsedDocument {
     links: Vec<(String, String)>,
 }
 
+impl ParsedDocument {
+    fn field(&self, name: &str) -> Option<&str> {
+        self.frontmatter.get(name).and_then(|value| value.as_str())
+    }
+
+    fn depth(&self) -> &str {
+        self.field("depth").unwrap_or("standard")
+    }
+}
+
 /// The canonical key an imported document carries.
 ///
 /// ADR-030: the key is the slug the frontmatter declares when that slug is
@@ -257,8 +491,6 @@ fn canonical_key_for_import(artifact_id: &str, document: &ParsedDocument) -> Str
         .frontmatter
         .get("slug")
         .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|slug| !slug.is_empty())
         .filter(|slug| crate::artifact::types::is_canonical_key(slug))
         .unwrap_or(artifact_id)
         .to_string()
@@ -339,29 +571,31 @@ async fn process_detected_file(
     guard: Option<&crate::workspace::lock::WorkspaceLock>,
     legacy: Option<&LanceStore>,
     dry_run: bool,
+    planned_id: Option<&(String, bool)>,
+    planned_existing: bool,
+    planned_parent: Option<&String>,
+    allocation: Option<&crate::artifact::id_alloc::AllocationGuard>,
 ) -> ScanImportEntry {
     let mut warnings: Vec<String> = Vec::new();
-    let document = parse_document(file, detection, &mut warnings);
+    let mut document = parse_document(file, detection, &mut warnings);
+    if let Some(parent) = planned_parent {
+        document.frontmatter.insert("parent_epic".to_string(), serde_yaml::Value::String(parent.clone()));
+    }
 
     // Build the canonical Markdown BEFORE resolving the id: the id lands in the
     // frontmatter, so the content is otherwise rendered twice. Dry-run never
     // allocates — it must not take the id-alloc lock or create a file.
-    let artifact_id = if dry_run {
-        preview_artifact_id(detection, legacy).await
+    let artifact_id = if let Some((id, _)) = planned_id {
+        id.clone()
     } else {
-        match allocate_artifact_id(workspace, legacy, detection).await {
-            Ok(id) => id,
-            Err(e) => {
-                return ScanImportEntry {
-                    relative_path: file.relative_path.display().to_string(),
-                    detected_kind: Some(detection.kind.clone()),
-                    detection_tier: Some(detection.tier.clone()),
-                    artifact_id: None,
-                    status: ImportStatus::Failed(format!("allocate id: {e}")),
-                    warnings,
-                };
-            }
-        }
+        return ScanImportEntry {
+            relative_path: file.relative_path.display().to_string(),
+            detected_kind: Some(detection.kind.clone()),
+            detection_tier: Some(detection.tier.clone()),
+            artifact_id: None,
+            status: ImportStatus::Failed("scan plan is missing an artifact id".to_string()),
+            warnings,
+        };
     };
 
     let entry_base = ScanImportEntry {
@@ -374,10 +608,9 @@ async fn process_detected_file(
     };
 
     if dry_run {
-        // Preview only: no file, no lock file, no row. `imported` here counts
-        // documents that WOULD be imported, exactly as before.
         return ScanImportEntry {
-            status: ImportStatus::Imported,
+            status: if planned_existing { ImportStatus::Skipped } else { ImportStatus::Imported },
+            warnings,
             ..entry_base
         };
     }
@@ -388,18 +621,19 @@ async fn process_detected_file(
     let guard = guard.expect("scan-import entry point guarantees a guard for a mutating run");
     let ctx = crate::projection::MutationContext::new(workspace, guard, legacy);
 
-    // Existence is a property of the canonical file, not of the derived index.
-    // Checking the projection first is what makes a repeat run a no-op on a
-    // migrated workspace, where there is no row to ask.
-    let canonical_exists = projection_exists(workspace, &detection.kind, &artifact_id).await;
-    // ADR-030: an imported document never mints a key. The key is the slug
-    // its frontmatter declares when that slug is valid, and its display id
-    // when it declares none — the same rule every other writer uses.
     let canonical_key = canonical_key_for_import(&artifact_id, &document);
+    let canonical_exists = match crate::artifact::documents::workspace_candidates(workspace).await
+        .and_then(|candidates| canonical_key_exists(&canonical_key, &candidates).map_err(Into::into)) {
+        Ok(exists) => exists,
+        Err(error) => return ScanImportEntry {
+            status: ImportStatus::Failed(format!("Check projection: {error}")),
+            ..entry_base
+        },
+    };
 
     let legacy_row = match legacy {
-        Some(store) => match store.get_artifact(&canonical_key).await {
-            Ok(row) => row,
+        Some(store) => match store.list_artifacts(guard, None).await {
+            Ok(rows) => rows.into_iter().find(|row| row.canonical_key == canonical_key),
             Err(e) => {
                 return ScanImportEntry {
                     status: ImportStatus::Failed(format!("Check existing: {e}")),
@@ -409,6 +643,20 @@ async fn process_detected_file(
         },
         None => None,
     };
+    if !canonical_exists && planned_id.is_some_and(|(_, generated)| *generated) {
+        let Some(allocation) = allocation else {
+            return ScanImportEntry { status: ImportStatus::Failed("allocator guard is missing".to_string()), ..entry_base };
+        };
+        if let Err(error) = crate::artifact::id_alloc::reserve_prepared_display_number(
+            workspace, guard, allocation, legacy, &detection.kind, 3, &artifact_id,
+        ).await {
+            return ScanImportEntry {
+                status: ImportStatus::Failed(format!("reserve planned id: {error}")),
+                ..entry_base
+            };
+        }
+    }
+
 
     if canonical_exists || legacy_row.is_some() {
         // Already imported. Do NOT rewrite: the canonical file is the source of
@@ -426,7 +674,7 @@ async fn process_detected_file(
             }
             if let Some(store) = legacy {
                 for (target, relation) in &document.links {
-                    if let Err(e) = store.add_relation(&canonical_key, target, relation).await {
+                    if let Err(e) = store.add_relation(guard, &canonical_key, target, relation).await {
                         warnings.push(format!(
                             "scan-import: could not restore relation {artifact_id}→{target} ({relation}): {e}"
                         ));
@@ -466,13 +714,13 @@ async fn process_detected_file(
             status: document.status.clone(),
             title: document.title.clone(),
             body: document.body.clone(),
-            depth: "standard".to_string(),
+            depth: document.depth().to_string(),
             author: Some(document.author.clone()),
-            parent_epic: None,
-            valid_until: None,
+            parent_epic: document.field("parent_epic").map(str::to_string),
+            valid_until: document.field("valid_until").map(str::to_string),
             tags: document.tags.clone(),
         };
-        if let Err(e) = store.create_artifact(&new_artifact).await {
+        if let Err(e) = store.create_artifact(guard, &new_artifact).await {
             return ScanImportEntry {
                 status: ImportStatus::Failed(format!("{e}")),
                 warnings: write_warnings,
@@ -480,7 +728,7 @@ async fn process_detected_file(
             };
         }
         for (target, relation) in &document.links {
-            if let Err(e) = store.add_relation(&canonical_key, target, relation).await {
+            if let Err(e) = store.add_relation(guard, &canonical_key, target, relation).await {
                 write_warnings.push(format!(
                     "scan-import: could not restore relation {artifact_id}→{target} ({relation}): {e}"
                 ));
@@ -495,64 +743,42 @@ async fn process_detected_file(
     }
 }
 
-/// Write the canonical Markdown for an imported document through the one
-/// writer every mutation uses, with the document's own unknown frontmatter
-/// carried through as preserved extras.
-///
-/// `render_projection_record` preserves unknown keys from an EXISTING file at
-/// the target path — but there is none on a first import, so the source's own
-/// keys would be dropped. Writing the source document first and letting the
-/// renderer normalise it is what makes "unknown frontmatter survives the round
-/// trip" true rather than hoped for.
+/// Publish the source frontmatter and body without replacing any existing file.
 async fn write_canonical_document(
     ctx: &crate::projection::MutationContext<'_>,
     kind: &ArtifactKind,
     artifact_id: &str,
     document: &ParsedDocument,
 ) -> anyhow::Result<()> {
-    let path = canonical_path(ctx.workspace(), kind, artifact_id, &document.title);
+    let preferred = canonical_path(ctx.workspace(), kind, artifact_id, &document.title);
+    let path = if preferred.exists() {
+        let dir = preferred.parent().expect("canonical path has a parent");
+        let key = canonical_key_for_import(artifact_id, document);
+        let mut suffix = 0u64;
+        loop {
+            let filename = if suffix == 0 {
+                format!("{}-{}.md", artifact_id, key)
+            } else {
+                format!("{}-{}-{}.md", artifact_id, key, suffix)
+            };
+            let candidate = dir.join(filename);
+            if !candidate.exists() {
+                break candidate;
+            }
+            suffix += 1;
+        }
+    } else {
+        preferred
+    };
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    // Seed the canonical file with the SOURCE document so its unknown
-    // frontmatter keys are on disk before the renderer reads what to preserve.
-    let seed = render_frontmatter_with_known_keys(document, kind, artifact_id)?;
-    atomic_write(&path, seed.as_bytes()).await?;
-
-    let now = chrono::Utc::now().to_rfc3339();
-    let record = crate::db::store::ArtifactRecord {
-        // ADR-030: the canonical key of a document is the slug its
-        // frontmatter declares, and its display id when it declares none.
-        // `seed` is the canonical document about to be written.
-        canonical_key: canonical_key_from_document(artifact_id, &seed),
-        id: artifact_id.to_string(),
-        kind: kind.template_key().to_string(),
-        status: document.status.clone(),
-        title: document.title.clone(),
-        body: document.body.clone(),
-        depth: "standard".to_string(),
-        author: Some(document.author.clone()),
-        parent_epic: None,
-        r_eff_score: 0.0,
-        valid_until: None,
-        created_at: now.clone(),
-        updated_at: now,
-        tags: document.tags.clone(),
-        body_hash: None,
-        embedding: None,
-    };
-    // Files-first: the renderer keeps the seeded body + unknown keys and
-    // normalises the known ones. `force_body = true` because this write IS the
-    // body decision — a stale file must not win over the document being
-    // imported right now.
-    crate::projection::render_projection_record_with_body(ctx.workspace(), &record, &document.links)
-        .await
-        .map(|_| ())
+    let content = render_frontmatter_with_known_keys(document, kind, artifact_id)?;
+    atomic_write(&path, content.as_bytes()).await?;
+    Ok(())
 }
 
-/// The canonical file path for `(kind, id, title)` — the same computation the
-/// projection renderer performs, so the seed write and the normalised write
-/// land on ONE file rather than two.
+/// Preferred filename for an imported document.
 fn canonical_path(
     workspace: &Path,
     kind: &ArtifactKind,
@@ -639,100 +865,82 @@ async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.write_all(bytes)?;
     tmp.flush()?;
-    tmp.persist(path).map_err(|e| e.error)?;
+    tmp.persist_noclobber(path).map_err(|e| e.error)?;
     Ok(())
 }
 
-/// Check whether a projection file for `(kind, artifact_id)` already exists
-/// on disk. Used by the Skipped-branch heal path (R2 audit rust-pro HIGH #3).
-async fn projection_exists(workspace: &Path, kind: &ArtifactKind, artifact_id: &str) -> bool {
-    let dir = workspace.join(kind.dir_name());
-    let prefix = format!("{}-", artifact_id);
-    let mut rd = match tokio::fs::read_dir(&dir).await {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    while let Ok(Some(entry)) = rd.next_entry().await {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prefix) && name.ends_with(".md") {
-            return true;
-        }
+
+
+fn canonical_key_exists(
+    key: &str,
+    candidates: &[crate::artifact::canonical_key::ArtifactCandidate],
+) -> Result<bool, crate::artifact::canonical_key::ResolveError> {
+    let mut matches: Vec<_> = candidates.iter().filter(|candidate| candidate.canonical_key == key).cloned().collect();
+    matches.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    if matches.len() > 1 {
+        return Err(crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey {
+            key: key.to_string(), candidates: matches,
+        });
     }
-    false
+    Ok(!matches.is_empty())
 }
 
-/// Allocate the id for an imported document under the existing per-kind
-/// `id_alloc` lock.
-///
-/// A document that declares its own well-formed id keeps it — the author's
-/// `id:` is a fact about the document, not something a lock may renumber.
-/// Everything else is allocated, and the allocation consults BOTH the
-/// canonical files on disk and (when present) the legacy rows, so a migrated
-/// workspace without a store still cannot collide with an id a sibling
-/// worktree just took.
-///
-/// The workspace lock is NOT taken here: the caller's guard already serializes
-/// the canonical writes, and id allocation guards a different thing on a
-/// different lock file — the same split `id_alloc` documents for its own
-/// callers.
-async fn allocate_artifact_id(
-    workspace: &Path,
-    legacy: Option<&LanceStore>,
-    detection: &DetectionResult,
-) -> anyhow::Result<String> {
-    if let Some(id) = &detection.suggested_id {
-        let normalized = id.to_uppercase();
-        if is_safe_artifact_id(&normalized) {
-            return Ok(normalized);
-        }
-    }
-    let kind = &detection.kind;
-    let _id_lock = crate::artifact::id_alloc::acquire_id_alloc_lock(workspace, kind)
-        .await
-        .with_context(|| format!("acquire id-alloc lock for {}", kind.prefix()))?;
+/// Lockless preview uses the allocator's same read-only sources; apply still
+/// acquires the allocator guard and recalculates before reserving.
+async fn unlocked_max_display_number(workspace: &Path, kind: &ArtifactKind) -> anyhow::Result<u32> {
+    use crate::artifact::frontmatter::{assigned_number_from_frontmatter, parse_frontmatter, predicted_number_from_frontmatter};
     let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-    for n in 1..=999u32 {
-        let candidate = format!("{prefix}-{n:03}");
-        if projection_exists(workspace, kind, &candidate).await {
-            continue;
-        }
-        if let Some(store) = legacy
-            && let Ok(Some(_)) = store.get_artifact(&candidate).await
-        {
-            continue;
-        }
-        return Ok(candidate);
-    }
-    anyhow::bail!(
-        "no free {prefix}-NNN id for kind {} — id space exhausted at 999",
-        kind.prefix()
-    )
-}
-
-/// The id a dry-run would use, computed WITHOUT the id-alloc lock, without
-/// touching disk and without writing anything.
-///
-/// A dry-run that took the allocation lock would create a lock file, which is
-/// exactly the "dry-run creates nothing" contract it is supposed to honour.
-async fn preview_artifact_id(detection: &DetectionResult, legacy: Option<&LanceStore>) -> String {
-    if let Some(id) = &detection.suggested_id {
-        let normalized = id.to_uppercase();
-        if is_safe_artifact_id(&normalized) {
-            return normalized;
-        }
-    }
-    let prefix = detection.kind.prefix().trim_end_matches('-').to_uppercase();
-    if let Some(store) = legacy {
-        for n in 1..=999u32 {
-            let candidate = format!("{prefix}-{n:03}");
-            match store.get_artifact(&candidate).await {
-                Ok(None) => return candidate,
-                Ok(Some(_)) => continue,
-                Err(_) => return candidate,
+    let mut max = crate::artifact::id_alloc::load_id_ledger(workspace, kind).await?
+        .map_or(0, |ledger| ledger.high_watermark);
+    let mut roots = vec![workspace.to_path_buf()];
+    if let Some(common) = crate::workspace::git::git_common_dir(workspace.parent().unwrap_or(workspace)) {
+        if let Some(repo) = common.parent() {
+            let output = tokio::process::Command::new("git").arg("-C").arg(repo)
+                .args(["worktree", "list", "--porcelain", "-z"]).output().await?;
+            if !output.status.success() {
+                anyhow::bail!("git worktree list failed with {}", output.status);
+            }
+            for line in String::from_utf8_lossy(&output.stdout).split('\0') {
+                if let Some(root) = line.trim().strip_prefix("worktree ") {
+                    let path = PathBuf::from(root.trim()).join(".forgeplan");
+                    if !roots.contains(&path) { roots.push(path); }
+                }
             }
         }
     }
-    format!("{prefix}-001")
+    for root in roots {
+        let mut stack = vec![root.join(kind.dir_name())];
+        while let Some(dir) = stack.pop() {
+            let mut entries = match tokio::fs::read_dir(&dir).await {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                if tokio::fs::metadata(&path).await?.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|ext| ext.to_str()) != Some("md") { continue; }
+                let name = entry.file_name().to_string_lossy().to_uppercase();
+                if let Some(number) = name.strip_prefix(&format!("{prefix}-"))
+                    .and_then(|rest| rest.split('-').next()).and_then(|n| n.parse::<u32>().ok()) {
+                    max = max.max(number);
+                }
+                let content = tokio::fs::read_to_string(&path).await?;
+                let (fm, _) = parse_frontmatter(&content)?;
+                if let Some(number) = assigned_number_from_frontmatter(&fm) { max = max.max(number); }
+                if let Some(number) = predicted_number_from_frontmatter(&fm) { max = max.max(number); }
+                if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
+                    if let Some(number) = id.to_uppercase().strip_prefix(&format!("{prefix}-")).and_then(|n| n.parse::<u32>().ok()) {
+                        max = max.max(number);
+                    }
+                }
+            }
+        }
+    }
+    Ok(max)
 }
 
 /// Same safety contract as `db::store::validate_id_for_filter` but
@@ -830,6 +1038,178 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conflicting_existing_canonical_key_refuses_before_any_import() {
+        let (tmp, ws) = workspace().await;
+        for (name, id) in [("one.md", "PRD-001"), ("two.md", "PRD-002")] {
+            std::fs::write(ws.join("prds").join(name), format!(
+                "---\nkind: prd\nid: {id}\nslug: prd-conflict\ntitle: Existing\n---\nExisting\n"
+            )).unwrap();
+        }
+        source(tmp.path(), "docs/a.md", "---\nkind: prd\nid: PRD-001\nslug: prd-conflict\ntitle: Existing\n---\nSource\n");
+        source(tmp.path(), "docs/b.md", "---\nkind: prd\nid: PRD-003\nslug: prd-new\ntitle: New\n---\nNew\n");
+        let lock = guard(&ws).await;
+        let kinds = scan_import_kinds(tmp.path(), &ScanImportOptions::default()).unwrap();
+        let allocation = crate::artifact::id_alloc::acquire_allocation_guard(&ws, &lock, &kinds).await.unwrap();
+        let before = inventory(&ws);
+        let error = plan_scan_import(tmp.path(), &ws, &lock, &allocation, None, &ScanImportOptions::default()).await.unwrap_err();
+        match error.downcast_ref::<crate::artifact::canonical_key::ResolveError>() {
+            Some(crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey { key, candidates }) => {
+                assert_eq!(key, "prd-conflict");
+                assert_eq!(candidates.len(), 2);
+            }
+            other => panic!("expected canonical conflict, got {other:?}"),
+        }
+        assert_eq!(inventory(&ws), before);
+        assert!(!ws.join("prds/PRD-003-new.md").exists());
+    }
+
+    #[tokio::test]
+    async fn invalid_whitespace_slug_uses_identical_key_in_markdown_and_index() {
+        let (tmp, ws) = workspace().await;
+        let lock = guard(&ws).await;
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        source(tmp.path(), "docs/PRD-001.md", "---\nkind: prd\nid: PRD-001\nslug: ' prd-child '\ntitle: Child\n---\nBody\n");
+        let options = ScanImportOptions::default();
+        let kinds = scan_import_kinds(tmp.path(), &options).unwrap();
+        let allocation = crate::artifact::id_alloc::acquire_allocation_guard(&ws, &lock, &kinds).await.unwrap();
+        let plan = plan_scan_import(tmp.path(), &ws, &lock, &allocation, Some(&store), &options).await.unwrap();
+        assert_eq!(plan.identities[0].1, "PRD-001");
+        let result = execute_scan_import_plan(tmp.path(), &ws, &lock, &allocation, Some(&store), &options, &plan).await.unwrap();
+        assert_eq!(result.imported, 1, "{:?}", result.entries);
+        let (_, content) = imported_file(&ws, "prds", "PRD-001-").unwrap();
+        assert_eq!(crate::artifact::canonical_key::canonical_key_from_document("PRD-001", &content), "PRD-001");
+        let row = store.get_record(&lock, "PRD-001").await.unwrap().unwrap();
+        assert_eq!(row.canonical_key, "PRD-001");
+    }
+
+    #[tokio::test]
+    async fn dry_run_matches_apply_for_generated_ids_and_existing_documents() {
+        let (tmp, ws) = workspace().await;
+        std::fs::write(ws.join("prds/PRD-004-existing.md"),
+            "---\nkind: prd\nid: PRD-004\nslug: prd-existing\ntitle: Existing\n---\nBody\n").unwrap();
+        source(tmp.path(), "docs/a.md", "---\nkind: prd\ntitle: First\n---\nFirst\n");
+        source(tmp.path(), "docs/b.md", "---\nkind: prd\ntitle: Second\n---\nSecond\n");
+        source(tmp.path(), "docs/c.md", "---\nkind: prd\nid: PRD-004\nslug: prd-existing\ntitle: Existing\n---\nBody\n");
+        let before = inventory(&ws);
+        let preview = scan_and_import_to_workspace(tmp.path(), &ws, None, None, None, &ScanImportOptions { dry_run: true, custom_path: None }).await.unwrap();
+        assert_eq!(inventory(&ws), before);
+        let lock = guard(&ws).await;
+        let applied = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default()).await.unwrap();
+        assert_eq!(preview.failed, 0);
+        assert_eq!(applied.failed, 0, "{:?}", applied.entries);
+        let summarize = |result: &ScanImportResult| result.entries.iter().map(|entry|
+            (entry.relative_path.clone(), entry.artifact_id.clone(), entry.status.clone())).collect::<Vec<_>>();
+        assert_eq!(summarize(&preview), summarize(&applied));
+        assert_eq!(preview.imported, 2);
+        assert_eq!(preview.skipped, 1);
+        assert!(preview.entries.iter().any(|e| e.artifact_id.as_deref() == Some("PRD-005")));
+        assert!(preview.entries.iter().any(|e| e.artifact_id.as_deref() == Some("PRD-006")));
+    }
+
+    #[tokio::test]
+    async fn apply_preserves_forward_and_qualified_parents() {
+        let (tmp, ws) = workspace().await;
+        for (id, parent) in [("PRD-001", "EPIC-A01"), ("PRD-002", "EPIC-A02@other")] {
+            source(tmp.path(), &format!("docs/{id}.md"), &format!(
+                "---\nkind: prd\nid: {id}\ntitle: {id}\nparent_epic: {parent}\n---\nBody\n"
+            ));
+        }
+        let lock = guard(&ws).await;
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default()).await.unwrap();
+        assert_eq!(result.imported, 2, "{:?}", result.entries);
+        for (id, parent) in [("PRD-001", "EPIC-A01"), ("PRD-002", "EPIC-A02@other")] {
+            let (_, content) = imported_file(&ws, "prds", id).unwrap();
+            let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&content).unwrap();
+            assert_eq!(fm.get("parent_epic").and_then(|v| v.as_str()), Some(parent));
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_preserves_metadata_and_resolves_batch_parent_in_both_paths() {
+        for legacy_enabled in [false, true] {
+            for prepared in [false, true] {
+                let (tmp, ws) = workspace().await;
+                let lock = guard(&ws).await;
+                let store = if legacy_enabled {
+                    Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+                } else {
+                    None
+                };
+                source(tmp.path(), "docs/EPIC-001-parent.md",
+                    "---\nkind: epic\nid: EPIC-001\nslug: epic-parent\ntitle: Parent\n---\nParent body\n");
+                source(tmp.path(), "docs/PRD-001-child.md",
+                    "---\nkind: prd\nid: PRD-001\nslug: prd-child\ntitle: Child\ndepth: deep\nparent_epic: EPIC-001\nvalid_until: '2030-12-31'\n---\nChild body\n");
+                let options = ScanImportOptions::default();
+                let result = if prepared {
+                    let kinds = scan_import_kinds(tmp.path(), &options).unwrap();
+                    let allocation = crate::artifact::id_alloc::acquire_allocation_guard(&ws, &lock, &kinds).await.unwrap();
+                    let plan = plan_scan_import(tmp.path(), &ws, &lock, &allocation, store.as_ref(), &options).await.unwrap();
+                    execute_scan_import_plan(tmp.path(), &ws, &lock, &allocation, store.as_ref(), &options, &plan).await.unwrap()
+                } else {
+                    scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, store.as_ref(), &options).await.unwrap()
+                };
+                assert_eq!(result.imported, 2, "{:?}", result.entries);
+                let (_, content) = imported_file(&ws, "prds", "PRD-001-").unwrap();
+                let (fm, _) = crate::artifact::frontmatter::parse_frontmatter(&content).unwrap();
+                assert_eq!(fm.get("depth").and_then(|v| v.as_str()), Some("deep"));
+                assert_eq!(fm.get("parent_epic").and_then(|v| v.as_str()), Some("epic-parent"));
+                assert_eq!(fm.get("valid_until").and_then(|v| v.as_str()), Some("2030-12-31"));
+                if let Some(store) = &store {
+                    let row = store.get_record(&lock, "prd-child").await.unwrap().unwrap();
+                    assert_eq!(row.depth, "deep");
+                    assert_eq!(row.parent_epic.as_deref(), Some("epic-parent"));
+                    assert_eq!(row.valid_until.as_deref(), Some("2030-12-31"));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn distinct_keys_share_display_id_without_clobber_and_generated_id_is_fresh() {
+        for legacy_enabled in [false, true] {
+            let (tmp, ws) = workspace().await;
+            let lock = guard(&ws).await;
+            let store = if legacy_enabled {
+                Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+            } else {
+                None
+            };
+            source(tmp.path(), "docs/a-generated.md", "---\nkind: prd\ntitle: Generated\n---\nGenerated body\n");
+            for (file, slug, body) in [("b.md", "prd-one", "First body"), ("c.md", "prd-two", "Second body")] {
+                source(tmp.path(), &format!("docs/{file}"), &format!(
+                    "---\nkind: prd\nid: PRD-001\nslug: {slug}\ntitle: Same title\n---\n{body}\n"
+                ));
+            }
+            let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, store.as_ref(), &ScanImportOptions::default()).await.unwrap();
+            assert_eq!(result.imported, 3, "{:?}", result.entries);
+            assert!(result.entries.iter().any(|entry| entry.relative_path.ends_with("a-generated.md") && entry.artifact_id.as_deref() == Some("PRD-002")));
+            let candidates = crate::artifact::documents::workspace_candidates(&ws).await.unwrap();
+            for (key, body) in [("prd-one", "First body"), ("prd-two", "Second body")] {
+                let candidate = candidates.iter().find(|candidate| candidate.canonical_key == key).unwrap();
+                let content = std::fs::read_to_string(ws.join(&candidate.relative_path)).unwrap();
+                assert!(content.contains(body));
+                if let Some(store) = &store {
+                    assert_eq!(store.get_record(&lock, key).await.unwrap().unwrap().body.trim(), body);
+                }
+            }
+            let repeat = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, store.as_ref(), &ScanImportOptions::default()).await.unwrap();
+            assert_eq!(repeat.skipped, 2);
+            assert_eq!(repeat.failed, 0, "{:?}", repeat.entries);
+            assert_eq!(repeat.imported, 1);
+            assert_eq!(repeat.entries.len(), 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn seed_publication_does_not_replace_an_existing_destination() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("existing.md");
+        std::fs::write(&path, "original").unwrap();
+        assert!(atomic_write(&path, b"replacement").await.is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "original");
+    }
+
+    #[tokio::test]
     async fn a_dry_run_creates_nothing_at_all() {
         let (tmp, ws) = workspace().await;
         source(
@@ -840,16 +1220,10 @@ mod tests {
         let lock = guard(&ws).await;
         let before = inventory(&ws);
 
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions {
-                dry_run: true,
-                custom_path: None,
-            },
-        )
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions {
+            dry_run: true,
+            custom_path: None,
+        })
         .await
         .unwrap();
 
@@ -867,7 +1241,7 @@ mod tests {
     #[tokio::test]
     async fn a_dry_run_on_a_legacy_workspace_creates_no_row() {
         let (tmp, ws) = workspace().await;
-        let store = LanceStore::init(&ws).await.unwrap();
+        let store = { let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); LanceStore::init_new(&ws, &guard).await.unwrap() };
         source(
             tmp.path(),
             "docs/PRD-001-test.md",
@@ -875,20 +1249,94 @@ mod tests {
         );
         let lock = guard(&ws).await;
 
-        scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            Some(&store),
-            &ScanImportOptions {
-                dry_run: true,
-                custom_path: None,
-            },
-        )
+        scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, Some(&store), &ScanImportOptions {
+            dry_run: true,
+            custom_path: None,
+        })
         .await
         .unwrap();
 
-        assert!(store.get_artifact("PRD-001").await.unwrap().is_none());
+        assert!(store.get_artifact(&lock, "PRD-001").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_preview_requires_and_reuses_shared_read_permit() {
+        let (tmp, ws) = workspace().await;
+        let store = {
+            let lock = guard(&ws).await;
+            LanceStore::init_new(&ws, &lock).await.unwrap()
+        };
+        source(tmp.path(), "docs/draft.md", "---\nkind: prd\ntitle: Preview\n---\n# Preview");
+        let options = ScanImportOptions { dry_run: true, custom_path: None };
+        assert!(scan_and_import_to_workspace(tmp.path(), &ws, None, None, Some(&store), &options).await.is_err());
+        let permit = crate::workspace::lock::acquire_workspace_read_lock(&ws).await.unwrap();
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, None, Some(&permit), Some(&store), &options).await.unwrap();
+        assert_eq!(result.imported, 1);
+        assert!(store.get_artifact(&permit, "PRD-001").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn planner_refuses_a_guard_from_another_workspace() {
+        let (tmp, ws) = workspace().await;
+        source(tmp.path(), "docs/PRD-001.md", "---\nkind: prd\nid: PRD-001\ntitle: Test\n---\n# Test\n");
+        let lock = guard(&ws).await;
+        let other = tempfile::tempdir().unwrap();
+        let other_lock = guard(&other.path().join(".forgeplan")).await;
+        let options = ScanImportOptions::default();
+        let kinds = scan_import_kinds(tmp.path(), &options).unwrap();
+        let allocation = crate::artifact::id_alloc::acquire_allocation_guard(&ws, &lock, &kinds).await.unwrap();
+        let before = inventory(&ws);
+        assert!(plan_scan_import(tmp.path(), &ws, &other_lock, &allocation, None, &options).await.is_err());
+        assert_eq!(inventory(&ws), before);
+    }
+
+    #[tokio::test]
+    async fn scan_preflight_accepts_forward_links_and_parents_but_not_invalid_targets() {
+        let (tmp, ws) = workspace().await;
+        let input = |link: &str, parent: &str| format!(
+            "---\nkind: prd\nid: PRD-001\ntitle: Source\nparent_epic: {parent}\nlinks:\n  - target: {link}\n    relation: informs\n---\n# Source\n"
+        );
+        let path = source(tmp.path(), "docs/PRD-001.md", &input("RFC-A01", "EPIC-A01"));
+        let lock = guard(&ws).await;
+        let options = ScanImportOptions::default();
+        let kinds = scan_import_kinds(tmp.path(), &options).unwrap();
+        let allocation = crate::artifact::id_alloc::acquire_allocation_guard(&ws, &lock, &kinds).await.unwrap();
+        let before = inventory(&ws);
+        let plan = plan_scan_import(tmp.path(), &ws, &lock, &allocation, None, &options).await.unwrap();
+        assert!(plan.identities.iter().any(|(_, _, links)| links.iter().any(|(target, _)| target == "RFC-A01")));
+        assert_eq!(inventory(&ws), before);
+        for bad in ["---", "EPIC-4294967296"] {
+            std::fs::write(&path, input(bad, "EPIC-A01")).unwrap();
+            assert!(plan_scan_import(tmp.path(), &ws, &lock, &allocation, None, &options).await.is_err());
+            std::fs::write(&path, input("RFC-A01", bad)).unwrap();
+            assert!(plan_scan_import(tmp.path(), &ws, &lock, &allocation, None, &options).await.is_err());
+        }
+        std::fs::create_dir_all(ws.join("rfcs")).unwrap();
+        for (name, slug) in [("one.md", "rfc-one"), ("two.md", "rfc-two")] {
+            std::fs::write(ws.join("rfcs").join(name), format!(
+                "---\nid: RFC-001\nkind: rfc\ntitle: {slug}\nslug: {slug}\n---\n\nBody\n"
+            )).unwrap();
+        }
+        std::fs::write(&path, input("RFC-001", "EPIC-A01")).unwrap();
+        let error = plan_scan_import(tmp.path(), &ws, &lock, &allocation, None, &options).await.unwrap_err();
+        assert!(matches!(error.downcast_ref::<crate::artifact::canonical_key::ResolveError>(),
+            Some(crate::artifact::canonical_key::ResolveError::Ambiguous { .. })));
+    }
+
+    #[tokio::test]
+    async fn prepared_scan_rejects_changed_source_without_importing() {
+        let (tmp, ws) = workspace().await;
+        let path = source(tmp.path(), "docs/PRD-001.md", "---\nkind: prd\nid: PRD-001\ntitle: Before\n---\n# Before\n");
+        let lock = guard(&ws).await;
+        let options = ScanImportOptions::default();
+        let kinds = scan_import_kinds(tmp.path(), &options).unwrap();
+        let allocation = crate::artifact::id_alloc::acquire_allocation_guard(&ws, &lock, &kinds).await.unwrap();
+        let plan = plan_scan_import(tmp.path(), &ws, &lock, &allocation, None, &options).await.unwrap();
+        std::fs::write(path, "---\nkind: prd\nid: PRD-001\ntitle: After\n---\n# After\n").unwrap();
+        let before = inventory(&ws);
+        assert!(execute_scan_import_plan(tmp.path(), &ws, &lock, &allocation, None, &options, &plan).await.is_err());
+        assert_eq!(inventory(&ws), before);
+        assert!(imported_file(&ws, "prds", "PRD-001-").is_none());
     }
 
     /// A dry run is allowed to run with NO workspace lock — that is the whole
@@ -904,16 +1352,10 @@ mod tests {
         );
         let before = inventory(&ws);
 
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            None,
-            None,
-            &ScanImportOptions {
-                dry_run: true,
-                custom_path: None,
-            },
-        )
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, None, None, None, &ScanImportOptions {
+            dry_run: true,
+            custom_path: None,
+        })
         .await
         .expect("a dry run must work without the workspace lock");
 
@@ -937,13 +1379,7 @@ mod tests {
         );
         let before = inventory(&ws);
 
-        let err = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            None,
-            None,
-            &ScanImportOptions::default(),
-        )
+        let err = scan_and_import_to_workspace(tmp.path(), &ws, None, None, None, &ScanImportOptions::default())
         .await
         .expect_err("a mutating run must not proceed without the lock");
 
@@ -970,13 +1406,7 @@ mod tests {
         std::fs::write(&adrs, b"not a directory").unwrap();
         let lock = guard(&ws).await;
 
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
 
@@ -1042,25 +1472,19 @@ mod tests {
         source(
             tmp.path(),
             "docs/PRD-009-first.md",
-            "---\nkind: prd\nid: PRD-009\ntitle: First\n---\n# A",
+            "---\nkind: prd\nid: PRD-009\nslug: prd-first\ntitle: First\n---\n# A",
         );
         source(
             tmp.path(),
             "docs/PRD-009-second.md",
-            "---\nkind: prd\nid: PRD-009\ntitle: Second\n---\n# B",
+            "---\nkind: prd\nid: PRD-009\nslug: prd-second\ntitle: Second\n---\n# B",
         );
         let lock = guard(&ws).await;
 
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions {
-                dry_run: true,
-                custom_path: None,
-            },
-        )
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions {
+            dry_run: true,
+            custom_path: None,
+        })
         .await
         .unwrap();
 
@@ -1095,13 +1519,7 @@ mod tests {
         );
         let lock = guard(&ws).await;
 
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
         assert_eq!(result.imported, 1);
@@ -1142,13 +1560,7 @@ mod tests {
         );
         let lock = guard(&ws).await;
 
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
 
@@ -1170,13 +1582,7 @@ mod tests {
         let path = source(tmp.path(), "docs/PRD-010-source.md", original);
         let lock = guard(&ws).await;
 
-        scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
 
@@ -1197,25 +1603,13 @@ mod tests {
         let path = source(tmp.path(), "docs/ADR-011-repeat.md", original);
         let lock = guard(&ws).await;
 
-        let first = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        let first = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
         assert_eq!(first.imported, 1);
         let (_, after_first) = imported_file(&ws, "adrs", "ADR-011-").unwrap();
 
-        let second = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        let second = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
 
@@ -1237,13 +1631,7 @@ mod tests {
             "---\nid: ADR-012\nkind: adr\ntitle: Edited\nstatus: accepted\n---\n# From import\n",
         );
         let lock = guard(&ws).await;
-        scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
 
@@ -1251,13 +1639,7 @@ mod tests {
         let edited = imported.replace("# From import", "# Hand edited");
         std::fs::write(&path, &edited).unwrap();
 
-        let second = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        let second = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
 
@@ -1281,13 +1663,7 @@ mod tests {
         );
         let lock = guard(&ws).await;
 
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
 
@@ -1311,7 +1687,7 @@ mod tests {
     #[tokio::test]
     async fn a_legacy_workspace_still_receives_the_derived_row() {
         let (tmp, ws) = workspace().await;
-        let store = LanceStore::init(&ws).await.unwrap();
+        let store = { let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); LanceStore::init_new(&ws, &guard).await.unwrap() };
         source(
             tmp.path(),
             "docs/PRD-007-tagged.md",
@@ -1319,18 +1695,12 @@ mod tests {
         );
         let lock = guard(&ws).await;
 
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            Some(&store),
-            &ScanImportOptions::default(),
-        )
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, Some(&store), &ScanImportOptions::default())
         .await
         .unwrap();
         assert_eq!(result.imported, 1);
 
-        let record = store.get_record("PRD-007").await.unwrap().unwrap();
+        let record = store.get_record(&lock, "PRD-007").await.unwrap().unwrap();
         assert_eq!(record.tags, vec!["source=code", "layer=auth"]);
         let (_, content) = imported_file(&ws, "prds", "PRD-007-").expect("canonical PRD written");
         assert!(
@@ -1339,14 +1709,14 @@ mod tests {
         );
     }
 
-    /// A legacy row whose canonical file is missing is healed from the source
-    /// document rather than left orphaned (the case `reindex` would purge).
+    /// An orphaned row cannot be safely attributed to an imported document.
     #[tokio::test]
-    async fn a_legacy_row_without_a_file_is_healed_from_the_source() {
+    async fn an_orphaned_legacy_row_is_refused_without_mutation() {
         let (tmp, ws) = workspace().await;
-        let store = LanceStore::init(&ws).await.unwrap();
+        let store = { let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); LanceStore::init_new(&ws, &guard).await.unwrap() };
+        let lock = guard(&ws).await;
         store
-            .create_artifact(&NewArtifact {
+            .create_artifact(&lock, &NewArtifact {
                 canonical_key: "ADR-013".to_string(),
                 id: "ADR-013".to_string(),
                 kind: "adr".to_string(),
@@ -1366,23 +1736,21 @@ mod tests {
             "docs/ADR-013-healed.md",
             "---\nkind: adr\nid: ADR-013\ntitle: Healed\nstatus: accepted\nauthor: Grace\n---\n# Healed body\n",
         );
-        let lock = guard(&ws).await;
 
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            Some(&store),
-            &ScanImportOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(result.skipped, 1);
-        let (_, content) = imported_file(&ws, "adrs", "ADR-013-")
-            .expect("the missing canonical file is restored from the source");
-        assert!(content.contains("Grace"), "author must survive the heal");
-        assert!(content.contains("# Healed body"));
+        let options = ScanImportOptions::default();
+        let kinds = scan_import_kinds(tmp.path(), &options).unwrap();
+        let allocation = crate::artifact::id_alloc::acquire_allocation_guard(&ws, &lock, &kinds).await.unwrap();
+        let before = inventory(&ws);
+        let before_record = store.get_record(&lock, "ADR-013").await.unwrap().unwrap();
+        let error = plan_scan_import(tmp.path(), &ws, &lock, &allocation, Some(&store), &options)
+            .await.expect_err("an unattributed orphan must fail closed");
+        assert!(error.to_string().contains("disagrees with the existing index"));
+        assert_eq!(inventory(&ws), before);
+        let after_record = store.get_record(&lock, "ADR-013").await.unwrap().unwrap();
+        assert_eq!(after_record.body, before_record.body);
+        assert_eq!(after_record.title, before_record.title);
+        assert_eq!(after_record.status, before_record.status);
+        assert!(imported_file(&ws, "adrs", "ADR-013-").is_none());
     }
 
     #[tokio::test]
@@ -1391,13 +1759,7 @@ mod tests {
         source(tmp.path(), "docs/random.md", "# Shopping\n- Milk");
         let lock = guard(&ws).await;
 
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
 
@@ -1422,13 +1784,7 @@ mod tests {
         );
         let lock = guard(&ws).await;
 
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
 
@@ -1442,16 +1798,10 @@ mod tests {
         let (tmp, ws) = workspace().await;
         let lock = guard(&ws).await;
 
-        let err = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions {
-                dry_run: false,
-                custom_path: Some("../../etc".to_string()),
-            },
-        )
+        let err = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions {
+            dry_run: false,
+            custom_path: Some("../../etc".to_string()),
+        })
         .await
         .unwrap_err();
 
@@ -1468,13 +1818,7 @@ mod tests {
             &format!("---\nkind: adr\nid: ADR-020\ntitle: Status\nstatus: {status}\n---\n# Body\n"),
         );
         let lock = guard(&ws).await;
-        let result = scan_and_import_to_workspace(
-            tmp.path(),
-            &ws,
-            Some(&lock),
-            None,
-            &ScanImportOptions::default(),
-        )
+        let result = scan_and_import_to_workspace(tmp.path(), &ws, Some(&lock), None, None, &ScanImportOptions::default())
         .await
         .unwrap();
         let entry = &result.entries[0];

@@ -13,136 +13,104 @@
 //! path could therefore begin a multi-gigabyte fetch. That is a write on a read
 //! path, and it is forbidden.
 //!
-//! So: [`tract_engine::find_snapshot`] decides whether an engine exists, and
-//! when it does not, **no engine is constructed at all** and the caller is told
-//! semantic scoring is unavailable. Construction goes through
-//! [`tract_engine::TractEmbedder::from_snapshot`], never `ensure_model`.
-//! Downloading is an explicit act — `forgeplan embed`, `forgeplan setup
-//! --warm-model`, FPF ingest — and a query is not one.
+//! Legacy vector queries use the store's pinned model profile.
+//! Unavailable or mismatched snapshots return errors; queries never download.
 
 use std::collections::HashMap;
 
 use crate::db::store::LanceStore;
 
-/// The model repository this build embeds with. Must match the engine's.
-#[cfg(feature = "semantic-search")]
-const MODEL_REPO: &str = "BAAI/bge-m3";
 
-/// Compute a semantic score per artifact id for `query`.
-///
-/// Returns `(Some(map), true)` when real scores were produced, and
-/// `(None, false)` when they were not. **`None` is the honest answer**, and it
-/// is returned for every reason the scores cannot exist:
-///
-/// - the build has no `semantic-search` feature;
-/// - the model cache holds no snapshot — **nothing is downloaded to find out**;
-/// - the engine could not be built from the snapshot that is there;
-/// - the query could not be embedded;
-/// - the vector search returned no rows.
-///
-/// An **empty map is never returned in place of `None`**: a caller cannot tell
-/// "nothing scored" from "everything scored zero", and an empty map presented
-/// as coverage is the same lie as a zero vector. `smart_search` treats `None`
-/// as absent semantic evidence and reports reduced coverage; it has no way to
-/// report a zero vector honestly.
-#[cfg(feature = "semantic-search")]
+/// Compute semantic scores by canonical key. An unavailable feature or an
+/// empty eligible set returns `(None, false)`; model, profile and index
+/// failures are returned to the caller.
 pub async fn semantic_scores(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     query: &str,
-) -> (Option<HashMap<String, f64>>, bool) {
-    use crate::db::schema::EMBEDDING_DIM;
-    use crate::embed::{resolve_cache_dir, tract_engine};
+) -> anyhow::Result<(Option<HashMap<String, f64>>, bool)> {
+    semantic_scores_with_limit(store, permit, query, 50).await
+}
 
-    let cache_dir = resolve_cache_dir();
-
-    // Cached-only. Absence is the answer; it is not a prompt to fetch.
-    let Some(snapshot) = tract_engine::find_snapshot(&cache_dir, MODEL_REPO) else {
-        return (None, false);
-    };
-
-    let engine = match tract_engine::TractEmbedder::from_snapshot(
-        &snapshot,
-        MODEL_REPO,
-        EMBEDDING_DIM as usize,
-    ) {
-        Ok(e) => e,
-        Err(_) => return (None, false),
-    };
-
-    let query_vec = match engine.embed(query) {
-        Ok(v) => v,
-        Err(_) => return (None, false),
-    };
-
-    let hits = match store.vector_search(&query_vec, 50).await {
-        Ok(h) if !h.is_empty() => h,
-        _ => return (None, false),
-    };
+/// Query the profile-bound vector index up to the caller's candidate count.
+/// Callers that filter results must request the full candidate set first.
+#[cfg(feature = "semantic-search")]
+pub async fn semantic_scores_with_limit(
+    store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<(Option<HashMap<String, f64>>, bool)> {
+    permit.matches_workspace(store.workspace_path())?;
+    let config = crate::workspace::load_config(store.workspace_path())?;
+    let marker = crate::db::migrate::read_identity_v5_marker(&store.workspace_path().join("lance"))?;
+    if config.embedding.is_none() && marker.as_ref().and_then(|marker| marker.embeddings.as_ref()).is_none() {
+        return Ok((None, false));
+    }
+    let hits = store.vector_search(permit, query, limit.max(1)).await?;
+    if hits.is_empty() {
+        return Ok((None, false));
+    }
 
     // Real cosine similarity from the distance column the engine returned.
     let map = hits
         .iter()
-        .map(|hit| (hit.record.id.clone(), hit.similarity()))
+        .map(|hit| (hit.record.canonical_key.clone(), hit.similarity()))
         .collect();
-    (Some(map), true)
+    Ok((Some(map), true))
 }
 
-/// A build without `semantic-search` has no engine and no scores.
-///
-/// It does not error and does not pretend: the absence is reported as absence.
+/// A build without `semantic-search` reports a configured backend as unavailable.
 #[cfg(not(feature = "semantic-search"))]
-pub async fn semantic_scores(
+pub async fn semantic_scores_with_limit(
     _store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     _query: &str,
-) -> (Option<HashMap<String, f64>>, bool) {
-    (None, false)
+    _limit: usize,
+) -> anyhow::Result<(Option<HashMap<String, f64>>, bool)> {
+    permit.matches_workspace(_store.workspace_path())?;
+    let config = crate::workspace::load_config(_store.workspace_path())?;
+    let marker = crate::db::migrate::read_identity_v5_marker(&_store.workspace_path().join("lance"))?;
+    if config.embedding.is_some() || marker.as_ref().and_then(|marker| marker.embeddings.as_ref()).is_some() {
+        anyhow::bail!("configured semantic embedding backend is unavailable in this build");
+    }
+    Ok((None, false))
 }
 
 /// Semantic evidence from the same captured view used for text and graph reads.
 /// A generation without a profile cannot contain eligible vectors.
 pub async fn workspace_semantic_scores(
     read: &crate::constellation::workspace_read::WorkspaceRead,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     query: &str,
-) -> (Option<HashMap<String, f64>>, bool) {
+) -> anyhow::Result<(Option<HashMap<String, f64>>, bool)> {
+    permit.matches_workspace(read.workspace())?;
     #[cfg(not(feature = "semantic-search"))]
     {
         let _ = (read, query);
-        (None, false)
+        Ok((None, false))
     }
     #[cfg(feature = "semantic-search")]
     {
         use crate::constellation::{facade, jobs, runtime};
         if read.records().is_empty() {
-            return (None, false);
+            return Ok((None, false));
         }
         let Some(profile) = read.view().semantic_profile_id() else {
-            return (None, false);
+            return Ok((None, false));
         };
         // No eligible vector means inference cannot change the answer. Skip
         // the model load (seconds) instead of paying it to rank nothing.
-        match facade::count_eligible_semantic(read.index_root(), read.view(), profile).await {
-            Ok(0) => return (None, false),
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!("semantic eligibility unavailable: {error}");
-                return (None, false);
-            }
+        if facade::count_eligible_semantic(read.index_root(), read.view(), profile).await? == 0 {
+            return Ok((None, false));
         }
-        let (profile_id, vector) = match runtime::cached_query_embedding(
+        let (profile_id, vector) = runtime::cached_query_embedding(
             jobs::DEFAULT_MODEL_NAME,
             Some(profile),
             read.captured().body_prefix_chars,
             query,
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                tracing::warn!("semantic query unavailable: {error}");
-                return (None, false);
-            }
-        };
-        let outcome = match facade::search_semantic_in_view(
+        ).await?;
+        let outcome = facade::search_semantic_in_view(
             read.index_root(),
             read.view(),
             &vector,
@@ -152,20 +120,12 @@ pub async fn workspace_semantic_scores(
                 .saturating_add(read.captured().sections.len())
                 .max(1),
             &facade::PinnedFilter::default(),
-        )
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                tracing::warn!("pinned semantic query unavailable: {error}");
-                return (None, false);
-            }
-        };
+        ).await?;
         let scores = scores_for_captured_hits(read, outcome.hits);
         if scores.is_empty() {
-            (None, false)
+            Ok((None, false))
         } else {
-            (Some(scores), true)
+            Ok((Some(scores), true))
         }
     }
 }
@@ -184,11 +144,11 @@ fn scores_for_captured_hits(
         else {
             continue;
         };
-        let id = &artifacts[index].display_id;
-        if let Some(score) = scores.get_mut(id) {
+        let canonical_key = &artifacts[index].canonical_key;
+        if let Some(score) = scores.get_mut(canonical_key) {
             *score = score.max(hit.similarity);
         } else {
-            scores.insert(id.clone(), hit.similarity);
+            scores.insert(canonical_key.clone(), hit.similarity);
         }
     }
     scores
@@ -231,9 +191,9 @@ mod workspace_semantic_tests {
                 hit("prd-stable-identity#s0", Some("prd-stable-identity"), 0.9),
             ],
         );
-        assert_eq!(scores.get("PRD-002"), Some(&0.9));
+        assert_eq!(scores.get("prd-stable-identity"), Some(&0.9));
         assert!(
-            !scores.contains_key("PRD-001"),
+            !scores.contains_key("prd-reused-display"),
             "the old display ID now belongs to an unrelated artifact"
         );
     }
@@ -242,6 +202,9 @@ mod workspace_semantic_tests {
     async fn a_view_without_a_published_profile_has_no_semantic_evidence() {
         let tmp = tempfile::TempDir::new().unwrap();
         let workspace = crate::workspace::init_workspace(tmp.path(), "query-profile").unwrap();
+        let permit = crate::workspace::lock::acquire_workspace_read_lock(&workspace)
+            .await
+            .unwrap();
         let read = crate::constellation::facade::open_workspace_read(
             &workspace,
             None,
@@ -250,7 +213,7 @@ mod workspace_semantic_tests {
         .await
         .unwrap();
         assert_eq!(
-            super::workspace_semantic_scores(&read, "query").await,
+            super::workspace_semantic_scores(&read, &permit, "query").await.unwrap(),
             (None, false)
         );
     }

@@ -8,13 +8,13 @@ use forgeplan_core::progress::{self, ArtifactProgress, CheckboxCount};
 use crate::commands::common;
 
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
     let records: Cow<'_, [ArtifactRecord]> = match &source {
-        common::ReadSource::Legacy(store) => Cow::Owned(store.list_records(None).await?),
+        common::ReadSource::Legacy(store) => Cow::Owned(store.list_records(&_read_guard, None).await?),
         common::ReadSource::Captured(read) => Cow::Borrowed(read.records()),
     };
 
-    if records.is_empty() {
+    if records.is_empty() && id.is_none() {
         let hints_vec = vec![
             Hint::suggestion("Workspace is empty — create your first PRD")
                 .with_action("forgeplan new prd \"<title>\"".to_string()),
@@ -75,20 +75,13 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     // payload on `id` presence: scoped-to-one when `Some`, all when `None`.
     let single: Option<(usize, &forgeplan_core::db::store::ArtifactRecord)> =
         if let Some(target_id) = id {
-            let canonical = match &source {
-                common::ReadSource::Legacy(store) => store.resolve_id(target_id).await?,
-                common::ReadSource::Captured(read) => read.resolve_id(target_id),
-            }
-            .ok_or_else(|| {
-                anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", target_id)
-            })?;
-            let canonical_upper = canonical.to_uppercase();
+            let (canonical, _) = common::resolve_required_identity(&source, &ws, target_id).await?;
 
             // Find both progress and record in one pass
             let found = records
                 .iter()
                 .enumerate()
-                .find(|(_, r)| r.id.to_uppercase() == canonical_upper);
+                .find(|(_, r)| r.canonical_key == canonical);
             let (idx, record) = found.ok_or_else(|| {
                 anyhow::anyhow!(
                     "Artifact '{}' not found
@@ -127,12 +120,12 @@ Fix: forgeplan list",
         // (it may point at a *different* artifact than the one requested).
         // Recompute a focused hint for the single artifact instead.
         let next_action = match single {
-            Some((idx, _)) => {
+            Some((idx, record)) => {
                 let p = &all_progress[idx];
                 if p.count.total > 0 && p.count.completed == p.count.total {
-                    Some(format!("forgeplan activate {}", p.id))
+                    Some(format!("forgeplan activate {}", record.canonical_key))
                 } else {
-                    Some(format!("forgeplan get {}", p.id))
+                    Some(format!("forgeplan get {}", record.canonical_key))
                 }
             }
             None => hints::primary_action(&hints_vec),
@@ -180,12 +173,12 @@ Fix: forgeplan list",
         let single_hints = if p.count.total > 0 && p.count.completed == p.count.total {
             vec![
                 Hint::suggestion(format!("All checkboxes complete — activate {}", p.id))
-                    .with_action(format!("forgeplan activate {}", p.id)),
+                    .with_action(format!("forgeplan activate {}", record.canonical_key)),
             ]
         } else {
             vec![
                 Hint::info(format!("Open {} to mark next checkbox", p.id))
-                    .with_action(format!("forgeplan get {}", p.id)),
+                    .with_action(format!("forgeplan get {}", record.canonical_key)),
             ]
         };
         print!("{}", hints::render_next_action_line(&single_hints));

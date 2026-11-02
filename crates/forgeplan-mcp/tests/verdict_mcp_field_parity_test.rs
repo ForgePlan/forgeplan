@@ -25,10 +25,10 @@ use common::McpFixture;
 /// - One PRD whose body is mostly TBD/TODO markers (active stub).
 ///
 /// All artifacts are status=active so they appear in the panels.
-async fn seed_dup_and_stub_fixture(store: std::sync::Arc<forgeplan_core::db::store::LanceStore>) {
+async fn seed_dup_and_stub_fixture(store: std::sync::Arc<forgeplan_core::db::store::LanceStore>, seed_guard: std::sync::Arc<forgeplan_core::workspace::lock::WorkspaceLock>) {
     // Two duplicate PRDs.
     store
-        .create_artifact_for_test(&NewArtifact {
+        .create_artifact_for_test(&seed_guard, &NewArtifact {
             canonical_key: "PRD-DUP-A".to_string(),
             id: "PRD-DUP-A".to_string(),
             kind: "prd".to_string(),
@@ -44,7 +44,7 @@ async fn seed_dup_and_stub_fixture(store: std::sync::Arc<forgeplan_core::db::sto
         .await
         .expect("seed PRD-DUP-A");
     store
-        .create_artifact_for_test(&NewArtifact {
+        .create_artifact_for_test(&seed_guard, &NewArtifact {
             canonical_key: "PRD-DUP-B".to_string(),
             id: "PRD-DUP-B".to_string(),
             kind: "prd".to_string(),
@@ -66,7 +66,7 @@ async fn seed_dup_and_stub_fixture(store: std::sync::Arc<forgeplan_core::db::sto
     // phrases (matches PHRASE_MARKERS) + a {placeholder} marker
     // to exceed the threshold.
     store
-        .create_artifact_for_test(&NewArtifact {
+        .create_artifact_for_test(&seed_guard, &NewArtifact {
             canonical_key: "PRD-STUB".to_string(),
             id: "PRD-STUB".to_string(),
             kind: "prd".to_string(),

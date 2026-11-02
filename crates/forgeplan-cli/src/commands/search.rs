@@ -44,55 +44,38 @@ pub async fn run(
         None
     };
 
-    let cwd = std::env::current_dir()?;
-    let read = match forgeplan_core::workspace::find_workspace(&cwd) {
-        Some(ws) if common::index_migrated(&ws) => Some(common::workspace_read(&ws).await?),
-        _ => None,
+    let ws = common::find_workspace_path()?;
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await?;
+    let read = if common::index_migrated(&ws) {
+        Some(forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &permit).await?)
+    } else {
+        None
     };
 
     // Build composite filter from CLI flags.
     let filter = build_filter(kind, status, depth, with_evidence, no_evidence, since_dt);
 
     match mode {
-        SearchMode::Keyword => run_keyword(query, kind, json, read.as_ref()).await,
+        SearchMode::Keyword => run_keyword(query, kind, filter.as_ref(), limit, json, read.as_ref(), &permit).await,
         SearchMode::Semantic => match read.as_ref() {
-            Some(read) => run_constellation(read, query, kind, status, limit, json).await,
-            None => run_semantic_only(query, kind, json).await,
+            Some(read) => run_constellation(read, query, filter.as_ref(), limit, json).await,
+            None => run_semantic_only(query, filter.as_ref(), limit, json, &permit).await,
         },
-        SearchMode::Smart => run_smart(query, filter, no_expand, limit, json, read.as_ref()).await,
+        SearchMode::Smart => run_smart(query, filter, no_expand, limit, json, read.as_ref(), &permit).await,
     }
 }
 
-/// Spell a requested kind/status the way the captured source spells it.
-///
-/// The pinned predicate is byte-exact, unlike every other CLI filter. Returning
-/// the capture's own spelling keeps a case-insensitive request and the coverage
-/// denominator computed from the same value.
-#[cfg(feature = "semantic-search")]
-fn captured_case<'a, I: Iterator<Item = &'a str>>(
-    wanted: Option<&str>,
-    values: I,
-) -> Option<String> {
-    wanted.map(|wanted| {
-        values
-            .into_iter()
-            .find(|value| value.eq_ignore_ascii_case(wanted))
-            .unwrap_or(wanted)
-            .to_string()
-    })
-}
 
 async fn run_constellation(
     read: &WorkspaceRead,
     query: &str,
-    kind: Option<&str>,
-    status: Option<&str>,
+    filter: Option<&forgeplan_core::search::filter::ArtifactFilter>,
     limit: usize,
     json: bool,
 ) -> anyhow::Result<()> {
     #[cfg(not(feature = "semantic-search"))]
     {
-        let _ = (read, query, kind, status, limit, json);
+        let _ = (read, query, filter, limit, json);
         anyhow::bail!("Semantic search requires a binary built with semantic-search");
     }
     #[cfg(feature = "semantic-search")]
@@ -101,19 +84,6 @@ async fn run_constellation(
         let profile = read.view().semantic_profile_id().ok_or_else(|| {
             anyhow::anyhow!("No embedding profile is published; run forgeplan embed first")
         })?;
-        // The pinned predicate compares bytes, while every other CLI path
-        // accepts the forgiving form (`--type PRD`, `--status DRAFT`). Resolve
-        // the request against the captured casing first: a filter the caller
-        // meant to widen must not exclude everything and then be reported as
-        // missing vectors.
-        let kind = captured_case(
-            kind,
-            read.captured().artifacts.iter().map(|a| a.kind.as_str()),
-        );
-        let status = captured_case(
-            status,
-            read.captured().artifacts.iter().map(|a| a.status.as_str()),
-        );
         // Nothing eligible under the pinned profile means the model load
         // cannot change the answer; refuse with the reason instead of
         // spending seconds to rank an empty set.
@@ -137,40 +107,44 @@ async fn run_constellation(
             read.view(),
             &vector,
             &profile,
-            limit.max(1),
-            &facade::PinnedFilter {
-                kind: kind.clone(),
-                status: status.clone(),
-            },
+            read.records().len().saturating_add(read.captured().sections.len()).max(1),
+            &facade::PinnedFilter::default(),
         )
         .await?;
         let expected_keys: std::collections::HashSet<_> = read
-            .captured()
-            .artifacts
+            .records()
             .iter()
-            .filter(|artifact| {
-                kind.as_ref().is_none_or(|kind| &artifact.kind == kind)
-                    && status
-                        .as_ref()
-                        .is_none_or(|status| &artifact.status == status)
-            })
-            .map(|artifact| artifact.canonical_key.as_str())
+            .filter(|record| semantic_matches(filter, record))
+            .map(|record| record.canonical_key.as_str())
             .collect();
         // Expected rows are the CURRENT source set under this filter: one per
         // artifact, plus one per section the capture actually holds for those
         // artifacts. See [`expected_rows_for_capture`] for why that is a
         // membership count and not a table-version check.
         let expected_rows = expected_rows_for_capture(read, &expected_keys);
-        let mut rows = Vec::with_capacity(outcome.hits.len().min(limit));
-        for hit in outcome.hits.into_iter().take(limit) {
+        let mut scores = std::collections::HashMap::<&str, f64>::new();
+        let mut eligible_rows = 0;
+        for hit in &outcome.hits {
             let key = hit.parent_key.as_deref().unwrap_or(&hit.canonical_key);
-            let record = read
-                .get_record_by_key(key)
+            let record = read.get_record_by_key(key)
+                .ok_or_else(|| anyhow::anyhow!("Search hit {key} has no captured artifact"))?;
+            if !semantic_matches(filter, record) || !hit.similarity.is_finite() {
+                continue;
+            }
+            eligible_rows += 1;
+            scores.entry(key).and_modify(|score| *score = score.max(hit.similarity)).or_insert(hit.similarity);
+        }
+        let mut ranked: Vec<_> = scores.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        ranked.truncate(limit);
+        let mut rows = Vec::with_capacity(ranked.len());
+        for (key, similarity) in ranked {
+            let record = read.get_record_by_key(key)
                 .ok_or_else(|| anyhow::anyhow!("Search hit {key} has no captured artifact"))?;
             rows.push(serde_json::json!({
                 "id": record.id, "title": record.title, "kind": record.kind,
-                "status": record.status, "similarity": hit.similarity,
-                "score": hit.similarity, "distance": 1.0 - hit.similarity,
+                "status": record.status, "similarity": similarity,
+                "score": similarity, "distance": 1.0 - similarity,
                 "canonical_key": record.canonical_key, "document_key": key,
                 "mode": "semantic",
             }));
@@ -193,7 +167,7 @@ async fn run_constellation(
                 serde_json::to_string_pretty(&serde_json::json!({
                     "results": rows, "index": "constellation", "mode": "semantic",
                     "semantic_available": outcome.eligible_rows > 0,
-                    "eligible_rows": outcome.eligible_rows, "expected_rows": expected_rows,
+                    "eligible_rows": eligible_rows, "expected_rows": expected_rows,
                     "semantic_scope": outcome.semantic_scope, "snapshot_id": read.snapshot_id(),
                     "persisted": read.is_persisted(),
                     "source_set_digest": read.source_set_digest(),
@@ -209,10 +183,10 @@ async fn run_constellation(
                 );
             }
             ui::info(&format!("{} semantic results", rows.len()));
-            if outcome.eligible_rows < expected_rows {
+            if eligible_rows < expected_rows {
                 ui::info(&format!(
                     "Semantic coverage: {}/{} current input rows are eligible",
-                    outcome.eligible_rows, expected_rows
+                    eligible_rows, expected_rows
                 ));
             }
         }
@@ -252,6 +226,14 @@ fn expected_rows(
         .filter(|section| expected_keys.contains(section.parent_key.as_str()))
         .count();
     expected_keys.len() + section_rows
+}
+
+#[cfg(any(test, feature = "semantic-search"))]
+fn semantic_matches(
+    filter: Option<&forgeplan_core::search::filter::ArtifactFilter>,
+    record: &forgeplan_core::db::store::ArtifactRecord,
+) -> bool {
+    filter.is_none_or(|filter| filter.matches(record))
 }
 
 fn build_filter(
@@ -295,13 +277,18 @@ fn build_filter(
 async fn run_keyword(
     query: &str,
     kind: Option<&str>,
+    filter: Option<&forgeplan_core::search::filter::ArtifactFilter>,
+    limit: usize,
     json: bool,
     read: Option<&WorkspaceRead>,
+    permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
 ) -> anyhow::Result<()> {
-    let hits = match read {
+    let mut hits = match read {
         Some(read) => read.search_body(query, kind),
-        None => common::store().await?.search_body(query, kind).await?,
+        None => common::store().await?.search_body(permit, query, kind).await?,
     };
+    hits.retain(|record| filter.is_none_or(|filter| filter.matches(record)));
+    hits.truncate(limit);
 
     if hits.is_empty() {
         // PRD-071: empty-result hints from search_hints are advisory; pick
@@ -321,9 +308,8 @@ async fn run_keyword(
         return Ok(());
     }
 
-    let top_id = hits[0].id.clone();
     let next_hints: Vec<Hint> =
-        vec![Hint::info("Top result").with_action(format!("forgeplan get {}", top_id))];
+        vec![Hint::info("Top result").with_action(format!("forgeplan get {}", hits[0].canonical_key))];
 
     if json {
         let json_data: Vec<_> = hits
@@ -406,8 +392,8 @@ async fn run_keyword(
 /// fail the search — an unavailable count is a missing warning, not a missing
 /// result — so this returns 0 rather than propagating.
 #[cfg(feature = "semantic-search")]
-async fn unindexed_count(store: &forgeplan_core::db::store::LanceStore) -> usize {
-    match store.list_records(None).await {
+async fn unindexed_count(store: &forgeplan_core::db::store::LanceStore, permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit) -> usize {
+    match store.list_records(permit, None).await {
         Ok(records) => records.iter().filter(|r| r.embedding.is_none()).count(),
         Err(_) => 0,
     }
@@ -426,37 +412,23 @@ fn warn_unindexed(n: usize) {
 }
 
 /// Semantic-only search (vector similarity).
-async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyhow::Result<()> {
+async fn run_semantic_only(query: &str, filter: Option<&forgeplan_core::search::filter::ArtifactFilter>, limit: usize, json: bool, permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit) -> anyhow::Result<()> {
     #[cfg(feature = "semantic-search")]
     {
-        use forgeplan_core::constellation::jobs::DEFAULT_MODEL_NAME;
-        use forgeplan_core::embed::CachedSnapshot;
 
         let store = common::store().await?;
 
-        // Cached-only, verified snapshot. `Embedder::new()` here was a query
-        // that could start a 2.1 GB download; the absence of a model is now an
-        // error that says so, which is what `--semantic` should have always
-        // meant.
-        let mut model = CachedSnapshot::open(DEFAULT_MODEL_NAME).map_err(|e| {
-            anyhow::anyhow!(
-                "{e}\nFor automatic fallback, use smart search (default) without --semantic."
-            )
-        })?;
-        let query_vec = model.embedder.embed(query)?;
-        let all_hits = store.vector_search(&query_vec, 50).await?;
-        let hits: Vec<_> = if let Some(k) = kind {
-            all_hits
-                .into_iter()
-                .filter(|h| h.record.kind.eq_ignore_ascii_case(k))
-                .take(10)
-                .collect()
-        } else {
-            all_hits.into_iter().take(10).collect()
-        };
+        let count = store.list_records(permit, None).await?.len();
+        let all_hits = store.vector_search(permit, query, count.max(1)).await?;
+        let mut hits: Vec<_> = all_hits.into_iter()
+            .filter(|hit| semantic_matches(filter, &hit.record))
+            .collect();
+        hits.sort_by(|a, b| b.similarity().total_cmp(&a.similarity())
+            .then_with(|| a.record.canonical_key.cmp(&b.record.canonical_key)));
+        hits.truncate(limit);
 
         // PROB-093: how much of the workspace this query could not reach.
-        let unindexed = unindexed_count(&store).await;
+        let unindexed = unindexed_count(&store, permit).await;
 
         if hits.is_empty() {
             // PRD-071: surface a primary fix-action.
@@ -537,7 +509,7 @@ async fn run_semantic_only(query: &str, kind: Option<&str>, json: bool) -> anyho
     }
     #[cfg(not(feature = "semantic-search"))]
     {
-        let _ = (query, kind, json);
+        let _ = (query, filter, limit, json, permit);
         anyhow::bail!(
             "Semantic search not available. Rebuild with: \
              cargo build --features semantic-search\n\
@@ -555,6 +527,7 @@ async fn run_smart(
     limit: usize,
     json: bool,
     read: Option<&WorkspaceRead>,
+    permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
 ) -> anyhow::Result<()> {
     use forgeplan_core::graph::knowledge::KnowledgeGraph;
     use forgeplan_core::search::smart;
@@ -571,7 +544,7 @@ async fn run_smart(
             legacy_records = store
                 .as_ref()
                 .expect("legacy source was opened")
-                .list_records(None)
+                .list_records(permit, None)
                 .await?;
             &legacy_records
         }
@@ -600,36 +573,9 @@ async fn run_smart(
     // Try to get semantic scores (graceful degradation)
     let (semantic_scores, has_embeddings) = match read {
         Some(read) => {
-            forgeplan_core::search::semantic::workspace_semantic_scores(read, query).await
+            forgeplan_core::search::semantic::workspace_semantic_scores(read, permit, query).await?
         }
-        None => get_semantic_scores(store.as_ref().expect("legacy source was opened"), query).await,
-    };
-    let semantic_scores = match (read, semantic_scores) {
-        (None, Some(scores)) => {
-            let mut key_by_alias: std::collections::HashMap<&str, Option<&str>> =
-                std::collections::HashMap::with_capacity(records.len());
-            for record in records {
-                match key_by_alias.entry(record.id.as_str()) {
-                    std::collections::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(Some(record.canonical_key.as_str()));
-                    }
-                    std::collections::hash_map::Entry::Occupied(mut entry) => {
-                        entry.insert(None);
-                    }
-                }
-            }
-            Some(
-                scores
-                    .into_iter()
-                    .filter_map(|(alias, score)| {
-                        key_by_alias
-                            .get(alias.as_str())
-                            .and_then(|key| key.map(|key| (key.to_string(), score)))
-                    })
-                    .collect(),
-            )
-        }
-        (_, scores) => scores,
+        None => forgeplan_core::search::semantic::semantic_scores(store.as_ref().expect("legacy source was opened"), permit, query).await?,
     };
 
 
@@ -641,7 +587,7 @@ async fn run_smart(
     } else if let Some(read) = read {
         Some(read.knowledge_graph())
     } else {
-        KnowledgeGraph::from_store(store.as_ref().expect("legacy source was opened"))
+        KnowledgeGraph::from_store(store.as_ref().expect("legacy source was opened"), permit)
             .await
             .ok()
     };
@@ -776,22 +722,6 @@ async fn run_smart(
     Ok(())
 }
 
-/// Try to compute semantic scores for all artifacts.
-/// Returns (Some(map), true) if embeddings available, (None, false) otherwise.
-///
-/// The implementation now lives in `forgeplan_core::search::semantic`, where
-/// MCP can reach it too. It used to live here, which meant MCP search passed
-/// `None` and answered differently from the CLI for the same query. It also
-/// resolved its engine through `Embedder::new()` → `ensure_model(.., true)`,
-/// whose last argument is `show_progress`, not permission: a cold cache meant a
-/// multi-gigabyte download **on the query path**. The core version is
-/// cached-only and constructs nothing when the snapshot is absent.
-async fn get_semantic_scores(
-    store: &forgeplan_core::db::store::LanceStore,
-    query: &str,
-) -> (Option<std::collections::HashMap<String, f64>>, bool) {
-    forgeplan_core::search::semantic::semantic_scores(store, query).await
-}
 
 #[cfg(all(test, feature = "semantic-search"))]
 mod tests {
@@ -865,5 +795,46 @@ mod tests {
     fn an_empty_key_set_expects_nothing() {
         let sections = vec![section("prd-auth", 0), section("prd-auth", 1)];
         assert_eq!(expected_rows(&sections, &keys(&[])), 0);
+    }
+}
+
+#[cfg(test)]
+mod semantic_filter_tests {
+    use super::{build_filter, semantic_matches};
+    use forgeplan_core::db::store::ArtifactRecord;
+
+    fn record() -> ArtifactRecord {
+        ArtifactRecord {
+            canonical_key: "prd-alpha".into(), id: "PRD-001".into(),
+            kind: "prd".into(), status: "active".into(), title: "Alpha".into(),
+            body: String::new(), depth: "deep".into(), author: None,
+            parent_epic: None, r_eff_score: 0.5, valid_until: None,
+            created_at: "2026-02-01T00:00:00Z".into(),
+            updated_at: "2026-02-01T00:00:00Z".into(),
+            tags: Vec::new(), body_hash: None, embedding: None,
+        }
+    }
+
+    #[test]
+    fn semantic_composite_filters_apply_all_predicates() {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap().and_hms_opt(0, 0, 0).unwrap();
+        let filter = build_filter(Some("PRD"), Some("ACTIVE"), Some("deep"), true, false, Some(date));
+        let mut hit = record();
+        assert!(semantic_matches(filter.as_ref(), &hit));
+        hit.kind = "rfc".into();
+        assert!(!semantic_matches(filter.as_ref(), &hit));
+        hit.kind = "prd".into();
+        hit.status = "draft".into();
+        assert!(!semantic_matches(filter.as_ref(), &hit));
+        hit.status = "active".into();
+        hit.depth = "standard".into();
+        assert!(!semantic_matches(filter.as_ref(), &hit));
+        hit.depth = "deep".into();
+        hit.r_eff_score = 0.0;
+        assert!(!semantic_matches(filter.as_ref(), &hit));
+        hit.r_eff_score = 0.5;
+        hit.created_at = "2025-01-01T00:00:00Z".into();
+        assert!(!semantic_matches(filter.as_ref(), &hit));
+        assert!(!semantic_matches(build_filter(None, None, None, false, true, None).as_ref(), &record()));
     }
 }

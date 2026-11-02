@@ -61,9 +61,10 @@ use common::McpFixture;
 /// land it in storage is via the `test-helpers` create path.
 fn body_with_null_assigned(slug: &str, kind: &str, predicted: u32, title: &str) -> String {
     let display = format!("{}-{predicted}?", kind.to_uppercase());
+    let stored_id = format!("{}-{predicted:03}", kind.to_uppercase());
     format!(
         "---\n\
-id: {display}\n\
+id: {stored_id}\n\
 slug: \"{slug}\"\n\
 predicted_number: {predicted}\n\
 assigned_number: null\n\
@@ -344,11 +345,11 @@ async fn t6_forgeplan_get_pre_merge_hint_uses_slug() {
     // current LanceStore caching layer — server's handle persists pre-seed
     // snapshot. The fixture's `new_with_seed` was designed для exactly
     // this case (см. fixture docstring).
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         let body = body_with_null_assigned("prd-pre-merge-feature", "prd", 7, "Pre Merge Feature");
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "PRD-007".into(),
+            .create_artifact_for_test(&seed_guard, &NewArtifact {
+                canonical_key: "prd-pre-merge-feature".into(),
                 id: "PRD-007".into(),
                 kind: "prd".into(),
                 status: "draft".into(),
@@ -639,10 +640,10 @@ async fn t12_multi_tool_flow_new_validate_score_list() {
 #[tokio::test]
 async fn t13_legacy_artifact_handled_gracefully() {
     // Round 1 fix: see T6 — seed BEFORE server boot via `new_with_seed`.
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         let legacy_body = body_legacy("PRD-099", "Legacy Artifact");
         store
-            .create_artifact_for_test(&NewArtifact {
+            .create_artifact_for_test(&seed_guard, &NewArtifact {
                 canonical_key: "PRD-099".into(),
                 id: "PRD-099".into(),
                 kind: "prd".into(),
@@ -1092,7 +1093,7 @@ async fn t36_forgeplan_hypothesis_promote_walks_one_step_forward() {
     // `ArtifactKindArg` enum hasn't yet been taught to accept `hypothesis`
     // (that's W2's territory in this Phase D sprint). Seeding directly
     // keeps W3 testable independent of W2's merge order.
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         let body = hypothesis_body_with_state(
             "HYP-001",
             "hyp-auth-tokens-expire-after-24h",
@@ -1100,8 +1101,8 @@ async fn t36_forgeplan_hypothesis_promote_walks_one_step_forward() {
             "inferred",
         );
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "HYP-001".into(),
+            .create_artifact_for_test(&seed_guard, &NewArtifact {
+                canonical_key: "hyp-auth-tokens-expire-after-24h".into(),
                 id: "HYP-001".into(),
                 kind: "hypothesis".into(),
                 status: "draft".into(),
@@ -1291,7 +1292,7 @@ async fn t38_forgeplan_interview_packet_ingest_returns_not_implemented_stub() {
 ///     out; brownfield edges + subgraph preserved.
 #[tokio::test]
 async fn t39_forgeplan_graph_brownfield_rendering_smoke() {
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         // Brownfield seeds with explicit body shapes so the MCP-side
         // parsing exercises both happy paths (HYP frontmatter, DM
         // composition section).
@@ -1353,8 +1354,8 @@ auth bounded context.\n\
             ("RFC-001", "rfc", "auth rfc", rfc_body),
         ] {
             store
-                .create_artifact_for_test(&NewArtifact {
-                    canonical_key: id.into(),
+                .create_artifact_for_test(&seed_guard, &NewArtifact {
+                    canonical_key: forgeplan_core::artifact::canonical_key::canonical_key_from_document(id, body),
                     id: id.into(),
                     kind: kind.into(),
                     status: "draft".into(),
@@ -1380,7 +1381,7 @@ auth bounded context.\n\
             ("PRD-001", "RFC-001", "informs"),
         ] {
             store
-                .add_relation_for_test(from, to, relation)
+                .add_relation_for_test(&seed_guard, from, to, relation)
                 .await
                 .unwrap_or_else(|e| panic!("link {from} -> {to} ({relation}): {e}"));
         }
@@ -1521,7 +1522,7 @@ async fn t40_brownfield_inspectors_wire_shape_on_empty_workspace() {
 async fn t41_hypothesis_promote_to_verified_syncs_lancedb_status() {
     use forgeplan_core::db::store::NewArtifact;
 
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         // Seed a HYP at `strong-inferred` so we can take one step to verified.
         let body = "---\n\
 id: HYP-001\n\
@@ -1534,7 +1535,7 @@ title: Auth tokens expire after 24h\n\
 ## Hypothesis\nClaim under test.\n\n\
 ## Lifecycle State\n**Current**: strong-inferred\n";
         store
-            .create_artifact_for_test(&NewArtifact {
+            .create_artifact_for_test(&seed_guard, &NewArtifact {
                 canonical_key: "HYP-001".into(),
                 id: "HYP-001".into(),
                 kind: "hypothesis".into(),
@@ -1552,7 +1553,7 @@ title: Auth tokens expire after 24h\n\
         // Seed two real EVID artifacts so SEC-H1 (audit-r7) existence check passes.
         for evid in ["EVID-001", "EVID-002"] {
             store
-                .create_artifact_for_test(&NewArtifact {
+                .create_artifact_for_test(&seed_guard, &NewArtifact {
                     canonical_key: evid.into(),
                     id: evid.into(),
                     kind: "evidence".into(),
@@ -1614,7 +1615,7 @@ title: Auth tokens expire after 24h\n\
 async fn t42_hypothesis_promote_to_verified_rejects_fake_evidence() {
     use forgeplan_core::db::store::NewArtifact;
 
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         let body = "---\n\
 id: HYP-001\n\
 kind: hypothesis\n\
@@ -1626,7 +1627,7 @@ title: Test\n\
 ## Hypothesis\nClaim.\n\n\
 ## Lifecycle State\n**Current**: strong-inferred\n";
         store
-            .create_artifact_for_test(&NewArtifact {
+            .create_artifact_for_test(&seed_guard, &NewArtifact {
                 canonical_key: "HYP-001".into(),
                 id: "HYP-001".into(),
                 kind: "hypothesis".into(),

@@ -17,12 +17,12 @@ use crate::commands::common;
 use crate::ui;
 
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    let (workspace, source) = common::open_read_source().await?;
+    let (workspace, source, _read_guard) = common::open_read_source().await?;
 
     let (canonical, _) = common::resolve_required_identity(&source, &workspace, id).await?;
     let id = canonical.as_str();
     let record: Cow<'_, ArtifactRecord> = match &source {
-        common::ReadSource::Legacy(store) => store.get_record(id).await?.map(Cow::Owned),
+        common::ReadSource::Legacy(store) => store.get_record(&_read_guard, id).await?.map(Cow::Owned),
         common::ReadSource::Captured(read) => read.get_record(id).map(Cow::Borrowed),
     }
     .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
@@ -46,8 +46,8 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     // 3. Relations — outgoing and incoming
     let (outgoing, incoming) = match &source {
         common::ReadSource::Legacy(store) => (
-            store.get_relations(id).await?,
-            store.get_incoming_relations(id).await?,
+            store.get_relations(&_read_guard, id).await?,
+            store.get_incoming_relations(&_read_guard, id).await?,
         ),
         common::ReadSource::Captured(read) => {
             (read.get_relations(id), read.get_incoming_relations(id))
@@ -65,7 +65,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     // Every record, in both layouts: the display map below names the endpoint
     // of every relation, not only of the evidence ones.
     let all_records: Cow<'_, [ArtifactRecord]> = match &source {
-        common::ReadSource::Legacy(store) => Cow::Owned(store.list_records(None).await?),
+        common::ReadSource::Legacy(store) => Cow::Owned(store.list_records(&_read_guard, None).await?),
         common::ReadSource::Captured(read) => Cow::Borrowed(read.records()),
     };
     let all_evidence = || {
@@ -124,7 +124,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     // 4. R_eff via recursive scoring
     let mut visited = HashSet::new();
     let report = match &source {
-        common::ReadSource::Legacy(store) => reff::r_eff_recursive(id, store, &mut visited).await?,
+        common::ReadSource::Legacy(store) => reff::r_eff_recursive(id, store, &_read_guard, &mut visited).await?,
         common::ReadSource::Captured(read) => {
             reff::r_eff_recursive_captured(id, read, &mut visited).await?
         }
@@ -153,7 +153,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         .unwrap_or(false);
 
     let all_relations = match &source {
-        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Legacy(store) => store.get_all_relations(&_read_guard).await?,
         common::ReadSource::Captured(read) => read.get_all_relations(),
     };
     let link_count = all_relations

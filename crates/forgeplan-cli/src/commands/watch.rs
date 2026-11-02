@@ -32,11 +32,7 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
     forgeplan_core::constellation::storage::read_current(&index_root)?;
     let migrated = common::index_migrated(&ws);
     let constellation = constellation || migrated;
-    let store = if constellation {
-        None
-    } else {
-        Some(forgeplan_core::db::store::LanceStore::open(&ws).await?)
-    };
+    let legacy = !constellation;
     drop(lock);
 
     if migrated {
@@ -131,6 +127,7 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
             Ok(Ok(events)) => {
                 // Deduplicate paths within a single debounce batch
                 let mut batch_had_change = false;
+                let mut synced_ids = Vec::new();
                 let mut seen = HashSet::new();
                 for event in &events {
                     if event.kind != DebouncedEventKind::Any {
@@ -148,7 +145,7 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
                     // The host owns every change on the migrated layout,
                     // including deletes and renames. Legacy-only diagnostics
                     // and syncs must not run beside it.
-                    let Some(store) = store.as_ref() else {
+                    if !legacy {
                         continue;
                     };
                     // Determine if file was deleted or changed
@@ -169,10 +166,8 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
                     }
 
                     // File created or modified in the legacy index.
-                    match sync_single_file(store, &ws, path).await {
-                        Ok(Some(id)) => {
-                            println!("SYNC {} — body updated from file", id);
-                        }
+                    match sync_single_file(&ws, path).await {
+                        Ok(Some(id)) => synced_ids.push(id),
                         Ok(None) => {
                             // Body unchanged, no sync needed
                         }
@@ -198,6 +193,12 @@ pub async fn run(constellation: bool) -> anyhow::Result<()> {
                 // signalled pass, and the pass itself captures the whole
                 // workspace.
                 if batch_had_change {
+                    if legacy {
+                        common::drain_legacy_semantic_after_mutation(&ws).await?;
+                        for id in &synced_ids {
+                            println!("SYNC {} — body updated from file", id);
+                        }
+                    }
                     // Through the registry, not through a handle, so this is
                     // the same call any other in-process writer would make —
                     // and its `false` is the honest report that nobody is
@@ -263,10 +264,10 @@ fn watch_artifact_dirs(
 
 /// Sync a single .md file to LanceDB. Returns Some(id) if synced, None if unchanged.
 async fn sync_single_file(
-    store: &forgeplan_core::db::store::LanceStore,
     workspace: &std::path::Path,
     path: &std::path::Path,
 ) -> anyhow::Result<Option<String>> {
+    let guard = forgeplan_core::workspace::acquire_workspace_lock(workspace).await?;
     let content = tokio::fs::read_to_string(path).await?;
     let (fm, body) = forgeplan_core::artifact::frontmatter::parse_frontmatter(&content)?;
 
@@ -276,11 +277,24 @@ async fn sync_single_file(
         .ok_or_else(|| anyhow::anyhow!("No id in frontmatter: {}", path.display()))?
         .to_string();
 
-    match store.get_record(&id).await? {
+    let canonical = canonical_key_from_document(&id, &content);
+    let candidates = forgeplan_core::artifact::documents::workspace_candidates(workspace).await?;
+    match common::resolve_in_document_set(&canonical, &candidates) {
+        common::Resolution::Found(found)
+            if workspace.join(&found.relative_path) == path
+                && found.identity.canonical_key == canonical => {}
+        common::Resolution::Found(_) => anyhow::bail!("watch: file no longer names the selected canonical artifact"),
+        outcome => return Err(common::refuse_resolution(&canonical, &outcome, &candidates)),
+    }
+    let store = common::prepare_store_locked_checked(workspace, &guard, &[])
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("watch: index ownership changed; restart watch"))?;
+
+    match store.get_record(&guard, &canonical).await? {
         Some(record) => {
             // Use projection::sync_file_to_store for proper comparison
             let synced =
-                forgeplan_core::projection::sync_file_to_store(store, workspace, &record).await?;
+                forgeplan_core::projection::sync_file_to_store(&guard, &store, workspace, &record).await?;
             if synced { Ok(Some(id)) } else { Ok(None) }
         }
         None => {
@@ -305,7 +319,7 @@ async fn sync_single_file(
                 // ADR-030: the canonical key of a document read from disk is
                 // the slug its frontmatter declares, and its display id when
                 // it declares none.
-                canonical_key: canonical_key_from_document(&id, &content),
+                canonical_key: canonical,
                 id: id.clone(),
                 kind: kind.to_string(),
                 status: status.to_lowercase(),
@@ -328,13 +342,11 @@ async fn sync_single_file(
             // lock. Acquired here, per file, and released when this function
             // returns — the watcher loop must never hold it across a debounce
             // sleep, or every other mutator would block for the full timeout.
-            let guard = forgeplan_core::workspace::acquire_workspace_lock(workspace).await?;
             projection::sync_artifact_from_file(
-                &projection::MutationContext::new(workspace, &guard, Some(store)),
+                &projection::MutationContext::new(workspace, &guard, Some(&store)),
                 &artifact,
             )
             .await?;
-            println!("NEW  {} — created from file", id);
             Ok(Some(id))
         }
     }

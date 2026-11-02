@@ -1,3 +1,4 @@
+use anyhow::Context;
 use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
@@ -21,20 +22,14 @@ pub async fn run(
         forgeplan_core::artifact::validate_title(t)?;
     }
 
-    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (ws, _lock, store) = common::open_store_locked_checked(&[(id, true)]).await?;
     let Some(store) = store else {
         return run_file_first(ws, _lock, id, status, title, depth, body).await;
     };
 
-    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    // Resolve once at the top so every downstream operation (lifecycle,
-    // projection, log_change, hint rendering) sees the canonical DB id
-    // regardless of which form the user passed.
-    let id = store
-        .resolve_id(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
-    let id = id.as_str();
+    let resolution = common::resolve_against_workspace(&ws, id).await?;
+    let (canonical_key, display_id) = common::require_found_identity(id, &resolution)?;
+    let id = canonical_key.as_str();
 
     // The file-first path has always refused an empty update; the legacy
     // store path accepted it and rewrote the document for nothing. One
@@ -47,7 +42,7 @@ pub async fn run(
     }
 
     // Verify artifact exists (keep original for old projection cleanup)
-    let original = store.get_record(id).await?.ok_or_else(|| {
+    let original = store.get_record(&_lock, id).await?.ok_or_else(|| {
         anyhow::anyhow!(
             "Artifact '{}' not found
 Fix: forgeplan list",
@@ -87,13 +82,6 @@ Fix: forgeplan list",
         );
     }
 
-    // PRD-073 audit fix: order is metadata FIRST (which writes any title
-    // change into LanceDB), THEN depth/body (each renders against the new
-    // title → new slug). The previous order ran depth before metadata, so
-    // the depth helper rendered to the OLD slug — defeating the OLD-file
-    // cleanup and leaving both filenames on disk. Old-slug cleanup happens
-    // AT THE END via `remove_projection_at` with the original title so we
-    // pin the exact path and don't risk prefix collisions.
 
     // Validate depth string up-front so the inner helper doesn't see invalid input.
     if let Some(d) = depth {
@@ -108,15 +96,20 @@ Fix: forgeplan list",
         })?;
     }
 
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     let ctx = projection::MutationContext::new(&ws, &_lock, Some(&store));
     // Update metadata (status, title) FIRST so subsequent renders see the new title.
     if status.is_some() || title.is_some() {
-        projection::update_metadata_with_projection(&ctx, id, status, title).await?;
+        projection::update_metadata_with_projection(&ctx, id, status, title)
+            .await
+            .context("update failed; canonical files may be partially committed, semantic backlog may be pending")?;
     }
 
     // Depth update — renders against the (possibly new) title from DB.
     if let Some(d) = depth {
-        projection::update_depth_with_projection(&ctx, id, d).await?;
+        projection::update_depth_with_projection(&ctx, id, d)
+            .await
+            .context("update failed; canonical files may be partially committed, semantic backlog may be pending")?;
     }
 
     // Update body
@@ -124,7 +117,7 @@ Fix: forgeplan list",
 
         // Safety check: warn if new body is significantly shorter than existing.
         // Re-read after the metadata mutation above may have synced file→DB.
-        let current = store.get_record(id).await?.unwrap_or(original.clone());
+        let current = store.get_record(&_lock, id).await?.unwrap_or(original.clone());
         let old_len = current.body.len();
         let new_len = body_content.len();
         if old_len > 100 && new_len < old_len / 3 {
@@ -137,55 +130,37 @@ Fix: forgeplan list",
             );
         }
 
-        projection::update_body_with_projection(&ctx, id, body_content).await?;
+        projection::update_body_with_projection(&ctx, id, body_content)
+            .await
+            .context("update failed; canonical files may be partially committed, semantic backlog may be pending")?;
     }
 
-    // PRD-073 audit M1 fix: clean up OLD slug AFTER the new file is in place
-    // (so there's no orphan window) and use exact-path removal so we don't
-    // accidentally clobber a sibling artifact whose ID is a prefix of this one.
-    // The rename-aware helper additionally skips removal when the new title
-    // slugifies to the same filename (case/punctuation-only edit) — otherwise
-    // it deletes the file update just wrote (silent, reindex-unrecoverable).
-    if let Some(new_title) = title {
-        let _ = projection::remove_stale_projection_after_rename(
-            &ws,
-            id,
-            &original.kind,
-            &original.title,
-            new_title,
-        )
-        .await;
-    }
 
     // Log changes
     if let Some(s) = status {
-        common::log_change_field(
-            &ws,
-            Some(&store),
-            id,
-            "update",
-            ("status", Some(&original.status), Some(s)),
-            "cli",
-        )
+        common::log_change_field(&ws, &_lock, Some(&store), id,
+        "update",
+        ("status", Some(&original.status), Some(s)),
+        "cli",)
         .await;
     }
     if let Some(t) = title {
-        common::log_change_field(
-            &ws,
-            Some(&store),
-            id,
-            "update",
-            ("title", Some(&original.title), Some(t)),
-            "cli",
-        )
+        common::log_change_field(&ws, &_lock, Some(&store), id,
+        "update",
+        ("title", Some(&original.title), Some(t)),
+        "cli",)
         .await;
     }
     if body.is_some() {
-        common::log_change_field(&ws, Some(&store), id, "update", ("body", None, None), "cli")
+        common::log_change_field(&ws, &_lock, Some(&store), id, "update", ("body", None, None), "cli")
             .await;
     }
 
-    println!("  Updated: {}", id);
+    drop(store);
+    drop(_lock);
+    common::drain_legacy_semantic_after_mutation(&ws).await?;
+
+    println!("  Updated: {}", display_id);
     if let Some(s) = status {
         println!("  Status:  {}", s);
     }
@@ -204,14 +179,7 @@ Fix: forgeplan list",
 
     // PRD-071: any update — re-validate to make sure the artifact still
     // satisfies its kind+depth rules.
-    // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
-    // id post-merge so the re-validation command stays canonical for
-    // commit `Refs:` lines.
-    let updated_record = store.get_record(id).await?;
-    let ref_form = match &updated_record {
-        Some(r) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&r.body, &r.id),
-        None => id.to_string(),
-    };
+    let ref_form = canonical_key;
     let next_hints: Vec<Hint> = vec![
         Hint::info("Updated — re-run validator")
             .with_action(format!("forgeplan validate {}", ref_form)),
@@ -228,7 +196,7 @@ Fix: forgeplan list",
 /// projection cleanup bookkeeping beyond the rename itself is skipped.
 ///
 /// Same gates, ordering and output shape as the store path: resolve →
-/// nothing-to-update → status guards → metadata+rename → body → prints.
+/// nothing-to-update → status guards → metadata → body → prints.
 async fn run_file_first(
     ws: std::path::PathBuf,
     lock: WorkspaceLock,
@@ -238,10 +206,11 @@ async fn run_file_first(
     depth: Option<&str>,
     body: Option<&str>,
 ) -> anyhow::Result<()> {
-    use forgeplan_core::artifact::store::resolve_artifact_path;
-
-    let artifact_path = resolve_artifact_path(&ws, id)
-        .await
+    let resolution = common::resolve_against_workspace(&ws, id).await?;
+    let (canonical_key, _) = common::require_found_identity(id, &resolution)?;
+    let artifact_path = forgeplan_core::artifact::documents::resolve_in_workspace(&ws, &canonical_key)
+        .await?
+        .map(|document| ws.join(document.relative_path))
         .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
     let content = tokio::fs::read_to_string(&artifact_path).await?;
     let (fm, old_body) = forgeplan_core::artifact::frontmatter::parse_frontmatter(&content)?;
@@ -299,6 +268,7 @@ async fn run_file_first(
 
     // Metadata first (renames the file on --title), then body against the
     // possibly-renamed path — mirrors the store path's ordering.
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     let mut final_path = artifact_path.clone();
     if status.is_some() || title.is_some() || depth.is_some() {
         final_path =
@@ -325,29 +295,21 @@ async fn run_file_first(
     }
 
     if let Some(s) = status {
-        common::log_change_field(
-            &ws,
-            None,
-            id,
-            "update",
-            ("status", fm.get("status").and_then(|v| v.as_str()), Some(s)),
-            "cli",
-        )
+        common::log_change_field(&ws, &lock, None, id,
+        "update",
+        ("status", fm.get("status").and_then(|v| v.as_str()), Some(s)),
+        "cli",)
         .await;
     }
     if let Some(t) = title {
-        common::log_change_field(
-            &ws,
-            None,
-            id,
-            "update",
-            ("title", fm.get("title").and_then(|v| v.as_str()), Some(t)),
-            "cli",
-        )
+        common::log_change_field(&ws, &lock, None, id,
+        "update",
+        ("title", fm.get("title").and_then(|v| v.as_str()), Some(t)),
+        "cli",)
         .await;
     }
     if body.is_some() {
-        common::log_change_field(&ws, None, id, "update", ("body", None, None), "cli").await;
+        common::log_change_field(&ws, &lock, None, id, "update", ("body", None, None), "cli").await;
     }
 
     println!("  Updated: {}", id);
@@ -361,18 +323,7 @@ async fn run_file_first(
         println!("  Body:    updated");
     }
 
-    // Ref form for the validate hint: slug pre-merge, display id
-    // post-merge — read from the mutated file's body portion, the file-first
-    // equivalent of `refs_form_from_body(&record.body, ..)`.
-    let ref_form = match tokio::fs::read_to_string(&final_path).await {
-        Ok(content) => {
-            let body_portion = forgeplan_core::artifact::frontmatter::parse_frontmatter(&content)
-                .map(|(_, b)| b)
-                .unwrap_or_default();
-            forgeplan_core::artifact::frontmatter::refs_form_from_body(&body_portion, id)
-        }
-        Err(_) => id.to_string(),
-    };
+    let ref_form = canonical_key;
 
     common::note_constellation_owns_index();
     // Lock must drop before reconcile — see `common::reconcile_after_file_mutation`.

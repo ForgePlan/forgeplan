@@ -9,23 +9,23 @@ pub async fn run(id: &str) -> anyhow::Result<()> {
     // gates, both of which need the artifact's relation graph. On a migrated
     // workspace that graph is the canonical Markdown's `links:` blocks, so the
     // read comes from one capture instead of the retired `relations.lance`.
-    // No lock is taken — the command performs no mutation.
-    let (ws, store) = common::open_store_tolerating_constellation().await?;
+    // Hold one shared permit through selector resolution, review and rendering.
+    let ws = common::find_workspace_path()?;
+    let read_guard = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await?;
+    let (_, store) = common::open_store_tolerating_constellation().await?;
 
     let (result, kind, ref_form) = match &store {
         Some(store) => {
             // Phase 2.5 (PROB-060) — accept slug or display id form. Without
             // resolver, slug input fails в lifecycle::review's get_record path.
-            let canonical = store
-                .resolve_id(id)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found"))?;
-            let result = lifecycle::review(store, &canonical).await?;
+            let resolution = common::resolve_against_workspace(&ws, id).await?;
+            let (canonical, _) = common::require_found_identity(id, &resolution)?;
+            let result = lifecycle::review(&read_guard, store, &canonical).await?;
             // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — load the record so we
             // can pick slug pre-merge or display id post-merge for hint emission,
             // matching the canonical reference form used in commit `Refs:` lines.
             let record = store
-                .get_record(&canonical)
+                .get_record(&read_guard, &canonical)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("Artifact '{canonical}' not found"))?;
             let kind = record
@@ -39,10 +39,9 @@ pub async fn run(id: &str) -> anyhow::Result<()> {
             (result, kind, ref_form)
         }
         None => {
-            let read = common::workspace_read(&ws).await?;
-            let canonical = read
-                .resolve_id(id)
-                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found"))?;
+            let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &read_guard).await?;
+            let resolution = common::resolve_against_capture(&read, id);
+            let (canonical, _) = common::require_found_identity(id, &resolution)?;
             let result = forgeplan_core::lifecycle::canonical::review_captured(&read, &canonical)?;
             let kind = read
                 .get_record(&canonical)

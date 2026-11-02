@@ -58,10 +58,10 @@ fn resolve<'a>(
     read: &'a WorkspaceRead,
     artifact_id: &str,
 ) -> anyhow::Result<&'a crate::db::store::ArtifactRecord> {
-    let canonical = read
-        .resolve_id(artifact_id)
+    let resolved = read
+        .resolve_artifact(artifact_id)?
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
-    read.get_record(&canonical)
+    read.get_record_by_key(&resolved.identity.canonical_key)
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))
 }
 
@@ -107,8 +107,8 @@ pub fn collect_activation_gates_captured(
 ) -> GatesReport {
     super::activation_gates_from(
         record,
-        &read.get_relations(&record.id),
-        &read.get_incoming_relations(&record.id),
+        &read.get_relations_by_key(&record.canonical_key),
+        &read.get_incoming_relations_by_key(&record.canonical_key),
     )
 }
 
@@ -124,8 +124,8 @@ pub fn review_captured(read: &WorkspaceRead, artifact_id: &str) -> anyhow::Resul
     let (must_findings, should_findings) = split_findings(&record.id, record, &fm)?;
 
     let mut warnings = Vec::new();
-    for (target_id, _relation) in read.get_relations(&record.id) {
-        if let Some(target) = read.get_record(&target_id)
+    for (target_id, _relation) in read.get_relations_by_key(&record.canonical_key) {
+        if let Some(target) = read.get_record_by_key(&target_id).or_else(|| read.get_record(&target_id))
             && target.status == "draft"
         {
             warnings.push(format!(
@@ -205,7 +205,7 @@ pub async fn activate_captured(
         must_errors = must;
     }
 
-    projection::update_metadata_with_projection(ctx, &record.id, Some("active"), None)
+    projection::update_metadata_with_projection(ctx, &record.canonical_key, Some("active"), None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -256,13 +256,7 @@ pub async fn supersede_captured(
     replacement_id: &str,
 ) -> anyhow::Result<SupersedeResult> {
     let record = resolve(read, artifact_id)?.clone();
-    let replacement_id = read
-        .resolve_id(replacement_id)
-        .unwrap_or_else(|| replacement_id.to_string());
-    let replacement = read
-        .get_record(&replacement_id)
-        .ok_or_else(|| anyhow::anyhow!("Replacement not found: {replacement_id}"))?
-        .clone();
+    let replacement = resolve(read, replacement_id)?.clone();
 
     transitions::validate_transition(&record.status, "superseded")?;
 
@@ -270,13 +264,13 @@ pub async fn supersede_captured(
     if replacement.status == "draft" {
         warnings.push(format!(
             "Replacement {} is still draft — activate before using",
-            replacement_id
+            replacement.id
         ));
     }
     if replacement.status == "superseded" || replacement.status == "deprecated" {
         anyhow::bail!(
             "Replacement {} is already {}. Choose an active or draft artifact as replacement.",
-            replacement_id,
+            replacement.id,
             replacement.status
         );
     }
@@ -285,7 +279,7 @@ pub async fn supersede_captured(
     // their display id, because the list is written into a document a person
     // reads.
     let dependents: Vec<String> = read
-        .get_incoming_relations(&record.id)
+        .get_incoming_relations_by_key(&record.canonical_key)
         .into_iter()
         .map(|(source, _)| {
             read.get_record_by_key(&source)
@@ -294,10 +288,10 @@ pub async fn supersede_captured(
         })
         .collect();
 
-    projection::add_link_with_projection(ctx, &record.id, &replacement_id, "supersedes")
+    projection::add_link_with_projection(ctx, &record.canonical_key, &replacement.canonical_key, "supersedes")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    projection::update_metadata_with_projection(ctx, &record.id, Some("superseded"), None)
+    projection::update_metadata_with_projection(ctx, &record.canonical_key, Some("superseded"), None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -327,7 +321,7 @@ pub async fn deprecate_captured(
     // their display id, because the list is written into a document a person
     // reads.
     let dependents: Vec<String> = read
-        .get_incoming_relations(&record.id)
+        .get_incoming_relations_by_key(&record.canonical_key)
         .into_iter()
         .map(|(source, _)| {
             read.get_record_by_key(&source)
@@ -339,10 +333,10 @@ pub async fn deprecate_captured(
     let body = post_frontmatter_body(&record)?;
     let today = chrono::Utc::now().format("%Y-%m-%d");
     let new_body = format!("{body}\n\n## Deprecation\n\nReason: {reason}\nDate: {today}");
-    projection::update_body_with_projection(ctx, &record.id, &new_body)
+    projection::update_body_with_projection(ctx, &record.canonical_key, &new_body)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    projection::update_metadata_with_projection(ctx, &record.id, Some("deprecated"), None)
+    projection::update_metadata_with_projection(ctx, &record.canonical_key, Some("deprecated"), None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -376,13 +370,13 @@ pub async fn renew_captured(
     let body = post_frontmatter_body(&record)?;
     let new_body = format!("{body}{renewal_section}");
 
-    projection::update_body_with_projection(ctx, &record.id, &new_body)
+    projection::update_body_with_projection(ctx, &record.canonical_key, &new_body)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    projection::update_metadata_with_projection(ctx, &record.id, Some("active"), None)
+    projection::update_metadata_with_projection(ctx, &record.canonical_key, Some("active"), None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    projection::update_valid_until_with_projection(ctx, &record.id, new_valid_until)
+    projection::update_valid_until_with_projection(ctx, &record.canonical_key, new_valid_until)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -472,7 +466,7 @@ pub async fn reopen_captured(
     let new_key = created.canonical_key;
 
     // Step 2 — lineage edge, new → old.
-    projection::add_link_with_projection(ctx, &new_id, &record.id, "based_on")
+    projection::add_link_with_projection(ctx, &new_key, &record.canonical_key, "based_on")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -480,10 +474,10 @@ pub async fn reopen_captured(
     let body = post_frontmatter_body(&record)?;
     let new_body =
         format!("{body}\n\n## Reopened ({today})\n\nReason: {safe_reason}\nReplacement: {new_id}");
-    projection::update_body_with_projection(ctx, &record.id, &new_body)
+    projection::update_body_with_projection(ctx, &record.canonical_key, &new_body)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    projection::update_metadata_with_projection(ctx, &record.id, Some("deprecated"), None)
+    projection::update_metadata_with_projection(ctx, &record.canonical_key, Some("deprecated"), None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 

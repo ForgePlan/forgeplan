@@ -20,9 +20,9 @@ pub struct ImportResult {
 }
 
 /// Export all data from LanceStore to ExportData.
-pub async fn export_all(store: &LanceStore) -> anyhow::Result<ExportData> {
-    let artifacts = store.list_records(None).await?;
-    let relations = store.get_all_relations().await?;
+pub async fn export_all(store: &LanceStore, permit: &dyn crate::workspace::lock::WorkspaceReadPermit) -> anyhow::Result<ExportData> {
+    let artifacts = store.list_records(permit, None).await?;
+    let relations = store.get_all_relations(permit).await?;
 
     Ok(ExportData {
         version: "1.0".to_string(),
@@ -35,6 +35,7 @@ pub async fn export_all(store: &LanceStore) -> anyhow::Result<ExportData> {
 /// Import data into LanceStore. Skip existing artifacts unless force=true.
 pub async fn import_all(
     store: &LanceStore,
+    guard: &crate::workspace::lock::WorkspaceLock,
     data: &ExportData,
     force: bool,
 ) -> anyhow::Result<ImportResult> {
@@ -52,7 +53,7 @@ pub async fn import_all(
         } else {
             record.canonical_key.clone()
         };
-        let exists = store.get_record(&canonical_key).await?.is_some();
+        let exists = store.get_record(guard, &canonical_key).await?.is_some();
 
         if exists && !force {
             skipped += 1;
@@ -61,7 +62,7 @@ pub async fn import_all(
 
         if exists {
             // force: delete existing, then re-create
-            store.delete_artifact(&canonical_key).await?;
+            store.delete_artifact(guard, &canonical_key).await?;
         }
 
         let new = NewArtifact {
@@ -79,13 +80,13 @@ pub async fn import_all(
             valid_until: record.valid_until.clone(),
             tags: record.tags.clone(),
         };
-        store.create_artifact(&new).await?;
+        store.create_artifact(guard, &new).await?;
         created += 1;
     }
 
     let mut relations_created = 0usize;
     for (source, target, relation) in &data.relations {
-        store.add_relation(source, target, relation).await?;
+        store.add_relation(guard, source, target, relation).await?;
         relations_created += 1;
     }
 
@@ -105,14 +106,24 @@ mod tests {
     async fn make_store() -> (LanceStore, TempDir) {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let store = { let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); LanceStore::init_new(&ws, &guard).await.unwrap() };
         (store, tmp)
     }
 
     #[tokio::test]
-    async fn export_empty_store() {
+    async fn export_rejects_a_permit_from_another_workspace() {
         let (store, _tmp) = make_store().await;
-        let data = export_all(&store).await.unwrap();
+        let (other, _other_tmp) = make_store().await;
+        let wrong = crate::workspace::lock::acquire_workspace_read_lock(other.workspace_path()).await.unwrap();
+        assert!(export_all(&store, &wrong).await.is_err());
+        let correct = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path()).await.unwrap();
+        assert!(export_all(&store, &correct).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn export_empty_store() {
+        let (store, _tmp, guard) = { let (store, _tmp) = make_store().await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (store, _tmp, guard) };
+        let data = export_all(&store, &guard).await.unwrap();
         assert_eq!(data.version, "1.0");
         assert!(data.artifacts.is_empty());
         assert!(data.relations.is_empty());
@@ -120,7 +131,7 @@ mod tests {
 
     #[tokio::test]
     async fn export_with_data() {
-        let (store, _tmp) = make_store().await;
+        let (store, _tmp, guard) = { let (store, _tmp) = make_store().await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (store, _tmp, guard) };
 
         let artifact = NewArtifact {
             canonical_key: "prd-001".to_string(),
@@ -135,9 +146,9 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&artifact).await.unwrap();
+        store.create_artifact(&guard, &artifact).await.unwrap();
 
-        let data = export_all(&store).await.unwrap();
+        let data = export_all(&store, &guard).await.unwrap();
         assert_eq!(data.artifacts.len(), 1);
         assert_eq!(data.artifacts[0].id, "prd-001");
         assert_eq!(data.artifacts[0].title, "Test PRD");
@@ -145,7 +156,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_skip_existing() {
-        let (store, _tmp) = make_store().await;
+        let (store, _tmp, guard) = { let (store, _tmp) = make_store().await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (store, _tmp, guard) };
 
         let artifact = NewArtifact {
             canonical_key: "prd-001".to_string(),
@@ -160,7 +171,7 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&artifact).await.unwrap();
+        store.create_artifact(&guard, &artifact).await.unwrap();
 
         let data = ExportData {
             version: "1.0".to_string(),
@@ -186,18 +197,18 @@ mod tests {
             relations: vec![],
         };
 
-        let result = import_all(&store, &data, false).await.unwrap();
+        let result = import_all(&store, &guard, &data, false).await.unwrap();
         assert_eq!(result.created, 0);
         assert_eq!(result.skipped, 1);
 
         // Title unchanged
-        let rec = store.get_record("prd-001").await.unwrap().unwrap();
+        let rec = store.get_record(&guard, "prd-001").await.unwrap().unwrap();
         assert_eq!(rec.title, "Original");
     }
 
     #[tokio::test]
     async fn import_force_overwrites() {
-        let (store, _tmp) = make_store().await;
+        let (store, _tmp, guard) = { let (store, _tmp) = make_store().await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (store, _tmp, guard) };
 
         let artifact = NewArtifact {
             canonical_key: "prd-002".to_string(),
@@ -212,7 +223,7 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&artifact).await.unwrap();
+        store.create_artifact(&guard, &artifact).await.unwrap();
 
         let data = ExportData {
             version: "1.0".to_string(),
@@ -238,11 +249,11 @@ mod tests {
             relations: vec![],
         };
 
-        let result = import_all(&store, &data, true).await.unwrap();
+        let result = import_all(&store, &guard, &data, true).await.unwrap();
         assert_eq!(result.created, 1);
         assert_eq!(result.skipped, 0);
 
-        let rec = store.get_record("prd-002").await.unwrap().unwrap();
+        let rec = store.get_record(&guard, "prd-002").await.unwrap().unwrap();
         assert_eq!(rec.title, "Overwritten");
     }
 }

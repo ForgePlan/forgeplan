@@ -56,7 +56,7 @@ impl McpFixture {
     /// test uses only `new_with_seed`).
     #[allow(dead_code)]
     pub async fn new() -> Self {
-        Self::new_with_seed(|_| std::future::ready(())).await
+        Self::new_with_seed(|_, _| std::future::ready(())).await
     }
 
     /// Two-phase setup so tests can seed artifacts via
@@ -69,14 +69,17 @@ impl McpFixture {
     /// handle while the server side is still uninitialized.
     pub async fn new_with_seed<F, Fut>(seed: F) -> Self
     where
-        F: FnOnce(Arc<LanceStore>) -> Fut,
+        F: FnOnce(Arc<LanceStore>, Arc<workspace::lock::WorkspaceLock>) -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
         let tempdir = TempDir::new().expect("tempdir");
         let workspace_path =
             workspace::init_workspace(tempdir.path(), "mcp-e2e-test").expect("init workspace");
+        let lock = Arc::new(workspace::acquire_workspace_lock(&workspace_path)
+            .await
+            .expect("workspace lock"));
         let store = Arc::new(
-            LanceStore::init(&workspace_path)
+            LanceStore::init_new(&workspace_path, &lock)
                 .await
                 .expect("init lance store"),
         );
@@ -84,7 +87,42 @@ impl McpFixture {
         // Run any caller-provided seed BEFORE the server opens its own
         // store handle. Any rows written here are guaranteed to be
         // visible to the server's first read.
-        seed(Arc::clone(&store)).await;
+        seed(Arc::clone(&store), Arc::clone(&lock)).await;
+        // MCP selectors resolve against canonical Markdown, not an orphan
+        // index row. Materialize each seeded record before the server starts.
+        for record in store.list_records(&*lock, None).await.expect("read seeded rows") {
+            let links = store.get_relations(&*lock, &record.canonical_key).await.expect("read seeded links");
+            if record.body.trim_start().starts_with("---") {
+                use forgeplan_core::artifact::frontmatter::{parse_frontmatter, render_frontmatter};
+                let (mut fm, body) = parse_frontmatter(&record.body).expect("parse seeded frontmatter");
+                fm.entry("id".to_string()).or_insert_with(|| record.id.clone().into());
+                fm.entry("kind".to_string()).or_insert_with(|| record.kind.clone().into());
+                if !links.is_empty() {
+                    let mut all = forgeplan_core::artifact::frontmatter::links_from_frontmatter(&fm);
+                    for link in links {
+                        if !all.contains(&link) { all.push(link); }
+                    }
+                    let values: Vec<_> = all.into_iter().map(|(target, relation)| {
+                        let mut entry = serde_yaml::Mapping::new();
+                        entry.insert("target".into(), target.into());
+                        entry.insert("relation".into(), relation.into());
+                        serde_yaml::Value::Mapping(entry)
+                    }).collect();
+                    fm.insert("links".to_string(), serde_yaml::Value::Sequence(values));
+                }
+                let kind: forgeplan_core::artifact::types::ArtifactKind = record.kind.parse().expect("seed kind");
+                let dir = workspace_path.join(kind.dir_name());
+                tokio::fs::create_dir_all(&dir).await.expect("seed artifact directory");
+                let filename = forgeplan_core::artifact::store::canonical_filename(&record.canonical_key)
+                    .expect("seed canonical filename");
+                tokio::fs::write(dir.join(filename), render_frontmatter(&fm, &body).expect("render seed"))
+                    .await.expect("write seed document");
+            } else {
+                forgeplan_core::projection::render_projection_record_with_body(&workspace_path, &record, &links)
+                    .await.expect("render seeded document");
+            }
+        }
+        drop(lock);
 
         // ForgeplanServer::new walks up from the supplied root looking for
         // `.forgeplan/` and opens a second Lance handle. The fixture's

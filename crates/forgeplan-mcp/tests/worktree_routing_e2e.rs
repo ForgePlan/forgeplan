@@ -297,15 +297,19 @@ async fn ac1_worktree_workspace_param_routes_correctly_ac3_missing_param_errors(
     // We do this via the workspace::init_workspace API directly.
     let main_ws = forgeplan_core::workspace::init_workspace(&main_root, "ac1-main-test")
         .expect("init main workspace");
-    let _main_store = forgeplan_core::db::store::LanceStore::init(&main_ws)
+    let main_lock = forgeplan_core::workspace::acquire_workspace_lock(&main_ws).await.unwrap();
+    let _main_store = forgeplan_core::db::store::LanceStore::init_new(&main_ws, &main_lock)
         .await
         .expect("init main LanceDB");
+    drop(main_lock);
 
     let wt_ws = forgeplan_core::workspace::init_workspace(&wt_root, "ac1-wt-test")
         .expect("init worktree workspace");
-    let _wt_store = forgeplan_core::db::store::LanceStore::init(&wt_ws)
+    let wt_lock = forgeplan_core::workspace::acquire_workspace_lock(&wt_ws).await.unwrap();
+    let _wt_store = forgeplan_core::db::store::LanceStore::init_new(&wt_ws, &wt_lock)
         .await
         .expect("init wt LanceDB");
+    drop(wt_lock);
 
     // Spin up MCP server rooted at the MAIN repo.
     let main_fixture = McpFixture::new_rooted(main_root.clone()).await;

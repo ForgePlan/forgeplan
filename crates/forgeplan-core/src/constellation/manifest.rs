@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::capture::{CapturedSection, CapturedSourceView, Coverage, SourceEntry};
+use super::capture::{CapturedSection, CapturedSourceView, Coverage, OutgoingEdge, SourceEntry};
 // `SourceDiagnostic` is defined at the `constellation` root, not re-exported
 // through `capture` — the `capture` import of it is private.
 use super::SourceDiagnostic;
@@ -150,8 +150,130 @@ impl SectionBinding {
     }
 }
 
+/// A path-keyed claimant retained without duplicating its document body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConflictSource {
+    pub relative_path: String,
+    pub canonical_key: String,
+    pub display_id: String,
+    pub title: String,
+    pub source_digest: String,
+    pub declared_outgoing: Vec<OutgoingEdge>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum WireCoverage {
+    Diagnostic { kind: DiagnosticKind, observed: Coverage, inventory: Vec<ConflictSource> },
+    Normal(Coverage),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DiagnosticKind { IdentityConflicts }
+
+#[derive(Serialize, Deserialize)]
+struct WireManifest {
+    schema_version: u32,
+    generation_id: String,
+    checkout_id: String,
+    index_epoch: u64,
+    source_set_digest: String,
+    config_digest: String,
+    table_versions: TableVersions,
+    source_entries: Vec<SourceEntry>,
+    #[serde(default)]
+    section_bindings: Vec<SectionBinding>,
+    tombstones: Vec<Tombstone>,
+    #[serde(default)]
+    identity_retirements: BTreeMap<String, u64>,
+    #[serde(default)]
+    semantic_blocked_paths: Vec<String>,
+    pending_jobs: BTreeMap<String, EmbeddingJob>,
+    coverage: WireCoverage,
+    diagnostics: Vec<SourceDiagnostic>,
+    evaluated_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WireCoverageRef<'a> {
+    Diagnostic { kind: DiagnosticKind, observed: Coverage, inventory: &'a [ConflictSource] },
+    Normal(Coverage),
+}
+
+#[derive(Serialize)]
+struct WireManifestRef<'a> {
+    schema_version: u32,
+    generation_id: &'a str,
+    checkout_id: &'a str,
+    index_epoch: u64,
+    source_set_digest: &'a str,
+    config_digest: &'a str,
+    table_versions: TableVersions,
+    source_entries: &'a [SourceEntry],
+    section_bindings: &'a [SectionBinding],
+    tombstones: &'a [Tombstone],
+    identity_retirements: &'a BTreeMap<String, u64>,
+    semantic_blocked_paths: &'a [String],
+    pending_jobs: &'a BTreeMap<String, EmbeddingJob>,
+    coverage: WireCoverageRef<'a>,
+    diagnostics: &'a [SourceDiagnostic],
+    evaluated_at: &'a str,
+}
+
+impl Serialize for GenerationManifest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        WireManifestRef {
+            schema_version: self.schema_version, generation_id: &self.generation_id,
+            checkout_id: &self.checkout_id, index_epoch: self.index_epoch,
+            source_set_digest: &self.source_set_digest, config_digest: &self.config_digest,
+            table_versions: self.table_versions, source_entries: &self.source_entries,
+            section_bindings: &self.section_bindings, tombstones: &self.tombstones,
+            identity_retirements: &self.identity_retirements, pending_jobs: &self.pending_jobs,
+            semantic_blocked_paths: &self.semantic_blocked_paths,
+            coverage: if self.conflict_inventory.is_empty() { WireCoverageRef::Normal(self.coverage) }
+                else { WireCoverageRef::Diagnostic { kind: DiagnosticKind::IdentityConflicts,
+                    observed: self.coverage, inventory: &self.conflict_inventory } },
+            diagnostics: &self.diagnostics, evaluated_at: &self.evaluated_at,
+        }.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GenerationManifest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = WireManifest::deserialize(deserializer)?;
+        let (coverage, conflict_inventory, diagnostic) = match wire.coverage {
+            WireCoverage::Normal(c) => (c, Vec::new(), false),
+            WireCoverage::Diagnostic { observed, inventory, .. } => (observed, inventory, true),
+        };
+        let manifest = Self {
+            schema_version: wire.schema_version, generation_id: wire.generation_id,
+            checkout_id: wire.checkout_id, index_epoch: wire.index_epoch,
+            source_set_digest: wire.source_set_digest, config_digest: wire.config_digest,
+            table_versions: wire.table_versions, source_entries: wire.source_entries,
+            section_bindings: wire.section_bindings, tombstones: wire.tombstones,
+            identity_retirements: wire.identity_retirements, pending_jobs: wire.pending_jobs,
+            coverage, conflict_inventory, semantic_blocked_paths: wire.semantic_blocked_paths,
+            diagnostics: wire.diagnostics, evaluated_at: wire.evaluated_at,
+        };
+        if diagnostic {
+            manifest.validate_diagnostic_inventory().map_err(serde::de::Error::custom)?;
+        } else if !manifest.semantic_blocked_paths.is_empty() {
+            return Err(serde::de::Error::custom("normal generation has blocked semantic paths"));
+        } else if manifest.coverage.read.checked_add(manifest.coverage.invalid)
+            .and_then(|n| n.checked_add(manifest.coverage.unavailable))
+            .and_then(|n| n.checked_add(manifest.coverage.excluded))
+            != Some(manifest.coverage.expected)
+        {
+            return Err(serde::de::Error::custom("coverage does not partition expected paths"));
+        }
+        Ok(manifest)
+    }
+}
+
 /// Immutable manifest of one published generation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GenerationManifest {
     pub schema_version: u32,
     pub generation_id: String,
@@ -168,9 +290,10 @@ pub struct GenerationManifest {
     /// it reads as an empty membership, which for a generation whose
     /// `config_digest` predates the layout identity is the honest reading —
     /// that generation made no claim about its sections.
-    #[serde(default)]
+    // Older manifests predate section membership.
     pub section_bindings: Vec<SectionBinding>,
     pub tombstones: Vec<Tombstone>,
+    pub identity_retirements: BTreeMap<String, u64>,
     /// One current coalesced entry per **artifact** key.
     ///
     /// Recorded **before** the work is scheduled, so a crash between
@@ -181,6 +304,8 @@ pub struct GenerationManifest {
     /// section events.
     pub pending_jobs: BTreeMap<String, EmbeddingJob>,
     pub coverage: Coverage,
+    pub conflict_inventory: Vec<ConflictSource>,
+    pub semantic_blocked_paths: Vec<String>,
     pub diagnostics: Vec<SourceDiagnostic>,
     pub evaluated_at: String,
 }
@@ -202,6 +327,13 @@ impl GenerationManifest {
             .map(|section| SectionBinding::from_capture(section, &layout_fingerprint))
             .collect();
         section_bindings.sort_by(|a, b| a.section_key.cmp(&b.section_key));
+        let conflict_inventory = captured.diagnostic_inventory().unwrap_or_default();
+        let mut semantic_blocked_paths = if conflict_inventory.is_empty() {
+            Vec::new()
+        } else {
+            captured.enumerated_paths.clone()
+        };
+        semantic_blocked_paths.sort();
         Self {
             schema_version: FORMAT_VERSION,
             generation_id: generation_id.to_string(),
@@ -213,8 +345,11 @@ impl GenerationManifest {
             source_entries: captured.entries.clone(),
             section_bindings,
             tombstones: Vec::new(),
+            identity_retirements: BTreeMap::new(),
             pending_jobs: BTreeMap::new(),
             coverage: captured.coverage,
+            conflict_inventory,
+            semantic_blocked_paths,
             diagnostics: captured.diagnostics.clone(),
             evaluated_at: captured.evaluated_at.clone(),
         }
@@ -255,12 +390,64 @@ impl GenerationManifest {
                 ),
             });
         }
-        if !self.coverage.is_complete() {
+        if self.is_diagnostic() {
+            self.validate_diagnostic_inventory()?;
+        } else if !self.coverage.is_complete()
+            || self.coverage.read != self.coverage.expected
+            || self.coverage.read != self.source_entries.len()
+            || !self.semantic_blocked_paths.is_empty()
+        {
             return Err(ConstellationError::SourceBusy {
-                attempts: super::capture::DEFAULT_CAPTURE_ATTEMPTS,
-                elapsed_ms: 0,
+                attempts: super::capture::DEFAULT_CAPTURE_ATTEMPTS, elapsed_ms: 0,
             });
         }
+        Ok(())
+    }
+
+    pub fn is_diagnostic(&self) -> bool { !self.conflict_inventory.is_empty() }
+
+    /// Reject APIs which cannot represent an incomplete, contested projection.
+    pub fn require_addressable(&self) -> Result<(), ConstellationError> {
+        if self.is_diagnostic() {
+            return Err(ConstellationError::IndexProtocolMismatch {
+                detail: "generation contains identity conflicts and is diagnostic only".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_diagnostic_inventory(&self) -> Result<(), ConstellationError> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let invalid = || ConstellationError::IndexProtocolMismatch {
+            detail: "malformed diagnostic identity conflict inventory".into(),
+        };
+        if self.coverage.invalid != 0 || self.coverage.unavailable != 0
+            || self.coverage.excluded == 0 || self.coverage.excluded != self.conflict_inventory.len()
+            || self.coverage.read != self.source_entries.len()
+            || self.coverage.read.checked_add(self.coverage.excluded) != Some(self.coverage.expected)
+        { return Err(invalid()); }
+        let mut paths = BTreeSet::new();
+        let mut unique_keys = BTreeSet::new();
+        for entry in &self.source_entries {
+            if !paths.insert(entry.relative_path.as_str()) || !unique_keys.insert(entry.canonical_key.as_str()) {
+                return Err(invalid());
+            }
+        }
+        let mut counts = BTreeMap::<&str, usize>::new();
+        let mut previous: Option<&str> = None;
+        for source in &self.conflict_inventory {
+            if source.relative_path.is_empty() || source.canonical_key.is_empty() || source.source_digest.is_empty()
+                || previous.is_some_and(|p| p >= source.relative_path.as_str())
+                || !paths.insert(&source.relative_path) || unique_keys.contains(source.canonical_key.as_str())
+                || source.declared_outgoing.windows(2).any(|w| w[0] >= w[1])
+            { return Err(invalid()); }
+            previous = Some(&source.relative_path);
+            *counts.entry(&source.canonical_key).or_default() += 1;
+        }
+        if counts.values().any(|n| *n < 2) { return Err(invalid()); }
+        if self.semantic_blocked_paths.windows(2).any(|w| w[0] >= w[1])
+            || self.semantic_blocked_paths.iter().map(String::as_str).collect::<BTreeSet<_>>() != paths
+        { return Err(invalid()); }
         Ok(())
     }
 
@@ -734,6 +921,7 @@ mod tests {
                 row_revision: 1,
                 diagnostics: Vec::new(),
             })],
+            conflict_artifacts: vec![],
             sections: vec![],
             entries: vec![SourceEntry {
                 canonical_key: "PRD-001".to_string(),

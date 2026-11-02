@@ -62,10 +62,10 @@ pub struct KnowledgeGraph {
 
 impl KnowledgeGraph {
     /// Build a knowledge graph by loading all artifacts and relations from the store.
-    pub async fn from_store(store: &LanceStore) -> anyhow::Result<Self> {
-        // Use list_artifacts (summary, no body) to avoid loading full bodies into memory
-        let artifacts = store.list_artifacts(None).await?;
-        let relations = store.get_all_relations().await?;
+    pub async fn from_store(store: &LanceStore, permit: &dyn crate::workspace::lock::WorkspaceReadPermit) -> anyhow::Result<Self> {
+        // Load the summary and relation tables under the same admission.
+        let artifacts = store.list_artifacts(permit, None).await?;
+        let relations = store.get_all_relations(permit).await?;
 
         let mut graph = DiGraph::new();
         let mut index = HashMap::new();

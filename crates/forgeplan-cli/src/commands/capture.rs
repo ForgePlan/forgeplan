@@ -8,7 +8,7 @@ use forgeplan_core::llm::capture;
 use crate::commands::common;
 
 pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
-    let (workspace, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (workspace, lock, store) = common::open_store_locked_checked(&[]).await?;
 
     // PRD-071 contract: emit `Fix:` when LLM unavailable.
     let llm_config = match common::require_llm_config() {
@@ -77,6 +77,7 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
         })
     };
 
+    common::ensure_ordinary_mutation_allowed(&workspace)?;
     let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
         &workspace,
         &lock,
@@ -86,7 +87,8 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
         &title,
         &build,
     )
-    .await?;
+    .await
+    .map_err(|e| common::describe_possible_legacy_partial_commit(store.is_some(), e))?;
     let id = created.id;
     let canonical_key = created.canonical_key;
     let filepath = created.filepath;
@@ -98,6 +100,10 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
         // storage commit, and a held guard would time the capture out.
         drop(lock);
         common::reconcile_after_file_mutation(&workspace).await;
+    } else {
+        drop(store);
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&workspace).await?;
     }
 
     println!("  Captured: {}", filepath.display());

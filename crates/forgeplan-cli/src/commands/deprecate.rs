@@ -10,36 +10,38 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     // is the canonical Markdown. So the transition, the `## Deprecation`
     // section and the status flip are all file-first here; the store-backed
     // cached-score rescore has no counterpart and is not faked.
-    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (ws, _lock, store) = common::open_store_locked_checked(&[(id, true)]).await?;
 
     let Some(store) = store else {
         return run_file_first(ws, _lock, id, reason).await;
     };
 
     // PROB-060 / SPEC-005 Phase 1.5b — slug-aware lookup.
-    let id = store
-        .resolve_id(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let resolution = common::resolve_against_workspace(&ws, id).await?;
+    let (id, display_id) = common::require_found_identity(id, &resolution)?;
     let id = id.as_str();
 
     let old_status = store
-        .get_record(id)
+        .get_record(&_lock, id)
         .await?
         .map(|r| r.status)
         .unwrap_or_else(|| "active".to_string());
 
     // Sync file→LanceDB before lifecycle call (preserve user edits)
-    if let Some(record) = store.get_record(id).await? {
-        projection::sync_file_to_store(&store, &ws, &record).await?;
+    common::ensure_ordinary_mutation_allowed(&ws)?;
+    if let Some(record) = store.get_record(&_lock, id).await? {
+        projection::sync_file_to_store(&_lock, &store, &ws, &record).await?;
     }
 
     // PRD-071 contract: error path emits a `Fix:` marker line so agents have
     // a deterministic next action — typically `validate` to surface why the
     // transition is rejected (e.g. draft→deprecated requires active first).
-    let dependents = lifecycle::deprecate(&store, id, reason)
+    let dependents = lifecycle::deprecate(&_lock, &store, id, reason)
         .await
-        .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id))?;
+        .map_err(|e| common::describe_possible_legacy_partial_commit(
+            true,
+            anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id),
+        ))?;
 
     // Re-render projection with the updated status AND the appended body.
     //
@@ -53,54 +55,44 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     //
     // Forcing is safe *here* because `sync_file_to_store` ran above: at this
     // point the DB body is the file body plus the section just appended.
-    if let Some(record) = store.get_record(id).await? {
-        let links = store.get_relations(id).await.unwrap_or_default();
-        projection::render_projection_with_body(
-            &ws,
-            &record.id,
-            &record.kind,
-            &record.title,
-            &record.status,
-            &record.depth,
-            record.author.as_deref(),
-            record.parent_epic.as_deref(),
-            record.valid_until.as_deref(),
-            &record.body,
-            &links,
-        )
-        .await?;
+    if let Some(record) = store.get_record(&_lock, id).await.map_err(|e| common::describe_possible_legacy_partial_commit(true, e))? {
+        let links = store.get_relations(&_lock, &record.canonical_key).await
+            .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?;
+        projection::render_projection_record_with_body(&ws, &record, &links).await
+            .map_err(|e| common::describe_possible_legacy_partial_commit(true, e.into()))?;
     }
 
-    common::log_change_field(
-        &ws,
-        Some(&store),
-        id,
-        "update",
-        ("status", Some(&old_status), Some("deprecated")),
-        "cli",
-    )
+    common::log_change_field(&ws, &_lock, Some(&store), id,
+    "update",
+    ("status", Some(&old_status), Some("deprecated")),
+    "cli",)
     .await;
-
-    println!("  Deprecated {id}: {reason}");
 
     // ADR-020: a displaced evidence pack just left the R_eff min of the
     // artifacts it informs — refresh their cached scores now.
-    for target in forgeplan_core::scoring::rescore_evidence_dependents(&store, id).await {
-        // The dependent is named by its canonical key; the report names it
-        // by the display id a reader can act on.
+    let mut rescored = Vec::new();
+    for target in forgeplan_core::scoring::rescore_evidence_dependents(&store, &_lock, id).await {
         let display = store
-            .resolve_display_id(&target)
+            .resolve_display_id(&_lock, &target)
             .await
             .ok()
             .flatten()
             .unwrap_or(target);
+        rescored.push(display);
+    }
+    drop(store);
+    drop(_lock);
+    common::drain_legacy_semantic_after_mutation(&ws).await?;
+
+    println!("  Deprecated {display_id}: {reason}");
+    for display in rescored {
         println!("  Rescored {display} (displaced evidence left its weakest-link min)");
     }
 
     if !dependents.is_empty() {
         println!("\nDependents affected:");
         for dep in &dependents {
-            println!("  ! {dep} depends on deprecated {id}");
+            println!("  ! {dep} depends on deprecated {display_id}");
         }
     }
 
@@ -109,7 +101,7 @@ pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
     // terminal — surface health.
     let hint_list = if let Some(first_dep) = dependents.first() {
         vec![
-            Hint::warning(format!("{} depends on deprecated {}", first_dep, id))
+            Hint::warning(format!("{} depends on deprecated {}", first_dep, display_id))
                 .with_action(format!("forgeplan get {}", first_dep)),
         ]
     } else {
@@ -133,10 +125,9 @@ async fn run_file_first(
     id: &str,
     reason: &str,
 ) -> anyhow::Result<()> {
-    let read = common::workspace_read(&ws).await?;
-    let canonical = read
-        .resolve_id(id)
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock).await?;
+    let resolution = common::resolve_against_capture(&read, id);
+    let (canonical, display_id) = common::require_found_identity(id, &resolution)?;
     let old_status = read
         .get_record(&canonical)
         .map(|r| r.status.as_str())
@@ -144,6 +135,7 @@ async fn run_file_first(
 
     // Scoped so the context's borrow of the lock guard ends before the
     // reconcile pass below — that pass re-acquires the same lock.
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     let dependents = {
         let ctx = projection::MutationContext::new(&ws, &lock, None);
         forgeplan_core::lifecycle::canonical::deprecate_captured(&ctx, &read, &canonical, reason)
@@ -151,14 +143,10 @@ async fn run_file_first(
             .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
     };
 
-    common::log_change_field(
-        &ws,
-        None,
-        &canonical,
-        "update",
-        ("status", Some(old_status), Some("deprecated")),
-        "cli",
-    )
+    common::log_change_field(&ws, &lock, None, &canonical,
+    "update",
+    ("status", Some(old_status), Some("deprecated")),
+    "cli",)
     .await;
 
     common::note_constellation_owns_index();
@@ -166,18 +154,18 @@ async fn run_file_first(
     drop(lock);
     let published = common::reconcile_after_file_mutation(&ws).await;
 
-    println!("  Deprecated {canonical}: {reason}");
+    println!("  Deprecated {display_id}: {reason}");
 
     if !dependents.is_empty() {
         println!("\nDependents affected:");
         for dep in &dependents {
-            println!("  ! {dep} depends on deprecated {canonical}");
+            println!("  ! {dep} depends on deprecated {display_id}");
         }
     }
 
     let hint_list = if let Some(first_dep) = dependents.first() {
         vec![
-            Hint::warning(format!("{first_dep} depends on deprecated {canonical}"))
+            Hint::warning(format!("{first_dep} depends on deprecated {display_id}"))
                 .with_action(format!("forgeplan get {first_dep}")),
         ]
     } else {

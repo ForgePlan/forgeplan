@@ -463,6 +463,11 @@ pub async fn run_execute(
     // PROB-053 audit Round 7 LOW-2 fix: cache the find_workspace result
     // (was: 2 fs walks, one для workspace_root one для config).
     let fp_dir_opt = workspace::find_workspace(&cwd);
+    if let Some(fp_dir) = &fp_dir_opt {
+        let guard = workspace::lock::acquire_workspace_lock(fp_dir).await?;
+        crate::commands::common::ensure_ordinary_mutation_allowed(fp_dir)?;
+        drop(guard);
+    }
     let workspace_root = match &fp_dir_opt {
         Some(fp_dir) => fp_dir
             .parent()

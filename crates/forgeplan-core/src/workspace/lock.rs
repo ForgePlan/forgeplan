@@ -37,6 +37,8 @@ pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 #[must_use = "dropping the WorkspaceLock releases the lock immediately — bind it to a named variable for the intended scope"]
 pub struct WorkspaceLock {
     file: File,
+    workspace: Option<PathBuf>,
+    repair_binding: Option<RepairBinding>,
 }
 
 impl std::fmt::Debug for WorkspaceLock {
@@ -54,7 +56,57 @@ impl WorkspaceLock {
     /// having taken the exclusive `flock` before constructing the guard;
     /// `Drop` will release it.
     pub fn from_file(file: File) -> Self {
-        Self { file }
+        Self { file, workspace: None, repair_binding: None }
+    }
+
+    pub(crate) fn is_repair_guard_for(&self, workspace: &Path, transaction_id: &str) -> bool {
+        self.repair_binding.as_ref().is_some_and(|binding| {
+            !binding.semantic && !binding.blocked_legacy && binding.workspace == workspace && binding.transaction_id == transaction_id
+        })
+    }
+
+    pub(crate) fn is_legacy_repair_guard_for(&self, workspace: &Path, transaction_id: &str) -> bool {
+        self.repair_binding.as_ref().is_some_and(|binding| {
+            !binding.semantic && binding.legacy && !binding.blocked_legacy && binding.workspace == workspace && binding.transaction_id == transaction_id
+        })
+    }
+
+    pub(crate) fn legacy_repair_digest_for(&self, workspace: &Path, transaction_id: &str) -> Option<&str> {
+        self.repair_binding.as_ref()
+            .filter(|binding| !binding.semantic && binding.legacy && !binding.blocked_legacy && binding.workspace == workspace && binding.transaction_id == transaction_id)
+            .map(|binding| binding.journal_digest.as_str())
+    }
+
+    pub(crate) fn is_blocked_legacy_repair_guard_for(&self, workspace: &Path, transaction_id: &str) -> bool {
+        self.blocked_legacy_repair_digest_for(workspace, transaction_id).is_some()
+    }
+
+    pub(crate) fn blocked_legacy_repair_digest_for(&self, workspace: &Path, transaction_id: &str) -> Option<&str> {
+        self.repair_binding.as_ref()
+            .filter(|binding| !binding.semantic && binding.legacy && binding.blocked_legacy && binding.workspace == workspace && binding.transaction_id == transaction_id)
+            .map(|binding| binding.journal_digest.as_str())
+    }
+
+    pub(crate) fn linked_legacy_repair_digests_for(
+        &self, workspace: &Path, old_id: &str, new_id: &str,
+    ) -> Option<(&str, &str)> {
+        let binding = self.repair_binding.as_ref()?;
+        if binding.semantic || !binding.legacy || binding.blocked_legacy || binding.workspace != workspace
+            || binding.transaction_id != new_id
+        {
+            return None;
+        }
+        let (bound_old_id, old_digest) = binding.linked_predecessor.as_ref()?;
+        (bound_old_id == old_id).then_some((old_digest.as_str(), binding.journal_digest.as_str()))
+    }
+
+    pub(crate) fn is_legacy_semantic_rebuild_guard_for(
+        &self, workspace: &Path, transaction_id: &str, digest: &str,
+    ) -> bool {
+        self.repair_binding.as_ref().is_some_and(|binding| {
+            binding.semantic && binding.workspace == workspace
+                && binding.transaction_id == transaction_id && binding.journal_digest == digest
+        })
     }
 }
 
@@ -71,6 +123,54 @@ impl Drop for WorkspaceLock {
                  but explicit unlock errored (NFS / stale fd?)"
             );
         }
+    }
+}
+
+/// A shared guard held for the entire materialization of a logical read.
+#[must_use = "dropping the read guard releases the shared workspace lock"]
+pub struct WorkspaceReadLock {
+    file: File,
+    workspace: PathBuf,
+}
+
+impl Drop for WorkspaceReadLock {
+    fn drop(&mut self) {
+        if let Err(error) = self.file.unlock() {
+            tracing::warn!(%error, "workspace read lock unlock failed");
+        }
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Unforgeable workspace-bound proof for an ordinary read.
+///
+/// A writer may borrow its existing exclusive guard instead of re-locking.
+/// Repair guards are deliberately excluded from ordinary reads.
+pub trait WorkspaceReadPermit: sealed::Sealed + Send + Sync {
+    fn matches_workspace(&self, workspace: &Path) -> anyhow::Result<()>;
+}
+
+impl sealed::Sealed for WorkspaceReadLock {}
+impl WorkspaceReadPermit for WorkspaceReadLock {
+    fn matches_workspace(&self, workspace: &Path) -> anyhow::Result<()> {
+        if workspace.canonicalize()? != self.workspace {
+            anyhow::bail!("read permit belongs to another workspace");
+        }
+        Ok(())
+    }
+}
+
+impl sealed::Sealed for WorkspaceLock {}
+impl WorkspaceReadPermit for WorkspaceLock {
+    fn matches_workspace(&self, workspace: &Path) -> anyhow::Result<()> {
+        if self.repair_binding.is_some() || self.workspace.as_deref() != Some(workspace.canonicalize()?.as_path()) {
+            anyhow::bail!("exclusive guard is not an ordinary permit for this workspace");
+        }
+        crate::artifact::identity_repair::check_repair_journals(workspace, None)?;
+        crate::db::migrate::check_legacy_semantic_rebuild(workspace)
     }
 }
 
@@ -109,6 +209,342 @@ pub async fn acquire_workspace_lock(workspace: &Path) -> anyhow::Result<Workspac
     acquire_workspace_lock_with_timeout(workspace, DEFAULT_LOCK_TIMEOUT).await
 }
 
+/// Acquire ordinary read admission; retain the guard until all rows are materialized.
+pub async fn acquire_workspace_read_lock(workspace: &Path) -> anyhow::Result<WorkspaceReadLock> {
+    acquire_workspace_read_lock_with_timeout(workspace, DEFAULT_LOCK_TIMEOUT).await
+}
+
+async fn acquire_workspace_read_lock_with_timeout(
+    workspace: &Path,
+    timeout: Duration,
+) -> anyhow::Result<WorkspaceReadLock> {
+    refuse_if_symlink(workspace, "workspace directory").await?;
+    let workspace = workspace.canonicalize()
+        .with_context(|| format!("resolve workspace {}", workspace.display()))?;
+    let path = lock_path(&workspace);
+    refuse_if_symlink(&path, "lock file").await?;
+    tokio::task::spawn_blocking(move || -> anyhow::Result<WorkspaceReadLock> {
+        let file = open_lock_with_backoff(&path, timeout, true)?;
+        let guard = WorkspaceReadLock { file, workspace };
+        crate::artifact::identity_repair::check_repair_journals(&guard.workspace, None)?;
+        crate::db::migrate::check_legacy_semantic_rebuild(&guard.workspace)?;
+        if !crate::constellation::facade::workspace_is_migrated(&guard.workspace) {
+            let lance = guard.workspace.join("lance");
+            match std::fs::symlink_metadata(&lance) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() =>
+                    anyhow::bail!("legacy index root is not a non-symlink directory"),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            let marker_path = crate::db::migrate::identity_v5_marker_path(&lance);
+            match std::fs::symlink_metadata(&marker_path) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() =>
+                    anyhow::bail!("legacy identity marker is not a non-symlink file"),
+                Ok(_) => { crate::db::migrate::read_identity_v5_marker(&lance)?; }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(guard)
+    }).await.context("read lock acquisition task panicked")?
+}
+
+/// Synchronous ordinary-writer admission, for synchronous CLI commands.
+/// Like the async entrypoint, this refuses unfinished or damaged repairs.
+pub fn acquire_workspace_lock_blocking(workspace: &Path) -> anyhow::Result<WorkspaceLock> {
+    let meta = std::fs::symlink_metadata(workspace)
+        .with_context(|| format!("inspect workspace {}", workspace.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        anyhow::bail!("workspace {} is not a non-symlink directory", workspace.display());
+    }
+    let workspace = workspace.canonicalize()?;
+    let file = open_and_lock_with_backoff(&lock_path(&workspace), DEFAULT_LOCK_TIMEOUT)?;
+    let guard = WorkspaceLock { file, workspace: Some(workspace.clone()), repair_binding: None };
+    crate::artifact::identity_repair::check_repair_journals(&workspace, None)?;
+    crate::db::migrate::check_legacy_semantic_rebuild(&workspace)?;
+    Ok(guard)
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RepairBinding {
+    workspace: PathBuf,
+    transaction_id: String,
+    journal_digest: String,
+    legacy: bool,
+    blocked_legacy: bool,
+    linked_predecessor: Option<(String, String)>,
+    semantic: bool,
+}
+
+/// Opaque admission pinned to a single journal and the held physical owner.
+pub(crate) struct RepairIndexAdmission<'a> {
+    owner: &'a crate::constellation::publisher::IndexPublisher,
+    binding: RepairBinding,
+}
+
+impl RepairIndexAdmission<'_> {
+    pub(crate) fn owner(&self) -> &crate::constellation::publisher::IndexPublisher {
+        self.owner
+    }
+
+    pub(crate) fn workspace(&self) -> &Path {
+        &self.binding.workspace
+    }
+
+    pub(crate) fn journal_digest(&self) -> &str {
+        &self.binding.journal_digest
+    }
+}
+
+#[cfg(not(unix))]
+fn refuse_unpinned_non_unix_recovery() -> anyhow::Result<()> {
+    anyhow::bail!("recovery is unavailable on non-Unix platforms until journal and index operations use pinned, no-reparse handles with durable namespace barriers")
+}
+
+pub(crate) async fn begin_repair_index_admission<'a>(
+    workspace: &Path,
+    transaction_id: &str,
+    owner: &'a crate::constellation::publisher::IndexPublisher,
+) -> anyhow::Result<RepairIndexAdmission<'a>> {
+    #[cfg(not(unix))]
+    refuse_unpinned_non_unix_recovery()?;
+    refuse_if_symlink(workspace, "workspace directory").await?;
+    let workspace = workspace.canonicalize()
+        .with_context(|| format!("resolve workspace {}", workspace.display()))?;
+    if owner.index_root() != workspace.join("lance") {
+        anyhow::bail!("repair index owner does not belong to the requested workspace");
+    }
+    let path = lock_path(&workspace);
+    refuse_if_symlink(&path, "lock file").await?;
+    let workspace_copy = workspace.clone();
+    let id = transaction_id.to_string();
+    let id_copy = id.clone();
+    let digest = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let file = open_and_lock_with_backoff(&path, DEFAULT_LOCK_TIMEOUT)?;
+        let _guard = WorkspaceLock { file, workspace: Some(workspace_copy.clone()), repair_binding: None };
+        crate::db::migrate::check_legacy_semantic_rebuild(&workspace_copy)?;
+        crate::artifact::identity_repair::pending_repair_digest(&workspace_copy, &id_copy)
+    }).await.context("repair admission task panicked")??;
+    Ok(RepairIndexAdmission {
+        owner,
+        binding: RepairBinding { workspace, transaction_id: id, journal_digest: digest, legacy: false, blocked_legacy: false, linked_predecessor: None, semantic: false },
+    })
+}
+
+pub(crate) async fn acquire_repair_workspace_lock(
+    admission: &RepairIndexAdmission<'_>,
+) -> anyhow::Result<WorkspaceLock> {
+    #[cfg(not(unix))]
+    refuse_unpinned_non_unix_recovery()?;
+    if admission.owner.index_root() != admission.binding.workspace.join("lance") {
+        anyhow::bail!("repair index owner does not match admission");
+    }
+    let binding = admission.binding.clone();
+    let path = lock_path(&binding.workspace);
+    refuse_if_symlink(&path, "lock file").await?;
+    tokio::task::spawn_blocking(move || -> anyhow::Result<WorkspaceLock> {
+        let file = open_and_lock_with_backoff(&path, DEFAULT_LOCK_TIMEOUT)?;
+        let guard = WorkspaceLock { file, workspace: Some(binding.workspace.clone()), repair_binding: Some(binding.clone()) };
+        crate::db::migrate::check_legacy_semantic_rebuild(&binding.workspace)?;
+        let digest = crate::artifact::identity_repair::pending_repair_digest(&binding.workspace, &binding.transaction_id)?;
+        if digest != binding.journal_digest {
+            anyhow::bail!("repair journal changed after admission");
+        }
+        Ok(guard)
+    }).await.context("repair lock acquisition task panicked")?
+}
+
+/// Acquire the workspace lock for exactly one pending legacy-index repair.
+/// This never admits an ordinary writer and never finishes the journal.
+pub(crate) async fn acquire_legacy_repair_workspace_lock(
+    workspace: &Path,
+    transaction_id: &str,
+) -> anyhow::Result<WorkspaceLock> {
+    #[cfg(not(unix))]
+    refuse_unpinned_non_unix_recovery()?;
+    refuse_if_symlink(workspace, "workspace directory").await?;
+    let workspace = workspace.canonicalize()
+        .with_context(|| format!("resolve workspace {}", workspace.display()))?;
+    let path = lock_path(&workspace);
+    refuse_if_symlink(&path, "lock file").await?;
+    let transaction_id = transaction_id.to_owned();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<WorkspaceLock> {
+        let file = open_and_lock_with_backoff(&path, DEFAULT_LOCK_TIMEOUT)?;
+        let mut guard = WorkspaceLock { file, workspace: Some(workspace.clone()), repair_binding: None };
+        let lance = workspace.join("lance");
+        let metadata = std::fs::symlink_metadata(&lance)
+            .with_context(|| format!("inspect legacy index {}", lance.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            anyhow::bail!("legacy index root is not a non-symlink directory");
+        }
+        if crate::constellation::facade::workspace_is_migrated(&workspace) {
+            anyhow::bail!("workspace is owned by Constellation, not the legacy index");
+        }
+        let marker_path = crate::db::migrate::identity_v5_marker_path(&lance);
+        match std::fs::symlink_metadata(&marker_path) {
+            Ok(marker_meta) => {
+                if marker_meta.file_type().is_symlink() || !marker_meta.is_file() {
+                    anyhow::bail!("legacy identity marker is not a non-symlink file");
+                }
+                let marker = crate::db::migrate::read_identity_v5_marker(&lance)?
+                    .ok_or_else(|| anyhow::anyhow!("legacy identity marker disappeared"))?;
+                if marker.artifacts_table != crate::db::migrate::IDENTITY_V5_ARTIFACTS_TABLE
+                    || marker.relations_table != crate::db::migrate::IDENTITY_V5_RELATIONS_TABLE
+                    || marker.evidence_table != crate::db::migrate::IDENTITY_V5_EVIDENCE_TABLE
+                {
+                    anyhow::bail!("legacy identity marker names unexpected tables");
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Admission does not create a marker. The reconciler subsequently opens
+                // and verifies these tables while holding this same journal-bound guard.
+                for name in ["artifacts", "relations", "evidence"] {
+                    let table = lance.join(format!("{name}.lance"));
+                    let metadata = std::fs::symlink_metadata(&table)
+                        .with_context(|| format!("inspect legacy v4 table {}", table.display()))?;
+                    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                        anyhow::bail!("legacy v4 table is not a non-symlink directory: {}", table.display());
+                    }
+                    crate::db::migrate::semantic_rebuild_tree_digest(&table)?;
+                }
+            }
+            Err(error) => return Err(error).context("inspect legacy identity marker"),
+        }
+        crate::db::migrate::check_legacy_semantic_rebuild(&workspace)?;
+        let journal_digest = crate::artifact::identity_repair::pending_repair_digest(
+            &workspace, &transaction_id,
+        )?;
+        guard.repair_binding = Some(RepairBinding {
+            workspace, transaction_id, journal_digest, legacy: true, blocked_legacy: false, linked_predecessor: None, semantic: false,
+        });
+        Ok(guard)
+    }).await.context("legacy repair lock acquisition task panicked")?
+}
+
+/// Lock one blocked legacy transaction for an explicitly linked repair.
+pub(crate) async fn acquire_blocked_legacy_workspace_lock(
+    workspace: &Path,
+    transaction_id: &str,
+) -> anyhow::Result<WorkspaceLock> {
+    #[cfg(not(unix))]
+    refuse_unpinned_non_unix_recovery()?;
+    refuse_if_symlink(workspace, "workspace directory").await?;
+    let workspace = workspace.canonicalize()
+        .with_context(|| format!("resolve workspace {}", workspace.display()))?;
+    let path = lock_path(&workspace);
+    refuse_if_symlink(&path, "lock file").await?;
+    let transaction_id = transaction_id.to_owned();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<WorkspaceLock> {
+        let file = open_and_lock_with_backoff(&path, DEFAULT_LOCK_TIMEOUT)?;
+        let mut guard = WorkspaceLock { file, workspace: Some(workspace.clone()), repair_binding: None };
+        let lance = workspace.join("lance");
+        let metadata = std::fs::symlink_metadata(&lance)
+            .with_context(|| format!("inspect legacy index {}", lance.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir()
+            || crate::constellation::facade::workspace_is_migrated(&workspace)
+        {
+            anyhow::bail!("blocked repair requires a legacy-owned, non-symlink index root");
+        }
+        crate::db::migrate::check_legacy_semantic_rebuild(&workspace)?;
+        let journal_digest = crate::artifact::identity_repair::validate_blocked_repair_admission(
+            &workspace, &transaction_id,
+        )?;
+        guard.repair_binding = Some(RepairBinding {
+            workspace, transaction_id, journal_digest, legacy: true, blocked_legacy: true, linked_predecessor: None, semantic: false,
+        });
+        Ok(guard)
+    }).await.context("blocked legacy repair lock acquisition task panicked")?
+}
+
+/// Lock an exact, durably linked blocked-and-successor legacy repair pair.
+pub(crate) async fn acquire_linked_repair_workspace_lock(
+    workspace: &Path,
+    old_id: &str,
+    new_id: &str,
+) -> anyhow::Result<WorkspaceLock> {
+    #[cfg(not(unix))]
+    refuse_unpinned_non_unix_recovery()?;
+    refuse_if_symlink(workspace, "workspace directory").await?;
+    let workspace = workspace.canonicalize()
+        .with_context(|| format!("resolve workspace {}", workspace.display()))?;
+    let path = lock_path(&workspace);
+    refuse_if_symlink(&path, "lock file").await?;
+    let old_id = old_id.to_owned();
+    let new_id = new_id.to_owned();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<WorkspaceLock> {
+        let file = open_and_lock_with_backoff(&path, DEFAULT_LOCK_TIMEOUT)?;
+        let mut guard = WorkspaceLock { file, workspace: Some(workspace.clone()), repair_binding: None };
+        let lance = workspace.join("lance");
+        let metadata = std::fs::symlink_metadata(&lance)
+            .with_context(|| format!("inspect legacy index {}", lance.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir()
+            || crate::constellation::facade::workspace_is_migrated(&workspace)
+        {
+            anyhow::bail!("linked repair requires a legacy-owned, non-symlink index root");
+        }
+        crate::db::migrate::check_legacy_semantic_rebuild(&workspace)?;
+        let (old_digest, journal_digest) =
+            crate::artifact::identity_repair::validate_linked_repair_journals(&workspace, &old_id, &new_id)?;
+        guard.repair_binding = Some(RepairBinding {
+            workspace, transaction_id: new_id, journal_digest, legacy: true, blocked_legacy: false,
+            linked_predecessor: Some((old_id, old_digest)),
+            semantic: false,
+        });
+        Ok(guard)
+    }).await.context("linked legacy repair lock acquisition task panicked")?
+}
+
+/// Acquire the exclusive workspace lock for exactly one semantic rebuild.
+/// Ordinary readers and identity-repair admissions remain blocked.
+pub(crate) async fn acquire_legacy_semantic_rebuild_lock(
+    workspace: &Path,
+    transaction_id: &str,
+) -> anyhow::Result<WorkspaceLock> {
+    #[cfg(not(unix))]
+    refuse_unpinned_non_unix_recovery()?;
+    refuse_if_symlink(workspace, "workspace directory").await?;
+    let workspace = workspace.canonicalize()
+        .with_context(|| format!("resolve workspace {}", workspace.display()))?;
+    let path = lock_path(&workspace);
+    refuse_if_symlink(&path, "lock file").await?;
+    let transaction_id = transaction_id.to_owned();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<WorkspaceLock> {
+        let file = open_and_lock_with_backoff(&path, DEFAULT_LOCK_TIMEOUT)?;
+        let mut guard = WorkspaceLock { file, workspace: Some(workspace.clone()), repair_binding: None };
+        crate::artifact::identity_repair::check_repair_journals(&workspace, None)?;
+        let lance = workspace.join("lance");
+        let metadata = std::fs::symlink_metadata(&lance)
+            .with_context(|| format!("inspect legacy index {}", lance.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir()
+            || crate::constellation::facade::workspace_is_migrated(&workspace)
+        {
+            anyhow::bail!("semantic rebuild requires a legacy-owned, non-symlink index root");
+        }
+        let journal_digest = crate::db::migrate::validate_legacy_semantic_rebuild(&workspace, &transaction_id)?;
+        guard.repair_binding = Some(RepairBinding {
+            workspace, transaction_id, journal_digest, legacy: true, blocked_legacy: false,
+            linked_predecessor: None, semantic: true,
+        });
+        Ok(guard)
+    }).await.context("legacy semantic rebuild lock acquisition task panicked")?
+}
+
+pub(crate) fn finish_repair_index_admission(
+    admission: &RepairIndexAdmission<'_>,
+    guard: &WorkspaceLock,
+) -> anyhow::Result<()> {
+    if guard.repair_binding.as_ref() != Some(&admission.binding) {
+        anyhow::bail!("workspace guard does not belong to this repair admission");
+    }
+    crate::artifact::identity_repair::finish_pending_recovery(
+        &admission.binding.workspace,
+        &admission.binding.transaction_id,
+        &admission.binding.journal_digest,
+        guard,
+    )
+}
+
 /// Same as `acquire_workspace_lock` but with a caller-specified timeout.
 /// Use shorter timeouts in tight loops (e.g. 5s in dispatch) and longer
 /// for interactive handlers. A timeout of `Duration::ZERO` means
@@ -130,25 +566,36 @@ pub async fn acquire_workspace_lock_with_timeout(
     refuse_if_symlink(&path, "lock file").await?;
 
     let path_clone = path.clone();
-    let file = tokio::task::spawn_blocking(move || -> anyhow::Result<File> {
-        open_and_lock_with_backoff(&path_clone, timeout)
+    let workspace = workspace.to_path_buf();
+    let workspace = workspace.canonicalize()?;
+    tokio::task::spawn_blocking(move || -> anyhow::Result<WorkspaceLock> {
+        let file = open_and_lock_with_backoff(&path_clone, timeout)?;
+        let guard = WorkspaceLock { file, workspace: Some(workspace.clone()), repair_binding: None };
+        crate::artifact::identity_repair::check_repair_journals(&workspace, None)?;
+        crate::db::migrate::check_legacy_semantic_rebuild(&workspace)?;
+        Ok(guard)
     })
     .await
-    .context("lock acquisition task panicked")??;
-
-    let _ = path; // suppress unused-var lint when debug disabled
-    Ok(WorkspaceLock { file })
+    .context("lock acquisition task panicked")?
 }
 
 /// Blocking helper: open the lock file and repeatedly `try_lock_exclusive`
 /// with exponential backoff until the lock is held or the timeout elapses.
 fn open_and_lock_with_backoff(path: &Path, timeout: Duration) -> anyhow::Result<File> {
+    open_lock_with_backoff(path, timeout, false)
+}
+
+fn open_lock_with_backoff(path: &Path, timeout: Duration, shared: bool) -> anyhow::Result<File> {
     // Minimal OpenOptions: create if missing, write-only. Previously
     // had `.read(true).truncate(false)` — unnecessary (audit Round 1 L-1).
-    let f = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let f = options
         .open(path)
         .with_context(|| format!("could not open lock file {}", path.display()))?;
 
@@ -157,7 +604,7 @@ fn open_and_lock_with_backoff(path: &Path, timeout: Duration) -> anyhow::Result<
     const MAX_DELAY: Duration = Duration::from_millis(1000);
 
     loop {
-        match f.try_lock_exclusive() {
+        match if shared { FileExt::try_lock_shared(&f) } else { f.try_lock_exclusive() } {
             Ok(()) => return Ok(f),
             Err(e) => {
                 // Distinguish "already locked" from other IO errors —
@@ -190,8 +637,253 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[cfg(not(unix))]
+    #[tokio::test]
+    async fn non_unix_scoped_recovery_refuses_before_opening_lockfile() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        assert!(acquire_legacy_repair_workspace_lock(workspace, "txn").await.is_err());
+        assert!(acquire_blocked_legacy_workspace_lock(workspace, "txn").await.is_err());
+        assert!(acquire_linked_repair_workspace_lock(workspace, "old", "new").await.is_err());
+        assert!(acquire_legacy_semantic_rebuild_lock(workspace, "txn").await.is_err());
+        assert_eq!(std::fs::read_dir(workspace).unwrap().count(), 0);
+    }
+
     fn ws(tmp: &TempDir) -> std::path::PathBuf {
         tmp.path().join(".forgeplan")
+    }
+
+    #[test]
+    fn repair_admission_exposes_the_bound_manifest_digest() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        let owner = crate::constellation::publisher::IndexPublisher::acquire(
+            &workspace.join("lance"),
+            std::sync::Arc::new(object_store::memory::InMemory::new()),
+        ).unwrap();
+        let admission = RepairIndexAdmission {
+            owner: &owner,
+            binding: RepairBinding {
+                workspace,
+                transaction_id: "repair-1".to_string(),
+                journal_digest: "a".repeat(64),
+                legacy: false,
+                blocked_legacy: false,
+                linked_predecessor: None,
+                semantic: false,
+            },
+        };
+        assert_eq!(admission.journal_digest(), "a".repeat(64));
+    }
+
+    #[test]
+    fn repair_guard_provenance_rejects_other_workspace_transaction_and_raw_file() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        let file = File::create(workspace.join("test.lock")).unwrap();
+        let raw = WorkspaceLock::from_file(file);
+        assert!(!raw.is_repair_guard_for(&workspace, "repair-1"));
+        assert!(raw.matches_workspace(&workspace).is_err());
+        drop(raw);
+        let file = File::create(workspace.join("bound.lock")).unwrap();
+        let bound = WorkspaceLock {
+            file,
+            workspace: Some(workspace.clone()),
+            repair_binding: Some(RepairBinding {
+                workspace: workspace.clone(),
+                transaction_id: "repair-1".to_string(),
+                journal_digest: "a".repeat(64),
+                legacy: false,
+                blocked_legacy: false,
+                linked_predecessor: None,
+                semantic: false,
+            }),
+        };
+        assert!(bound.is_repair_guard_for(&workspace, "repair-1"));
+        assert!(!bound.is_repair_guard_for(&workspace, "repair-2"));
+        assert!(!bound.is_repair_guard_for(&workspace.join("other"), "repair-1"));
+        assert!(!bound.is_legacy_repair_guard_for(&workspace, "repair-1"));
+        assert!(bound.matches_workspace(&workspace).is_err());
+        assert!(bound.legacy_repair_digest_for(&workspace, "repair-1").is_none());
+    }
+
+    #[test]
+    fn legacy_guard_is_bound_to_its_workspace_and_transaction() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        let file = File::create(workspace.join("legacy.lock")).unwrap();
+        let guard = WorkspaceLock {
+            file,
+            workspace: Some(workspace.clone()),
+            repair_binding: Some(RepairBinding {
+                workspace: workspace.clone(),
+                transaction_id: "repair-1".to_owned(),
+                journal_digest: "a".repeat(64),
+                legacy: true,
+                blocked_legacy: false,
+                linked_predecessor: None,
+                semantic: false,
+            }),
+        };
+        assert!(guard.is_legacy_repair_guard_for(&workspace, "repair-1"));
+        assert_eq!(guard.legacy_repair_digest_for(&workspace, "repair-1"), Some("a".repeat(64).as_str()));
+        assert!(guard.legacy_repair_digest_for(&workspace, "repair-2").is_none());
+        assert!(!guard.is_legacy_repair_guard_for(&workspace, "repair-2"));
+        assert!(guard.matches_workspace(&workspace).is_err());
+        assert!(!guard.is_legacy_repair_guard_for(&workspace.join("elsewhere"), "repair-1"));
+        let raw = WorkspaceLock::from_file(File::create(workspace.join("raw.lock")).unwrap());
+        assert!(!raw.is_legacy_repair_guard_for(&workspace, "repair-1"));
+        assert!(raw.legacy_repair_digest_for(&workspace, "repair-1").is_none());
+    }
+
+    #[test]
+    fn blocked_legacy_guard_cannot_authorize_pending_or_ordinary_access() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        let guard = WorkspaceLock {
+            file: File::create(workspace.join("blocked.lock")).unwrap(),
+            workspace: Some(workspace.clone()),
+            repair_binding: Some(RepairBinding {
+                workspace: workspace.clone(),
+                transaction_id: "old".to_owned(),
+                journal_digest: "digest".to_owned(),
+                legacy: true,
+                blocked_legacy: true,
+                linked_predecessor: None,
+                semantic: false,
+            }),
+        };
+        assert!(guard.is_blocked_legacy_repair_guard_for(&workspace, "old"));
+        assert_eq!(guard.blocked_legacy_repair_digest_for(&workspace, "old"), Some("digest"));
+        assert!(!guard.is_blocked_legacy_repair_guard_for(&workspace, "other"));
+        assert!(!guard.is_repair_guard_for(&workspace, "old"));
+        assert!(!guard.is_legacy_repair_guard_for(&workspace, "old"));
+        assert!(guard.legacy_repair_digest_for(&workspace, "old").is_none());
+        assert!(guard.matches_workspace(&workspace).is_err());
+    }
+
+    #[test]
+    fn linked_guard_binds_both_transactions_and_their_digests() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        let guard = WorkspaceLock {
+            file: File::create(workspace.join("linked.lock")).unwrap(),
+            workspace: Some(workspace.clone()),
+            repair_binding: Some(RepairBinding {
+                workspace: workspace.clone(),
+                transaction_id: "new".to_owned(),
+                journal_digest: "new-digest".to_owned(),
+                legacy: true,
+                blocked_legacy: false,
+                linked_predecessor: Some(("old".to_owned(), "old-digest".to_owned())),
+                semantic: false,
+            }),
+        };
+        assert_eq!(guard.linked_legacy_repair_digests_for(&workspace, "old", "new"), Some(("old-digest", "new-digest")));
+        assert!(guard.linked_legacy_repair_digests_for(&workspace, "other", "new").is_none());
+        assert!(guard.linked_legacy_repair_digests_for(&workspace, "old", "other").is_none());
+        assert!(guard.is_legacy_repair_guard_for(&workspace, "new"));
+        assert!(!guard.is_legacy_repair_guard_for(&workspace, "old"));
+        assert!(!guard.is_blocked_legacy_repair_guard_for(&workspace, "old"));
+        assert!(guard.matches_workspace(&workspace).is_err());
+    }
+
+    #[test]
+    fn semantic_guard_requires_exact_workspace_transaction_and_digest() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        let guard = WorkspaceLock {
+            file: File::create(workspace.join("semantic.lock")).unwrap(),
+            workspace: Some(workspace.clone()),
+            repair_binding: Some(RepairBinding {
+                workspace: workspace.clone(), transaction_id: "txn".to_owned(),
+                journal_digest: "digest".to_owned(), legacy: true, blocked_legacy: false,
+                linked_predecessor: None, semantic: true,
+            }),
+        };
+        assert!(guard.is_legacy_semantic_rebuild_guard_for(&workspace, "txn", "digest"));
+        assert!(!guard.is_legacy_semantic_rebuild_guard_for(&workspace, "other", "digest"));
+        assert!(!guard.is_legacy_semantic_rebuild_guard_for(&workspace, "txn", "other"));
+        assert!(!guard.is_legacy_semantic_rebuild_guard_for(&workspace.join("other"), "txn", "digest"));
+        assert!(!guard.is_repair_guard_for(&workspace, "txn"));
+        assert!(!guard.is_legacy_repair_guard_for(&workspace, "txn"));
+        assert!(guard.matches_workspace(&workspace).is_err());
+    }
+
+    #[tokio::test]
+    async fn damaged_semantic_journal_blocks_all_ordinary_admission() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        let journal = workspace.join("lance/legacy-semantic-rebuild/txn");
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("manifest.json"), b"{damaged").unwrap();
+        assert!(acquire_workspace_read_lock_with_timeout(&workspace, Duration::ZERO).await.is_err());
+        assert!(acquire_workspace_lock_with_timeout(&workspace, Duration::ZERO).await.is_err());
+        assert!(acquire_workspace_lock_blocking(&workspace).is_err());
+        assert!(acquire_legacy_semantic_rebuild_lock(&workspace, "txn").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn shared_readers_exclude_writer_until_all_guards_drop() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        let first = acquire_workspace_read_lock_with_timeout(&workspace, Duration::ZERO).await.unwrap();
+        let second = acquire_workspace_read_lock_with_timeout(&workspace, Duration::ZERO).await.unwrap();
+        assert!(first.matches_workspace(&workspace).is_ok());
+        assert!(first.matches_workspace(&workspace.join("missing")).is_err());
+        assert!(acquire_workspace_lock_with_timeout(&workspace, Duration::ZERO).await.is_err());
+        drop(first);
+        assert!(acquire_workspace_lock_with_timeout(&workspace, Duration::ZERO).await.is_err());
+        drop(second);
+        let writer = acquire_workspace_lock_with_timeout(&workspace, Duration::ZERO).await.unwrap();
+        assert!(writer.matches_workspace(&workspace).is_ok());
+        assert!(acquire_workspace_read_lock_with_timeout(&workspace, Duration::ZERO).await.is_err());
+        drop(writer);
+        assert!(acquire_workspace_read_lock_with_timeout(&workspace, Duration::ZERO).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn shared_reader_refuses_damaged_journal_or_marker() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        let lance = workspace.join("lance");
+        std::fs::create_dir(&lance).unwrap();
+        let marker = crate::db::migrate::identity_v5_marker_path(&lance);
+        std::fs::write(&marker, b"{damaged").unwrap();
+        assert!(acquire_workspace_read_lock(&workspace).await.is_err());
+        std::fs::remove_file(marker).unwrap();
+        let journal = workspace.join("identity-repair/repair-broken");
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("manifest.json"), b"{damaged").unwrap();
+        assert!(acquire_workspace_read_lock(&workspace).await.is_err());
+        assert!(acquire_workspace_lock_with_timeout(&workspace, Duration::ZERO).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn legacy_repair_refuses_missing_or_damaged_marker_and_damaged_journal() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        let lance = workspace.join("lance");
+        std::fs::create_dir(&lance).unwrap();
+        assert!(acquire_legacy_repair_workspace_lock(&workspace, "repair-1").await.is_err());
+        let marker_path = crate::db::migrate::identity_v5_marker_path(&lance);
+        std::fs::write(&marker_path, b"{broken").unwrap();
+        assert!(acquire_legacy_repair_workspace_lock(&workspace, "repair-1").await.is_err());
+        let marker = crate::db::migrate::IdentityV5Marker {
+            version: crate::db::migrate::IDENTITY_V5_VERSION,
+            artifacts_table: crate::db::migrate::IDENTITY_V5_ARTIFACTS_TABLE.to_owned(),
+            relations_table: crate::db::migrate::IDENTITY_V5_RELATIONS_TABLE.to_owned(),
+            evidence_table: crate::db::migrate::IDENTITY_V5_EVIDENCE_TABLE.to_owned(),
+            source_digest: "a".repeat(64),
+            document_count: 0,
+            completed: true,
+        };
+        std::fs::write(&marker_path, serde_json::to_vec(&marker).unwrap()).unwrap();
+        let journal = workspace.join("identity-repair/repair-1");
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("manifest.json"), b"{broken").unwrap();
+        assert!(acquire_legacy_repair_workspace_lock(&workspace, "repair-1").await.is_err());
+        assert!(acquire_workspace_lock(&workspace).await.is_err());
     }
 
     #[tokio::test]
@@ -200,6 +892,29 @@ mod tests {
         let ws = ws(&tmp);
         let _guard = acquire_workspace_lock(&ws).await.unwrap();
         assert!(lock_path(&ws).exists(), "lock file must be created");
+    }
+
+    #[tokio::test]
+    async fn damaged_and_missing_manifests_block_normal_writers() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let journal = ws.join("identity-repair/repair-broken");
+        std::fs::create_dir_all(&journal).unwrap();
+        assert!(acquire_workspace_lock(&ws).await.is_err());
+        std::fs::write(journal.join("manifest.json"), b"{invalid").unwrap();
+        assert!(acquire_workspace_lock(&ws).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn symlinked_journal_root_blocks_normal_writers() {
+        #[cfg(unix)]
+        {
+            let tmp = TempDir::new().unwrap();
+            let ws = ws(&tmp);
+            std::fs::create_dir_all(&ws).unwrap();
+            std::os::unix::fs::symlink(tmp.path(), ws.join("identity-repair")).unwrap();
+            assert!(acquire_workspace_lock(&ws).await.is_err());
+        }
     }
 
     #[tokio::test]

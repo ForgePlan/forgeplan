@@ -5,6 +5,7 @@ pub mod frontmatter;
 pub mod id_alloc;
 pub mod identity;
 pub mod identity_repair;
+pub(crate) mod legacy_diagnostic;
 pub mod sanitize;
 pub mod sections;
 pub mod sidecar;

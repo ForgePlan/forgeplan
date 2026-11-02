@@ -7,7 +7,7 @@
 //! decides v0.33-symptom-fix vs v0.34-engine-rewrite).
 //!
 //! Components measured (per `forgeplan_new`):
-//!   * **store init** — `LanceStore::init` (one-time per workspace; cached by the
+//!   * **store init** — `LanceStore::init_new` (one-time per workspace; cached by the
 //!     MCP server's `workspace_store_cache` since PRD-078, so NOT per-call —
 //!     reported once for context).
 //!   * **lance write** — `create_artifact_for_test` = the `add().execute()`
@@ -63,16 +63,20 @@ async fn bench_create_roundtrip_components() {
     let dir = TempDir::new().unwrap();
     let ws = dir.path().join(".forgeplan");
     std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join("config.yaml"), "project_name: create_roundtrip_bench\n").unwrap();
+    let init_lock = forgeplan_core::workspace::acquire_workspace_lock(&ws)
+        .await
+        .expect("acquire workspace lock for initialization");
 
     // ── store init (one-time per workspace; cached per-workspace in prod) ──
     let t = Instant::now();
-    let store = LanceStore::init(&ws).await.expect("init store");
+    let store = LanceStore::init_new(&ws, &init_lock).await.expect("init store");
     let store_init = t.elapsed();
 
     // warm-up — prime LanceDB table handles + FS caches.
     for i in 0..3 {
         store
-            .create_artifact_for_test(&art(i))
+            .create_artifact_for_test(&init_lock, &art(i))
             .await
             .expect("warmup");
     }
@@ -84,11 +88,12 @@ async fn bench_create_roundtrip_components() {
     for i in 1000..1000 + n {
         let t = Instant::now();
         store
-            .create_artifact_for_test(&art(i))
+            .create_artifact_for_test(&init_lock, &art(i))
             .await
             .expect("lance write");
         lance.push(t.elapsed());
     }
+    drop(init_lock);
 
     // ── full roundtrip (validate + render + file write + lance write) ─────
     // The context carries the workspace lock, which production holds for

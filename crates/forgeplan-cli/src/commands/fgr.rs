@@ -33,26 +33,20 @@ fn is_valid_until_expired(s: &str) -> Option<bool> {
 }
 
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
     let fpf_weights = common::config().ok().and_then(|c| c.fpf.map(|f| f.weights));
 
     let records: Cow<'_, [ArtifactRecord]> = match (&source, id) {
         (common::ReadSource::Legacy(store), Some(id)) => {
-            let canonical = store
-                .resolve_id(id)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
-            let record = store
-                .get_record(&canonical)
+            let (canonical, _) = common::resolve_required_identity(&source, &ws, id).await?;
+            let record = store.get_record(&_read_guard, &canonical)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("Artifact not found: {canonical}"))?;
             Cow::Owned(vec![record])
         }
-        (common::ReadSource::Legacy(store), None) => Cow::Owned(store.list_records(None).await?),
+        (common::ReadSource::Legacy(store), None) => Cow::Owned(store.list_records(&_read_guard, None).await?),
         (common::ReadSource::Captured(read), Some(id)) => {
-            let canonical = read
-                .resolve_id(id)
-                .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+            let (canonical, _) = common::resolve_required_identity(&source, &ws, id).await?;
             let record = read
                 .get_record(&canonical)
                 .ok_or_else(|| anyhow::anyhow!("Artifact not found: {canonical}"))?;
@@ -99,8 +93,8 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
                 .map(|(fm, _)| fm)
                 .unwrap_or_default();
             let relations = match &source {
-                common::ReadSource::Legacy(store) => store.get_relations(&record.id).await?,
-                common::ReadSource::Captured(read) => read.get_relations(&record.id),
+                common::ReadSource::Legacy(store) => store.get_relations(&_read_guard, &record.canonical_key).await?,
+                common::ReadSource::Captured(read) => read.get_relations(&record.canonical_key),
             };
             // PROB-060 MED-10 — use the shared helper so JSON and text
             // branches treat date-only `valid_until` identically.
@@ -171,8 +165,8 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             .unwrap_or_default();
 
         let relations = match &source {
-            common::ReadSource::Legacy(store) => store.get_relations(&record.id).await?,
-            common::ReadSource::Captured(read) => read.get_relations(&record.id),
+            common::ReadSource::Legacy(store) => store.get_relations(&_read_guard, &record.canonical_key).await?,
+            common::ReadSource::Captured(read) => read.get_relations(&record.canonical_key),
         };
         // PROB-060 MED-10 — shared helper (text branch parity with JSON).
         let is_stale = record

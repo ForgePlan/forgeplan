@@ -45,14 +45,18 @@ pub async fn run(
         anyhow::bail!("--overlap-threshold must be in [0.0, 1.0]");
     }
 
-    let (ws, source) = common::open_read_source().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
     let legacy_records;
     let records = match &source {
         common::ReadSource::Legacy(store) => {
-            legacy_records = store.list_records(None).await?;
+            legacy_records = store.list_records(&_read_guard, None).await?;
             legacy_records.as_slice()
         }
         common::ReadSource::Captured(read) => read.records(),
+    };
+    let epic_key = match epic {
+        Some(selector) => Some(common::resolve_required_identity(&source, &ws, selector).await?.0),
+        None => None,
     };
 
     // Default status filter is `draft` — the dispatch-relevant set.
@@ -66,7 +70,7 @@ pub async fn run(
     // Compute blocked set so dependency-blocked artifacts never land in a
     // parallel bucket (FR-003).
     let relations = match &source {
-        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Legacy(store) => store.get_all_relations(&_read_guard).await?,
         common::ReadSource::Captured(read) => read.get_all_relations(),
     };
     let resolved_ids: HashSet<String> = records
@@ -100,16 +104,17 @@ pub async fn run(
             skipped_parse_errors += 1;
             continue;
         }
-        if let Some(wanted) = epic
-            && fields.parent_epic.as_deref() != Some(wanted)
-        {
-            continue;
+        if let Some(wanted) = epic_key.as_deref() {
+            let Some(parent) = fields.parent_epic.as_deref() else {
+                continue;
+            };
+            let (parent_key, _) = common::resolve_required_identity(&source, &ws, parent).await?;
+            if parent_key != wanted {
+                continue;
+            }
         }
-        // The blocking graph is read in the display-id namespace, so the
-        // blocked check stays there; the candidate id is the canonical key
-        // because that is what the claim set is keyed by.
-        if blocked_ids.contains(&summary.id) {
-            skipped_blocked.push(summary.id.clone());
+        if blocked_ids.contains(&summary.canonical_key) {
+            skipped_blocked.push(summary.canonical_key.clone());
             continue;
         }
         candidates.push(ArtifactCandidate {

@@ -10,13 +10,13 @@
 // 3. Both the file and parent directory are fsync'd — ext4/xfs can
 //    lose the directory entry on a hard crash otherwise.
 // 4. Missing state file is NOT an error — returns `Ok(None)`. FR-012.
-// 5. Corrupt state file (YAML parse error) is logged and treated as
-//    `None` rather than propagating — phase tracking is advisory and
-//    must never break the existing tool-call flow.
+// 5. Invalid or unsupported state is reported without modifying the file.
+//    Mutation paths must not replace state they could not read.
 
 use chrono::Utc;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 
 use super::{
@@ -36,14 +36,35 @@ const MAX_STATE_FILE_BYTES: u64 = 1_048_576;
 /// binary. Round 2 audit M-logic.
 const CURRENT_SCHEMA_VERSION: u32 = 1;
 
+/// Diagnosable failures reading an existing phase sidecar.
+#[derive(Debug, thiserror::Error)]
+pub enum PhaseReadError {
+    #[error("phase state for {canonical_key} is a symlink")]
+    Symlink { canonical_key: String },
+    #[error("phase state for {canonical_key} exceeds {max_bytes} bytes")]
+    Oversized { canonical_key: String, max_bytes: u64 },
+    #[error("phase state for {canonical_key} is malformed: {source}")]
+    Malformed {
+        canonical_key: String,
+        #[source]
+        source: serde_yaml::Error,
+    },
+    #[error("phase state for {canonical_key} uses unsupported schema {version} (maximum {max_supported})")]
+    FutureSchema {
+        canonical_key: String,
+        version: u64,
+        max_supported: u32,
+    },
+}
+
 /// Monotonic counter for tmp filenames. Combined with pid + nanos
 /// eliminates Round 2 H-sec #3 collision window (two advances in
 /// the same nanosecond within one process getting identical tmp).
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Read phase state for an artifact. Returns `Ok(None)` if the file does
-/// not exist (FR-012 — missing state is not an error). Corrupt files
-/// are logged and also yield `None` to avoid breaking tool flow.
+/// not exist (FR-012 — missing state is not an error). Malformed, oversized
+/// and future-schema files return a [`PhaseReadError`] and remain untouched.
 ///
 /// state written before the key was escaped keeps the raw key name. Alias-
 /// named legacy files are read only when a complete workspace scan proves
@@ -61,7 +82,7 @@ pub async fn read_phase(
     let dir = state_dir(workspace);
     let path =
         crate::artifact::sidecar::resolve_sidecar_path(&dir, canonical_key, canonical_key, "yaml")
-            .await?;
+            .await.map_err(sidecar_error)?;
     read_phase_at(&path, canonical_key).await
 }
 
@@ -78,114 +99,68 @@ pub async fn read_phase_for(
     let dir = state_dir(workspace);
     let path =
         crate::artifact::sidecar::resolve_sidecar_path(&dir, canonical_key, display_alias, "yaml")
-            .await?;
+            .await.map_err(sidecar_error)?;
     read_phase_at(&path, canonical_key).await
+}
+
+fn sidecar_error(error: std::io::Error) -> anyhow::Error {
+    if let Some(resolve) = error.get_ref()
+        .and_then(|inner| inner.downcast_ref::<crate::artifact::canonical_key::ResolveError>())
+    {
+        return resolve.clone().into();
+    }
+    error.into()
 }
 
 /// Read one state file, guarding against a symlinked target and an
 /// oversized one.
 async fn read_phase_at(path: &Path, canonical_key: &str) -> anyhow::Result<Option<PhaseState>> {
-    let artifact_id = canonical_key;
-    if !tokio::fs::try_exists(path).await.unwrap_or(false) {
-        return Ok(None);
-    }
-
-    // Symlink guard on the target file — if the state file was replaced
-    // by a symlink to `/etc/shadow`, refuse to read. Advisory parity
-    // with write-side (audit Round 1 C-sec #2).
-    //
-    // **Wave 1.5 SEC-H3 (CWE-200 log leak)**: route `path.display()`
-    // through `sanitize_path_for_display` so tracing logs do not leak
-    // `/Users/<username>/proj/.forgeplan/state/PRD-001.yaml` into
-    // host-identifying log surfaces. The symlink-rejection log is a
-    // forensics signal — the absolute path is not load-bearing to an
-    // operator who already has the workspace, but the username
-    // suffix definitely leaks the host identity.
-    if let Ok(meta) = tokio::fs::symlink_metadata(&path).await
-        && meta.file_type().is_symlink()
-    {
-        let safe_path = crate::projection::sanitize_path_for_display(&path);
-        tracing::warn!(
-            artifact = %artifact_id,
-            path = %safe_path,
-            "phase state file is a symlink — refusing to read, treating as unknown"
-        );
-        return Ok(None);
-    }
-
-    // Size cap to bound memory on a pathological/corrupted file.
-    if let Ok(meta) = tokio::fs::metadata(&path).await
-        && meta.len() > MAX_STATE_FILE_BYTES
-    {
-        tracing::warn!(
-            artifact = %artifact_id,
-            size = meta.len(),
-            max = MAX_STATE_FILE_BYTES,
-            "phase state file exceeds size cap — treating as unknown"
-        );
-        return Ok(None);
-    }
-
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(b) => b,
+    let meta = match tokio::fs::symlink_metadata(path).await {
+        Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    match serde_yaml::from_slice::<PhaseState>(&bytes) {
-        Ok(s) => {
-            // Round 2 audit M-logic: fail-safe on unknown future schema
-            // rather than silently mis-deserializing a newer writer's
-            // output (which serde-default would paper over).
-            if s.schema_version > CURRENT_SCHEMA_VERSION {
-                tracing::warn!(
-                    artifact = %artifact_id,
-                    schema_version = s.schema_version,
-                    max_known = CURRENT_SCHEMA_VERSION,
-                    "phase state from newer schema — treating as unknown to avoid data loss"
-                );
-                return Ok(None);
-            }
-            Ok(Some(s))
-        }
-        Err(e) => {
-            // Round 2 audit M-sec #3: preserve forensics. If YAML is
-            // corrupt we'd previously let the next advance_phase clobber
-            // it via initial_state(), silently wiping history. Quarantine
-            // the corrupt file by renaming with a timestamp suffix so an
-            // operator can recover / investigate.
-            //
-            // **Wave 1.5 SEC-H3 (CWE-200 log leak)**: route every
-            // `path.display()` through `sanitize_path_for_display` so
-            // tracing logs do not leak `/Users/<username>/...` host-
-            // identifying suffixes. `e` (serde_yaml::Error) carries the
-            // failing line/column from the corrupt YAML; it does not
-            // typically embed absolute paths but is bounded to a
-            // reasonable length here as defence-in-depth against a
-            // future change that adds path context via with_context.
-            let ts = Utc::now().timestamp();
-            let quarantine = path.with_extension(format!("yaml.corrupt.{ts}"));
-            let safe_path = crate::projection::sanitize_path_for_display(&path);
-            let safe_quarantine = crate::projection::sanitize_path_for_display(&quarantine);
-            if let Err(e2) = tokio::fs::rename(&path, &quarantine).await {
-                tracing::warn!(
-                    artifact = %artifact_id,
-                    path = %safe_path,
-                    parse_error = %e,
-                    rename_error = %e2,
-                    "phase state corrupted AND quarantine failed — treating as unknown"
-                );
-            } else {
-                tracing::warn!(
-                    artifact = %artifact_id,
-                    path = %safe_path,
-                    quarantine = %safe_quarantine,
-                    error = %e,
-                    "phase state corrupted — quarantined, treating as unknown"
-                );
-            }
-            Ok(None)
-        }
+    if meta.file_type().is_symlink() {
+        return Err(PhaseReadError::Symlink {
+            canonical_key: canonical_key.to_owned(),
+        }.into());
     }
+    if meta.len() > MAX_STATE_FILE_BYTES {
+        return Err(PhaseReadError::Oversized {
+            canonical_key: canonical_key.to_owned(),
+            max_bytes: MAX_STATE_FILE_BYTES,
+        }.into());
+    }
+
+    let file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_STATE_FILE_BYTES + 1).read_to_end(&mut bytes).await?;
+    if bytes.len() as u64 > MAX_STATE_FILE_BYTES {
+        return Err(PhaseReadError::Oversized {
+            canonical_key: canonical_key.to_owned(),
+            max_bytes: MAX_STATE_FILE_BYTES,
+        }.into());
+    }
+    let malformed = |source| PhaseReadError::Malformed {
+        canonical_key: canonical_key.to_owned(),
+        source,
+    };
+    let value: serde_yaml::Value = serde_yaml::from_slice(&bytes).map_err(malformed)?;
+    if let Some(version) = value.get("schema_version").and_then(serde_yaml::Value::as_u64)
+        && version > u64::from(CURRENT_SCHEMA_VERSION)
+    {
+        return Err(PhaseReadError::FutureSchema {
+            canonical_key: canonical_key.to_owned(),
+            version,
+            max_supported: CURRENT_SCHEMA_VERSION,
+        }.into());
+    }
+    let state: PhaseState = serde_yaml::from_value(value).map_err(malformed)?;
+    Ok(Some(state))
 }
 
 /// Migrate a legacy alias-named phase file only after revalidating its unique
@@ -211,9 +186,6 @@ pub async fn migrate_legacy_state_held(
     legacy_id: &str,
     canonical_key: &str,
 ) -> anyhow::Result<bool> {
-    if legacy_id == canonical_key {
-        return Ok(false);
-    }
     let _acquired;
     let _lock = match held {
         Some(guard) => guard,
@@ -223,6 +195,16 @@ pub async fn migrate_legacy_state_held(
         }
     };
     let candidates = crate::artifact::documents::workspace_candidates(workspace).await?;
+    if let Err(error @ crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey { .. }) =
+        crate::artifact::canonical_key::resolve_artifact(canonical_key, &candidates)
+    {
+        return Err(error.into());
+    }
+    let dir = state_dir(workspace);
+    let target = state_path(workspace, canonical_key);
+    if legacy_id == canonical_key || tokio::fs::try_exists(&target).await? {
+        return Ok(false);
+    }
     let resolved = crate::artifact::canonical_key::resolve_artifact(legacy_id, &candidates)?;
     let Some(resolved) = resolved else {
         return Ok(false);
@@ -233,11 +215,6 @@ pub async fn migrate_legacy_state_held(
         );
     }
 
-    let dir = state_dir(workspace);
-    let target = state_path(workspace, canonical_key);
-    if tokio::fs::try_exists(&target).await? {
-        return Ok(false);
-    }
     for legacy in
         crate::artifact::sidecar::legacy_sidecar_paths(&dir, canonical_key, legacy_id, "yaml")
     {
@@ -472,7 +449,7 @@ async fn advance_phase_inner(
     // so subsequent reads see the materialized state (Round 2 audit
     // H-logic #2: the silent no-persist bug previously left disk empty
     // after "advance from missing" and confused callers).
-    let (mut state, was_missing) = match read_phase(workspace, canonical_key).await? {
+    let (mut state, was_missing) = match read_phase_for(workspace, canonical_key, artifact_id).await? {
         Some(s) => (s, false),
         None => (initial_state(artifact_id, None), true),
     };
@@ -553,6 +530,7 @@ mod tests {
         let ws = ws(&tmp);
         let got = read_phase(&ws, "PRD-999").await.unwrap();
         assert!(got.is_none(), "missing state must be Ok(None), not error");
+        assert!(!state_dir(&ws).exists());
     }
 
     #[tokio::test]
@@ -623,16 +601,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_corrupt_yaml_returns_none_not_error() {
-        // FR-012 + design invariant #5: corrupt state must not break
-        // existing tools. We yield None so callers treat it as unknown.
+    async fn corrupt_state_is_diagnosed_and_not_overwritten() {
         let tmp = TempDir::new().unwrap();
         let ws = ws(&tmp);
         let dir = state_dir(&ws);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("PRD-X.yaml"), b"{ not valid yaml :::").unwrap();
-        let got = read_phase(&ws, "PRD-X").await.unwrap();
-        assert!(got.is_none(), "corrupt yaml must read as None");
+        let path = dir.join("prd-example.yaml");
+        let bytes = b"{ not valid yaml :::";
+        std::fs::write(&path, bytes).unwrap();
+
+        for err in [
+            read_phase(&ws, "prd-example").await.unwrap_err(),
+            read_phase_for(&ws, "prd-example", "PRD-001").await.unwrap_err(),
+            advance_phase_for(&ws, "prd-example", "PRD-001", Phase::Code, None)
+                .await.unwrap_err(),
+        ] {
+            assert!(matches!(err.downcast_ref::<PhaseReadError>(),
+                Some(PhaseReadError::Malformed { canonical_key, .. }) if canonical_key == "prd-example"));
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap()
+            .map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(names, vec![path.file_name().unwrap().to_os_string()]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_refuses_symlink_without_touching_it_or_target() {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let dir = state_dir(&ws);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = tmp.path().join("target");
+        std::fs::write(&target, b"private").unwrap();
+        let path = dir.join("prd-symlink.yaml");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let err = read_phase(&ws, "prd-symlink").await.unwrap_err();
+        assert!(matches!(err.downcast_ref::<PhaseReadError>(),
+            Some(PhaseReadError::Symlink { canonical_key }) if canonical_key == "prd-symlink"));
+        assert_eq!(std::fs::read_link(&path).unwrap(), target);
+        assert_eq!(std::fs::read(&target).unwrap(), b"private");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     }
 
     #[cfg(unix)]
@@ -936,66 +945,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn corrupt_yaml_is_quarantined_not_clobbered() {
-        // Audit Round 2 M-sec #3: corrupt state file should be renamed
-        // to a quarantine path (not silently clobbered), preserving
-        // forensic trail. Next advance rebuilds from initial_state.
+    async fn oversized_and_future_state_are_diagnosed_without_mutation() {
         let tmp = TempDir::new().unwrap();
         let ws = ws(&tmp);
         let dir = state_dir(&ws);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("PRD-Q.yaml"), b"{ not valid :::").unwrap();
+        let oversized = vec![b'x'; MAX_STATE_FILE_BYTES as usize + 1];
+        let future = b"artifact_id: PRD-FV\nworkflow_type: future_workflow\ncurrent_phase: future_phase\nschema_version: 9999\n";
+        let big_path = dir.join("prd-large.yaml");
+        let future_path = dir.join("prd-future.yaml");
+        std::fs::write(&big_path, &oversized).unwrap();
+        std::fs::write(&future_path, future).unwrap();
 
-        // Read triggers quarantine.
-        let _ = read_phase(&ws, "PRD-Q").await.unwrap();
-
-        // Original file should be gone (or quarantined).
-        let orig = std::fs::exists(dir.join("PRD-Q.yaml")).unwrap_or(false);
-        // List dir; at least one .yaml.corrupt.* file must exist.
-        let mut found_quarantine = false;
-        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .contains(".yaml.corrupt.")
-            {
-                found_quarantine = true;
-                break;
-            }
-        }
-        assert!(
-            !orig,
-            "corrupt yaml must be renamed away from the canonical path"
-        );
-        assert!(
-            found_quarantine,
-            "corrupt yaml must be renamed to quarantine path"
-        );
-    }
-
-    #[tokio::test]
-    async fn schema_version_greater_than_current_returns_none() {
-        // Audit Round 2 M-logic: fail-safe on newer-schema files —
-        // do not silently deserialize with defaults.
-        let tmp = TempDir::new().unwrap();
-        let ws = ws(&tmp);
-        let dir = state_dir(&ws);
-        std::fs::create_dir_all(&dir).unwrap();
-        // Synthesize a valid YAML with future schema_version.
-        let future_yaml = r#"artifact_id: PRD-FV
-workflow_type: greenfield
-current_phase: shape
-advanced_at: 2026-04-18T00:00:00Z
-history: []
-schema_version: 9999
-"#;
-        std::fs::write(dir.join("PRD-FV.yaml"), future_yaml).unwrap();
-
-        let got = read_phase(&ws, "PRD-FV").await.unwrap();
-        assert!(
-            got.is_none(),
-            "future-schema file must be refused, not silently accepted"
-        );
+        let err = read_phase_for(&ws, "prd-large", "PRD-001").await.unwrap_err();
+        assert!(matches!(err.downcast_ref::<PhaseReadError>(),
+            Some(PhaseReadError::Oversized { canonical_key, max_bytes })
+                if canonical_key == "prd-large" && *max_bytes == MAX_STATE_FILE_BYTES));
+        let err = read_phase_for(&ws, "prd-future", "PRD-002").await.unwrap_err();
+        assert!(matches!(err.downcast_ref::<PhaseReadError>(),
+            Some(PhaseReadError::FutureSchema { canonical_key, version: 9999, .. })
+                if canonical_key == "prd-future"));
+        assert!(advance_phase_for(&ws, "prd-large", "PRD-001", Phase::Code, None).await.is_err());
+        assert!(advance_phase_for(&ws, "prd-future", "PRD-002", Phase::Code, None).await.is_err());
+        assert_eq!(std::fs::read(&big_path).unwrap(), oversized);
+        assert_eq!(std::fs::read(&future_path).unwrap(), future);
+        let mut names: Vec<_> = std::fs::read_dir(&dir).unwrap()
+            .map(|entry| entry.unwrap().file_name()).collect();
+        names.sort();
+        assert_eq!(names, vec![future_path.file_name().unwrap().to_os_string(), big_path.file_name().unwrap().to_os_string()]);
     }
 
     // ── ADR-030 — the state file is addressed by the canonical key ────────

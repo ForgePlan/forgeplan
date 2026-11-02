@@ -860,11 +860,13 @@ async fn environment_workspace_routes_requests_and_maintenance_to_the_same_sourc
     let x_root = x_root.canonicalize().unwrap();
     let x_workspace =
         forgeplan_core::workspace::init_workspace(&x_root, "legacy-launch-X").unwrap();
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&x_workspace).await.unwrap();
     drop(
-        forgeplan_core::db::store::LanceStore::init(&x_workspace)
+        forgeplan_core::db::store::LanceStore::init_new(&x_workspace, &lock)
             .await
             .unwrap(),
     );
+    drop(lock);
     let x = MigratedWorkspace {
         artifact: x_workspace.join(ARTIFACT_PATH),
         root: x_root,

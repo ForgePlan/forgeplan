@@ -24,18 +24,23 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
     // graph — so the command answers from a fresh capture instead and writes
     // no cache. It takes no lock for that reason: it performs no mutation.
     let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let store = if store.is_some() {
+        drop(store);
+        common::prepare_store_locked_checked(&ws, &lock, &[]).await?
+    } else {
+        store
+    };
 
     if store.is_none() {
         common::note_constellation_owns_index();
-        drop(lock);
     }
     let read = if store.is_none() {
-        Some(common::workspace_read(&ws).await?)
+        Some(forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock).await?)
     } else {
         None
     };
     let records: Vec<forgeplan_core::db::store::ArtifactRecord> = match (&store, &read) {
-        (Some(store), _) => store.list_records(None).await?,
+        (Some(store), _) => store.list_records(&lock, None).await?,
         (None, Some(read)) => read.list_records(None),
         (None, None) => unreachable!("a migrated workspace has a captured read"),
     };
@@ -81,7 +86,7 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
         // path, it does not persist a score column that this layout does not have.
         let r_eff = match &store {
             Some(store) => {
-                match forgeplan_core::scoring::sync_score_target(store, &record.id).await {
+                match forgeplan_core::scoring::sync_score_target(store, &lock, &record.canonical_key).await {
                     Ok(report) => report.r_eff,
                     Err(e) => {
                         // Round 8 audit MED-4: surface failed artifacts in JSON instead
@@ -98,7 +103,7 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
                 let read = read
                     .as_ref()
                     .expect("a migrated workspace has a captured read");
-                match reff::assurance_report_captured(&record.id, read).await {
+                match reff::assurance_report_captured(&record.canonical_key, read).await {
                     Ok(report) => report.r_eff,
                     Err(e) => {
                         let msg = e.to_string();
@@ -163,11 +168,17 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
     let view = match store {
-        Some(store) => score_from_store(target_id_input, &store).await?,
+        Some(store) => {
+            let resolution = common::resolve_against_workspace(&ws, target_id_input).await?;
+            let (key, _) = common::require_found_identity(target_id_input, &resolution)?;
+            drop(store);
+            let prepared = common::prepare_store_locked_checked(&ws, &lock, &[(&key, true)]).await?
+                .ok_or_else(|| anyhow::anyhow!("legacy index ownership changed during scoring"))?;
+            score_from_store(&key, &prepared, &lock).await?
+        }
         None => {
             common::note_constellation_owns_index();
-            drop(lock);
-            let read = common::workspace_read(&ws).await?;
+            let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock).await?;
             score_from_read(target_id_input, &read).await?
         }
     };
@@ -197,15 +208,13 @@ fn not_found(input: &str) -> anyhow::Error {
 async fn score_from_store(
     input: &str,
     store: &forgeplan_core::db::store::LanceStore,
+    lock: &forgeplan_core::workspace::lock::WorkspaceLock,
 ) -> anyhow::Result<ScoreView> {
     // PROB-060 / SPEC-005 Phase 1.5b — slug-aware lookup.
-    let target_id_owned = store
-        .resolve_id(input)
-        .await?
-        .ok_or_else(|| not_found(input))?;
+    let target_id_owned = input.to_string();
     let target_id = target_id_owned.as_str();
     let target = store
-        .get_record(target_id)
+        .get_record(lock, target_id)
         .await?
         .ok_or_else(|| not_found(target_id))?;
 
@@ -222,17 +231,17 @@ async fn score_from_store(
     // display. On persist failure we fall back to a fresh recursive walk so
     // the user still sees a breakdown — but we annotate it with a warning so
     // the displayed value cannot silently disagree with stored cache.
-    let report = match forgeplan_core::scoring::sync_score_target(store, target_id).await {
+    let report = match forgeplan_core::scoring::sync_score_target(store, lock, target_id).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("  Warning: could not persist R_eff score: {e}");
             eprintln!("Fix: forgeplan score --all");
             let mut visited = HashSet::new();
-            reff::r_eff_recursive(target_id, store, &mut visited).await?
+            reff::r_eff_recursive(target_id, store, lock, &mut visited).await?
         }
     };
 
-    let graph = reff::AssuranceSource::Store(store);
+    let graph = reff::AssuranceSource::Store(store, lock);
     let evidence_items = reff::linked_evidence_items(&graph, target_id).await?;
     let link_count = reff::relation_link_count(&graph, target_id).await?;
     let fgr_score = compute_fgr(&target, report.r_eff, link_count)?;
@@ -257,7 +266,8 @@ async fn score_from_read(
     input: &str,
     read: &forgeplan_core::constellation::workspace_read::WorkspaceRead,
 ) -> anyhow::Result<ScoreView> {
-    let target_id = read.resolve_id(input).ok_or_else(|| not_found(input))?;
+    let resolution = common::resolve_against_capture(read, input);
+    let (target_id, _) = common::require_found_identity(input, &resolution)?;
     let target = read
         .get_record(&target_id)
         .cloned()

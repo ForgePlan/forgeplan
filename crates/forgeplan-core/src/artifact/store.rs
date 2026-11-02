@@ -172,7 +172,11 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let path = d.join(name);
         let stem = path.file_stem().unwrap().to_string_lossy();
-        let id = if stem.as_bytes().get(3) == Some(&b'-') {
+        // `mem-*` ids ARE the whole stem (issue #411); every other fixture
+        // name is `KIND-NNN-<slug>` and its id is the first two segments.
+        let id = if stem.starts_with("mem-") {
+            stem.to_string()
+        } else if stem.as_bytes().get(3) == Some(&b'-') {
             stem.splitn(3, '-').take(2).collect::<Vec<_>>().join("-")
         } else {
             "X".to_string()

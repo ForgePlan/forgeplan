@@ -20,34 +20,16 @@ pub async fn run(id: &str, agent: Option<&str>, force: bool, json: bool) -> anyh
     workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    // Resolve from the owning source: the legacy store before cutover, one
-    // captured canonical read after it. If an artifact was removed while its
-    // claim remains, preserve release's idempotent raw-input fallback.
-    let (ws, store) = common::open_store_tolerating_constellation().await?;
-    let (id_owned, ref_form) = if let Some(lance) = store.as_ref() {
-        let id = lance
-            .resolve_id(id)
-            .await?
-            .unwrap_or_else(|| id.to_string());
-        let ref_form = match lance.get_record(&id).await? {
-            Some(rec) => {
-                forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id)
-            }
-            None => id.clone(),
-        };
-        (id, ref_form)
-    } else {
-        let read = common::workspace_read(&ws).await?;
-        let id = read.resolve_id(id).unwrap_or_else(|| id.to_string());
-        let ref_form = read
-            .get_record(&id)
-            .map(|rec| {
-                forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id)
-            })
-            .unwrap_or_else(|| id.clone());
-        (id, ref_form)
+    let (ws, source, _read_guard) = common::open_read_source().await?;
+    let resolution = match &source {
+        common::ReadSource::Legacy(_) => common::resolve_against_workspace(&ws, id).await?,
+        common::ReadSource::Captured(read) => common::resolve_against_capture(read, id),
     };
+    let (id_owned, ref_form) = match &resolution.outcome {
+        forgeplan_mcp::convert::Resolution::NotFound => (id.to_string(), id.to_string()),
+        _ => common::require_found_identity(id, &resolution)?,
+    };
+    let original_selector = id;
     let id = id_owned.as_str();
 
     // Match MCP semantics: explicit agent > default agent string. With
@@ -59,8 +41,25 @@ pub async fn run(id: &str, agent: Option<&str>, force: bool, json: bool) -> anyh
         None => default_agent(),
     };
 
+    drop(source);
+    drop(_read_guard);
+    let _lock = workspace::lock::acquire_workspace_lock(&ws).await?;
+    let locked_source = common::read_source_for(&ws, &_lock).await?;
+    let locked_resolution = match &locked_source {
+        common::ReadSource::Legacy(_) => common::resolve_against_workspace(&ws, original_selector).await?,
+        common::ReadSource::Captured(read) => common::resolve_against_capture(read, original_selector),
+    };
+    let locked_identity = match &locked_resolution.outcome {
+        forgeplan_mcp::convert::Resolution::NotFound => (original_selector.to_string(), original_selector.to_string()),
+        _ => common::require_found_identity(original_selector, &locked_resolution)?,
+    };
+    if locked_identity != (id_owned.clone(), ref_form.clone()) {
+        anyhow::bail!("release selector changed while acquiring workspace lock");
+    }
+    common::ensure_ordinary_mutation_allowed(&ws)?;
+
     let store = ClaimStore::new(&ws);
-    match store.release(id, &agent_str, force).await {
+    match store.release_for(id, &ref_form, &agent_str, force).await {
         Ok(()) => {
             // PRD-071: re-plan after a successful release so the orchestrator
             // (or solo agent) immediately sees the freed slot.
@@ -71,14 +70,14 @@ pub async fn run(id: &str, agent: Option<&str>, force: bool, json: bool) -> anyh
 
             if json {
                 let body = serde_json::json!({
-                    "id": id,
+                    "id": ref_form,
                     "released": true,
                     "force": force,
                     "_next_action": hints::primary_action(&next_hints),
                 });
                 println!("{}", serde_json::to_string_pretty(&body)?);
             } else {
-                println!("Released claim on {id}");
+                println!("Released claim on {ref_form}");
                 if force {
                     println!("  (forced — orchestrator override)");
                 }

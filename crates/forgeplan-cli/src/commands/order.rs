@@ -7,15 +7,15 @@ use crate::commands::common;
 
 /// `forgeplan order` — show artifacts in topological order (dependency order).
 pub async fn run(json: bool) -> anyhow::Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (_, source, _read_guard) = common::open_read_source().await?;
     let all_relations = match &source {
-        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Legacy(store) => store.get_all_relations(&_read_guard).await?,
         common::ReadSource::Captured(read) => read.get_all_relations(),
     };
     let legacy_records;
     let all_records = match &source {
         common::ReadSource::Legacy(store) => {
-            legacy_records = store.list_records(None).await?;
+            legacy_records = store.list_records(&_read_guard, None).await?;
             legacy_records.as_slice()
         }
         common::ReadSource::Captured(read) => read.records(),
@@ -24,10 +24,12 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     let active_ids: HashSet<String> = all_records
         .iter()
         .filter(|r| r.status == "active")
-        .map(|r| r.id.clone())
+        .map(|r| r.canonical_key.clone())
         .collect();
     // For blocking logic: resolved = active + deprecated + superseded
-    let resolved_ids = common::resolved_ids(all_records);
+    let resolved_ids: HashSet<String> = all_records.iter()
+        .filter(|r| matches!(r.status.as_str(), "active" | "deprecated" | "superseded"))
+        .map(|r| r.canonical_key.clone()).collect();
 
     // Dogfood v0.32.1 MED bug: the per-line label hardcoded "draft" for every
     // non-active artifact, so a `deprecated`/`superseded`/`stale` artifact
@@ -37,14 +39,15 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     // "unknown".
     let status_by_id: std::collections::HashMap<&str, &str> = all_records
         .iter()
-        .map(|r| (r.id.as_str(), r.status.as_str()))
+        .map(|r| (r.canonical_key.as_str(), r.status.as_str()))
         .collect();
     let real_status = |id: &str| -> &str { status_by_id.get(id).copied().unwrap_or("unknown") };
 
-    // The relations are stored under the canonical key; the report names the
-    // documents by their display id, so the graph is read in that namespace.
-    let display_relations = common::relations_by_display_id(&all_relations, all_records);
-    let result = topological::kahn_sort(&display_relations, &resolved_ids);
+    let result = topological::kahn_sort(&all_relations, &resolved_ids);
+    let display_by_key: std::collections::HashMap<&str, &str> = all_records.iter()
+        .map(|r| (r.canonical_key.as_str(), r.id.as_str())).collect();
+    let display = |key: &str| display_by_key.get(key).copied().unwrap_or(key).to_string();
+    let display_list = |keys: &[String]| keys.iter().map(|key| display(key)).collect::<Vec<_>>();
 
     // PRD-071 contract: priority — fix cycles first, then activate ready
     // artifacts, else inspect order.
@@ -75,10 +78,13 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
 
     if json {
         let data = serde_json::json!({
-            "order": result.order,
-            "cycles": result.cycles,
-            "blocked": result.blocked.iter().map(|(id, deps)| serde_json::json!({"id": id, "blocked_by": deps})).collect::<Vec<_>>(),
-            "ready": result.ready,
+            "order": display_list(&result.order),
+            "canonical_order": result.order,
+            "cycles": result.cycles.iter().map(|cycle| display_list(cycle)).collect::<Vec<_>>(),
+            "canonical_cycles": result.cycles,
+            "blocked": result.blocked.iter().map(|(id, deps)| serde_json::json!({"id": display(id), "canonical_key": id, "blocked_by": display_list(deps), "canonical_blocked_by": deps})).collect::<Vec<_>>(),
+            "ready": display_list(&result.ready),
+            "canonical_ready": result.ready,
             "_next_action": hints::primary_action(&hints_vec),
         });
         println!("{}", serde_json::to_string_pretty(&data)?);
@@ -88,7 +94,7 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     if !result.cycles.is_empty() {
         println!("  Warning: Cycles detected:");
         for cycle in &result.cycles {
-            println!("    {}", cycle.join(" -> "));
+            println!("    {}", display_list(cycle).join(" -> "));
         }
         println!();
     }
@@ -131,13 +137,13 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
         let status: String = if lifecycle == "active" {
             "active".to_string()
         } else if let Some(blockers) = blocked_map.get(id.as_str()) {
-            let names: Vec<&str> = blockers.iter().map(|s| s.as_str()).collect();
+            let names = display_list(blockers);
             format!("{}, blocked by {}", lifecycle, names.join(", "))
         } else {
             format!("{}, ready", lifecycle)
         };
 
-        println!("    {} {} ({})", marker, id, status);
+        println!("    {} {} ({})", marker, display(id), status);
     }
 
     println!();

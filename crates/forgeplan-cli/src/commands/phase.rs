@@ -18,17 +18,12 @@ use crate::commands::common;
 /// `current_phase: unknown` -- never an error. Phase tracking is advisory
 /// and never blocks other tools.
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    let (ws, source) = common::open_read_source().await?;
-
-    // Resolve to the canonical identity so ambiguity, key collisions, and
-    // absence remain distinct instead of falling through to an "unknown"
-    // advisory phase state.
-    let (canonical, display) = common::resolve_required_identity(&source, &ws, id).await?;
+    let (ws, _source, canonical, display, _read_guard) = common::open_selected_source(id).await?;
     // A read does not migrate: the keyed reader finds a state file written
     // before the key existed and answers from it, and renaming it belongs to
     // the writer that holds the workspace lock.
 
-    match phase::store::read_phase(&ws, &canonical).await? {
+    match phase::store::read_phase_for(&ws, &canonical, &display).await? {
         Some(state) => print_state(&state, &display, &canonical, json),
         None => print_unknown(&display, &canonical, json),
     }

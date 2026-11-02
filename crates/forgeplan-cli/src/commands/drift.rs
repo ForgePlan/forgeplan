@@ -4,7 +4,7 @@ use forgeplan_core::hints::{self, Hint};
 use crate::commands::common;
 
 pub async fn run(json: bool) -> anyhow::Result<()> {
-    let (ws, source) = common::open_read_source().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
 
     let workspace_root = ws
         .parent()
@@ -12,7 +12,7 @@ pub async fn run(json: bool) -> anyhow::Result<()> {
     // Drift reads ADR/RFC frontmatter from the capture and git mtimes from the
     // same project root on both layouts; only the record source differs.
     let reports = match &source {
-        common::ReadSource::Legacy(store) => drift::check_drift(store, workspace_root).await?,
+        common::ReadSource::Legacy(store) => drift::check_drift(store, &_read_guard, workspace_root).await?,
         common::ReadSource::Captured(read) => {
             drift::check_drift_captured(read, workspace_root).await?
         }

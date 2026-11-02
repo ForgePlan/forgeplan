@@ -3,13 +3,13 @@ use forgeplan_core::hints::{self, Hint};
 use crate::commands::common;
 
 pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
-    let (_ws, source) = common::open_read_source().await?;
+    let (_ws, source, _read_guard) = common::open_read_source().await?;
     let cwd = std::env::current_dir()?;
 
     let legacy_records;
     let records = match &source {
         common::ReadSource::Legacy(store) => {
-            legacy_records = store.list_records(None).await?;
+            legacy_records = store.list_records(&_read_guard, None).await?;
             legacy_records.as_slice()
         }
         common::ReadSource::Captured(read) => read.records(),
@@ -37,7 +37,7 @@ pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
         .collect();
 
     let all_relations = match &source {
-        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Legacy(store) => store.get_all_relations(&_read_guard).await?,
         common::ReadSource::Captured(read) => read.get_all_relations(),
     };
     // The stored endpoints are canonical keys. The bundle keeps the ids it

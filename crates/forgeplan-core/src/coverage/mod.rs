@@ -170,8 +170,9 @@ async fn count_files_and_lines(dir: &Path) -> anyhow::Result<(usize, usize)> {
 pub async fn build_coverage(
     modules: &mut [CodeModule],
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
 ) -> anyhow::Result<CoverageReport> {
-    let records = store.list_records(None).await?;
+    let records = store.list_records(permit, None).await?;
     Ok(build_coverage_from_records(modules, &records))
 }
 
@@ -244,8 +245,8 @@ pub fn body_with_affected_file_backfill(body: &str) -> Option<String> {
 
 /// Backfill "## Affected Files" section into artifacts that lack it.
 /// Returns the number of artifacts updated.
-pub async fn backfill_affected_files(store: &LanceStore) -> anyhow::Result<Vec<String>> {
-    let records = store.list_records(None).await?;
+pub async fn backfill_affected_files(store: &LanceStore, guard: &crate::workspace::lock::WorkspaceLock) -> anyhow::Result<Vec<String>> {
+    let records = store.list_records(guard, None).await?;
     let mut updated = Vec::new();
 
     for record in &records {
@@ -259,7 +260,7 @@ pub async fn backfill_affected_files(store: &LanceStore) -> anyhow::Result<Vec<S
         let Some(new_body) = body_with_affected_file_backfill(&record.body) else {
             continue;
         };
-        if let Err(e) = store.update_body(&record.id, &new_body).await {
+        if let Err(e) = store.update_body(guard, &record.canonical_key, &new_body).await {
             eprintln!("  Warning: backfill failed for {}: {e}", record.id);
             continue;
         }
@@ -320,13 +321,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn backfill_updates_each_document_with_a_shared_display_id() {
+        use crate::db::store::{LanceStore, NewArtifact};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+        for (key, body) in [("prd-alpha", "Alpha body"), ("prd-beta", "Beta body")] {
+            store.create_artifact(&guard, &NewArtifact {
+                canonical_key: key.into(),
+                id: "PRD-001".into(),
+                kind: "prd".into(),
+                status: "active".into(),
+                title: key.into(),
+                body: body.into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            }).await.unwrap();
+        }
+        assert_eq!(backfill_affected_files(&store, &guard).await.unwrap().len(), 2);
+        for (key, body) in [("prd-alpha", "Alpha body"), ("prd-beta", "Beta body")] {
+            let record = store.get_record(&guard, key).await.unwrap().unwrap();
+            assert!(record.body.contains(body));
+            assert!(record.body.contains("## Affected Files"));
+        }
+    }
+
+    #[tokio::test]
     async fn backfill_adds_section_to_active_prd() {
         use crate::db::store::{LanceStore, NewArtifact};
         use tempfile::TempDir;
 
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let (store, guard) = { let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); let store = LanceStore::init_new(&ws, &guard).await.unwrap(); (store, guard) };
 
         // Create active PRD without Affected Files
         let art = NewArtifact {
@@ -342,7 +374,7 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
         // Create draft PRD (should NOT be backfilled)
         let draft = NewArtifact {
@@ -358,24 +390,24 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&draft).await.unwrap();
+        store.create_artifact(&guard, &draft).await.unwrap();
 
-        let updated = backfill_affected_files(&store).await.unwrap();
+        let updated = backfill_affected_files(&store, &guard).await.unwrap();
 
         // Only active PRD-001 should be backfilled
         assert_eq!(updated, vec!["PRD-001"]);
 
         // Verify body was updated
-        let record = store.get_record("PRD-001").await.unwrap().unwrap();
+        let record = store.get_record(&guard, "PRD-001").await.unwrap().unwrap();
         assert!(record.body.contains("## Affected Files"));
         assert!(record.body.contains("crates/forgeplan-core/src/**"));
 
         // Draft should NOT have been touched
-        let draft_record = store.get_record("PRD-002").await.unwrap().unwrap();
+        let draft_record = store.get_record(&guard, "PRD-002").await.unwrap().unwrap();
         assert!(!draft_record.body.contains("Affected Files"));
 
         // Idempotent: running again should return empty
-        let second_run = backfill_affected_files(&store).await.unwrap();
+        let second_run = backfill_affected_files(&store, &guard).await.unwrap();
         assert!(second_run.is_empty(), "Should be idempotent");
     }
 
@@ -410,7 +442,7 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let (store, guard) = { let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); let store = LanceStore::init_new(&ws, &guard).await.unwrap(); (store, guard) };
 
         // Active epic — should NOT get Affected Files (not code-level)
         let epic = NewArtifact {
@@ -426,9 +458,9 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&epic).await.unwrap();
+        store.create_artifact(&guard, &epic).await.unwrap();
 
-        let updated = backfill_affected_files(&store).await.unwrap();
+        let updated = backfill_affected_files(&store, &guard).await.unwrap();
         assert!(updated.is_empty(), "Epic should not be backfilled");
     }
 
@@ -439,7 +471,7 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let (store, guard) = { let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); let store = LanceStore::init_new(&ws, &guard).await.unwrap(); (store, guard) };
 
         // PRD with "Affected Scope" (alias) — should NOT be backfilled
         let art = NewArtifact {
@@ -455,9 +487,9 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
-        let updated = backfill_affected_files(&store).await.unwrap();
+        let updated = backfill_affected_files(&store, &guard).await.unwrap();
         assert!(
             updated.is_empty(),
             "Should skip artifact with Affected Scope alias"
@@ -471,7 +503,7 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let (store, guard) = { let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); let store = LanceStore::init_new(&ws, &guard).await.unwrap(); (store, guard) };
 
         let rfc = NewArtifact {
             canonical_key: "RFC-001".to_string(),
@@ -486,9 +518,9 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&rfc).await.unwrap();
+        store.create_artifact(&guard, &rfc).await.unwrap();
 
-        let updated = backfill_affected_files(&store).await.unwrap();
+        let updated = backfill_affected_files(&store, &guard).await.unwrap();
         assert_eq!(updated, vec!["RFC-001"], "Active RFC should be backfilled");
     }
 

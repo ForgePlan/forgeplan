@@ -10,20 +10,59 @@ use crate::ui;
 
 /// `forgeplan tree [ID] [--depth N] [--json]` — ASCII tree view of artifact hierarchy.
 pub async fn run(id: Option<&str>, depth: usize, json: bool) -> anyhow::Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (workspace, source, _read_guard) = common::open_read_source().await?;
     let relations = match &source {
-        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Legacy(store) => store.get_all_relations(&_read_guard).await?,
         common::ReadSource::Captured(read) => read.get_all_relations(),
     };
     let legacy_records;
     let records = match &source {
         common::ReadSource::Legacy(store) => {
-            legacy_records = store.list_records(None).await?;
+            legacy_records = store.list_records(&_read_guard, None).await?;
             legacy_records.as_slice()
         }
         common::ReadSource::Captured(read) => read.records(),
     };
-    let (children_map, all_records) = build_hierarchy(records, &relations);
+    let root = match id {
+        Some(selector) => Some(common::resolve_required_identity(&source, &workspace, selector).await?.0),
+        None => None,
+    };
+    let id = root.as_deref();
+    let mut parent_keys = BTreeMap::new();
+    for record in records {
+        if let Some(parent) = record.parent_epic.as_deref().filter(|p| !p.is_empty()) {
+            if parent.contains('@') {
+                forgeplan_core::db::store::validate_link_target(parent)?;
+                parent_keys.insert(record.canonical_key.clone(), parent.to_string());
+                continue;
+            }
+            let resolution = match &source {
+                common::ReadSource::Legacy(_) => common::resolve_against_workspace(&workspace, parent).await?,
+                common::ReadSource::Captured(read) => common::resolve_against_capture(read, parent),
+            };
+            if matches!(&resolution.outcome, forgeplan_mcp::convert::Resolution::IncompleteCapture { .. }) {
+                common::require_found_identity(parent, &resolution)?;
+            }
+            let candidates = match &source {
+                common::ReadSource::Legacy(_) => forgeplan_core::artifact::documents::workspace_candidates(&workspace).await?,
+                common::ReadSource::Captured(read) => forgeplan_core::artifact::documents::capture_candidates(read),
+            };
+            let outcome: forgeplan_mcp::convert::Resolution =
+                forgeplan_core::artifact::canonical_key::resolve_structural_target(parent, &candidates).into();
+            let named = match &outcome {
+                forgeplan_mcp::convert::Resolution::Ambiguous { candidates, .. }
+                | forgeplan_mcp::convert::Resolution::ConflictingCanonicalKey { candidates, .. } => candidates.clone(),
+                _ => Vec::new(),
+            };
+            let resolution = common::WorkspaceResolution { outcome, candidates: named };
+            let key = match &resolution.outcome {
+                forgeplan_mcp::convert::Resolution::NotFound => parent.to_string(),
+                _ => common::require_found_identity(parent, &resolution)?.0,
+            };
+            parent_keys.insert(record.canonical_key.clone(), key);
+        }
+    }
+    let (children_map, all_records) = build_hierarchy(records, &relations, &parent_keys);
 
     if json {
         return render_json(id, depth, &children_map, &all_records);
@@ -123,6 +162,7 @@ pub async fn run(id: Option<&str>, depth: usize, json: bool) -> anyhow::Result<(
 
 /// Record info needed for display.
 struct DisplayRecord {
+    id: String,
     kind: String,
     title: String,
     status: String,
@@ -134,6 +174,7 @@ struct DisplayRecord {
 fn build_hierarchy(
     records: &[ArtifactRecord],
     relations: &[(String, String, String)],
+    parent_keys: &BTreeMap<String, String>,
 ) -> (
     BTreeMap<String, Vec<String>>,
     BTreeMap<String, DisplayRecord>,
@@ -141,8 +182,9 @@ fn build_hierarchy(
     let mut records_map = BTreeMap::new();
     for r in records {
         records_map.insert(
-            r.id.clone(),
+            r.canonical_key.clone(),
             DisplayRecord {
+                id: r.id.clone(),
                 kind: r.kind.clone(),
                 title: r.title.clone(),
                 status: r.status.clone(),
@@ -162,7 +204,11 @@ fn build_hierarchy(
     let mut has_parent: HashSet<String> = HashSet::new();
 
     for (source, target, relation) in relations {
-        if child_relations.contains(relation.as_str()) && !has_parent.contains(source) {
+        if child_relations.contains(relation.as_str())
+            && records_map.contains_key(source)
+            && records_map.contains_key(target)
+            && !has_parent.contains(source)
+        {
             has_parent.insert(source.clone());
             children_map
                 .entry(target.clone())
@@ -172,15 +218,16 @@ fn build_hierarchy(
     }
 
     for r in records {
-        if let Some(parent) = &r.parent_epic
+        if let Some(parent) = parent_keys.get(&r.canonical_key)
             && !parent.is_empty()
-            && !has_parent.contains(&r.id)
+            && records_map.contains_key(parent)
+            && !has_parent.contains(&r.canonical_key)
         {
-            has_parent.insert(r.id.clone());
+            has_parent.insert(r.canonical_key.clone());
             children_map
                 .entry(parent.clone())
                 .or_default()
-                .push(r.id.clone());
+                .push(r.canonical_key.clone());
         }
     }
 
@@ -232,7 +279,7 @@ fn print_node_recursive(
         "{}  {}{} \"{}\"",
         data_left,
         line_prefix,
-        style(id).bold(),
+        style(records.get(id).map(|r| r.id.as_str()).unwrap_or(id)).bold(),
         title,
     );
 
@@ -389,7 +436,7 @@ fn build_json_node(
     let status = display.map(|d| d.status.as_str()).unwrap_or("unknown");
     let r_eff = display.map(|d| d.r_eff).unwrap_or(0.0);
 
-    let kind = id.split('-').next().unwrap_or("").to_lowercase();
+    let kind = display.map(|d| d.kind.as_str()).unwrap_or("");
 
     let children = if current_depth < max_depth {
         let empty = Vec::new();
@@ -404,7 +451,8 @@ fn build_json_node(
     };
 
     serde_json::json!({
-        "id": id,
+        "id": display.map(|d| d.id.as_str()).unwrap_or(id),
+        "canonical_key": id,
         "title": title,
         "kind": kind,
         "status": status,
@@ -454,6 +502,7 @@ mod tests {
         let records = BTreeMap::from([(
             "PRD-001".to_string(),
             DisplayRecord {
+                id: "PRD-001".to_string(),
                 kind: "prd".to_string(),
                 title: "Test".to_string(),
                 status: "draft".to_string(),
@@ -475,6 +524,7 @@ mod tests {
             (
                 "EPIC-001".to_string(),
                 DisplayRecord {
+                    id: "EPIC-001".to_string(),
                     kind: "epic".to_string(),
                     title: "Epic".to_string(),
                     status: "active".to_string(),
@@ -484,6 +534,7 @@ mod tests {
             (
                 "PRD-001".to_string(),
                 DisplayRecord {
+                    id: "PRD-001".to_string(),
                     kind: "prd".to_string(),
                     title: "Feature".to_string(),
                     status: "draft".to_string(),
@@ -505,6 +556,7 @@ mod tests {
             (
                 "A-001".to_string(),
                 DisplayRecord {
+                    id: "A-001".to_string(),
                     kind: "prd".into(),
                     title: "A".into(),
                     status: "active".into(),
@@ -514,6 +566,7 @@ mod tests {
             (
                 "B-001".to_string(),
                 DisplayRecord {
+                    id: "B-001".to_string(),
                     kind: "rfc".into(),
                     title: "B".into(),
                     status: "active".into(),

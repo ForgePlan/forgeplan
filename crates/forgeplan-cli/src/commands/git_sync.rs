@@ -27,8 +27,9 @@ async fn reconcile_if_constellation_owned(ws: &std::path::Path) -> anyhow::Resul
 /// Detects .forgeplan/ files changed since a git ref (default: ORIG_HEAD from last pull/merge)
 /// and syncs them into LanceDB with source=git_sync and commit_hash.
 pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
-    let captured_layout = store.is_none();
+    let (ws, _lock) = common::open_workspace_locked().await?;
+    let captured_layout = common::index_migrated(&ws);
+    let mut store: Option<LanceStore> = None;
 
     // PRD-071 contract: errors emit `Fix:` markers so agents have a
     // deterministic next action.
@@ -79,6 +80,48 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
         println!("\nDone.");
         return Ok(());
     }
+    if changed.iter().any(|file| file.status == 'D') {
+        anyhow::bail!("git-sync cannot safely process deleted paths without verified before-image provenance and durable deletion intent; no index or audit changes were made");
+    }
+    let changed_paths: Vec<_> = changed.iter()
+        .filter(|file| matches!(file.status, 'A' | 'M'))
+        .map(|file| repo_root.join(&file.path))
+        .collect();
+    let reference_plan = super::reindex::preflight_batch_references(&ws, Some(&changed_paths)).await?;
+    // Preflight the entire batch before preparing a legacy writer: a later
+    // selector refusal must not follow an earlier row or canonical mutation.
+    let mut selector_names = Vec::new();
+    for file in &changed {
+        match file.status {
+            'A' | 'M' => {
+                if let Ok(content) = tokio::fs::read_to_string(repo_root.join(&file.path)).await
+                    && let Ok((fm, _)) = frontmatter::parse_frontmatter(&content)
+                    && let Some(id) = fm.get("id").and_then(|value| value.as_str())
+                {
+                    selector_names.push(forgeplan_core::artifact::canonical_key::canonical_key_from_document(id, &content));
+                }
+            }
+            'D' => {
+                if let Some(id) = extract_id_from_path(&file.path) {
+                    selector_names.push(id);
+                }
+            }
+            _ => {}
+        }
+    }
+    let selectors: Vec<_> = selector_names.iter().map(|id| (id.as_str(), false)).collect();
+    let before = common::preflight_selectors(&ws, &selectors).await?;
+    drop(store);
+    // Newly added files do not have index rows yet. Check the source set
+    // before and after preparing the writer without requiring those rows.
+    store = common::prepare_store_locked_checked(&ws, &_lock, &[]).await?;
+    if before != common::preflight_selectors(&ws, &selectors).await? {
+        anyhow::bail!("artifact identity changed during write preparation");
+    }
+    if reference_plan != super::reindex::preflight_batch_references(&ws, Some(&changed_paths)).await? {
+        anyhow::bail!("artifact references changed during write preparation");
+    }
+
 
     let published = if captured_layout {
         let published = super::reindex::published_history_records(&ws)
@@ -98,7 +141,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
         std::collections::BTreeMap::new()
     };
     let current = if captured_layout {
-        Some(common::workspace_read(&ws).await.map_err(|error| {
+        Some(forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &_lock).await.map_err(|error| {
             anyhow::anyhow!("git-sync: Constellation reconcile failed: {error}")
         })?)
     } else {
@@ -114,6 +157,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
     // before unlocking for reconciliation.
     let mut history = None;
 
+    let sync_result: anyhow::Result<()> = async {
     for file in &changed {
         let full_path = repo_root.join(&file.path);
 
@@ -122,17 +166,10 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 // File deleted in git — extract ID from filename
                 if let Some(id) = extract_id_from_path(&file.path) {
                     let existed = match store.as_ref() {
-                        Some(store) => match store.get_record(&id).await? {
+                        Some(store) => match store.get_record(&_lock, &id).await? {
                             Some(record) => {
-                                super::reindex::orphan_reason(
-                        &ws,
-                        &id,
-                        &record.kind,
-                        &record.title,
-                        &record.canonical_key,
-                    )
-                                    .await
-                                    .is_some()
+                                let candidates = forgeplan_core::artifact::documents::workspace_candidates(&ws).await?;
+                                super::reindex::orphan_reason(&candidates, &record.canonical_key)?.is_some()
                             }
                             None => false,
                         },
@@ -162,7 +199,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                     let entry =
                         forgeplan_core::changelog::ChangeLogEntry::new(&id, "delete", "git_sync")
                             .with_commit(&commit_hash);
-                    log_git_change(&ws, store.as_ref(), &mut history, &entry).await;
+                    log_git_change(&ws, &_lock, store.as_ref(), &mut history, &entry).await;
                     println!("  DEL  {} (removed in git)", id);
                     deleted += 1;
                 }
@@ -201,8 +238,9 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                         continue;
                     }
                 };
+                let canonical = forgeplan_core::artifact::canonical_key::canonical_key_from_document(&id, &content);
                 if let Some(current) = current.as_ref()
-                    && current.get_record(&id).is_none()
+                    && current.get_record_by_key(&canonical).is_none()
                 {
                     anyhow::bail!(
                         "git-sync: artifact {id} is absent from the confirmed source capture"
@@ -210,12 +248,12 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 }
 
                 let record = match store.as_ref() {
-                    Some(store) => store.get_record(&id).await?,
+                    Some(store) => store.get_record(&_lock, &canonical).await?,
                     None => None,
                 };
                 let old_body = match record.as_ref() {
                     Some(record) => Some(record.body.as_str()),
-                    None => match published.get(&id) {
+                    None => match published.get(&canonical) {
                         Some(record) => Some(record.body.as_deref().ok_or_else(|| {
                             anyhow::anyhow!("published artifact {id} has no body")
                         })?),
@@ -241,7 +279,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                                     .map(str::to_lowercase);
                                 projection::sync_metadata_from_file(
                                     &ctx,
-                                    &id,
+                                    &canonical,
                                     status
                                         .as_deref()
                                         .filter(|status| *status != record.status.as_str()),
@@ -250,7 +288,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                                 .await?;
                                 projection::sync_body_from_file(
                                     &ctx,
-                                    &id,
+                                    &canonical,
                                     &record.kind,
                                     file_title,
                                     &body,
@@ -275,7 +313,7 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                                 .unwrap_or("standard");
 
                             let artifact = forgeplan_core::db::store::NewArtifact {
-                                canonical_key: id.clone(),
+                                canonical_key: canonical.clone(),
                                 id: id.clone(),
                                 kind: kind.to_string(),
                                 status: status.to_lowercase(),
@@ -311,27 +349,28 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                     && let Some(links_val) = fm.get("links")
                     && let Some(links_arr) = links_val.as_sequence()
                 {
-                    let existing = store.get_relations(&id).await.unwrap_or_default();
+                    let existing = store.get_relations(&_lock, &canonical).await?;
                     for link in links_arr {
                         let target = link.get("target").and_then(|v| v.as_str());
                         let relation = link.get("relation").and_then(|v| v.as_str());
                         if let (Some(t), Some(r)) = (target, relation)
                             && !existing.iter().any(|(et, er)| et == t && er == r)
                         {
-                            let _ = projection::sync_relation_from_file(
+                            projection::sync_relation_from_file(
                                 &projection::MutationContext::new(&ws, &_lock, Some(store)),
-                                &id,
+                                &canonical,
                                 t,
                                 r,
                             )
-                            .await;
+                            .await?;
                         }
                     }
                 }
 
                 let entry = forgeplan_core::changelog::ChangeLogEntry::new(&id, action, "git_sync")
+                    .with_canonical_key(&canonical)
                     .with_commit(&commit_hash);
-                log_git_change(&ws, store.as_ref(), &mut history, &entry).await;
+                log_git_change(&ws, &_lock, store.as_ref(), &mut history, &entry).await;
 
                 let status_char = if action == "create" { "NEW " } else { "SYNC" };
                 println!(
@@ -346,6 +385,15 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
                 continue;
             }
         }
+    }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = sync_result {
+        return Err(common::describe_possible_legacy_partial_commit(
+            !captured_layout,
+            error,
+        ));
     }
 
     // One reconcile for the whole sync, not one per changed file. The capture
@@ -372,6 +420,12 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
     // not migrate the index as a side effect. Only a workspace the protocol
     // already owns gets a reconcile pass here.
     reconcile_if_constellation_owned(&ws).await?;
+    if !captured_layout {
+        common::drain_legacy_semantic_after_mutation(&ws).await?;
+    }
+    if errors > 0 {
+        anyhow::bail!("git-sync encountered {errors} error(s); canonical changes may have been committed");
+    }
     if captured_layout {
         println!("\nDone.");
         return Ok(());
@@ -395,12 +449,13 @@ pub async fn run(since: Option<&str>) -> anyhow::Result<()> {
 /// selecting exactly one sink. The caller owns the workspace lock.
 async fn log_git_change(
     ws: &std::path::Path,
+    guard: &forgeplan_core::workspace::lock::WorkspaceLock,
     store: Option<&LanceStore>,
     history: &mut Option<AuxiliaryStore>,
     entry: &forgeplan_core::changelog::ChangeLogEntry,
 ) {
     let result = match store {
-        Some(store) => store.log_change(entry).await,
+        Some(store) => store.log_change(guard, entry).await,
         None => {
             if history.is_none() {
                 match AuxiliaryStore::open_history_or_create(ws).await {

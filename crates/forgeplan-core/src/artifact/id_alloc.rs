@@ -39,7 +39,7 @@ use crate::artifact::types::ArtifactKind;
 use crate::db::store::{LanceStore, NewArtifact};
 use crate::projection::{self, MutationContext};
 use crate::workspace::git::git_common_dir;
-use crate::workspace::lock::{DEFAULT_LOCK_TIMEOUT, WorkspaceLock};
+use crate::workspace::lock::{DEFAULT_LOCK_TIMEOUT, WorkspaceLock, WorkspaceReadPermit};
 
 /// Timeout for the cross-worktree id-allocation lock. Inherits the
 /// workspace-lock default (30 s) — keeps consistency with the rest of
@@ -111,6 +111,39 @@ pub async fn acquire_id_alloc_lock(
     // open-and-lock primitive locally — keeps the symlink guards and
     // backoff identical.
     open_and_lock(parent, &lock_path, ID_ALLOC_LOCK_TIMEOUT).await
+}
+
+/// Cross-worktree allocator locks held continuously across a batch preflight,
+/// index migration and publication. Locks are acquired in prefix order.
+pub struct AllocationGuard {
+    workspace: PathBuf,
+    locks: Vec<(String, WorkspaceLock)>,
+}
+
+impl AllocationGuard {
+    fn require(&self, workspace: &Path, kind: &ArtifactKind) -> anyhow::Result<()> {
+        if self.workspace != workspace || !self.locks.iter().any(|(prefix, _)| prefix == kind.prefix()) {
+            anyhow::bail!("allocator lock for {} is not held for this workspace", kind.prefix());
+        }
+        Ok(())
+    }
+}
+
+/// Acquire all distinct per-kind locks after the caller's workspace lock.
+pub async fn acquire_allocation_guard(
+    workspace: &Path,
+    _workspace_guard: &WorkspaceLock,
+    kinds: &[ArtifactKind],
+) -> anyhow::Result<AllocationGuard> {
+    let mut ordered = std::collections::BTreeMap::new();
+    for kind in kinds {
+        ordered.entry(kind.prefix().to_string()).or_insert(kind);
+    }
+    let mut locks = Vec::with_capacity(ordered.len());
+    for (prefix, kind) in ordered {
+        locks.push((prefix, acquire_id_alloc_lock(workspace, kind).await?));
+    }
+    Ok(AllocationGuard { workspace: workspace.to_path_buf(), locks })
 }
 
 /// Open a lock file at a custom path and hold an exclusive flock with
@@ -377,9 +410,11 @@ pub async fn save_id_ledger(
 /// a silently skipped maximum.
 pub async fn compute_max_display_number(
     workspace: &Path,
+    permit: &dyn WorkspaceReadPermit,
     store: Option<&LanceStore>,
     kind: &ArtifactKind,
 ) -> anyhow::Result<u32> {
+    permit.matches_workspace(workspace)?;
     let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
     let mut max_num: u32 = 0;
 
@@ -408,7 +443,7 @@ pub async fn compute_max_display_number(
     }
 
     if let Some(s) = store {
-        let lance_id = s.next_id(&prefix).await?;
+        let lance_id = s.next_id(permit, &prefix).await?;
         // `next_id` returns the *next* value (max + 1); convert back to
         // the current max for comparison.
         if let Some(num_str) = lance_id.rsplit('-').next()
@@ -576,26 +611,29 @@ pub struct ReservedNumber {
 /// takes the allocator lock itself and releases it before returning.
 pub async fn reserve_display_number(
     workspace: &Path,
+    guard: &WorkspaceLock,
     store: Option<&LanceStore>,
     kind: &ArtifactKind,
     digits: u32,
 ) -> anyhow::Result<ReservedNumber> {
+    guard.matches_workspace(workspace)?;
     let _lock = acquire_id_alloc_lock(workspace, kind)
         .await
         .with_context(|| format!("acquire id-alloc lock for {}", kind.prefix()))?;
-    reserve_display_number_locked(workspace, store, kind, digits, None).await
+    reserve_display_number_locked(workspace, guard, store, kind, digits, None).await
 }
 
 /// The reservation step, for callers that already hold the per-kind
 /// allocator lock.
 async fn reserve_display_number_locked(
     workspace: &Path,
+    guard: &WorkspaceLock,
     store: Option<&LanceStore>,
     kind: &ArtifactKind,
     digits: u32,
     bump_above: Option<u32>,
 ) -> anyhow::Result<ReservedNumber> {
-    let (id, number) = compute_next_id(workspace, store, kind, digits, bump_above)
+    let (id, number) = compute_next_id(workspace, guard, store, kind, digits, bump_above)
         .await
         .context("compute next-id under id-alloc lock")?;
     let ledger = IdLedger::new(number);
@@ -668,6 +706,75 @@ pub async fn create_artifact_with_minted_key(
     .await
 }
 
+/// Publish a key minted during read-only batch planning without minting it
+/// again. The caller must retain the workspace lock from planning through
+/// execution; the usual allocator lock and ledger order remain unchanged.
+pub async fn create_artifact_with_prepared_key(
+    workspace: &Path,
+    guard: &WorkspaceLock,
+    allocation: &AllocationGuard,
+    store: Option<&LanceStore>,
+    kind: &ArtifactKind,
+    digits: u32,
+    canonical_key: String,
+    expected_id: &str,
+    build: &BuildMintedArtifactFn<'_>,
+) -> anyhow::Result<CreatedArtifact> {
+    guard.matches_workspace(workspace)?;
+    if !crate::artifact::types::is_canonical_key(&canonical_key) {
+        anyhow::bail!("invalid prepared canonical key '{canonical_key}'");
+    }
+    let candidates = crate::artifact::documents::workspace_candidates(workspace).await?;
+    if candidates.iter().any(|candidate| candidate.canonical_key == canonical_key) {
+        anyhow::bail!("canonical key '{canonical_key}' is already claimed");
+    }
+    if let Some(store) = store {
+        if store.list_records(guard, None).await?.iter().any(|record| record.canonical_key == canonical_key) {
+            anyhow::bail!("canonical key '{canonical_key}' is already indexed");
+        }
+    }
+    create_artifact_with_key_locked(
+        workspace, guard, store, kind, digits, canonical_key, Some(expected_id), Some(allocation), build,
+    ).await
+}
+
+/// Preview the next allocator result while retaining the per-kind lock.
+/// `bump_above` accounts for earlier planned creations.
+pub async fn preview_display_number(
+    workspace: &Path,
+    guard: &WorkspaceLock,
+    allocation: &AllocationGuard,
+    store: Option<&LanceStore>,
+    kind: &ArtifactKind,
+    digits: u32,
+    bump_above: Option<u32>,
+) -> anyhow::Result<(String, u32)> {
+    guard.matches_workspace(workspace)?;
+    allocation.require(workspace, kind)?;
+    compute_next_id(workspace, guard, store, kind, digits, bump_above).await
+}
+
+/// Reserve a previously previewed number under the shared per-kind lock.
+/// A changed high-water mark fails before the ledger is advanced.
+pub async fn reserve_prepared_display_number(
+    workspace: &Path,
+    guard: &WorkspaceLock,
+    allocation: &AllocationGuard,
+    store: Option<&LanceStore>,
+    kind: &ArtifactKind,
+    digits: u32,
+    expected_id: &str,
+) -> anyhow::Result<()> {
+    guard.matches_workspace(workspace)?;
+    allocation.require(workspace, kind)?;
+    let (actual, _) = compute_next_id(workspace, guard, store, kind, digits, None).await?;
+    if actual != expected_id {
+        anyhow::bail!("planned display id '{expected_id}' changed to '{actual}'; ledger was not advanced");
+    }
+    reserve_display_number_locked(workspace, guard, store, kind, digits, None).await?;
+    Ok(())
+}
+
 async fn create_artifact_with_minted_key_using<M>(
     workspace: &Path,
     guard: &WorkspaceLock,
@@ -684,12 +791,37 @@ where
     // Mint exactly once before reserving a number. Entropy failures leave no
     // file or index row and consume no display number.
     let canonical_key = mint(kind, title)?;
+    create_artifact_with_key_locked(workspace, guard, store, kind, digits, canonical_key, None, None, build).await
+}
 
-    let _lock = acquire_id_alloc_lock(workspace, kind)
-        .await
-        .with_context(|| format!("acquire id-alloc lock for {}", kind.prefix()))?;
+async fn create_artifact_with_key_locked(
+    workspace: &Path,
+    guard: &WorkspaceLock,
+    store: Option<&LanceStore>,
+    kind: &ArtifactKind,
+    digits: u32,
+    canonical_key: String,
+    expected_id: Option<&str>,
+    allocation: Option<&AllocationGuard>,
+    build: &BuildMintedArtifactFn<'_>,
+) -> anyhow::Result<CreatedArtifact> {
+
+    let _lock = match allocation {
+        Some(guard) => {
+            guard.require(workspace, kind)?;
+            None
+        }
+        None => Some(acquire_id_alloc_lock(workspace, kind)
+            .await.with_context(|| format!("acquire id-alloc lock for {}", kind.prefix()))?),
+    };
+    if let Some(expected) = expected_id {
+        let (actual, _) = compute_next_id(workspace, guard, store, kind, digits, None).await?;
+        if actual != expected {
+            anyhow::bail!("planned display id '{expected}' changed to '{actual}'; ledger was not advanced");
+        }
+    }
     let reserved =
-        reserve_display_number_locked(workspace, store, kind, digits, None).await?;
+        reserve_display_number_locked(workspace, guard, store, kind, digits, None).await?;
 
     let mut artifact = build(&reserved.id, reserved.number, &canonical_key)
         .with_context(|| format!("build artifact for {}", reserved.id))?;
@@ -701,8 +833,6 @@ where
         );
     }
     artifact.canonical_key = canonical_key.clone();
-    artifact.body =
-        crate::artifact::frontmatter::ensure_canonical_key(&artifact.body, &canonical_key)?;
 
     let ctx = MutationContext::new(workspace, guard, store);
     let filepath = projection::create_artifact_with_canonical_key(&ctx, &artifact)
@@ -729,13 +859,14 @@ where
 /// the call is the safe lower bound for the next number.
 async fn compute_next_id(
     workspace: &Path,
+    permit: &dyn WorkspaceReadPermit,
     store: Option<&LanceStore>,
     kind: &ArtifactKind,
     digits: u32,
     bump_above: Option<u32>,
 ) -> anyhow::Result<(String, u32)> {
     let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-    let mut max_num = compute_max_display_number(workspace, store, kind).await?;
+    let mut max_num = compute_max_display_number(workspace, permit, store, kind).await?;
 
     // Audit override: caller asks us to skip past a known-bad number.
     if let Some(bump) = bump_above {
@@ -1179,7 +1310,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = ws(&tmp);
         let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
-        let store = LanceStore::init(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &guard).await.unwrap();
         let title = "Stored identity";
         let build = |id: &str, _: u32, key: &str| -> anyhow::Result<NewArtifact> {
             Ok(NewArtifact {
@@ -1245,7 +1376,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = ws(&tmp);
         std::fs::write(id_ledger_path(&ws, &ArtifactKind::Prd), "{ this is not a ledger").unwrap();
-        let err = compute_max_display_number(&ws, None, &ArtifactKind::Prd)
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let err = compute_max_display_number(&ws, &guard, None, &ArtifactKind::Prd)
             .await
             .expect_err("a damaged ledger must be an error, not a skipped maximum");
         assert!(
@@ -1261,11 +1393,12 @@ mod tests {
         save_id_ledger(&ws, &ArtifactKind::Prd, &IdLedger::new(7))
             .await
             .unwrap();
-        let max = compute_max_display_number(&ws, None, &ArtifactKind::Prd)
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let max = compute_max_display_number(&ws, &guard, None, &ArtifactKind::Prd)
             .await
             .unwrap();
         assert_eq!(max, 7);
-        let reserved = reserve_display_number(&ws, None, &ArtifactKind::Prd, 3)
+        let reserved = reserve_display_number(&ws, &guard, None, &ArtifactKind::Prd, 3)
             .await
             .unwrap();
         assert_eq!(reserved.number, 8);
@@ -1276,8 +1409,9 @@ mod tests {
     async fn a_reserved_number_is_never_handed_out_twice_after_a_crash() {
         let tmp = TempDir::new().unwrap();
         let ws = ws(&tmp);
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
         // Reserve, then "crash": no document is written to disk.
-        let first = reserve_display_number(&ws, None, &ArtifactKind::Prd, 3)
+        let first = reserve_display_number(&ws, &guard, None, &ArtifactKind::Prd, 3)
             .await
             .unwrap();
         assert_eq!(first.number, 1);
@@ -1288,8 +1422,10 @@ mod tests {
             .unwrap()
             .expect("ledger must exist after a reservation");
         assert_eq!(ledger.high_watermark, 1);
+        drop(guard);
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
         // The next allocation must not reuse the reserved number.
-        let second = reserve_display_number(&ws, None, &ArtifactKind::Prd, 3)
+        let second = reserve_display_number(&ws, &guard, None, &ArtifactKind::Prd, 3)
             .await
             .unwrap();
         assert_eq!(second.number, 2);
@@ -1303,11 +1439,12 @@ mod tests {
         save_id_ledger(&ws, &ArtifactKind::Prd, &IdLedger::new(u32::MAX))
             .await
             .unwrap();
-        let err = reserve_display_number(&ws, None, &ArtifactKind::Prd, 3)
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let err = reserve_display_number(&ws, &guard, None, &ArtifactKind::Prd, 3)
             .await
             .expect_err("an overflow must be an error, never a wrap");
         assert!(
-            err.to_string().contains("overflow"),
+            format!("{err:#}").contains("overflow"),
             "unexpected error: {err:#}"
         );
     }
@@ -1325,7 +1462,8 @@ mod tests {
             "---\nid: PRD-042\nkind: prd\ntitle: Weekly review\n---\n\nBody.\n",
         )
         .unwrap();
-        let max = compute_max_display_number(&ws, None, &ArtifactKind::Prd)
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let max = compute_max_display_number(&ws, &guard, None, &ArtifactKind::Prd)
             .await
             .unwrap();
         assert_eq!(max, 42);
@@ -1357,11 +1495,13 @@ mod tests {
         let ws_linked = linked.join(".forgeplan");
         std::fs::create_dir_all(&ws_main).unwrap();
         std::fs::create_dir_all(&ws_linked).unwrap();
+        let guard_main = crate::workspace::acquire_workspace_lock(&ws_main).await.unwrap();
+        let guard_linked = crate::workspace::acquire_workspace_lock(&ws_linked).await.unwrap();
 
-        let first = reserve_display_number(&ws_main, None, &ArtifactKind::Prd, 3)
+        let first = reserve_display_number(&ws_main, &guard_main, None, &ArtifactKind::Prd, 3)
             .await
             .unwrap();
-        let second = reserve_display_number(&ws_linked, None, &ArtifactKind::Prd, 3)
+        let second = reserve_display_number(&ws_linked, &guard_linked, None, &ArtifactKind::Prd, 3)
             .await
             .unwrap();
         assert_ne!(
@@ -1400,8 +1540,9 @@ mod tests {
             "---\nid: PRD-900\nkind: prd\nslug: prd-imported-k0123456789abcdef0123456789abcdef\n",
         )
         .unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
 
-        let error = compute_max_display_number(&ws, None, &ArtifactKind::Prd)
+        let error = compute_max_display_number(&ws, &guard, None, &ArtifactKind::Prd)
             .await
             .expect_err("a malformed source must not be omitted from accounting");
         assert!(error.to_string().contains("could not account for frontmatter"));

@@ -115,13 +115,13 @@ fn the_candidates_are_named_by_key_title_and_relative_path() {
 /// Their canonical keys differ, so neither is an identity collision: the
 /// display id is the alias they share, and it is the alias that must not
 /// pick a winner.
-async fn seed_two_prds_sharing_one_display_id(store: Arc<LanceStore>) {
+async fn seed_two_prds_sharing_one_display_id(store: Arc<LanceStore>, seed_guard: Arc<forgeplan_core::workspace::lock::WorkspaceLock>) {
     for (key, title, body) in [
         ("prd-alpha", "Alpha", "Alpha body."),
         ("prd-beta", "Beta", "Beta body."),
     ] {
         store
-            .create_artifact_for_test(&NewArtifact {
+            .create_artifact_for_test(&seed_guard, &NewArtifact {
                 canonical_key: key.to_string(),
                 id: "PRD-001".to_string(),
                 kind: "prd".to_string(),
@@ -137,6 +137,61 @@ async fn seed_two_prds_sharing_one_display_id(store: Arc<LanceStore>) {
             .await
             .expect("seed artifact");
     }
+}
+
+async fn seed_normalized_phase_aliases(store: Arc<LanceStore>, guard: Arc<forgeplan_core::workspace::lock::WorkspaceLock>) {
+    for (key, id) in [
+        ("prd-alpha-k11111111111111111111111111111111", "PRD-001"),
+        ("prd-beta-k22222222222222222222222222222222", "PRD-1"),
+    ] {
+        store.create_artifact_for_test(&guard, &NewArtifact {
+            canonical_key: key.to_string(),
+            id: id.to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: key.to_string(),
+            body: "Phase alias regression.".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        }).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn phase_by_key_refuses_normalized_ambiguous_legacy_state() {
+    let fixture = McpFixture::new_with_seed(seed_normalized_phase_aliases).await;
+    let state = fixture.workspace_path.join("state");
+    tokio::fs::create_dir_all(&state).await.unwrap();
+    let legacy = state.join("PRD-001.yaml");
+    let bytes = b"artifact_id: PRD-001\ncurrent_phase: shape\n";
+    tokio::fs::write(&legacy, bytes).await.unwrap();
+    for key in [
+        "prd-alpha-k11111111111111111111111111111111",
+        "prd-beta-k22222222222222222222222222222222",
+    ] {
+        for (tool, args) in [
+            ("forgeplan_phase", serde_json::json!({"id": key})),
+            ("forgeplan_phase_advance", serde_json::json!({"id": key, "to": "code"})),
+        ] {
+            let response = fixture.call_tool_json(tool, args).await;
+            assert!(response.is_error, "{tool}: {}", response.raw_text);
+            let payload = response.json.as_ref().expect("structured resolver error");
+            assert_eq!(payload["code"], "ambiguous", "{tool}: {}", response.raw_text);
+            let candidates = payload["candidates"].as_array().unwrap();
+            assert_eq!(candidates.len(), 2);
+            for expected in [
+                "prd-alpha-k11111111111111111111111111111111",
+                "prd-beta-k22222222222222222222222222222222",
+            ] {
+                assert!(candidates.iter().any(|candidate| candidate["canonical_key"] == expected), "{tool}: {}", response.raw_text);
+            }
+        }
+        assert!(!state.join(format!("{key}.yaml")).exists());
+    }
+    assert_eq!(tokio::fs::read(&legacy).await.unwrap(), bytes);
 }
 
 /// An ambiguous reference reaches the agent as a tool error that carries
@@ -333,4 +388,192 @@ async fn a_qualified_get_names_one_source_and_an_unqualified_get_reports_the_amb
         "no other source's data may reach the output: {}",
         envelope.raw_text
     );
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn cached_v4_read_then_import_refreshes_same_server_after_migration() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace = forgeplan_core::db::migrate::populated_identity_v4_workspace_for_test(temp.path())
+        .await.expect("create populated schema-4 workspace");
+    let old = LanceStore::open(&workspace).await.expect("open v4 store");
+    assert!(!old.uses_identity_v5(), "fixture must really be schema 4");
+    assert!(forgeplan_core::db::migrate::read_identity_v5_marker(&workspace.join("lance")).unwrap().is_none());
+    drop(old);
+    let server = McpFixture::new_rooted(temp.path().to_path_buf()).await;
+    let root = temp.path().to_str().unwrap();
+    let first = server.call_tool_json("forgeplan_get", serde_json::json!({
+        "id": "PRD-001", "workspace": root,
+    })).await;
+    assert_eq!(first.assert_ok()["canonical_key"], "prd-auth-system");
+    let bundle = serde_json::json!({
+        "artifacts": [{
+            "id": "NOTE-002",
+            "canonical_key": "note-cache-refresh",
+            "kind": "note",
+            "title": "Cache refresh",
+            "body": "New note after v4 migration."
+        }],
+        "relations": []
+    });
+    let imported = server.call_tool_json("forgeplan_import", serde_json::json!({
+        "data": bundle.to_string(), "force": false, "workspace": root,
+    })).await;
+    imported.assert_ok();
+    assert!(forgeplan_core::db::migrate::read_identity_v5_marker(&workspace.join("lance")).unwrap().is_some());
+    let original = server.call_tool_json("forgeplan_get", serde_json::json!({
+        "id": "PRD-001", "workspace": root,
+    })).await;
+    assert_eq!(original.assert_ok()["canonical_key"], "prd-auth-system");
+    let created = server.call_tool_json("forgeplan_get", serde_json::json!({
+        "id": "NOTE-002", "workspace": root,
+    })).await;
+    assert_eq!(created.assert_ok()["canonical_key"], "note-cache-refresh");
+}
+
+#[tokio::test]
+async fn validate_and_fpf_refuse_ambiguous_alias_and_validate_key() {
+    let fixture = McpFixture::new_with_seed(seed_two_prds_sharing_one_display_id).await;
+    for tool in ["forgeplan_validate", "forgeplan_fpf_check"] {
+        let result = fixture.call_tool_json(tool, serde_json::json!({"id": "PRD-001"})).await;
+        assert!(result.is_error, "{tool}: {}", result.raw_text);
+        for expected in ["ambiguous", "prd-alpha", "prd-beta"] {
+            assert!(result.raw_text.contains(expected), "{tool}: {}", result.raw_text);
+        }
+    }
+    assert!(forgeplan_core::phase::store::read_phase(&fixture.workspace_path, "prd-alpha").await.unwrap().is_none());
+    assert!(forgeplan_core::phase::store::read_phase(&fixture.workspace_path, "prd-beta").await.unwrap().is_none());
+    let invalid = fixture.call_tool_json("forgeplan_fpf_check", serde_json::json!({"id": "prd-alpha@other"})).await;
+    assert!(invalid.is_error && invalid.raw_text.contains("invalid_selector"), "{}", invalid.raw_text);
+    let result = fixture.call_tool_json("forgeplan_validate", serde_json::json!({"id": "prd-alpha"})).await;
+    let value = result.assert_ok();
+    assert_eq!(value["total_artifacts"], 1);
+    assert_eq!(value["results"][0]["id"], "PRD-001");
+    assert_eq!(value["results"][0]["canonical_key"], "prd-alpha");
+}
+
+#[tokio::test]
+async fn update_refuses_key_change_before_metadata_and_returns_both_identities() {
+    let fixture = McpFixture::new_with_seed(seed_two_prds_sharing_one_display_id).await;
+    let before = fixture.call_tool_json("forgeplan_get", serde_json::json!({"id": "prd-alpha"})).await;
+    let before = before.assert_ok().clone();
+    let rejected = fixture.call_tool_json("forgeplan_update", serde_json::json!({
+        "id": "prd-alpha", "title": "Changed",
+        "body": "---\nslug: prd-other\n---\n\nReplacement"
+    })).await;
+    assert!(rejected.is_error, "{}", rejected.raw_text);
+    let after = fixture.call_tool_json("forgeplan_get", serde_json::json!({"id": "prd-alpha"})).await;
+    let after = after.assert_ok();
+    assert_eq!(after["title"], before["title"]);
+    assert_eq!(after["body"], before["body"]);
+    let updated = fixture.call_tool_json("forgeplan_update", serde_json::json!({
+        "id": "prd-alpha", "title": "Changed"
+    })).await;
+    let updated = updated.assert_ok();
+    assert_eq!(updated["id"], "PRD-001");
+    assert_eq!(updated["canonical_key"], "prd-alpha");
+}
+
+#[tokio::test]
+async fn get_surfaces_keyed_claim_and_phase_for_shared_alias() {
+    let fixture = McpFixture::new_with_seed(seed_two_prds_sharing_one_display_id).await;
+    let claims = forgeplan_core::claim::ClaimStore::new(&fixture.workspace_path);
+    claims.claim_for("prd-alpha", "PRD-001", "agent/1", chrono::Duration::minutes(10), None)
+        .await.expect("claim canonical document");
+    forgeplan_core::phase::store::initialize_phase(&fixture.workspace_path, "prd-alpha", None)
+        .await.expect("initialize canonical phase");
+    let result = fixture.call_tool_json("forgeplan_get", serde_json::json!({"id": "prd-alpha"})).await;
+    assert!(!result.is_error, "{}", result.raw_text);
+    assert!(result.raw_text.contains("agent/1"), "{}", result.raw_text);
+    assert!(result.raw_text.contains("Phase:"), "{}", result.raw_text);
+}
+
+#[tokio::test]
+async fn search_rejects_bad_parameters_before_index_preparation() {
+    let fixture = McpFixture::new_with_seed(seed_two_prds_sharing_one_display_id).await;
+    let lance = fixture.workspace_path.join("lance");
+    let before = forgeplan_core::db::migrate::read_identity_v5_marker(&lance).unwrap();
+    for args in [
+        serde_json::json!({"query": "alpha", "since": "not-a-date"}),
+        serde_json::json!({"query": "alpha", "mode": "bogus"}),
+    ] {
+        let result = fixture.try_call_tool("forgeplan_search", args).await;
+        assert!(result.is_err(), "invalid parameters must be rejected");
+        assert_eq!(forgeplan_core::db::migrate::read_identity_v5_marker(&lance).unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn semantic_mode_never_reports_lexical_results_as_semantic() {
+    let fixture = McpFixture::new_with_seed(seed_two_prds_sharing_one_display_id).await;
+    let result = fixture.call_tool_json("forgeplan_search", serde_json::json!({
+        "query": "Alpha body", "mode": "semantic"
+    })).await;
+    assert!(result.is_error, "no configured backend must not yield lexical hits: {}", result.raw_text);
+    assert!(result.raw_text.contains("Semantic search is unavailable"), "{}", result.raw_text);
+}
+
+#[cfg(all(feature = "semantic-search", debug_assertions))]
+#[tokio::test]
+async fn semantic_search_filters_before_limit_and_returns_more_than_fifty() {
+    let fixture = McpFixture::new_with_seed(|store, guard| async move {
+        for i in 0..71 {
+            let low = i >= 65;
+            let kind = if low { "note" } else { "prd" };
+            let id = format!("{}-{:03}", kind.to_uppercase(), i + 1);
+            store.create_artifact_for_test(&guard, &NewArtifact {
+                canonical_key: format!("{kind}-semantic-{i:03}"),
+                id,
+                kind: kind.into(),
+                status: "draft".into(),
+                title: if low { format!("lowrank {i}") } else { format!("highrank {i}") },
+                body: "semantic test body".into(),
+                depth: if low { "deep" } else { "standard" }.into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            }).await.expect("seed semantic candidate");
+        }
+    }).await;
+    let config = fixture.workspace_path.join("config.yaml");
+    let original = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("{original}\nembedding:\n  model: forgeplan-test\n  chunk_size: 2000\n")).unwrap();
+    let backend = forgeplan_core::db::store::install_semantic_backend_for_test(
+        &fixture.workspace_path,
+        Arc::new(|text| {
+            let mut vector = vec![0.0; forgeplan_core::db::schema::EMBEDDING_DIM as usize];
+            if text.contains("lowrank") {
+                vector[0] = 0.8;
+                vector[1] = 0.6;
+            } else {
+                vector[0] = 1.0;
+            }
+            Ok(vector)
+        }),
+    ).expect("install scoped profile-bound test backend");
+    let filtered = fixture.call_tool_json("forgeplan_search", serde_json::json!({
+        "query": "rank-query", "mode": "semantic", "kind": "note",
+        "status": "draft", "depth": "deep", "since": "2020-01-01",
+        "no_evidence": true, "limit": 3, "no_expand": true
+    })).await;
+    let value = filtered.assert_ok();
+    assert_eq!(value["total"], 3);
+    assert_eq!(value["coverage"]["lexical"], false);
+    for hit in value["results"].as_array().unwrap() {
+        assert_eq!(hit["kind"], "note");
+        assert!(hit["canonical_key"].as_str().unwrap().starts_with("note-semantic-"));
+    }
+    let large = fixture.call_tool_json("forgeplan_search", serde_json::json!({
+        "query": "rank-query", "mode": "semantic", "limit": 60, "no_expand": true
+    })).await;
+    assert_eq!(large.assert_ok()["total"], 60);
+    drop(backend);
+    let unavailable = fixture.try_call_tool("forgeplan_search", serde_json::json!({
+        "query": "rank-query", "mode": "semantic", "limit": 60
+    })).await;
+    match unavailable {
+        Err(_) => {}
+        Ok(result) => assert!(result.is_error.unwrap_or(false), "missing backend must not return lexical hits"),
+    }
 }

@@ -70,11 +70,16 @@ async fn drive(pass_ws_param: bool) {
     // passing in-process variant 1. The MCP server (a DIFFERENT OS process)
     // will open the store fresh and must observe its own subsequent update.
     {
-        let store = LanceStore::init(&ws).await.expect("init store");
+        let lock = workspace::acquire_workspace_lock(&ws).await.expect("workspace lock");
+        let store = LanceStore::init_new(&ws, &lock).await.expect("init store");
         store
-            .create_artifact_for_test(&seed_artifact("PRD-700"))
+            .create_artifact_for_test(&lock, &seed_artifact("PRD-700"))
             .await
             .expect("seed PRD-700");
+        forgeplan_core::projection::render_projection(
+            &ws, "PRD-700", "prd", "Seed PRD-700", "draft", "standard",
+            Some("prob078-subproc"), None, None, TEMPLATE, &[],
+        ).await.expect("seed canonical document");
     }
 
     let root = tempdir.path().to_path_buf();

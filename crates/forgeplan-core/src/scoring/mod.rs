@@ -58,12 +58,13 @@ use crate::db::store::{LanceStore, validate_artifact_id};
 /// PRD-071 Hint Protocol so operators / agents see the recovery path.
 pub async fn sync_score_target(
     store: &LanceStore,
+    guard: &crate::workspace::lock::WorkspaceLock,
     id: &str,
 ) -> anyhow::Result<reff::AssuranceReport> {
     validate_artifact_id(id)?;
     let mut visited: HashSet<String> = HashSet::new();
-    let report = reff::r_eff_recursive(id, store, &mut visited).await?;
-    store.update_r_eff_score(id, report.r_eff).await?;
+    let report = reff::r_eff_recursive(id, store, guard, &mut visited).await?;
+    store.update_r_eff_score(guard, id, report.r_eff).await?;
     Ok(report)
 }
 
@@ -78,18 +79,18 @@ pub async fn sync_score_target(
 /// absent from the returned list — the displacement itself must never fail on
 /// a scoring hiccup. No-op for non-evidence artifacts. Transitive parents
 /// stay out of scope (see [`sync_score_target`] §3 — `score-all` covers them).
-pub async fn rescore_evidence_dependents(store: &LanceStore, evidence_id: &str) -> Vec<String> {
+pub async fn rescore_evidence_dependents(store: &LanceStore, guard: &crate::workspace::lock::WorkspaceLock, evidence_id: &str) -> Vec<String> {
     let mut rescored = Vec::new();
-    let Ok(Some(record)) = store.get_record(evidence_id).await else {
+    let Ok(Some(record)) = store.get_record(guard, evidence_id).await else {
         return rescored;
     };
     if !record.kind.eq_ignore_ascii_case("evidence") {
         return rescored;
     }
-    let outgoing = store.get_relations(evidence_id).await.unwrap_or_default();
+    let outgoing = store.get_relations(guard, evidence_id).await.unwrap_or_default();
     for (target, rel) in outgoing {
         if matches!(rel.as_str(), "informs" | "based_on" | "refines")
-            && sync_score_target(store, &target).await.is_ok()
+            && sync_score_target(store, guard, &target).await.is_ok()
         {
             rescored.push(target);
         }
@@ -107,7 +108,7 @@ mod sync_score_target_tests {
     async fn fresh_store() -> (TempDir, LanceStore) {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let store = { let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); LanceStore::init_new(&ws, &guard).await.unwrap() };
         (tmp, store)
     }
 
@@ -129,13 +130,12 @@ mod sync_score_target_tests {
 
     #[tokio::test]
     async fn sync_score_target_with_no_evidence_persists_zero() {
-        let (_dir, store) = fresh_store().await;
-        store
-            .create_artifact_for_test(&sample("PRD-AAA", "prd"))
+        let (_dir, store, guard) = { let (_dir, store) = fresh_store().await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (_dir, store, guard) };
+        store.create_artifact_for_test(&guard, &sample("PRD-AAA", "prd"))
             .await
             .unwrap();
 
-        let report = sync_score_target(&store, "PRD-AAA").await.unwrap();
+        let report = sync_score_target(&store, &guard, "PRD-AAA").await.unwrap();
 
         assert!(
             (report.r_eff - 0.0).abs() < f64::EPSILON,
@@ -146,7 +146,7 @@ mod sync_score_target_tests {
             report.artifact_id, "PRD-AAA",
             "report.artifact_id must echo input"
         );
-        let record = store.get_record("PRD-AAA").await.unwrap().unwrap();
+        let record = store.get_record(&guard, "PRD-AAA").await.unwrap().unwrap();
         assert!((record.r_eff_score - 0.0).abs() < f64::EPSILON);
     }
 
@@ -155,16 +155,15 @@ mod sync_score_target_tests {
     /// recomputed and overwritten by `sync_score_target`, not preserved.
     #[tokio::test]
     async fn sync_score_target_overwrites_stale_cached_value() {
-        let (_dir, store) = fresh_store().await;
-        store
-            .create_artifact_for_test(&sample("PRD-CCC", "prd"))
+        let (_dir, store, guard) = { let (_dir, store) = fresh_store().await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (_dir, store, guard) };
+        store.create_artifact_for_test(&guard, &sample("PRD-CCC", "prd"))
             .await
             .unwrap();
 
         // Plant a stale value as if a previous link had populated the cache,
         // then the linked evidence was removed without re-scoring.
-        store.update_r_eff_score("PRD-CCC", 0.99).await.unwrap();
-        let stale = store.get_record("PRD-CCC").await.unwrap().unwrap();
+        store.update_r_eff_score(&guard, "PRD-CCC", 0.99).await.unwrap();
+        let stale = store.get_record(&guard, "PRD-CCC").await.unwrap().unwrap();
         assert!(
             (stale.r_eff_score - 0.99).abs() < f64::EPSILON,
             "precondition: stale value planted"
@@ -172,14 +171,14 @@ mod sync_score_target_tests {
 
         // Recompute. With no evidence linked the truthful R_eff is 0.0, so
         // the helper MUST overwrite the planted 0.99.
-        let report = sync_score_target(&store, "PRD-CCC").await.unwrap();
+        let report = sync_score_target(&store, &guard, "PRD-CCC").await.unwrap();
         assert!(
             (report.r_eff - 0.0).abs() < f64::EPSILON,
             "no evidence → recomputed R_eff must be 0.0, got {}",
             report.r_eff
         );
 
-        let after = store.get_record("PRD-CCC").await.unwrap().unwrap();
+        let after = store.get_record(&guard, "PRD-CCC").await.unwrap().unwrap();
         assert!(
             (after.r_eff_score - 0.0).abs() < f64::EPSILON,
             "stale cache must be overwritten in storage, got {}",
@@ -189,8 +188,8 @@ mod sync_score_target_tests {
 
     #[tokio::test]
     async fn sync_score_target_unknown_id_returns_error() {
-        let (_dir, store) = fresh_store().await;
-        let result = sync_score_target(&store, "PRD-NONEXISTENT").await;
+        let (_dir, store, guard) = { let (_dir, store) = fresh_store().await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (_dir, store, guard) };
+        let result = sync_score_target(&store, &guard, "PRD-NONEXISTENT").await;
         let err = result.expect_err("unknown artifact must surface as Err");
         let msg = err.to_string();
         assert!(
@@ -204,9 +203,9 @@ mod sync_score_target_tests {
     /// `r_eff_recursive`'s SQL escaping layer.
     #[tokio::test]
     async fn sync_score_target_rejects_malformed_id() {
-        let (_dir, store) = fresh_store().await;
+        let (_dir, store, guard) = { let (_dir, store) = fresh_store().await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (_dir, store, guard) };
         for bad in ["", "PRD'; DROP--", "../../../etc/passwd", "PRD-001\0evil"] {
-            let result = sync_score_target(&store, bad).await;
+            let result = sync_score_target(&store, &guard, bad).await;
             assert!(
                 result.is_err(),
                 "malformed id {bad:?} must be rejected before recursion"
@@ -222,25 +221,21 @@ mod sync_score_target_tests {
     /// rejects self-links at the relation level.
     #[tokio::test]
     async fn sync_score_target_circular_dependency_terminates() {
-        let (_dir, store) = fresh_store().await;
-        store
-            .create_artifact_for_test(&sample("PRD-LOOP-A", "prd"))
+        let (_dir, store, guard) = { let (_dir, store) = fresh_store().await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (_dir, store, guard) };
+        store.create_artifact_for_test(&guard, &sample("PRD-LOOP-A", "prd"))
             .await
             .unwrap();
-        store
-            .create_artifact_for_test(&sample("PRD-LOOP-B", "prd"))
+        store.create_artifact_for_test(&guard, &sample("PRD-LOOP-B", "prd"))
             .await
             .unwrap();
-        store
-            .add_relation_for_test("PRD-LOOP-A", "PRD-LOOP-B", "informs")
+        store.add_relation_for_test(&guard, "PRD-LOOP-A", "PRD-LOOP-B", "informs")
             .await
             .unwrap();
-        store
-            .add_relation_for_test("PRD-LOOP-B", "PRD-LOOP-A", "informs")
+        store.add_relation_for_test(&guard, "PRD-LOOP-B", "PRD-LOOP-A", "informs")
             .await
             .unwrap();
 
-        let report = sync_score_target(&store, "PRD-LOOP-A").await.unwrap();
+        let report = sync_score_target(&store, &guard, "PRD-LOOP-A").await.unwrap();
         assert!(
             (0.0..=1.0).contains(&report.r_eff),
             "circular dependency produced out-of-range r_eff = {}",

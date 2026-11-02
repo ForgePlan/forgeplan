@@ -267,7 +267,7 @@ fn score_evidence_full(e: &EvidenceItem) -> f64 {
 pub enum AssuranceSource<'a> {
     /// The legacy Lance projection, for a workspace Constellation has not
     /// claimed.
-    Store(&'a LanceStore),
+    Store(&'a LanceStore, &'a dyn crate::workspace::lock::WorkspaceReadPermit),
     /// One captured/pinned read view of the canonical Markdown, for a
     /// workspace the constellation protocol owns.
     Read(&'a WorkspaceRead),
@@ -277,7 +277,7 @@ impl AssuranceSource<'_> {
     /// Outgoing `(target, relation)` edges of one artifact.
     async fn outgoing(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         match self {
-            Self::Store(store) => store.get_relations(id).await,
+            Self::Store(store, permit) => store.get_relations(*permit, id).await,
             Self::Read(read) => Ok(read.get_relations(id)),
         }
     }
@@ -285,7 +285,7 @@ impl AssuranceSource<'_> {
     /// Incoming `(source, relation)` edges of one artifact.
     async fn incoming(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         match self {
-            Self::Store(store) => store.get_incoming_relations(id).await,
+            Self::Store(store, permit) => store.get_incoming_relations(*permit, id).await,
             Self::Read(read) => Ok(read.get_incoming_relations(id)),
         }
     }
@@ -298,7 +298,7 @@ impl AssuranceSource<'_> {
             status: None,
         };
         match self {
-            Self::Store(store) => store.list_records(Some(&filter)).await,
+            Self::Store(store, permit) => store.list_records(*permit, Some(&filter)).await,
             Self::Read(read) => Ok(read.list_records(Some(&filter))),
         }
     }
@@ -310,7 +310,7 @@ impl AssuranceSource<'_> {
     /// unresolved edge masquerade as a Note exempt from evidence.
     async fn record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
         match self {
-            Self::Store(store) => store.get_record(id).await,
+            Self::Store(store, permit) => store.get_record(*permit, id).await,
             Self::Read(read) => Ok(read.get_record(id).cloned()),
         }
     }
@@ -318,7 +318,7 @@ impl AssuranceSource<'_> {
     /// Every edge in the graph, as `(source, target, relation)`.
     async fn all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
         match self {
-            Self::Store(store) => store.get_all_relations().await,
+            Self::Store(store, permit) => store.get_all_relations(*permit).await,
             Self::Read(read) => Ok(read.get_all_relations()),
         }
     }
@@ -328,14 +328,12 @@ impl AssuranceSource<'_> {
     /// Relation endpoints are canonical keys (ADR-030); a caller may still
     /// hold a display id. Both the evidence comparison and the link count
     /// need the key, and neither may assume one layout.
-    async fn canonical_key_of(&self, id: &str) -> Option<String> {
+    async fn canonical_key_of(&self, id: &str) -> anyhow::Result<Option<String>> {
         match self {
-            Self::Store(store) => store.resolve_canonical_key(id).await.ok().flatten(),
-            Self::Read(read) => read
-                .resolve_artifact(id)
-                .ok()
-                .flatten()
-                .map(|resolved| resolved.identity.canonical_key),
+            Self::Store(store, permit) => store.resolve_canonical_key(*permit, id).await,
+            Self::Read(read) => Ok(read.resolve_artifact(id)
+                .map_err(|error| anyhow::anyhow!("{error}"))?
+                .map(|resolved| resolved.identity.canonical_key)),
         }
     }
 }
@@ -352,9 +350,10 @@ impl AssuranceSource<'_> {
 pub async fn r_eff_recursive(
     artifact_id: &str,
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     visited: &mut HashSet<String>,
 ) -> anyhow::Result<AssuranceReport> {
-    assurance_recursive(artifact_id, &AssuranceSource::Store(store), visited).await
+    assurance_recursive(artifact_id, &AssuranceSource::Store(store, permit), visited).await
 }
 
 /// The same [`AssuranceReport`], computed over one captured/pinned read view
@@ -403,7 +402,7 @@ pub async fn linked_evidence_items(
 
     // The relation endpoints are canonical keys; the evidence records carry
     // both, so the comparison is made on the key.
-    let target_key = source.canonical_key_of(target_id).await;
+    let target_key = source.canonical_key_of(target_id).await?;
     let mut items = Vec::new();
     for record in source.evidence_records().await? {
         let linked = evidence_targets
@@ -431,7 +430,7 @@ pub async fn relation_link_count(
     target_id: &str,
 ) -> anyhow::Result<usize> {
     // The edges name canonical keys; the caller may hold a display id.
-    let Some(key) = source.canonical_key_of(target_id).await else {
+    let Some(key) = source.canonical_key_of(target_id).await? else {
         return Ok(0);
     };
     Ok(source

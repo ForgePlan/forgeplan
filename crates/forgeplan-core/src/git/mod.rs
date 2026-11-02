@@ -149,46 +149,73 @@ pub fn merge_base(repo_root: &Path, ref_name: &str) -> Option<String> {
     }
 }
 
-/// Detect .forgeplan/ files changed between two git refs (or since last N commits).
-/// Returns A/M/D paths; rename detection is disabled so no path is hidden in R rows.
-pub fn changed_artifact_files(
-    repo_root: &Path,
-    since_ref: &str,
-) -> anyhow::Result<Vec<GitChangedFile>> {
+/// Detect changed Markdown paths between pinned Git commits. Paths are read
+/// from NUL-delimited output and are never inferred from quoted filenames.
+pub fn changed_artifact_files(repo_root: &Path, since_ref: &str) -> anyhow::Result<Vec<GitChangedFile>> {
+    fn commit(repo: &Path, reference: &str) -> anyhow::Result<String> {
+        // Git parses the expression after `--end-of-options`; reject options,
+        // ranges and control bytes while retaining valid revision operators.
+        if reference.is_empty() || reference.starts_with('-') || reference.contains("..")
+            || reference.bytes().any(|byte| byte.is_ascii_control())
+        {
+            anyhow::bail!("invalid Git revision");
+        }
+        let expression = format!("{reference}^{{commit}}");
+        let result = Command::new("git")
+            .args(["rev-parse", "--verify", "--end-of-options", &expression])
+            .current_dir(repo)
+            .output()?;
+        if !result.status.success() {
+            anyhow::bail!("git rev-parse failed: {}", String::from_utf8_lossy(&result.stderr));
+        }
+        let mut lines = std::str::from_utf8(&result.stdout)?.lines();
+        let output = lines.next().ok_or_else(|| anyhow::anyhow!("git returned no commit object id"))?;
+        if lines.next().is_some() || !matches!(output.len(), 40 | 64)
+            || !output.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            anyhow::bail!("git returned an invalid commit object id");
+        }
+        Ok(output.to_owned())
+    }
+    let base = commit(repo_root, since_ref)?;
+    let head = commit(repo_root, "HEAD")?;
     let output = Command::new("git")
-        .args([
-            "diff",
-            "--name-status",
-            "--no-renames",
-            since_ref,
-            "HEAD",
-            "--",
-            ".forgeplan/",
-        ])
+        .args(["diff", "--name-status", "-z", "--no-renames", &base, &head, "--", ".forgeplan/"])
         .current_dir(repo_root)
         .output()
         .map_err(|e| anyhow::anyhow!("Failed to run git (is git installed?): {}", e))?;
-
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git diff failed: {}", stderr);
+        anyhow::bail!("git diff failed: {}", String::from_utf8_lossy(&output.stderr));
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.stdout.is_empty() && output.stdout.last() != Some(&0) {
+        anyhow::bail!("git diff output is truncated");
+    }
+    let mut tokens = output.stdout.split(|b| *b == 0);
     let mut files = Vec::new();
-
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.splitn(2, '\t').collect();
-        if parts.len() == 2 {
-            let status = parts[0].chars().next().unwrap_or('M');
-            let path = parts[1].to_string();
-            // Only .md files in artifact dirs
-            if path.ends_with(".md") {
-                files.push(GitChangedFile { path, status });
+    while let Some(status) = tokens.next() {
+        if status.is_empty() {
+            if tokens.next().is_some() {
+                anyhow::bail!("git diff contains an empty record");
             }
+            break;
+        }
+        let path = std::str::from_utf8(tokens.next().ok_or_else(|| anyhow::anyhow!("git diff path is missing"))?)?;
+        let relative = Path::new(path);
+        if !path.starts_with(".forgeplan/") || relative.is_absolute()
+            || relative.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            anyhow::bail!("git diff contains an invalid artifact path");
+        }
+        if path.ends_with(".md") {
+            let status = match status {
+                b"A" => 'A',
+                b"M" => 'M',
+                b"D" => 'D',
+                _ => anyhow::bail!("git diff contains an unsupported artifact change status"),
+            };
+            files.push(GitChangedFile { path: path.to_owned(), status });
         }
     }
-
     Ok(files)
 }
 
@@ -659,6 +686,59 @@ mod tests {
             .collect::<Vec<_>>();
         paths.sort_unstable();
         assert_eq!(paths, vec![('A', new_path), ('D', old_path)]);
+    }
+
+    #[test]
+    fn changed_artifact_files_preserves_unicode_and_tab_paths() {
+        let old = ".forgeplan/notes/старый\tfile.md";
+        let new = ".forgeplan/notes/новый\tfile.md";
+        let repo = init_repo_with_files(&[(old, "---\nid: NOTE-001\n---\nbody\n")]);
+        std::fs::rename(repo.path().join(old), repo.path().join(new)).unwrap();
+        run_git(repo.path(), &["add", "-A"]);
+        run_git(repo.path(), &["commit", "-q", "-m", "rename"]);
+        let files = changed_artifact_files(repo.path(), "HEAD~1").unwrap();
+        assert!(files.iter().any(|file| file.status == 'D' && file.path == old));
+        assert!(files.iter().any(|file| file.status == 'A' && file.path == new));
+    }
+
+    #[test]
+    fn changed_artifact_files_accepts_standard_git_revision_expressions() {
+        let path = ".forgeplan/notes/note.md";
+        let repo = init_repo_with_files(&[(path, "initial")]);
+        for body in ["one", "two", "three"] {
+            std::fs::write(repo.path().join(path), body).unwrap();
+            run_git(repo.path(), &["add", path]);
+            run_git(repo.path(), &["commit", "-q", "-m", body]);
+        }
+        run_git(repo.path(), &["tag", "stable"]);
+        for revision in ["HEAD^", "stable^0", "dev~2^"] {
+            let files = changed_artifact_files(repo.path(), revision).unwrap();
+            if revision == "stable^0" {
+                assert!(files.is_empty());
+            } else {
+                assert!(files.iter().any(|file| file.status == 'M' && file.path == path));
+            }
+        }
+    }
+
+    #[test]
+    fn changed_artifact_files_refuses_revision_options_and_ranges() {
+        let repo = temp_repo();
+        assert!(changed_artifact_files(repo.path(), "--output=/tmp/unsafe").is_err());
+        assert!(changed_artifact_files(repo.path(), "HEAD~1..HEAD").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn changed_artifact_files_refuses_non_utf8_paths() {
+        use std::os::unix::ffi::OsStrExt;
+        let repo = temp_repo();
+        let dir = repo.path().join(".forgeplan/notes");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(std::ffi::OsStr::from_bytes(b"bad-\xff.md")), b"body").unwrap();
+        run_git(repo.path(), &["add", "-A"]);
+        run_git(repo.path(), &["commit", "-q", "-m", "non utf8"]);
+        assert!(changed_artifact_files(repo.path(), "HEAD~1").is_err());
     }
 
     // PROB-060 / SPEC-005 Phase 1.3 — slug_exists_in_filenames pure function.

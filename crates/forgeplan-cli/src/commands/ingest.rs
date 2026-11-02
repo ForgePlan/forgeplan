@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use console::style;
-use forgeplan_core::workspace::lock::WorkspaceLock;
 use serde_json::json;
 
 // =====================================================================
@@ -115,13 +114,11 @@ fn read_source_with_limits(path: &Path) -> Result<String> {
 use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::{LanceStore, NewArtifact};
 use forgeplan_core::hints::{self, Hint};
-use forgeplan_core::ingest::idempotency::IngestCandidates;
+use forgeplan_core::ingest::idempotency::{draft_artifact_kind, plan_drafts, PlannedAction, PlannedDraft};
 use forgeplan_core::ingest::{
-    ArtifactTargetKind, DraftLink, IfExists, IngestArtifactDraft, IngestEngine, IngestOptions,
-    IngestReport, Mapping, ParsedSource, SourceSpec, UpdateDecision, artifact_needs_update,
-    exceeds_nesting_depth, parser_for,
+    ArtifactTargetKind, IngestArtifactDraft, IngestEngine, IngestOptions,
+    IngestReport, Mapping, ParsedSource, SourceSpec, exceeds_nesting_depth, parser_for,
 };
-use forgeplan_core::link;
 use forgeplan_core::projection;
 
 use crate::commands::common;
@@ -227,64 +224,95 @@ pub async fn run(
         return print_dry_run(&report, json);
     }
 
-    // ── 6. Write drafts to workspace ───────────────────────────────────────
-    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
-
+    // Plan the entire batch while holding both locks. The first plan reads the
+    // pre-migration index; a changed second plan is refused before any document
+    // is written.
+    let ws = common::find_workspace_path()?;
+    let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws).await?;
+    let kinds: Vec<_> = report.drafts.iter().map(|draft| draft_artifact_kind(&draft.kind)).collect();
+    let allocation = forgeplan_core::artifact::id_alloc::acquire_allocation_guard(&ws, &lock, &kinds).await?;
+    let before_store = if common::index_migrated(&ws) {
+        None
+    } else {
+        Some(LanceStore::open(&ws).await?)
+    };
+    let before = plan_drafts(&ws, &lock, &allocation, before_store.as_ref(), &report.drafts, update, None).await?;
+    drop(before_store);
+    let all_skipped = before.iter().all(|planned| matches!(&planned.action, PlannedAction::Skip { .. }));
+    if !all_skipped {
+        common::ensure_ordinary_mutation_allowed(&ws)?;
+    }
+    let store = if common::index_migrated(&ws) || all_skipped {
+        None
+    } else {
+        Some(LanceStore::open_for_write(&ws, &lock).await?)
+    };
+    let migrated = common::index_migrated(&ws);
+    let plan = if all_skipped {
+        before
+    } else {
+        plan_drafts(&ws, &lock, &allocation, store.as_ref(), &report.drafts, update, Some(&before)).await?
+    };
+    let ctx = projection::MutationContext::new(&ws, &lock, store.as_ref());
     let mut written: Vec<WrittenArtifact> = Vec::new();
     let mut skipped_existing: Vec<String> = Vec::new();
     let mut write_errors: Vec<String> = Vec::new();
-    let mut wrote_anything = false;
-    // Keep a failed read in the existing per-draft write-error channel; it
-    // must not become an empty workspace or bypass the JSON error report.
-    let ctx = projection::MutationContext::new(&ws, &lock, store.as_ref());
-    let mut candidates = if report.drafts.is_empty() {
-        Ok(IngestCandidates::default())
-    } else {
-        IngestCandidates::load(&ctx).await
-    };
-
-    for draft in &report.drafts {
-        let outcome = match &mut candidates {
-            Ok(candidates) => {
-                write_draft(&ws, &lock, store.as_ref(), candidates, draft, update).await
+    let mut attempted = false;
+    // All documents exist before any link is written, including forward links
+    // to another draft in this batch.
+    for (draft, planned) in report.drafts.iter().zip(&plan) {
+        if let PlannedAction::Skip { id, .. } = &planned.action {
+            skipped_existing.push(format!("{id} skipped by ingest plan"));
+            continue;
+        }
+        if let Err(error) = common::ensure_ordinary_mutation_allowed(&ws) {
+            write_errors.push(format!("mutation refused: {error:#}"));
+            break;
+        }
+        attempted = true;
+        match write_planned_draft(&ctx, &allocation, draft, planned).await {
+            Ok(id) => written.push(WrittenArtifact {
+                id,
+                kind: kind_label(&draft.kind),
+                title: draft.title.clone(),
+                rule_id: draft.rule_id.clone(),
+                source_path: draft.source_path.clone(),
+            }),
+            Err(error) => {
+                write_errors.push(format!("{}: {error:#}; canonical mutation may have committed, semantic backlog may be pending", draft.title));
+                break;
             }
-            Err(error) => Err(anyhow::anyhow!("{error}")),
-        };
-        match outcome {
-            Ok(WriteOutcome::Created(id)) => {
-                wrote_anything = true;
-                written.push(WrittenArtifact {
-                    id,
-                    kind: kind_label(&draft.kind),
-                    title: draft.title.clone(),
-                    rule_id: draft.rule_id.clone(),
-                    source_path: draft.source_path.clone(),
-                });
-            }
-            Ok(WriteOutcome::Updated(id)) => {
-                wrote_anything = true;
-                written.push(WrittenArtifact {
-                    id,
-                    kind: kind_label(&draft.kind),
-                    title: draft.title.clone(),
-                    rule_id: draft.rule_id.clone(),
-                    source_path: draft.source_path.clone(),
-                });
-            }
-            Ok(WriteOutcome::Skipped(reason)) => skipped_existing.push(reason),
-            Err(e) => write_errors.push(format!("{}: {}", draft.title, e)),
         }
     }
-
-    // One reconcile for the whole run, not one per draft — the capture reads
-    // the entire workspace, so batching is what keeps an N-draft ingest from
-    // becoming N publications. The lock is released first: the pass
-    // re-acquires it per storage commit and a held guard would deadlock it
-    // for the full 30 s timeout.
-    if store.is_none() && wrote_anything {
+    if write_errors.is_empty() {
+        'links: for (draft, planned) in report.drafts.iter().zip(&plan) {
+            let source = match &planned.action {
+                PlannedAction::Skip { .. } => continue,
+                PlannedAction::Create { key, .. } | PlannedAction::Update { key, .. } => key,
+            };
+            for link in &planned.links {
+                if let Err(error) = common::ensure_ordinary_mutation_allowed(&ws) {
+                    write_errors.push(format!("mutation refused: {error:#}"));
+                    break 'links;
+                }
+                attempted = true;
+                if let Err(error) = projection::add_link_with_projection(&ctx, source, &link.target, &link.relation).await {
+                    write_errors.push(format!("{}: {error:#}; canonical mutation may have committed, semantic backlog may be pending", draft.title));
+                    break 'links;
+                }
+            }
+        }
+    }
+    drop(store);
+    drop(allocation);
+    drop(lock);
+    if attempted && migrated {
         common::note_constellation_owns_index();
-        drop(lock);
         common::reconcile_after_file_mutation(&ws).await;
+    } else if attempted {
+        if let Err(error) = common::drain_legacy_semantic_after_mutation(&ws).await {
+            write_errors.push(format!("{error:#}"));
+        }
     }
 
     // ── 7. Emit report ─────────────────────────────────────────────────────
@@ -311,12 +339,13 @@ pub async fn run(
         print_json(&payload);
     } else {
         print_text_report(&report, &written, &skipped_existing, &write_errors);
-        match next_action {
-            Some(cmd) => {
+        match (had_write_errors || had_apply_errors, next_action) {
+            (false, Some(cmd)) => {
                 let h: Vec<Hint> = vec![Hint::info("Validate the new artifact").with_action(cmd)];
                 print!("{}", hints::render_next_action_line(&h));
             }
-            None => println!("\nDone."),
+            (false, None) => println!("\nDone."),
+            (true, _) => {}
         }
     }
 
@@ -530,70 +559,27 @@ fn matcher(p: &[char], pi: usize, t: &[char], ti: usize) -> bool {
 // Draft writes (artifact + links)
 // ────────────────────────────────────────────────────────────────────────────
 
-enum WriteOutcome {
-    Created(String),
-    Updated(String),
-    Skipped(String),
-}
-
-/// Write a single draft to LanceDB + markdown projection. Honours
-/// idempotency (`source_hash`) and `--update` flag (PRD-066 AC-3).
-///
-/// `store` is `None` on a constellation-migrated workspace: there the
-/// canonical markdown is the whole mutation and the reconcile pass publishes
-/// the derived row, so no legacy store is opened to check idempotency or
-/// allocate an id.
-async fn write_draft(
-    ws: &Path,
-    guard: &WorkspaceLock,
-    store: Option<&LanceStore>,
-    candidates: &mut IngestCandidates,
+async fn write_planned_draft(
+    ctx: &projection::MutationContext<'_>,
+    allocation: &forgeplan_core::artifact::id_alloc::AllocationGuard,
     draft: &IngestArtifactDraft,
-    allow_update: bool,
-) -> Result<WriteOutcome> {
-    let kind = artifact_kind_from_draft(&draft.kind);
-    let template_key = kind.template_key();
-
-    // The shared operation-local index checks every hash-bearing candidate
-    // before considering an update, so an unmarked title collision cannot
-    // hide an import created by a preceding draft or invocation.
-    if let Some(existing) = candidates.matching(template_key, draft) {
-        let decision = artifact_needs_update(Some(&existing.source_hash), &draft.source_hash);
-        match decision {
-            UpdateDecision::Skip => {
-                return Ok(WriteOutcome::Skipped(format!(
-                    "{} unchanged (hash match)",
-                    existing.id
-                )));
-            }
-            UpdateDecision::Update if !allow_update => {
-                return Ok(WriteOutcome::Skipped(format!(
-                    "{} differs but --update not passed",
-                    existing.id
-                )));
-            }
-            UpdateDecision::Update => {
-                update_existing(ws, guard, store, &existing.id, draft).await?;
-                existing.source_hash.clone_from(&draft.source_hash);
-                add_links(ws, guard, store, &existing.id, &draft.links).await;
-                return Ok(WriteOutcome::Updated(existing.id.clone()));
-            }
-            UpdateDecision::Create => {
-                // Stale title-collision with no hash marker — fall through to create.
-            }
-            // `UpdateDecision` is `#[non_exhaustive]` (Audit Round 2 T-H4):
-            // unknown variants fall through to the create path so a stale
-            // CLI build still produces an artifact rather than silently
-            // dropping the draft.
-            _ => {}
+    planned: &PlannedDraft,
+) -> Result<String> {
+    let (id, key) = match &planned.action {
+        PlannedAction::Skip { .. } => anyhow::bail!("cannot write a skipped draft"),
+        PlannedAction::Update { id, key } => {
+            projection::update_body_with_projection(ctx, key, &draft.body).await?;
+            common::log_change(ctx.workspace, ctx.guard, ctx.legacy_sink, id, "ingest_update", "cli").await;
+            return Ok(id.clone());
         }
-    }
-
+        PlannedAction::Create { id, key } => (id, key),
+    };
+    let kind = draft_artifact_kind(&draft.kind);
     let build = |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
         Ok(NewArtifact {
             canonical_key: canonical_key.to_string(),
             id: id.to_string(),
-            kind: template_key.to_string(),
+            kind: kind.template_key().to_string(),
             status: "draft".to_string(),
             title: draft.title.clone(),
             body: draft.body.clone(),
@@ -604,119 +590,12 @@ async fn write_draft(
             tags: vec![format!("source=ingest:{}", draft.rule_id)],
         })
     };
-    let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
-        ws,
-        guard,
-        store,
-        &kind,
-        3,
-        &draft.title,
-        &build,
-    )
-    .await
-    .with_context(|| format!("create canonical-key artifact for {}", draft.title))?;
-    let id = created.id;
-    let path = created.filepath;
-    candidates.record_written(template_key, draft, id.clone(), path);
-
-    common::log_change(ws, store, &id, "ingest_create", "cli").await;
-
-    add_links(ws, guard, store, &id, &draft.links).await;
-
-    Ok(WriteOutcome::Created(id))
-}
-
-async fn update_existing(
-    ws: &Path,
-    guard: &WorkspaceLock,
-    store: Option<&LanceStore>,
-    id: &str,
-    draft: &IngestArtifactDraft,
-) -> Result<()> {
-    // PRD-073 Phase 3b: file-first body update — helper writes file then DB.
-    // With no store the markdown body IS the row.
-    projection::update_body_with_projection(
-        &projection::MutationContext::new(ws, guard, store),
-        id,
-        &draft.body,
-    )
-    .await
-    .with_context(|| format!("update_body_with_projection failed for {id}"))?;
-    common::log_change(ws, store, id, "ingest_update", "cli").await;
-    Ok(())
-}
-
-/// Add each draft link to the source artifact's projection. Honours the
-/// per-link [`IfExists`] policy and silently skips missing target IDs (the
-/// link target may itself be a draft from the same ingest run).
-async fn add_links(
-    ws: &Path,
-    guard: &WorkspaceLock,
-    store: Option<&LanceStore>,
-    source_id: &str,
-    links: &[DraftLink],
-) {
-    if links.is_empty() {
-        return;
-    }
-    // Resolve the source's canonical file. On a migrated workspace there is
-    // no row to derive `(kind, title)` from, and the file-first resolver
-    // binds exactly the file the index would have — which is also where the
-    // best-effort frontmatter mirror below has to write.
-    let path = match forgeplan_core::artifact::store::resolve_artifact_path(ws, source_id).await {
-        Some(path) => path,
-        None => return,
-    };
-
-    for lnk in links {
-        let relation = match link::normalize_relation(&lnk.relation) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        // File-first helper updates only the source's outgoing links.
-        if let Err(e) = projection::add_link_with_projection(
-            &projection::MutationContext::new(ws, guard, store),
-            source_id,
-            &lnk.target,
-            &relation,
-        )
-        .await
-        {
-            match lnk.if_exists {
-                IfExists::Skip => {}
-                IfExists::Warn => eprintln!(
-                    "  {} link {} -> {} ({}) skipped: {}",
-                    style("⚠").yellow(),
-                    source_id,
-                    lnk.target,
-                    relation,
-                    e
-                ),
-                IfExists::Error => eprintln!(
-                    "  {} link {} -> {} ({}) error: {}",
-                    style("✗").red(),
-                    source_id,
-                    lnk.target,
-                    relation,
-                    e
-                ),
-                // `IfExists` is `#[non_exhaustive]` (Audit Round 2 T-H4):
-                // future policies (`Merge`, `Defer`) fall back to the
-                // safest behaviour — silently skip — until the CLI grows
-                // explicit handling.
-                _ => {}
-            }
-        }
-        // Best-effort frontmatter mirror; ignore errors so we don't half-write.
-        //
-        // Store-backed layouts only: with a `None` sink
-        // `add_link_with_projection` has already written this exact edge
-        // into the file, and repeating it here would be a second writer
-        // touching the same bytes for no observable gain.
-        if store.is_some() && path.exists() {
-            let _ = link::add_link(&path, &lnk.target, &relation).await;
-        }
-    }
+    let created = forgeplan_core::artifact::id_alloc::create_artifact_with_prepared_key(
+        ctx.workspace, ctx.guard, allocation, ctx.legacy_sink, &kind, 3,
+        key.clone(), id, &build,
+    ).await?;
+    common::log_change(ctx.workspace, ctx.guard, ctx.legacy_sink, &created.id, "ingest_create", "cli").await;
+    Ok(created.id)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -889,19 +768,6 @@ fn kind_label(k: &ArtifactTargetKind) -> String {
     .to_string()
 }
 
-fn artifact_kind_from_draft(k: &ArtifactTargetKind) -> ArtifactKind {
-    match k {
-        ArtifactTargetKind::Prd => ArtifactKind::Prd,
-        ArtifactTargetKind::Adr => ArtifactKind::Adr,
-        ArtifactTargetKind::Epic => ArtifactKind::Epic,
-        ArtifactTargetKind::Note => ArtifactKind::Note,
-        ArtifactTargetKind::Spec => ArtifactKind::Spec,
-        ArtifactTargetKind::Problem => ArtifactKind::ProblemCard,
-        // `ArtifactTargetKind` is `#[non_exhaustive]` (Audit Round 2):
-        // fall back to `Note` (lowest-trust artifact) on unknown variants.
-        _ => ArtifactKind::Note,
-    }
-}
 
 fn default_depth_for(kind: &ArtifactKind) -> &'static str {
     match kind {
@@ -974,15 +840,15 @@ mod tests {
     #[test]
     fn artifact_kind_from_draft_maps_each_variant() {
         assert!(matches!(
-            artifact_kind_from_draft(&ArtifactTargetKind::Prd),
+            draft_artifact_kind(&ArtifactTargetKind::Prd),
             ArtifactKind::Prd
         ));
         assert!(matches!(
-            artifact_kind_from_draft(&ArtifactTargetKind::Problem),
+            draft_artifact_kind(&ArtifactTargetKind::Problem),
             ArtifactKind::ProblemCard
         ));
         assert!(matches!(
-            artifact_kind_from_draft(&ArtifactTargetKind::Note),
+            draft_artifact_kind(&ArtifactTargetKind::Note),
             ArtifactKind::Note
         ));
     }

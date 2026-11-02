@@ -5,26 +5,30 @@ use crate::commands::common;
 
 /// `forgeplan blocked [id] [--json]` — show blocked artifacts and their dependencies.
 pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (workspace, source, _read_guard) = common::open_read_source().await?;
     let all_relations = match &source {
-        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Legacy(store) => store.get_all_relations(&_read_guard).await?,
         common::ReadSource::Captured(read) => read.get_all_relations(),
     };
     let legacy_records;
     let all_records = match &source {
         common::ReadSource::Legacy(store) => {
-            legacy_records = store.list_records(None).await?;
+            legacy_records = store.list_records(&_read_guard, None).await?;
             legacy_records.as_slice()
         }
         common::ReadSource::Captured(read) => read.records(),
     };
-    let resolved_ids = common::resolved_ids(all_records);
-    // The relations are stored under the canonical key; the report names the
-    // documents by their display id.
-    let all_relations = common::relations_by_display_id(&all_relations, all_records);
+    let resolved_ids = all_records.iter()
+        .filter(|r| matches!(r.status.as_str(), "active" | "deprecated" | "superseded"))
+        .map(|r| r.canonical_key.clone()).collect();
+    let display_by_key: std::collections::HashMap<&str, &str> = all_records.iter()
+        .map(|r| (r.canonical_key.as_str(), r.id.as_str())).collect();
+    let display = |key: &str| display_by_key.get(key).copied().unwrap_or(key).to_string();
+    let display_list = |keys: &[String]| keys.iter().map(|key| display(key)).collect::<Vec<_>>();
 
-    if let Some(artifact_id) = id {
-        let blocked_by = topological::get_blocked_by(artifact_id, &all_relations, &resolved_ids);
+    if let Some(selector) = id {
+        let (artifact_id, _) = common::resolve_required_identity(&source, &workspace, selector).await?;
+        let blocked_by = topological::get_blocked_by(&artifact_id, &all_relations, &resolved_ids);
 
         // Compose hints: surface the activate-the-draft suggestion from
         // blocked_hints when there are blockers. When the artifact has no
@@ -34,7 +38,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         for dep in &blocked_by {
             let status = all_records
                 .iter()
-                .find(|r| r.id.eq_ignore_ascii_case(dep))
+                .find(|r| r.canonical_key == *dep)
                 .map(|r| r.status.as_str())
                 .unwrap_or("unknown");
             blocker_pairs.push((dep.clone(), status.to_string()));
@@ -43,9 +47,11 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
 
         if json {
             let data = serde_json::json!({
-                "id": artifact_id,
+                "id": display(&artifact_id),
+                "canonical_key": artifact_id,
                 "blocked": !blocked_by.is_empty(),
-                "blocked_by": blocked_by,
+                "blocked_by": display_list(&blocked_by),
+                "canonical_blocked_by": blocked_by,
                 "_next_action": hints::primary_action(&hint_list),
                 "hints": hint_list,
             });
@@ -53,14 +59,14 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
             return Ok(());
         }
         if blocked_by.is_empty() {
-            println!("  {} is NOT blocked (all dependencies met)", artifact_id);
+            println!("  {} is NOT blocked (all dependencies met)", display(&artifact_id));
             println!();
             println!("Done.");
             return Ok(());
         } else {
-            println!("  {} is BLOCKED by:", artifact_id);
+            println!("  {} is BLOCKED by:", display(&artifact_id));
             for (dep, status) in &blocker_pairs {
-                println!("    -> {} ({})", dep, status);
+                println!("    -> {} ({})", display(dep), status);
             }
             if !hint_list.is_empty() {
                 print!("{}", forgeplan_core::hints::format_hints(&hint_list));
@@ -89,9 +95,11 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
 
         if json {
             let data = serde_json::json!({
-                "cycles": result.cycles,
-                "blocked": result.blocked.iter().map(|(id, deps)| serde_json::json!({"id": id, "blocked_by": deps})).collect::<Vec<_>>(),
-                "ready": result.ready,
+                "cycles": result.cycles.iter().map(|cycle| display_list(cycle)).collect::<Vec<_>>(),
+                "canonical_cycles": result.cycles,
+                "blocked": result.blocked.iter().map(|(id, deps)| serde_json::json!({"id": display(id), "canonical_key": id, "blocked_by": display_list(deps), "canonical_blocked_by": deps})).collect::<Vec<_>>(),
+                "ready": display_list(&result.ready),
+                "canonical_ready": result.ready,
                 "ready_count": result.ready.len(),
                 "blocked_count": result.blocked.len(),
                 "_next_action": hints::primary_action(&hint_list),
@@ -104,7 +112,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         if !result.cycles.is_empty() {
             println!("  Warning: Cycles detected:");
             for cycle in &result.cycles {
-                println!("    {}", cycle.join(" -> "));
+                println!("    {}", display_list(cycle).join(" -> "));
             }
             println!();
         }
@@ -114,7 +122,7 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         } else {
             println!("  Blocked artifacts:");
             for (id, blockers) in &result.blocked {
-                println!("    {} <- blocked by: {}", id, blockers.join(", "));
+                println!("    {} <- blocked by: {}", display(id), display_list(blockers).join(", "));
             }
         }
 

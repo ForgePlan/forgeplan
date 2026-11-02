@@ -19,18 +19,14 @@ pub async fn run(
     complexity_overrides: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
 
     // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    let canonical = match &source {
-        common::ReadSource::Legacy(store) => store.resolve_id(id).await?,
-        common::ReadSource::Captured(read) => read.resolve_id(id),
-    }
-    .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let (canonical, _) = common::resolve_required_identity(&source, &ws, id).await?;
     let id = canonical.as_str();
 
     let record: Cow<'_, ArtifactRecord> = match &source {
-        common::ReadSource::Legacy(store) => store.get_record(id).await?.map(Cow::Owned),
+        common::ReadSource::Legacy(store) => store.get_record(&_read_guard, id).await?.map(Cow::Owned),
         common::ReadSource::Captured(read) => read.get_record(id).map(Cow::Borrowed),
     }
     .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", id))?;
@@ -130,12 +126,12 @@ pub async fn run(
     // evidence that no Spec or Evidence is linked.
     let (outgoing, incoming) = match &source {
         common::ReadSource::Legacy(store) => (
-            store.get_relations(&record.id).await?,
-            store.get_incoming_relations(&record.id).await?,
+            store.get_relations(&_read_guard, &record.canonical_key).await?,
+            store.get_incoming_relations(&_read_guard, &record.canonical_key).await?,
         ),
         common::ReadSource::Captured(read) => (
-            read.get_relations(&record.id),
-            read.get_incoming_relations(&record.id),
+            read.get_relations(&record.canonical_key),
+            read.get_incoming_relations(&record.canonical_key),
         ),
     };
 

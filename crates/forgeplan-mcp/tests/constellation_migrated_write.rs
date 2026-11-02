@@ -599,11 +599,12 @@ async fn a_legacy_workspace_still_writes_its_projection_row() {
 
     // A legacy workspace is one the store still owns — and, unlike a migrated
     // one, its `artifacts.lance` genuinely exists.
-    let store = forgeplan_core::db::store::LanceStore::init(&ws)
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    let store = forgeplan_core::db::store::LanceStore::init_new(&ws, &lock)
         .await
         .expect("init legacy store");
     store
-        .create_artifact_for_test(&forgeplan_core::db::store::NewArtifact {
+        .create_artifact_for_test(&lock, &forgeplan_core::db::store::NewArtifact {
             canonical_key: "PRD-001".into(),
             id: "PRD-001".into(),
             kind: "prd".into(),
@@ -624,6 +625,7 @@ async fn a_legacy_workspace_still_writes_its_projection_row() {
     )
     .expect("seed the canonical file a real legacy workspace would hold");
     drop(store);
+    drop(lock);
 
     assert!(
         !forgeplan_core::constellation::facade::workspace_is_migrated(&ws),
@@ -655,8 +657,9 @@ async fn a_legacy_workspace_still_writes_its_projection_row() {
     let reopened = forgeplan_core::db::store::LanceStore::open(&ws)
         .await
         .expect("reopen the legacy store");
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await.unwrap();
     let row = reopened
-        .get_record("PRD-001")
+        .get_record(&permit, "PRD-001")
         .await
         .expect("read the legacy row")
         .expect("the row must still exist");

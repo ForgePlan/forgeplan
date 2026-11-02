@@ -30,10 +30,15 @@ pub const EMBEDDING_DIM: i32 = 1024;
 /// - tags        List(Utf8) (nullable) — string tags like "source=code", "layer=domain"
 /// - canonical_key Utf8 (nullable) — ADR-030 authoritative identity: the frontmatter
 ///   slug when the document declares a valid one, otherwise the display id
+/// - semantic_input_digest Utf8 (nullable) — digest of the semantic input
+/// - semantic_profile_digest Utf8 (nullable) — digest of the embedding profile
+/// - semantic_vector_digest Utf8 (nullable) — digest of the stored vector
+/// - semantic_job_id Utf8 (nullable) — semantic job identifier
+/// - semantic_attempt_token Utf8 (nullable) — semantic attempt identifier
+/// - semantic_state Utf8 (nullable) — semantic binding state
 ///
-/// `canonical_key` is the LAST column on purpose: a schema-4 table upgraded in
-/// place gains it through `add_columns`, which appends. One schema definition
-/// therefore describes both a freshly created table and a migrated one.
+/// `canonical_key` follows the 15 schema-4 columns. The semantic columns are
+/// appended after it so fresh and upgraded tables share the same order.
 ///
 /// The column is nullable in the Arrow schema because that is the only shape
 /// an in-place upgrade can produce — `add_columns` fills existing rows with
@@ -68,6 +73,12 @@ pub fn artifacts_schema() -> Arc<Schema> {
             true,
         ),
         Field::new("canonical_key", DataType::Utf8, true),
+        Field::new("semantic_input_digest", DataType::Utf8, true),
+        Field::new("semantic_profile_digest", DataType::Utf8, true),
+        Field::new("semantic_vector_digest", DataType::Utf8, true),
+        Field::new("semantic_job_id", DataType::Utf8, true),
+        Field::new("semantic_attempt_token", DataType::Utf8, true),
+        Field::new("semantic_state", DataType::Utf8, true),
     ]))
 }
 
@@ -328,19 +339,26 @@ mod tests {
         }
     }
 
-    /// ADR-030 / schema v5: the artifacts table carries the canonical key as
-    /// a real column, and it is the LAST one — a schema-4 table upgraded in
-    /// place gains it through `add_columns`, which appends, so one schema
-    /// definition has to describe both shapes.
+    /// Preserve the schema-4 columns and the canonical key's appended position.
     #[test]
-    fn artifacts_schema_carries_the_canonical_key_last() {
+    fn artifacts_schema_carries_canonical_key_and_semantic_columns_in_order() {
         let schema = artifacts_schema();
         let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
         assert_eq!(
-            names.last(),
-            Some(&"canonical_key"),
-            "canonical_key must be the appended column, got {names:?}"
+            names,
+            vec![
+                "id", "kind", "status", "title", "body", "depth", "author",
+                "parent_epic", "r_eff_score", "valid_until", "created_at", "updated_at",
+                "body_hash", "embedding", "tags", "canonical_key",
+                "semantic_input_digest", "semantic_profile_digest", "semantic_vector_digest",
+                "semantic_job_id", "semantic_attempt_token", "semantic_state",
+            ]
         );
+        for name in &names[16..] {
+            let field = schema.field_with_name(name).unwrap();
+            assert_eq!(field.data_type(), &DataType::Utf8);
+            assert!(field.is_nullable());
+        }
         let key = schema.field_with_name("canonical_key").unwrap();
         assert_eq!(key.data_type(), &DataType::Utf8);
         // Nullable in the Arrow schema: `add_columns` is the only way an

@@ -5,12 +5,12 @@ use forgeplan_core::hints::{self, Hint};
 use crate::commands::common;
 
 pub async fn run() -> anyhow::Result<()> {
-    let (_ws, source) = common::open_read_source().await?;
+    let (_ws, source, _read_guard) = common::open_read_source().await?;
     // Same blind-spot / orphan computation on both layouts — the captured
     // variant is the same shared computation over one capture, so a migrated
     // workspace answers instead of refusing on the retired store.
     let report = match &source {
-        common::ReadSource::Legacy(store) => health::health_report(store).await?,
+        common::ReadSource::Legacy(store) => health::health_report(store, &_read_guard).await?,
         common::ReadSource::Captured(read) => health::health_report_captured(read).await?,
     };
 

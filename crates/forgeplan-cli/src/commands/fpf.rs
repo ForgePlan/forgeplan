@@ -16,11 +16,11 @@ use super::common::{self, ReadSource};
 
 /// FPF Dashboard (original command, now `forgeplan fpf dashboard`)
 pub async fn run_dashboard() -> anyhow::Result<()> {
-    let (ws, source) = common::open_read_source().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
     let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
     let fpf_config = config.fpf.as_ref();
     let dashboard = match &source {
-        ReadSource::Legacy(store) => fpf::dashboard(store, fpf_config).await?,
+        ReadSource::Legacy(store) => fpf::dashboard(store, &_read_guard, fpf_config).await?,
         ReadSource::Captured(read) => fpf::dashboard_captured(read, fpf_config).await?,
     };
     print!("{dashboard}");
@@ -483,7 +483,7 @@ fn style_action(action: &str) -> String {
 
 /// `forgeplan fpf rules [--flat] [--json]`
 pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
-    let (ws, read_source) = common::open_read_source().await?;
+    let (ws, read_source, _read_guard) = common::open_read_source().await?;
     let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
     let fpf_config = config.fpf.as_ref();
 
@@ -497,7 +497,7 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
     // the `<id>` placeholder. Pick the first PRD / RFC / ADR available so the
     // suggested command is runnable verbatim. Empty workspace falls back to
     // the conventional `PRD-NNN` value-to-fill placeholder used elsewhere.
-    let example_id = pick_example_artifact_id(&read_source).await;
+    let example_id = pick_example_artifact_id(&read_source, &_read_guard).await;
 
     let hints_vec = vec![
         Hint::info("Test rules against an artifact")
@@ -627,7 +627,7 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
 /// most often want to check rules against. Falls back to `PRD-NNN`
 /// (value-to-fill placeholder, allowed by the contract) when the workspace
 /// is empty so the hint stays runnable-shape.
-async fn pick_example_artifact_id(source: &ReadSource) -> String {
+async fn pick_example_artifact_id(source: &ReadSource, read_guard: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit) -> String {
     for kind in ["prd", "rfc", "adr"] {
         let id = match source {
             ReadSource::Legacy(store) => {
@@ -636,17 +636,17 @@ async fn pick_example_artifact_id(source: &ReadSource) -> String {
                     status: None,
                 };
                 store
-                    .list_records(Some(&filter))
+                    .list_records(read_guard, Some(&filter))
                     .await
                     .ok()
                     .and_then(|records| records.into_iter().next())
-                    .map(|record| record.id)
+                    .map(|record| record.canonical_key)
             }
             ReadSource::Captured(read) => read
                 .records()
                 .iter()
                 .find(|record| record.kind == kind)
-                .map(|record| record.id.clone()),
+                .map(|record| record.canonical_key.clone()),
         };
         if let Some(id) = id {
             return id;
@@ -670,11 +670,13 @@ fn truncate(s: &str, max: usize) -> String {
 
 /// `forgeplan fpf check <id> [--verbose] [--json]`
 pub async fn run_check(id: &str, verbose: bool, json: bool) -> anyhow::Result<()> {
-    let (ws, source) = common::open_read_source().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
     let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
     let fpf_config = config.fpf.as_ref();
+    let (canonical, _) = common::resolve_required_identity(&source, &ws, id).await?;
+    let id = canonical.as_str();
     let checked = match &source {
-        ReadSource::Legacy(store) => fpf::check_artifact_against_rules(store, id, fpf_config).await,
+        ReadSource::Legacy(store) => fpf::check_artifact_against_rules(store, &_read_guard, id, fpf_config).await,
         ReadSource::Captured(read) => {
             fpf::check_artifact_against_rules_captured(read, id, fpf_config).await
         }
@@ -688,13 +690,7 @@ pub async fn run_check(id: &str, verbose: bool, json: bool) -> anyhow::Result<()
             );
             std::process::exit(1);
         }
-        Err(_) => {
-            ui::error_hint(
-                &format!("Failed to check artifact '{id}'"),
-                "forgeplan health",
-            );
-            std::process::exit(1);
-        }
+        Err(error) => return Err(error.into()),
     };
 
     // PRD-071 contract: derive Next: from the winning rule's action — EXPLOIT

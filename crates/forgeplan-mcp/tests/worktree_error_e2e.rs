@@ -210,9 +210,11 @@ async fn ac3b_explicit_workspace_param_bypasses_gate() {
     // Init a forgeplan workspace in the main repo.
     let ws =
         forgeplan_core::workspace::init_workspace(main_tmp.path(), "ac3b").expect("init workspace");
-    let _ = forgeplan_core::db::store::LanceStore::init(&ws)
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    let _ = forgeplan_core::db::store::LanceStore::init_new(&ws, &lock)
         .await
         .expect("init store");
+    drop(lock);
 
     let linked_tmp = TempDir::new().unwrap();
     let wt_output = Command::new("git")

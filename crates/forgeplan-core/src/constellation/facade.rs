@@ -123,6 +123,89 @@ impl MaintainCapability {
     }
 }
 
+/// Refuse an ordinary mutation unless the complete canonical corpus is
+/// addressable and any managed CURRENT is a normal generation.
+///
+/// The caller holds the workspace guard. This function never acquires it
+/// again. Selector-specific resolution must happen first so its conflict
+/// candidates are not replaced by this corpus-wide admission error.
+pub fn ensure_ordinary_mutation_allowed(workspace: &Path) -> Result<(), ConstellationError> {
+    // Callers include synchronous handlers and async handlers holding their
+    // workspace guard. A separate thread owns its runtime, avoiding nested
+    // block_on and, critically, never reacquiring that non-reentrant guard.
+    let captured = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| ConstellationError::Io {
+                    detail: format!("cannot start mutation census: {error}"),
+                })?;
+            runtime.block_on(capture_source(
+                &CaptureRequest::new(workspace),
+                CaptureLimits::default(),
+            ))
+        }).join()
+    }).map_err(|_| ConstellationError::Io {
+        detail: "mutation census thread panicked".to_string(),
+    })??;
+    if !captured.is_complete() {
+        if let Some(inventory) = captured.diagnostic_inventory() {
+            if let Some(first) = inventory.first() {
+                if let Err(error) = resolve_diagnostic_artifact(&captured, &first.canonical_key) {
+                    return Err(ConstellationError::Resolve(error));
+                }
+            }
+        }
+        return Err(ConstellationError::SourceUnavailable {
+            detail: format!("ordinary mutation refused: incomplete canonical census: {:?}", captured.diagnostics),
+        });
+    }
+    let root = workspace.join("lance");
+    let marker = storage::read_marker(&root)?;
+    match storage::read_current(&root)? {
+        Some(descriptor) => {
+            if !matches!(marker, IndexProtocolState::Active(_)) {
+                return Err(ConstellationError::IndexGenerationUnavailable {
+                    detail: "CURRENT has no active managed index marker; ordinary mutation refused".to_string(),
+                });
+            }
+            storage::read_manifest(&root, &descriptor)?.require_addressable()?;
+        }
+        None => {
+            if !matches!(marker, IndexProtocolState::Uninitialized) || has_managed_index_state(&root)? {
+                return Err(ConstellationError::IndexGenerationUnavailable {
+                    detail: "managed index has no CURRENT; ordinary mutation refused".to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a selector over a confirmed, collision-only diagnostic census.
+/// This never turns a claimant path into an ordinary selector or returns a
+/// partial corpus; ordinary read views remain unavailable for this capture.
+pub fn resolve_diagnostic_artifact(
+    captured: &CapturedSourceView,
+    input: &str,
+) -> Result<Option<crate::artifact::canonical_key::ResolvedArtifact>, crate::artifact::canonical_key::ResolveError> {
+    use crate::artifact::canonical_key::{ArtifactCandidate, ResolveError, resolve_artifact};
+    if captured.diagnostic_inventory().is_none() {
+        return Err(ResolveError::IncompleteCapture {
+            message: "source is not a confirmed collision-only diagnostic census".to_string(),
+        });
+    }
+    let candidates: Vec<_> = captured.artifacts.iter().chain(&captured.conflict_artifacts)
+        .map(|artifact| ArtifactCandidate {
+            canonical_key: artifact.canonical_key.clone(),
+            display_id: artifact.display_id.clone(),
+            title: artifact.title.clone(),
+            relative_path: std::path::PathBuf::from(&artifact.relative_path),
+        }).collect();
+    resolve_artifact(input, &candidates)
+}
+
 /// Read-only capture for CLI and MCP handlers.
 ///
 /// Takes no owner, no `WorkspaceLock`, writes nothing — not to the index, not
@@ -148,6 +231,11 @@ pub async fn capture_for_read(
         request = request.with_previous(previous);
     }
     let captured = capture_source(&request, limits).await?;
+    if !captured.is_complete() {
+        return Err(ConstellationError::SourceUnavailable {
+            detail: format!("canonical source capture is incomplete: {:?}", captured.diagnostics),
+        });
+    }
     Ok(ReadView::from_capture(Arc::new(captured)))
 }
 
@@ -189,6 +277,20 @@ pub async fn ensure_read_view(
     workspace: &Path,
     captured: Arc<CapturedSourceView>,
 ) -> Result<ReadView, ConstellationError> {
+    if !captured.is_complete() {
+        return Err(ConstellationError::SourceUnavailable {
+            detail: format!("canonical source capture is incomplete: {:?}", captured.diagnostics),
+        });
+    }
+    ensure_read_view_inner(workspace, captured).await
+}
+
+// The selector path can also supply a validated collision-only capture.
+// It is never eligible to match a published source set.
+async fn ensure_read_view_inner(
+    workspace: &Path,
+    captured: Arc<CapturedSourceView>,
+) -> Result<ReadView, ConstellationError> {
     let index_root = workspace.join("lance");
     let protocol = storage::read_marker(&index_root)?;
     let descriptor = storage::read_current(&index_root)?;
@@ -219,9 +321,11 @@ pub async fn ensure_read_view(
     // retained for moved sources: an unreadable published pin is not absence.
     let pin = Arc::new(storage::pin_generation_read(&index_root, &descriptor)?);
     let manifest = pin.manifest_arc();
+    manifest.require_addressable()?;
     let persisted = ReadView::from_manifest(Arc::clone(&manifest), descriptor, Arc::clone(&pin))?;
     validate_physical_read_pins(&index_root, pin.descriptor(), &manifest, &captured).await?;
-    if manifest.source_set_digest != captured.source_set_digest
+    if !captured.is_complete()
+        || manifest.source_set_digest != captured.source_set_digest
         || manifest.config_digest != captured.config_digest
     {
         return Ok(ReadView::Ephemeral {
@@ -308,6 +412,209 @@ fn has_managed_index_state(index_root: &Path) -> Result<bool, ConstellationError
     }
     has_generation_manifest(index_root)
 }
+type EdgeIdentity = (String, String, String, String, u64, u64);
+
+fn exact_edge_set(
+    expected: &std::collections::BTreeSet<EdgeIdentity>,
+    rows: impl IntoIterator<Item = EdgeIdentity>,
+) -> Result<(), ConstellationError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for edge in rows {
+        if !expected.contains(&edge) || !seen.insert(edge) {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: "the pinned relations contain an unexpected or duplicate edge".to_string(),
+            });
+        }
+    }
+    if seen.len() != expected.len() {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: "the pinned relations are missing captured edges".to_string(),
+        });
+    }
+    Ok(())
+}
+
+async fn verify_captured_edges(
+    reader: &super::lance_tables::OpenedTable,
+    captured: &CapturedSourceView,
+) -> Result<(), ConstellationError> {
+    let batches = reader.query_batches().await?;
+    verify_captured_edge_batches(&batches, captured)
+}
+
+pub(super) fn verify_captured_edge_batches(
+    batches: &[arrow_array::RecordBatch],
+    captured: &CapturedSourceView,
+) -> Result<(), ConstellationError> {
+    use arrow_array::{Array, StringArray, UInt64Array};
+
+    let expected = captured.artifacts.iter().flat_map(|artifact| {
+        artifact.outgoing.iter().map(move |edge| {
+            (artifact.canonical_key.clone(), edge.target.clone(), edge.relation.clone(),
+             artifact.source_digest.clone(), artifact.row_revision, artifact.incarnation)
+        })
+    }).collect();
+    let mut rows = Vec::new();
+    for batch in batches {
+        let column = |name: &str| {
+            batch.column_by_name(name)
+                .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+                    detail: format!("invalid pinned relations column {name}"),
+                })
+        };
+        let keys = column("canonical_key")?;
+        let targets = column("target")?;
+        let relations = column("relation")?;
+        let digests = column("source_digest")?;
+        let integer_column = |name: &str| {
+            batch.column_by_name(name)
+                .and_then(|array| array.as_any().downcast_ref::<UInt64Array>())
+                .ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+                    detail: format!("invalid pinned relations column {name}"),
+                })
+        };
+        let revisions = integer_column("row_revision")?;
+        let incarnations = integer_column("incarnation")?;
+        for row in 0..batch.num_rows() {
+            if keys.is_null(row) || targets.is_null(row) || relations.is_null(row)
+                || digests.is_null(row) || revisions.is_null(row) || incarnations.is_null(row) {
+                return Err(ConstellationError::IndexGenerationUnavailable {
+                    detail: "the pinned relations contain a null edge identity".to_string(),
+                });
+            }
+            rows.push((keys.value(row).to_owned(), targets.value(row).to_owned(), relations.value(row).to_owned(),
+                digests.value(row).to_owned(), revisions.value(row), incarnations.value(row)));
+        }
+    }
+    exact_edge_set(&expected, rows)
+}
+
+async fn verify_captured_rows(
+    root: &Path,
+    marker: &super::manifest::ProtocolMarker,
+    descriptor: &CurrentDescriptor,
+    manifest: &GenerationManifest,
+    captured: &CapturedSourceView,
+) -> Result<(), ConstellationError> {
+    let versions = super::manifest::TableVersions::new(
+        descriptor.effective_artifacts_version(manifest)?,
+        descriptor.effective_relations_version(manifest)?,
+        descriptor.effective_sections_version(manifest)?,
+    );
+    verify_captured_rows_at_versions(root, marker, versions, captured).await
+}
+
+async fn verify_captured_rows_at_versions(
+    root: &Path,
+    marker: &super::manifest::ProtocolMarker,
+    versions: super::manifest::TableVersions,
+    captured: &CapturedSourceView,
+) -> Result<(), ConstellationError> {
+    use arrow_array::{Array, StringArray};
+    let artifacts = super::publisher::artifacts_batch(
+        &captured.artifacts, captured.index_epoch, &captured.checkout_id, &BTreeMap::new(),
+    )?;
+    let sections = super::publisher::sections_batch(captured, &BTreeMap::new())?;
+    for (role, version, expected) in [
+        ("artifacts", versions.artifacts, artifacts),
+        ("sections", versions.sections, sections),
+    ] {
+        let expected_keys = expected.column_by_name("canonical_key")
+            .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+            .ok_or_else(|| ConstellationError::IndexGenerationUnavailable { detail: format!("{role} expectation has no key") })?;
+        let mut remaining = BTreeMap::new();
+        for row in 0..expected.num_rows() {
+            if expected_keys.is_null(row) || remaining.insert(expected_keys.value(row), row).is_some() {
+                return Err(ConstellationError::IndexGenerationUnavailable { detail: format!("{role} expectation has duplicate or null keys") });
+            }
+        }
+        let reader = super::lance_tables::open_table_at_version(root, marker, role, version).await?;
+        for batch in reader.query_batches().await? {
+            let keys = batch.column_by_name("canonical_key")
+                .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| ConstellationError::IndexGenerationUnavailable { detail: format!("{role} pin has no key") })?;
+            for row in 0..batch.num_rows() {
+                if keys.is_null(row) {
+                    return Err(ConstellationError::IndexGenerationUnavailable { detail: format!("{role} pin has a null key") });
+                }
+                let Some(expected_row) = remaining.remove(keys.value(row)) else {
+                    return Err(ConstellationError::IndexGenerationUnavailable { detail: format!("{role} pin has an unexpected or duplicate key") });
+                };
+                for field in expected.schema().fields() {
+                    let name = field.name().as_str();
+                    // Model failures overwrite this shared column; the
+                    // canonical parser cannot reconstruct operational state.
+                    if matches!(name, "embedding" | "profile_id" | "semantic_state" | "retry_after" | "diagnostics") {
+                        continue;
+                    }
+                    let actual = batch.column_by_name(name).ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+                        detail: format!("{role} pin lacks column {name}"),
+                    })?;
+                    let wanted = expected.column_by_name(name).expect("field belongs to expected batch");
+                    if actual.slice(row, 1).to_data() != wanted.slice(expected_row, 1).to_data() {
+                        return Err(ConstellationError::IndexGenerationUnavailable {
+                            detail: format!("{role} pin disagrees for {} column {name}", keys.value(row)),
+                        });
+                    }
+                }
+            }
+        }
+        if !remaining.is_empty() {
+            return Err(ConstellationError::IndexGenerationUnavailable { detail: format!("{role} pin is missing captured rows") });
+        }
+    }
+    Ok(())
+}
+
+
+/// Bind a fresh read's canonical payload to the durable identity of the
+/// verified generation. Source identity is adopted only after matching key,
+/// path and digest; a read without a baseline otherwise starts at revision 1.
+fn capture_with_published_identity(
+    captured: &CapturedSourceView,
+    manifest: &GenerationManifest,
+) -> Result<CapturedSourceView, ConstellationError> {
+    let mismatch = || ConstellationError::IndexGenerationUnavailable {
+        detail: "the generation's durable identity disagrees with its confirmed capture".into(),
+    };
+    if captured.checkout_id != manifest.checkout_id || captured.index_epoch != manifest.index_epoch
+        || captured.entries.len() != manifest.source_entries.len()
+        || captured.artifacts.len() != captured.entries.len()
+    {
+        return Err(mismatch());
+    }
+    let published: BTreeMap<_, _> = manifest.source_entries.iter()
+        .map(|entry| (entry.canonical_key.as_str(), entry)).collect();
+    if published.len() != manifest.source_entries.len() {
+        return Err(mismatch());
+    }
+    let mut bound = (*captured).clone();
+    for entry in &mut bound.entries {
+        let source = published.get(entry.canonical_key.as_str()).ok_or_else(mismatch)?;
+        if entry.relative_path != source.relative_path || entry.source_digest != source.source_digest
+            || source.checkout_id != manifest.checkout_id || source.index_epoch != manifest.index_epoch
+            || source.incarnation == 0 || source.row_revision == 0
+        {
+            return Err(mismatch());
+        }
+        entry.incarnation = source.incarnation;
+        entry.row_revision = source.row_revision;
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for artifact in &mut bound.artifacts {
+        let source = published.get(artifact.canonical_key.as_str()).ok_or_else(mismatch)?;
+        if artifact.relative_path != source.relative_path || artifact.source_digest != source.source_digest
+            || !seen.insert(artifact.canonical_key.clone())
+        {
+            return Err(mismatch());
+        }
+        let artifact = Arc::make_mut(artifact);
+        artifact.incarnation = source.incarnation;
+        artifact.row_revision = source.row_revision;
+    }
+    Ok(bound)
+}
 
 /// Reuse the publisher's independent exact-version read-back, rather than
 /// accepting canonical records as proof that the published tables still exist.
@@ -318,7 +625,8 @@ async fn validate_physical_read_pins(
     captured: &CapturedSourceView,
 ) -> Result<(), ConstellationError> {
     let marker = marker_for(manifest);
-    let same_source = descriptor.source_set_digest == captured.source_set_digest
+    let same_source = captured.is_complete()
+        && descriptor.source_set_digest == captured.source_set_digest
         && descriptor.config_digest == captured.config_digest;
     let mut expected_edges: usize = captured
         .artifacts
@@ -394,19 +702,23 @@ async fn validate_physical_read_pins(
             )
         })
         .collect();
-    super::publisher::verify_staged(
-        index_root,
-        &marker,
-        manifest.table_versions.artifacts,
-        &expected,
-        manifest.table_versions.relations,
-        expected_edges,
-        &super::publisher::SectionsExpectation {
-            version: manifest.table_versions.sections,
-            digests: section_digests,
-        },
-    )
-    .await
+    let sections = super::publisher::SectionsExpectation {
+        version: manifest.table_versions.sections,
+        digests: section_digests,
+    };
+    let verification = if same_source {
+        let bound = capture_with_published_identity(captured, manifest)?;
+        super::publisher::verify_staged_with_operational_diagnostics(
+            index_root, &marker, manifest.table_versions.artifacts, &expected,
+            manifest.table_versions.relations, expected_edges, &bound, &sections,
+        ).await.map(|_| ())
+    } else {
+        super::publisher::verify_historical_pins(
+            index_root, &marker, manifest.table_versions.artifacts, &expected,
+            manifest.table_versions.relations, expected_edges, &sections,
+        ).await
+    };
+    verification
     .map_err(|error| ConstellationError::IndexGenerationUnavailable {
         detail: format!("the published generation's physical pins failed verification: {error}"),
     })?;
@@ -459,6 +771,118 @@ pub async fn open_workspace_read(
     Ok(super::workspace_read::WorkspaceRead::from_parts(
         workspace, view, captured,
     ))
+}
+
+/// Resolve a single selector before requiring a publishable read view.
+/// Collision-only captures remain private to this operation and can never be
+/// used as a list or search view.
+pub async fn open_workspace_selector_with_permit(
+    workspace: &Path,
+    guard: &dyn crate::workspace::lock::WorkspaceReadPermit,
+    input: &str,
+) -> Result<Option<super::workspace_read::SelectedWorkspaceRead>, ConstellationError> {
+    open_workspace_selector_with_limits(workspace, guard, input, CaptureLimits::default()).await
+}
+
+pub(crate) async fn open_workspace_selector_with_limits(
+    workspace: &Path,
+    guard: &dyn crate::workspace::lock::WorkspaceReadPermit,
+    input: &str,
+    limits: CaptureLimits,
+) -> Result<Option<super::workspace_read::SelectedWorkspaceRead>, ConstellationError> {
+    use crate::artifact::canonical_key::{ArtifactCandidate, ResolveError, resolve_artifact};
+    crate::workspace::lock::WorkspaceReadPermit::matches_workspace(guard, workspace)
+        .map_err(|error| ConstellationError::Io { detail: format!("invalid workspace read permit: {error}") })?;
+    let captured = Arc::new(capture_source(&CaptureRequest::new(workspace), limits)
+        .await.map_err(|error| ConstellationError::Resolve(ResolveError::IncompleteCapture {
+            message: error.to_string(),
+        }))?);
+    let complete = captured.confirmed && captured.is_complete();
+    let resolved = if complete {
+        let candidates: Vec<_> = captured.artifacts.iter().map(|artifact| ArtifactCandidate {
+            canonical_key: artifact.canonical_key.clone(),
+            display_id: artifact.display_id.clone(),
+            title: artifact.title.clone(),
+            relative_path: PathBuf::from(&artifact.relative_path),
+        }).collect();
+        resolve_artifact(input, &candidates)
+    } else if captured.diagnostic_inventory().is_some() {
+        resolve_diagnostic_artifact(&captured, input)
+    } else {
+        Err(ResolveError::IncompleteCapture {
+            message: format!("canonical source capture is incomplete: {:?}", captured.diagnostics),
+        })
+    }.map_err(ConstellationError::Resolve)?;
+    // A selector refusal may diagnose a collision independently, but neither
+    // a successful payload nor a complete-negative result can hide a broken
+    // managed generation. Validate its manifest and physical pins even when
+    // the current capture is a collision-only diagnostic inventory.
+    let view = ensure_read_view_inner(workspace, Arc::clone(&captured)).await?;
+    let Some(resolved) = resolved else { return Ok(None); };
+    let read = super::workspace_read::WorkspaceRead::from_parts(workspace, view, captured);
+    Ok(Some(super::workspace_read::SelectedWorkspaceRead::new(
+        read, resolved.identity.canonical_key,
+    )))
+}
+
+/// Open an ordinary workspace view under an existing shared or exclusive
+/// workspace permit. It must belong to this workspace and cannot be a
+/// transaction-scoped repair guard; no second workspace lock is acquired.
+pub async fn open_workspace_read_with_permit(
+    workspace: &Path,
+    guard: &dyn crate::workspace::lock::WorkspaceReadPermit,
+) -> Result<super::workspace_read::WorkspaceRead, ConstellationError> {
+    crate::workspace::lock::WorkspaceReadPermit::matches_workspace(guard, workspace)
+        .map_err(|error| ConstellationError::Io { detail: format!("invalid workspace read permit: {error}") })?;
+    open_workspace_read(workspace, None, CaptureLimits::default()).await
+}
+
+/// Capture the entire corpus under an existing workspace guard. Unlike an
+/// ordinary read view, this explicitly exposes conflict claimants separately.
+/// Unreadable or otherwise incomplete inventories are refused.
+pub async fn capture_full_workspace_with_permit(
+    workspace: &Path,
+    guard: &crate::workspace::WorkspaceLock,
+) -> Result<Arc<CapturedSourceView>, ConstellationError> {
+    crate::workspace::lock::WorkspaceReadPermit::matches_workspace(guard, workspace)
+        .map_err(|error| ConstellationError::Io { detail: format!("invalid workspace read permit: {error}") })?;
+    let captured = capture_source(&CaptureRequest::new(workspace), CaptureLimits::default()).await?;
+    if !captured.confirmed || (!captured.is_complete() && captured.diagnostic_inventory().is_none()) {
+        return Err(ConstellationError::Resolve(
+            crate::artifact::canonical_key::ResolveError::IncompleteCapture {
+                message: format!("canonical source capture is incomplete: {:?}", captured.diagnostics),
+            },
+        ));
+    }
+    Ok(Arc::new(captured))
+}
+
+/// Resolve one selector against the complete canonical census while a
+/// workspace guard is already held, including every conflict claimant.
+pub async fn resolve_workspace_selector_with_permit(
+    workspace: &Path,
+    guard: &crate::workspace::WorkspaceLock,
+    input: &str,
+) -> Result<Option<crate::artifact::canonical_key::ResolvedArtifact>, ConstellationError> {
+    use crate::artifact::canonical_key::{ArtifactCandidate, ResolveError, resolve_artifact};
+    crate::workspace::lock::WorkspaceReadPermit::matches_workspace(guard, workspace)
+        .map_err(|error| ConstellationError::Io { detail: format!("invalid workspace read permit: {error}") })?;
+    let captured = capture_source(&CaptureRequest::new(workspace), CaptureLimits::default()).await?;
+    if !captured.is_complete() {
+        if captured.diagnostic_inventory().is_some() {
+            return resolve_diagnostic_artifact(&captured, input).map_err(ConstellationError::Resolve);
+        }
+        return Err(ConstellationError::Resolve(ResolveError::IncompleteCapture {
+            message: format!("canonical source capture is incomplete: {:?}", captured.diagnostics),
+        }));
+    }
+    let candidates: Vec<_> = captured.artifacts.iter().map(|artifact| ArtifactCandidate {
+        canonical_key: artifact.canonical_key.clone(),
+        display_id: artifact.display_id.clone(),
+        title: artifact.title.clone(),
+        relative_path: std::path::PathBuf::from(&artifact.relative_path),
+    }).collect();
+    resolve_artifact(input, &candidates).map_err(ConstellationError::Resolve)
 }
 
 /// Whether this workspace's index has been cut over to Constellation.
@@ -532,6 +956,7 @@ pub fn open_pinned_view(
     descriptor: &CurrentDescriptor,
 ) -> Result<PinnedVectorView, ConstellationError> {
     let manifest = Arc::new(storage::read_manifest(index_root, descriptor)?);
+    manifest.require_addressable()?;
 
     if manifest.generation_id != descriptor.generation_id {
         return Err(ConstellationError::IndexGenerationUnavailable {
@@ -709,6 +1134,7 @@ pub async fn embedding_precheck(
         None => return Ok(None),
     };
     let published = Arc::new(super::storage::read_manifest(&index_root, &descriptor)?);
+    published.require_addressable()?;
     let captured = capture_under_workspace_lock(
         workspace,
         super::capture::CaptureLimits::default(),
@@ -885,6 +1311,7 @@ async fn restore_diverged_heads(
     tables: &super::lance_tables::IndexTables,
     baseline: &GenerationManifest,
     workspace: &Path,
+    repair: Option<&RepairContext<'_>>,
 ) -> Result<super::manifest::TableVersions, ConstellationError> {
     use super::publisher::{HeadComparison, compare_heads};
 
@@ -900,20 +1327,23 @@ async fn restore_diverged_heads(
             relations_diverged,
             sections_diverged,
         } => {
-            if artifacts_diverged {
-                tables
-                    .restore_artifacts_to(baseline.table_versions.artifacts, workspace)
-                    .await?;
-            }
-            if relations_diverged {
-                tables
-                    .restore_relations_to(baseline.table_versions.relations, workspace)
-                    .await?;
-            }
-            if sections_diverged {
-                tables
-                    .restore_sections_to(baseline.table_versions.sections, workspace)
-                    .await?;
+            for (diverged, role, version) in [
+                (artifacts_diverged, "artifacts", baseline.table_versions.artifacts),
+                (relations_diverged, "relations", baseline.table_versions.relations),
+                (sections_diverged, "sections", baseline.table_versions.sections),
+            ] {
+                if !diverged {
+                    continue;
+                }
+                if let Some(repair) = repair {
+                    tables.restore_for_repair(role, version, workspace, repair).await?;
+                } else {
+                    match role {
+                        "artifacts" => tables.restore_artifacts_to(version, workspace).await?,
+                        "relations" => tables.restore_relations_to(version, workspace).await?,
+                        _ => tables.restore_sections_to(version, workspace).await?,
+                    };
+                }
             }
         }
         HeadComparison::MissingPublishedVersion { role } => {
@@ -926,6 +1356,23 @@ async fn restore_diverged_heads(
     }
     tables.head_versions().await
 }
+pub(super) struct RepairContext<'a> {
+    admission: &'a crate::workspace::lock::RepairIndexAdmission<'a>,
+}
+
+pub(super) async fn acquire_index_workspace_lock(
+    workspace: &Path,
+    repair: Option<&RepairContext<'_>>,
+) -> Result<crate::workspace::WorkspaceLock, ConstellationError> {
+    let result = match repair {
+        Some(repair) => crate::workspace::lock::acquire_repair_workspace_lock(repair.admission).await,
+        None => crate::workspace::acquire_workspace_lock(workspace).await,
+    };
+    result.map_err(|error| ConstellationError::Io {
+        detail: format!("cannot lock the workspace for index maintenance: {error}"),
+    })
+}
+
 
 /// Run one steady-state maintenance pass.
 ///
@@ -976,9 +1423,24 @@ pub async fn maintain_index(
     capture_limits: super::capture::CaptureLimits,
     deadline: std::time::Instant,
 ) -> Result<(PublishedReadView, ReconcileOutcome), ConstellationError> {
-    use super::publisher::{
-        IndexPublisher, artifacts_batch, capture_under_workspace_lock, plan_commits, stage_sequence,
-    };
+    if !is_admitting() || std::time::Instant::now() >= deadline {
+        return Err(ConstellationError::IndexBusy {
+            detail: "maintenance is not admitted or its deadline has expired".to_string(),
+        });
+    }
+    let index_root = capability.index_root();
+    let publisher = super::publisher::IndexPublisher::acquire(index_root, inner_store_for(index_root))?;
+    maintain_index_owned(capability, capture_limits, deadline, &publisher, None).await
+}
+
+async fn maintain_index_owned(
+    capability: &MaintainCapability,
+    capture_limits: super::capture::CaptureLimits,
+    deadline: std::time::Instant,
+    publisher: &super::publisher::IndexPublisher,
+    repair: Option<&RepairContext<'_>>,
+) -> Result<(PublishedReadView, ReconcileOutcome), ConstellationError> {
+    use super::publisher::{artifacts_batch, capture_under_workspace_lock, plan_commits, stage_sequence};
 
     if !is_admitting() {
         return Err(ConstellationError::IndexBusy {
@@ -997,12 +1459,13 @@ pub async fn maintain_index(
     let index_root = capability.index_root().to_path_buf();
     let workspace = capability.workspace().to_path_buf();
 
-    let publisher = IndexPublisher::acquire(&index_root, inner_store_for(&index_root))?;
 
     // Bootstrap on a first run, or recover on a restart. Either leaves the
     // index with a published generation or an error.
-    let progress =
-        super::publisher::bootstrap_or_recover(&publisher, &workspace, capture_limits).await?;
+    let progress = match repair {
+        Some(repair) => super::publisher::bootstrap_or_recover_for_repair(publisher, &workspace, capture_limits, repair.admission).await?,
+        None => super::publisher::bootstrap_or_recover(publisher, &workspace, capture_limits).await?,
+    };
 
     let descriptor = super::storage::read_current(&index_root)?.ok_or_else(|| {
         ConstellationError::IndexGenerationUnavailable {
@@ -1016,15 +1479,15 @@ pub async fn maintain_index(
     let baseline = published_baseline(&descriptor, &published)?;
 
     let marker = marker_for(&published);
-    let tables = super::lance_tables::open_active_tables(
-        &index_root,
-        &marker,
-        std::sync::Arc::clone(publisher.tracking_store()),
-        capability.workspace(),
-    )
-    .await?;
-
-    let head_versions = restore_diverged_heads(&tables, &baseline, capability.workspace()).await?;
+    let tables = match repair {
+        Some(repair) => super::lance_tables::open_active_tables_for_repair(
+            &index_root, &marker, Arc::clone(publisher.tracking_store()), &workspace, repair,
+        ).await?,
+        None => super::lance_tables::open_active_tables(
+            &index_root, &marker, Arc::clone(publisher.tracking_store()), &workspace,
+        ).await?,
+    };
+    let head_versions = restore_diverged_heads(&tables, &baseline, &workspace, repair).await?;
 
     // Capture under the workspace lock, released before the first commit.
     //
@@ -1034,12 +1497,12 @@ pub async fn maintain_index(
     // re-derived them as `1`, and a byte-identical delete/recreate would
     // reproduce a retired row's identity — inheriting its vector and
     // satisfying an outstanding job bound to the deleted document.
-    let captured = capture_under_workspace_lock(
-        &workspace,
-        capture_limits,
-        Some(std::sync::Arc::clone(&published)),
-    )
-    .await?;
+    let captured = match repair {
+        Some(repair) => super::publisher::capture_under_repair_lock(
+            &workspace, capture_limits, Some(Arc::clone(&published)), repair.admission,
+        ).await?,
+        None => capture_under_workspace_lock(&workspace, capture_limits, Some(Arc::clone(&published))).await?,
+    };
     if !captured.coverage.is_complete() {
         return Err(ConstellationError::SourceUnavailable {
             detail: format!(
@@ -1193,11 +1656,7 @@ pub async fn maintain_index(
 
         for op in &sequence.ops {
             // One lock per commit, released before the next. Never across two.
-            let guard = crate::workspace::acquire_workspace_lock(&workspace)
-                .await
-                .map_err(|e| ConstellationError::Io {
-                    detail: format!("cannot take the workspace lock for a commit: {e}"),
-                })?;
+            let guard = acquire_index_workspace_lock(&workspace, repair).await?;
             match op {
                 super::publisher::CommitOp::MergeUpsert {
                     full_source_batch, ..
@@ -1320,21 +1779,26 @@ pub async fn maintain_index(
             version: committed_versions.sections,
             digests: expected_sections_map,
         };
-        verification = Some(
+        // A full-source artifact merge rewrites diagnostics from the parser;
+        // without one the existing value may be an operational model failure.
+        // Both modes still verify all durable identity and source payload.
+        let rewrote_artifacts = sequence.ops.iter().any(|op| matches!(
+            op, super::publisher::CommitOp::MergeUpsert { .. }
+        ));
+        let result = if rewrote_artifacts {
             super::publisher::verify_staged(
-                &index_root,
-                &marker,
-                committed_versions.artifacts,
-                &expected,
-                committed_versions.relations,
-                expected_edges,
-                &sections_expectation,
-            )
-            .await
-            .map_err(|e| ConstellationError::Io {
-                detail: format!("post-commit verification failed: {e}"),
-            })?,
-        );
+                &index_root, &marker, committed_versions.artifacts, &expected,
+                committed_versions.relations, expected_edges, &captured, &sections_expectation,
+            ).await
+        } else {
+            super::publisher::verify_staged_with_operational_diagnostics(
+                &index_root, &marker, committed_versions.artifacts, &expected,
+                committed_versions.relations, expected_edges, &captured, &sections_expectation,
+            ).await
+        };
+        verification = Some(result.map_err(|e| ConstellationError::Io {
+            detail: format!("post-commit verification failed: {e}"),
+        })?);
     }
 
     // A pass that committed nothing publishes nothing: the pointer, the
@@ -1387,11 +1851,7 @@ pub async fn maintain_index(
     // rows need it: identity is derived, and a recheck that derived it
     // differently would be comparing two unrelated observations rather than
     // asking whether the source moved.
-    let publish_guard = crate::workspace::acquire_workspace_lock(&workspace)
-        .await
-        .map_err(|e| ConstellationError::Io {
-            detail: format!("cannot take the workspace lock to publish: {e}"),
-        })?;
+    let publish_guard = acquire_index_workspace_lock(&workspace, repair).await?;
     let recheck = super::publisher::capture_while_locked(
         &workspace,
         capture_limits,
@@ -1441,6 +1901,8 @@ pub async fn maintain_index(
     // is the identity reuse this field exists to prevent.
     next.tombstones = reconcile.tombstones;
     next.coverage = captured.coverage;
+    next.conflict_inventory.clear();
+    next.semantic_blocked_paths.clear();
     next.evaluated_at = captured.evaluated_at.clone();
     next.table_versions = committed_versions;
     // The exact section membership this generation publishes. Carried from
@@ -1580,6 +2042,10 @@ pub fn path_bound_checkout_id(index_root: &Path) -> String {
 pub fn rebind_index_identity(
     index_root: &Path,
 ) -> Result<Option<RebindReport>, ConstellationError> {
+    #[cfg(not(unix))]
+    return Err(ConstellationError::UnsupportedIndexFilesystem {
+        detail: "index rebind is unavailable on non-Unix platforms until namespace writes use pinned, no-reparse handles with durable barriers".to_string(),
+    });
     if !is_admitting() {
         return Err(ConstellationError::IndexBusy {
             detail: "this process is shutting down and admits no new maintenance".to_string(),
@@ -1756,6 +2222,7 @@ pub async fn adopt_embedding_profile(
             detail: "no published generation; run index maintenance first".to_string(),
         }
     })?;
+    super::storage::read_manifest(&index_root, &descriptor)?.require_addressable()?;
     // Read under the owner so the decision is made against the pointer that is
     // actually current, and so no other publisher can move it between this
     // read and the republish below.
@@ -1870,9 +2337,21 @@ pub async fn prepare_embedding_batch(
     profile: &super::jobs::EmbeddingProfile,
     deadline: std::time::Instant,
 ) -> Result<super::jobs::PreparedEmbeddingBatch, ConstellationError> {
+    let root = capability.index_root();
+    let publisher = super::publisher::IndexPublisher::acquire(root, inner_store_for(root))?;
+    prepare_embedding_batch_owned(capability, profile, deadline, &publisher, None, false).await
+}
+
+async fn prepare_embedding_batch_owned(
+    capability: &MaintainCapability,
+    profile: &super::jobs::EmbeddingProfile,
+    deadline: std::time::Instant,
+    publisher: &super::publisher::IndexPublisher,
+    repair: Option<&RepairContext<'_>>,
+    full_backlog: bool,
+) -> Result<super::jobs::PreparedEmbeddingBatch, ConstellationError> {
     use super::jobs::{EmbeddingJob, PreparedEmbeddingBatch, PreparedEmbeddingInput};
-    use super::lance_tables::open_active_tables;
-    use super::publisher::{IndexPublisher, capture_under_workspace_lock};
+    use super::publisher::capture_under_workspace_lock;
 
     if !is_admitting() {
         return Err(ConstellationError::IndexBusy {
@@ -1905,7 +2384,6 @@ pub async fn prepare_embedding_batch(
     // released. Reading the pointer first and acquiring afterwards admits work
     // from a generation that was already superseded, and the admission write
     // then lands on tables the new generation has already pinned.
-    let publisher = IndexPublisher::acquire(&index_root, inner_store_for(&index_root))?;
 
     // The queue never bootstraps: an index that is not yet publishable is
     // `maintain_index`'s job, and creating one here would hide the
@@ -1916,6 +2394,7 @@ pub async fn prepare_embedding_batch(
         }
     })?;
     let published = Arc::new(super::storage::read_manifest(&index_root, &descriptor)?);
+    published.require_addressable()?;
     if !published.table_versions.is_publishable() {
         return Err(ConstellationError::IndexGenerationUnavailable {
             detail: format!(
@@ -1969,20 +2448,21 @@ pub async fn prepare_embedding_batch(
     }
 
     let marker = marker_for(&published);
-    let tables = open_active_tables(
-        &index_root,
-        &marker,
-        Arc::clone(publisher.tracking_store()),
-        capability.workspace(),
-    )
-    .await?;
+    let tables = match repair {
+        Some(repair) => super::lance_tables::open_active_tables_for_repair(
+            &index_root, &marker, Arc::clone(publisher.tracking_store()), &workspace, repair,
+        ).await?,
+        None => super::lance_tables::open_active_tables(
+            &index_root, &marker, Arc::clone(publisher.tracking_store()), &workspace,
+        ).await?,
+    };
 
     // Recover the baseline before anything reads the tables for a decision,
     // exactly as `maintain_index` does: a head an abandoned pass left behind is
     // not the published state, and an admission that read it would record a
     // job for bytes this index does not serve.
     let baseline = published_baseline(&descriptor, &published)?;
-    restore_diverged_heads(&tables, &baseline, capability.workspace()).await?;
+    restore_diverged_heads(&tables, &baseline, &workspace, repair).await?;
 
     // Capture under the workspace lock; the lock is released before any write,
     // exactly as the merge stage does it.
@@ -1993,12 +2473,19 @@ pub async fn prepare_embedding_batch(
     // same tuple. A capture without the baseline would derive `1` for a row
     // the table holds at any other revision, so every job would be born
     // matching nothing.
-    let captured = capture_under_workspace_lock(
-        &workspace,
-        super::capture::CaptureLimits::default(),
-        Some(Arc::clone(&published)),
-    )
-    .await?;
+    let captured = match repair {
+        Some(repair) => super::publisher::capture_under_repair_lock(
+            &workspace, super::capture::CaptureLimits::default(), Some(Arc::clone(&published)), repair.admission,
+        ).await?,
+        None => capture_under_workspace_lock(
+            &workspace, super::capture::CaptureLimits::default(), Some(Arc::clone(&published)),
+        ).await?,
+    };
+    if full_backlog && (!captured.is_complete() || captured.source_set_digest != published.source_set_digest) {
+        return Err(ConstellationError::SourceUnavailable {
+            detail: "semantic admission requires a complete capture matching the published generation".to_string(),
+        });
+    }
 
     // The prefix comes from the config this capture read, not from a caller
     // argument: the `input_digest` in the binding was computed over exactly
@@ -2011,6 +2498,17 @@ pub async fn prepare_embedding_batch(
 
     let mut eligibility = tables.artifacts_eligibility(&captured, &profile_id).await?;
     eligibility.merge_from(&tables.sections_eligibility(&captured, &profile_id).await?);
+    if full_backlog {
+        let expected: std::collections::BTreeSet<&str> = captured.entries.iter().map(|entry| entry.canonical_key.as_str())
+            .chain(captured.sections.iter().map(|section| section.canonical_key.as_str())).collect();
+        let observed: std::collections::BTreeSet<&str> = eligibility.current_keys().into_iter()
+            .chain(eligibility.eligible_keys()).chain(eligibility.cannot_judge().into_iter().map(|(key, _)| key)).collect();
+        if observed != expected || !eligibility.cannot_judge().is_empty() {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: "repair cannot admit an incomplete or unjudgeable semantic binding set".to_string(),
+            });
+        }
+    }
 
     // The capture must describe the config this generation was published
     // under. If it does not, the `input_digest`s in the rows were computed
@@ -2083,12 +2581,17 @@ pub async fn prepare_embedding_batch(
     }
 
     for key in eligibility.eligible_keys() {
-        if inputs.len() == MAX_PREPARED_BATCH {
+        if !full_backlog && inputs.len() == MAX_PREPARED_BATCH {
             break;
         }
         let Some((binding, input_text)) =
             admitted_binding_and_input(&captured, key, &profile_id, body_prefix_chars)
         else {
+            if full_backlog {
+                return Err(ConstellationError::SourceUnavailable {
+                    detail: format!("eligible semantic key {key} has no captured binding"),
+                });
+            }
             // Eligible but not bindable from this capture. It is left for the
             // next admission rather than guessed at, and the eligibility
             // report's `cannot_judge` half is where that is said out loud.
@@ -2117,11 +2620,7 @@ pub async fn prepare_embedding_batch(
 
         // One workspace lock per admission write, released before the next —
         // the same one-lock-per-commit rule the merge stage follows.
-        let guard = crate::workspace::acquire_workspace_lock(&workspace)
-            .await
-            .map_err(|e| ConstellationError::Io {
-                detail: format!("cannot take the workspace lock for an admission write: {e}"),
-            })?;
+        let guard = acquire_index_workspace_lock(&workspace, repair).await?;
         let admitted = match job.row_role() {
             super::jobs::EmbeddingRowRole::Artifact => {
                 tables.admit_embedding_into_artifacts(&binding).await?
@@ -2133,6 +2632,11 @@ pub async fn prepare_embedding_batch(
         drop(guard);
 
         if admitted.rows_updated == 0 {
+            if full_backlog {
+                return Err(ConstellationError::SourceUnavailable {
+                    detail: format!("semantic admission did not update eligible key {key}"),
+                });
+            }
             // The row moved between the eligibility scan and this write. Not
             // an error: the next admission sees the new state, and the row is
             // not in `jobs` because nothing was admitted for it.
@@ -2143,10 +2647,12 @@ pub async fn prepare_embedding_batch(
         // took the write, so a row that moved between the scan and the write
         // names no job.
         jobs.insert(key.to_string(), job.clone());
-        inputs.push(PreparedEmbeddingInput {
-            job,
-            input_text: std::sync::Arc::from(input_text),
-        });
+        if !full_backlog {
+            inputs.push(PreparedEmbeddingInput {
+                job,
+                input_text: std::sync::Arc::from(input_text),
+            });
+        }
     }
 
     // Publish the new pending set as an immutable manifest **before** the
@@ -2172,11 +2678,18 @@ pub async fn prepare_embedding_batch(
         // own lock, and a workspace mutation landing between them and this
         // publish would be invisible to the generation that names the pending
         // set. Nothing is written inside — the manifest is already assembled.
-        let guard = crate::workspace::acquire_workspace_lock(&workspace)
-            .await
-            .map_err(|e| ConstellationError::Io {
-                detail: format!("cannot take the workspace lock to publish admission: {e}"),
-            })?;
+        let guard = acquire_index_workspace_lock(&workspace, repair).await?;
+        if full_backlog {
+            let recheck = super::publisher::capture_while_locked(
+                &workspace, super::capture::CaptureLimits::default(), Some(Arc::clone(&published)),
+            ).await?;
+            if !recheck.is_complete() || recheck.source_set_digest != captured.source_set_digest
+                || recheck.config_digest != captured.config_digest {
+                return Err(ConstellationError::SourceUnavailable {
+                    detail: "canonical source changed during semantic backlog admission".to_string(),
+                });
+            }
+        }
         publisher.publish(&next, Some(&profile_id))?;
         drop(guard);
         admission_generation
@@ -2185,13 +2698,541 @@ pub async fn prepare_embedding_batch(
     };
 
     drop(tables);
-    drop(publisher);
 
     Ok(PreparedEmbeddingBatch {
         admission_generation,
         config_digest: captured.config_digest.clone(),
         profile: profile.clone(),
         inputs,
+    })
+}
+
+/// Evidence tying repair completion to one durable published generation.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RepairIndexProof {
+    pub transaction_id: String,
+    pub journal_digest: String,
+    pub generation_id: String,
+    pub source_set_digest: String,
+    pub config_digest: String,
+    pub table_versions: super::manifest::TableVersions,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticRecoveryState {
+    BlockedByIdentityConflicts,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub enum RepairReconcileOutcome {
+    Healthy(RepairIndexProof),
+    RollbackDiagnostic {
+        proof: RepairIndexProof,
+        conflicts: Vec<super::manifest::ConflictSource>,
+        semantic: SemanticRecoveryState,
+    },
+}
+
+/// Reconcile and finish exactly one pending identity repair.
+///
+/// Call only after releasing the workspace lock. This function acquires the
+/// physical index owner first, then takes transaction-scoped workspace locks.
+/// Failures before journal finalization leave it pending and do not roll back
+/// canonical files. Inspect the journal if its final write fails.
+pub async fn reconcile_identity_repair(
+    capability: &MaintainCapability,
+    transaction_id: &str,
+    deadline: std::time::Instant,
+) -> Result<RepairReconcileOutcome, ConstellationError> {
+    let workspace = capability.workspace();
+    let root = capability.index_root();
+    let publisher = super::publisher::IndexPublisher::acquire(root, inner_store_for(root))?;
+    let admission = crate::workspace::lock::begin_repair_index_admission(workspace, transaction_id, &publisher)
+        .await.map_err(|error| ConstellationError::Io { detail: format!("repair admission failed: {error}") })?;
+    let repair = RepairContext { admission: &admission };
+    let guard = acquire_index_workspace_lock(workspace, Some(&repair)).await?;
+    let status = crate::artifact::identity_repair::pending_recovery_status(workspace, transaction_id, &guard)
+        .map_err(|error| ConstellationError::Io { detail: format!("cannot inspect repair status: {error}") })?;
+    drop(guard);
+    if status == crate::artifact::identity_repair::JournalStatus::RolledBackIndexPending {
+        super::publisher::bootstrap_or_recover_for_repair(
+            &publisher, workspace, super::capture::CaptureLimits::default(), &admission,
+        ).await?;
+        let descriptor = super::storage::read_current(root)?.ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+            detail: "rollback has no published baseline".to_string(),
+        })?;
+        let baseline = Arc::new(super::storage::read_manifest(root, &descriptor)?);
+        let captured = super::publisher::capture_under_repair_lock(
+            workspace, super::capture::CaptureLimits::default(), Some(Arc::clone(&baseline)), &admission,
+        ).await?;
+        if let Some(conflicts) = captured.diagnostic_inventory() {
+            return reconcile_rollback_diagnostic(
+                capability, transaction_id, deadline, &publisher, &repair, &descriptor, &baseline, &captured, conflicts,
+            ).await;
+        }
+    }
+    maintain_index_owned(capability, super::capture::CaptureLimits::default(), deadline, &publisher, Some(&repair)).await?;
+    verify_repair_projection(capability, &repair).await?;
+    let config = crate::workspace::load_config(workspace).map_err(|error| ConstellationError::Io {
+        detail: format!("cannot read embedding configuration for repair: {error}"),
+    })?;
+    let profile_id: Option<String> = match config.embedding {
+        Some(embedding) => {
+            #[cfg(feature = "semantic-search")]
+            {
+                let repo = crate::embed::resolve_repo(&embedding.model).ok_or_else(|| ConstellationError::ModelUnavailable {
+                    detail: format!("unsupported embedding model {}", embedding.model),
+                })?;
+                let resolved = super::jobs::ResolvedProfile::open(
+                    &crate::embed::resolve_cache_dir(), repo, ENGINE_VERSION, embedding.chunk_size,
+                ).map_err(|error| ConstellationError::ModelUnavailable { detail: error.to_string() })?;
+                prepare_embedding_batch_owned(capability, &resolved.profile, deadline, &publisher, Some(&repair), true).await?;
+                let mut worker = super::runtime::InferenceWorker::spawn_resolved(&embedding.model, &resolved)?;
+                let result = drain_repair_embeddings(capability, &resolved.profile, &mut worker, deadline, &publisher, &repair).await;
+                let shutdown = worker.shutdown();
+                result?;
+                if !matches!(shutdown?, super::runtime::ShutdownOutcome::Joined) {
+                    return Err(ConstellationError::ModelUnavailable { detail: "repair inference did not stop".to_string() });
+                }
+                Some(resolved.profile.profile_id())
+            }
+            #[cfg(not(feature = "semantic-search"))]
+            {
+                let _ = embedding;
+                return Err(ConstellationError::ModelUnavailable {
+                    detail: "semantic indexing is configured but this build has no semantic-search feature".to_string(),
+                });
+            }
+        }
+        None => None,
+    };
+    verify_and_finish_repair(capability, transaction_id, &publisher, &repair, profile_id.as_deref(), deadline)
+        .await.map(RepairReconcileOutcome::Healthy)
+}
+
+#[cfg(feature = "semantic-search")]
+async fn drain_repair_embeddings(
+    capability: &MaintainCapability,
+    profile: &super::jobs::EmbeddingProfile,
+    worker: &mut super::runtime::InferenceWorker,
+    deadline: std::time::Instant,
+    publisher: &super::publisher::IndexPublisher,
+    repair: &RepairContext<'_>,
+) -> Result<(), ConstellationError> {
+    use super::runtime::{InferenceJob, Poll, SubmitOutcome};
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(ConstellationError::IndexBusy { detail: "repair semantic drain deadline expired".to_string() });
+        }
+        let prepared = prepare_embedding_batch_owned(capability, profile, deadline, publisher, Some(repair), false).await?;
+        if prepared.inputs.is_empty() {
+            return Ok(());
+        }
+        let _batch = worker.begin_batch();
+        let mut submitted = Vec::new();
+        for input in &prepared.inputs {
+            match worker.submit(InferenceJob { job: input.job.clone(), input_text: input.input_text.to_string() }) {
+                SubmitOutcome::Queued => submitted.push(input.job.clone()),
+                SubmitOutcome::QueueFull => break,
+                SubmitOutcome::WorkerStopped => {
+                    let _ = fail_embedding_batch_owned(capability, &prepared, &submitted, "inference worker stopped", deadline, publisher, Some(repair)).await;
+                    return Err(ConstellationError::ModelUnavailable { detail: "repair inference worker stopped".to_string() });
+                }
+            }
+        }
+        if submitted.is_empty() {
+            return Err(ConstellationError::ModelUnavailable { detail: "repair inference queue accepted no jobs".to_string() });
+        }
+        let mut results = Vec::with_capacity(submitted.len());
+        while results.len() < submitted.len() {
+            if std::time::Instant::now() >= deadline {
+                return Err(ConstellationError::IndexBusy { detail: "repair inference deadline expired".to_string() });
+            }
+            match worker.try_result() {
+                Poll::Ready(result) => {
+                    if !submitted.iter().any(|job| job == &result.job)
+                        || results.iter().any(|prior: &super::jobs::ComputedEmbedding| prior.job == result.job) {
+                        return Err(ConstellationError::Io { detail: "repair worker returned an unexpected or duplicate job".to_string() });
+                    }
+                    results.push(super::jobs::ComputedEmbedding { job: result.job, vector: result.vector });
+                }
+                Poll::Empty => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+                Poll::Disconnected => {
+                    let _ = fail_embedding_batch_owned(capability, &prepared, &submitted, "inference worker disconnected", deadline, publisher, Some(repair)).await;
+                    return Err(ConstellationError::ModelUnavailable { detail: "repair inference worker disconnected".to_string() });
+                }
+            }
+        }
+        let outcome = complete_embedding_batch_owned(capability, &prepared, &results, deadline, publisher, Some(repair)).await?;
+        if !outcome.stale.is_empty() || outcome.published.len() != results.len() {
+            return Err(ConstellationError::SourceUnavailable { detail: "repair inference produced stale or uncommitted results".to_string() });
+        }
+    }
+}
+
+/// Preserve incarnation fences even if a retired binding survives only in a
+/// pinned physical row or an outstanding job, rather than a source entry.
+async fn diagnostic_incarnation_floors(
+    root: &Path,
+    marker: &super::manifest::ProtocolMarker,
+    manifest: &GenerationManifest,
+    versions: super::manifest::TableVersions,
+    conflicts: &[super::manifest::ConflictSource],
+) -> Result<BTreeMap<String, u64>, ConstellationError> {
+    use arrow_array::{Array, StringArray, UInt64Array};
+    let mut floors: BTreeMap<String, u64> = conflicts.iter()
+        .map(|conflict| (conflict.canonical_key.clone(), 0))
+        .collect();
+    for job in manifest.pending_jobs.values() {
+        let parent = job.canonical_key.split_once("#s")
+            .map_or(job.canonical_key.as_str(), |(parent, _)| parent);
+        if let Some(floor) = floors.get_mut(parent) {
+            *floor = (*floor).max(job.incarnation);
+        }
+    }
+    for (name, version, key_column) in [
+        ("artifacts", versions.artifacts, "canonical_key"),
+        ("sections", versions.sections, "parent_key"),
+    ] {
+        let table = super::lance_tables::open_table_at_version(root, marker, name, version).await?;
+        for batch in table.select_columns(&[key_column, "incarnation"]).await? {
+            let keys = batch.column_by_name(key_column).and_then(|column| column.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| ConstellationError::IndexGenerationUnavailable { detail: format!("{name} missing {key_column}") })?;
+            let incarnations = batch.column_by_name("incarnation").and_then(|column| column.as_any().downcast_ref::<UInt64Array>())
+                .ok_or_else(|| ConstellationError::IndexGenerationUnavailable { detail: format!("{name} missing incarnation") })?;
+            for row in 0..batch.num_rows() {
+                if keys.is_null(row) || incarnations.is_null(row) {
+                    return Err(ConstellationError::IndexGenerationUnavailable { detail: format!("{name} has null identity binding") });
+                }
+                if let Some(floor) = floors.get_mut(keys.value(row)) {
+                    *floor = (*floor).max(incarnations.value(row));
+                }
+            }
+        }
+    }
+    Ok(floors)
+}
+
+/// Publish a complete path-census without choosing a canonical-key winner.
+/// This is reachable only after a validated rollback admission.
+async fn reconcile_rollback_diagnostic(
+    capability: &MaintainCapability,
+    transaction_id: &str,
+    deadline: std::time::Instant,
+    publisher: &super::publisher::IndexPublisher,
+    repair: &RepairContext<'_>,
+    descriptor: &CurrentDescriptor,
+    published: &Arc<GenerationManifest>,
+    captured: &Arc<CapturedSourceView>,
+    conflicts: Vec<super::manifest::ConflictSource>,
+) -> Result<RepairReconcileOutcome, ConstellationError> {
+    let root = capability.index_root();
+    let workspace = capability.workspace();
+    let marker = marker_for(published);
+    let baseline = published_baseline(descriptor, published)?;
+    let tables = super::lance_tables::open_active_tables_for_repair(
+        root, &marker, Arc::clone(publisher.tracking_store()), workspace, repair,
+    ).await?;
+    restore_diverged_heads(&tables, &baseline, workspace, Some(repair)).await?;
+    let physical_floors = diagnostic_incarnation_floors(root, &marker, published, baseline.table_versions, &conflicts).await?;
+
+    let old_keys: Vec<String> = published.source_entries.iter().map(|entry| entry.canonical_key.clone()).collect();
+    let empty = BTreeMap::new();
+    let artifacts = super::publisher::artifacts_batch(
+        &captured.artifacts, captured.index_epoch, &captured.checkout_id, &empty,
+    )?;
+    let relations = super::publisher::relations_batch(&captured.artifacts)?;
+    let sections = super::publisher::sections_batch(captured, &empty)?;
+
+    // Restore and every mutation use the same owner and scoped journal guard.
+    // A non-empty full merge removes every prior artifact not in the census.
+    if artifacts.num_rows() > 0 {
+        let guard = acquire_index_workspace_lock(workspace, Some(repair)).await?;
+        tables.merge_into_artifacts(artifacts, true).await?;
+        drop(guard);
+    } else if !old_keys.is_empty() {
+        let guard = acquire_index_workspace_lock(workspace, Some(repair)).await?;
+        tables.delete_from_artifacts(&old_keys).await?;
+        drop(guard);
+    }
+    if !old_keys.is_empty() {
+        let guard = acquire_index_workspace_lock(workspace, Some(repair)).await?;
+        tables.delete_from_relations(&old_keys).await?;
+        drop(guard);
+        let guard = acquire_index_workspace_lock(workspace, Some(repair)).await?;
+        tables.delete_from_sections(&old_keys).await?;
+        drop(guard);
+    }
+    if relations.num_rows() > 0 {
+        let guard = acquire_index_workspace_lock(workspace, Some(repair)).await?;
+        tables.merge_into_relations(relations, false).await?;
+        drop(guard);
+    }
+    if sections.num_rows() > 0 {
+        let guard = acquire_index_workspace_lock(workspace, Some(repair)).await?;
+        tables.merge_into_sections(sections, true).await?;
+        drop(guard);
+    }
+    let versions = tables.head_versions().await?;
+    verify_diagnostic_tables(root, &marker, versions, captured).await?;
+
+    let generation_id = super::publisher::generation_id_for(&captured.evaluated_at);
+    let mut next = GenerationManifest::from_capture(captured, &generation_id, versions);
+    next.tombstones = published.tombstones.clone();
+    next.identity_retirements = published.identity_retirements.clone();
+    for conflict in &conflicts {
+        let floor = next.identity_retirements.entry(conflict.canonical_key.clone()).or_insert(0);
+        *floor = (*floor).max(physical_floors.get(&conflict.canonical_key).copied().unwrap_or(0));
+        for entry in &published.source_entries {
+            if entry.canonical_key == conflict.canonical_key {
+                *floor = (*floor).max(entry.incarnation);
+            }
+        }
+        for tombstone in &published.tombstones {
+            if tombstone.canonical_key == conflict.canonical_key {
+                *floor = (*floor).max(tombstone.incarnation);
+            }
+        }
+    }
+    if next.conflict_inventory != conflicts || next.semantic_blocked_paths != captured.enumerated_paths {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: "diagnostic manifest does not contain the complete captured inventory".to_string(),
+        });
+    }
+    next.validate_for_publication()?;
+
+    // This guard covers the last complete census, visibility switch, pinned
+    // verification and journal transition: no workspace writer can pass it.
+    let guard = acquire_index_workspace_lock(workspace, Some(repair)).await?;
+    let status = crate::artifact::identity_repair::pending_recovery_status(workspace, transaction_id, &guard)
+        .map_err(|error| ConstellationError::Io { detail: format!("cannot recheck rollback status: {error}") })?;
+    if status != crate::artifact::identity_repair::JournalStatus::RolledBackIndexPending {
+        return Err(ConstellationError::SourceUnavailable { detail: "diagnostic publication requires rollback/index_pending".to_string() });
+    }
+    let recheck = super::publisher::capture_while_locked(
+        workspace, super::capture::CaptureLimits::default(), Some(Arc::clone(published)),
+    ).await?;
+    if recheck.source_set_digest != captured.source_set_digest
+        || recheck.config_digest != captured.config_digest
+        || recheck.enumerated_paths != captured.enumerated_paths
+        || recheck.diagnostic_inventory().as_ref() != Some(&conflicts)
+        || super::storage::read_current(root)?.as_ref() != Some(descriptor) {
+        return Err(ConstellationError::SourceUnavailable { detail: "rollback corpus or published baseline changed before diagnostic publication".to_string() });
+    }
+    if std::time::Instant::now() >= deadline {
+        return Err(ConstellationError::IndexBusy { detail: "rollback diagnostic deadline expired".to_string() });
+    }
+    let installed = publisher.publish(&next, None)?;
+    let pinned = super::storage::pin_generation_read(root, &installed)?;
+    if pinned.manifest() != &next || pinned.descriptor() != &installed
+        || super::storage::read_current(root)?.as_ref() != Some(&installed) {
+        return Err(ConstellationError::IndexGenerationUnavailable { detail: "diagnostic publication did not retain its exact manifest".to_string() });
+    }
+    verify_diagnostic_tables(root, &marker, versions, captured).await?;
+    let final_capture = super::publisher::capture_while_locked(
+        workspace, super::capture::CaptureLimits::default(), Some(Arc::clone(published)),
+    ).await?;
+    if final_capture.source_set_digest != captured.source_set_digest
+        || final_capture.config_digest != captured.config_digest
+        || final_capture.enumerated_paths != captured.enumerated_paths
+        || final_capture.diagnostic_inventory().as_ref() != Some(&conflicts) {
+        return Err(ConstellationError::SourceUnavailable { detail: "rollback corpus changed during diagnostic proof".to_string() });
+    }
+    if std::time::Instant::now() >= deadline {
+        return Err(ConstellationError::IndexBusy { detail: "rollback diagnostic deadline expired before journal completion".to_string() });
+    }
+    crate::workspace::lock::finish_repair_index_admission(repair.admission, &guard)
+        .map_err(|error| ConstellationError::Io { detail: format!("cannot finish rollback journal: {error}") })?;
+    Ok(RepairReconcileOutcome::RollbackDiagnostic {
+        proof: RepairIndexProof {
+            transaction_id: transaction_id.to_string(),
+            journal_digest: repair.admission.journal_digest().to_string(),
+            generation_id,
+            source_set_digest: next.source_set_digest,
+            config_digest: next.config_digest,
+            table_versions: versions,
+        },
+        conflicts,
+        semantic: SemanticRecoveryState::BlockedByIdentityConflicts,
+    })
+}
+
+async fn verify_diagnostic_tables(
+    root: &Path,
+    marker: &super::manifest::ProtocolMarker,
+    versions: super::manifest::TableVersions,
+    captured: &CapturedSourceView,
+) -> Result<(), ConstellationError> {
+    use arrow_array::{Array, StringArray};
+    verify_captured_rows_at_versions(root, marker, versions, captured).await?;
+    let relations = super::lance_tables::open_table_at_version(root, marker, "relations", versions.relations).await?;
+    verify_captured_edges(&relations, captured).await?;
+    for (role, version) in [("artifacts", versions.artifacts), ("sections", versions.sections)] {
+        let table = super::lance_tables::open_table_at_version(root, marker, role, version).await?;
+        for batch in table.query_batches().await? {
+            let vector = batch.column_by_name("embedding").ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+                detail: format!("diagnostic {role} is missing embedding column"),
+            })?;
+            let profile = batch.column_by_name("profile_id").ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+                detail: format!("diagnostic {role} is missing profile column"),
+            })?;
+            let state = batch.column_by_name("semantic_state")
+                .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| ConstellationError::IndexGenerationUnavailable { detail: format!("diagnostic {role} is missing semantic state") })?;
+            let retry_after = batch.column_by_name("retry_after").ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+                detail: format!("diagnostic {role} is missing retry column"),
+            })?;
+            for row in 0..batch.num_rows() {
+                if !vector.is_null(row) || !profile.is_null(row) || !retry_after.is_null(row)
+                    || state.is_null(row) || state.value(row) != "unavailable" {
+                    return Err(ConstellationError::IndexGenerationUnavailable { detail: format!("diagnostic {role} retains a served semantic vector") });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn verify_repair_projection(
+    capability: &MaintainCapability,
+    repair: &RepairContext<'_>,
+) -> Result<(), ConstellationError> {
+    let root = capability.index_root();
+    let workspace = capability.workspace();
+    let _guard = acquire_index_workspace_lock(workspace, Some(repair)).await?;
+    let descriptor = super::storage::read_current(root)?.ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+        detail: "repair has no published generation".to_string(),
+    })?;
+    let manifest = Arc::new(super::storage::read_manifest(root, &descriptor)?);
+    let captured = super::publisher::capture_while_locked(
+        workspace, super::capture::CaptureLimits::default(), Some(Arc::clone(&manifest)),
+    ).await?;
+    if !captured.is_complete()
+        || captured.source_set_digest != descriptor.source_set_digest
+        || captured.config_digest != descriptor.config_digest {
+        return Err(ConstellationError::SourceUnavailable {
+            detail: "repair capture differs from the published generation".to_string(),
+        });
+    }
+    validate_physical_read_pins(root, &descriptor, &manifest, &captured).await?;
+    verify_captured_rows(root, &marker_for(&manifest), &descriptor, &manifest, &captured).await
+}
+
+async fn verify_and_finish_repair(
+    capability: &MaintainCapability,
+    transaction_id: &str,
+    publisher: &super::publisher::IndexPublisher,
+    repair: &RepairContext<'_>,
+    profile_id: Option<&str>,
+    deadline: std::time::Instant,
+) -> Result<RepairIndexProof, ConstellationError> {
+    use arrow_array::{Array, FixedSizeListArray, Float32Array, StringArray};
+    let root = capability.index_root();
+    let workspace = capability.workspace();
+    let descriptor = super::storage::read_current(root)?.ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+        detail: "repair has no published generation".to_string(),
+    })?;
+    let manifest = Arc::new(super::storage::read_manifest(root, &descriptor)?);
+    if descriptor.profile_id.as_deref() != profile_id || !manifest.pending_jobs.is_empty() {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: "repair semantic profile or durable backlog is not settled".to_string(),
+        });
+    }
+    let marker = marker_for(&manifest);
+    let tables = super::lance_tables::open_active_tables_for_repair(
+        root, &marker, Arc::clone(publisher.tracking_store()), workspace, repair,
+    ).await?;
+    let guard = acquire_index_workspace_lock(workspace, Some(repair)).await?;
+    let current = super::storage::read_current(root)?.ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+        detail: "repair generation disappeared".to_string(),
+    })?;
+    if current != descriptor {
+        return Err(ConstellationError::SourceUnavailable { detail: "repair generation changed before final proof".to_string() });
+    }
+    let captured = super::publisher::capture_while_locked(
+        workspace, super::capture::CaptureLimits::default(), Some(Arc::clone(&manifest)),
+    ).await?;
+    if !captured.is_complete()
+        || captured.source_set_digest != descriptor.source_set_digest
+        || captured.config_digest != descriptor.config_digest {
+        return Err(ConstellationError::SourceUnavailable {
+            detail: "repair final capture differs from the published generation".to_string(),
+        });
+    }
+    validate_physical_read_pins(root, &descriptor, &manifest, &captured).await?;
+    verify_captured_rows(root, &marker, &descriptor, &manifest, &captured).await?;
+    let heads = tables.head_versions().await?;
+    if heads.artifacts != descriptor.effective_artifacts_version(&manifest)?
+        || heads.relations != descriptor.effective_relations_version(&manifest)?
+        || heads.sections != descriptor.effective_sections_version(&manifest)? {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: "repair semantic scan is not at the published table versions".to_string(),
+        });
+    }
+    if let Some(profile) = profile_id {
+        let mut report = tables.artifacts_eligibility(&captured, profile).await?;
+        report.merge_from(&tables.sections_eligibility(&captured, profile).await?);
+        let expected: std::collections::BTreeSet<&str> = captured.entries.iter().map(|entry| entry.canonical_key.as_str())
+            .chain(captured.sections.iter().map(|section| section.canonical_key.as_str())).collect();
+        let current: std::collections::BTreeSet<&str> = report.current_keys().into_iter().collect();
+        if current != expected || !report.eligible_keys().is_empty() || !report.cannot_judge().is_empty() {
+            return Err(ConstellationError::IndexGenerationUnavailable {
+                detail: "repair semantic bindings are incomplete or not current".to_string(),
+            });
+        }
+    }
+    for (role, version) in [
+        ("artifacts", descriptor.effective_artifacts_version(&manifest)?),
+        ("sections", descriptor.effective_sections_version(&manifest)?),
+    ] {
+        let reader = super::lance_tables::open_table_at_version(root, &marker, role, version).await?;
+        for batch in reader.query_batches().await? {
+            let vectors = batch.column_by_name("embedding")
+                .and_then(|array| array.as_any().downcast_ref::<FixedSizeListArray>())
+                .ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+                    detail: format!("{role} has no valid embedding column"),
+                })?;
+            let states = batch.column_by_name("semantic_state")
+                .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| ConstellationError::IndexGenerationUnavailable { detail: format!("{role} has no semantic state column") })?;
+            for row in 0..batch.num_rows() {
+                let valid = match profile_id {
+                    Some(_) => !vectors.is_null(row) && !states.is_null(row) && states.value(row) == "ready",
+                    None => vectors.is_null(row) && (states.is_null(row) || states.value(row) != "ready"),
+                };
+                if !valid {
+                    return Err(ConstellationError::IndexGenerationUnavailable {
+                        detail: format!("{role} contains an unsettled semantic row"),
+                    });
+                }
+                if profile_id.is_some() {
+                    let values = vectors.value(row);
+                    let values = values.as_any().downcast_ref::<Float32Array>().ok_or_else(|| ConstellationError::IndexGenerationUnavailable {
+                        detail: format!("{role} has an invalid embedding value type"),
+                    })?;
+                    if values.len() != super::lance_tables::EMBEDDING_DIM as usize
+                        || values.iter().any(|value| value.is_none_or(|value| !value.is_finite())) {
+                        return Err(ConstellationError::IndexGenerationUnavailable {
+                            detail: format!("{role} contains an invalid embedding"),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if std::time::Instant::now() >= deadline {
+        return Err(ConstellationError::IndexBusy { detail: "repair deadline expired before journal completion".to_string() });
+    }
+    crate::workspace::lock::finish_repair_index_admission(repair.admission, &guard)
+        .map_err(|error| ConstellationError::Io { detail: format!("cannot finish repair journal: {error}") })?;
+    Ok(RepairIndexProof {
+        transaction_id: transaction_id.to_string(),
+        journal_digest: repair.admission.journal_digest().to_string(),
+        generation_id: descriptor.generation_id.clone(),
+        source_set_digest: descriptor.source_set_digest.clone(),
+        config_digest: descriptor.config_digest.clone(),
+        table_versions: manifest.table_versions,
     })
 }
 
@@ -2361,8 +3402,20 @@ pub async fn complete_embedding_batch(
     results: &[super::jobs::ComputedEmbedding],
     deadline: std::time::Instant,
 ) -> Result<EmbeddingBatchOutcome, ConstellationError> {
-    use super::lance_tables::open_active_tables;
-    use super::publisher::{IndexPublisher, capture_under_workspace_lock, publish_embeddings};
+    let root = capability.index_root();
+    let publisher = super::publisher::IndexPublisher::acquire(root, inner_store_for(root))?;
+    complete_embedding_batch_owned(capability, prepared, results, deadline, &publisher, None).await
+}
+
+async fn complete_embedding_batch_owned(
+    capability: &MaintainCapability,
+    prepared: &super::jobs::PreparedEmbeddingBatch,
+    results: &[super::jobs::ComputedEmbedding],
+    deadline: std::time::Instant,
+    publisher: &super::publisher::IndexPublisher,
+    repair: Option<&RepairContext<'_>>,
+) -> Result<EmbeddingBatchOutcome, ConstellationError> {
+    use super::publisher::{capture_under_workspace_lock, publish_embeddings};
 
     if !is_admitting() {
         return Err(ConstellationError::IndexBusy {
@@ -2383,7 +3436,6 @@ pub async fn complete_embedding_batch(
     let workspace = capability.workspace().to_path_buf();
     let profile_id = prepared.profile.profile_id();
 
-    let publisher = IndexPublisher::acquire(&index_root, inner_store_for(&index_root))?;
     let descriptor = super::storage::read_current(&index_root)?.ok_or_else(|| {
         ConstellationError::IndexGenerationUnavailable {
             detail: "the index published no generation; there is nothing to complete against"
@@ -2391,6 +3443,7 @@ pub async fn complete_embedding_batch(
         }
     })?;
     let published = Arc::new(super::storage::read_manifest(&index_root, &descriptor)?);
+    published.require_addressable()?;
 
     if descriptor.config_digest != prepared.config_digest {
         return Err(ConstellationError::ProfileIncompatible {
@@ -2438,13 +3491,14 @@ pub async fn complete_embedding_batch(
     }
 
     let marker = marker_for(&published);
-    let tables = open_active_tables(
-        &index_root,
-        &marker,
-        Arc::clone(publisher.tracking_store()),
-        capability.workspace(),
-    )
-    .await?;
+    let tables = match repair {
+        Some(repair) => super::lance_tables::open_active_tables_for_repair(
+            &index_root, &marker, Arc::clone(publisher.tracking_store()), &workspace, repair,
+        ).await?,
+        None => super::lance_tables::open_active_tables(
+            &index_root, &marker, Arc::clone(publisher.tracking_store()), &workspace,
+        ).await?,
+    };
 
     // Recover the published baseline before the tables are read for a decision
     // or written to. A completion publishes a vector **and** a manifest, so it
@@ -2452,7 +3506,7 @@ pub async fn complete_embedding_batch(
     // must be the published state first, or the vectors land on top of rows an
     // abandoned pass wrote and the manifest records heads that include them.
     let baseline = published_baseline(&descriptor, &published)?;
-    restore_diverged_heads(&tables, &baseline, capability.workspace()).await?;
+    restore_diverged_heads(&tables, &baseline, &workspace, repair).await?;
 
     // The same baseline admission used, for the same reason: the check below
     // compares this capture's binding against the job's, and the guarded
@@ -2460,12 +3514,14 @@ pub async fn complete_embedding_batch(
     // identity only agree if all three were derived from the same published
     // state — so a row whose source moved is reported `stale` rather than
     // being misjudged as unchanged.
-    let captured = capture_under_workspace_lock(
-        &workspace,
-        super::capture::CaptureLimits::default(),
-        Some(Arc::clone(&published)),
-    )
-    .await?;
+    let captured = match repair {
+        Some(repair) => super::publisher::capture_under_repair_lock(
+            &workspace, super::capture::CaptureLimits::default(), Some(Arc::clone(&published)), repair.admission,
+        ).await?,
+        None => capture_under_workspace_lock(
+            &workspace, super::capture::CaptureLimits::default(), Some(Arc::clone(&published)),
+        ).await?,
+    };
 
     let body_prefix_chars = crate::workspace::init::load_config(&workspace)
         .ok()
@@ -2506,11 +3562,7 @@ pub async fn complete_embedding_batch(
 
     // One lock for the whole conditional publish, held across exactly the
     // writes that must not interleave with a workspace mutation.
-    let guard = crate::workspace::acquire_workspace_lock(&workspace)
-        .await
-        .map_err(|e| ConstellationError::Io {
-            detail: format!("cannot take the workspace lock for a completion publish: {e}"),
-        })?;
+    let guard = acquire_index_workspace_lock(&workspace, repair).await?;
     let publishes = publish_embeddings(&tables, &live).await?;
     drop(guard);
 
@@ -2589,11 +3641,7 @@ pub async fn complete_embedding_batch(
         );
         // One lock for the switch, released before the republish below, which
         // takes its own. Never two at once: the lock is not reentrant.
-        let guard = crate::workspace::acquire_workspace_lock(&workspace)
-            .await
-            .map_err(|e| ConstellationError::Io {
-                detail: format!("cannot take the workspace lock to publish completion: {e}"),
-            })?;
+        let guard = acquire_index_workspace_lock(&workspace, repair).await?;
         // The fence above already established that the served space *is*
         // `profile_id` (or that none is claimed yet), so passing it here can
         // only carry the served space forward or make the first claim. The
@@ -2628,17 +3676,12 @@ pub async fn complete_embedding_batch(
     if next != descriptor {
         // Under the workspace lock, for the same reason the manifest publish
         // above is.
-        let guard = crate::workspace::acquire_workspace_lock(&workspace)
-            .await
-            .map_err(|e| ConstellationError::Io {
-                detail: format!("cannot take the workspace lock to record the profile: {e}"),
-            })?;
+        let guard = acquire_index_workspace_lock(&workspace, repair).await?;
         publisher.republish_current(&next)?;
         drop(guard);
     }
 
     drop(tables);
-    drop(publisher);
 
     // Stale is one list, because the caller asks one question: which of my
     // vectors did not land. Supersession is one of three reasons, and they are
@@ -2727,8 +3770,20 @@ pub async fn fail_embedding_batch(
     detail: &str,
     deadline: std::time::Instant,
 ) -> Result<EmbeddingFailureOutcome, ConstellationError> {
-    use super::lance_tables::open_active_tables;
-    use super::publisher::IndexPublisher;
+    let root = capability.index_root();
+    let publisher = super::publisher::IndexPublisher::acquire(root, inner_store_for(root))?;
+    fail_embedding_batch_owned(capability, prepared, failed_jobs, detail, deadline, &publisher, None).await
+}
+
+async fn fail_embedding_batch_owned(
+    capability: &MaintainCapability,
+    prepared: &super::jobs::PreparedEmbeddingBatch,
+    failed_jobs: &[super::jobs::EmbeddingJob],
+    detail: &str,
+    deadline: std::time::Instant,
+    publisher: &super::publisher::IndexPublisher,
+    repair: Option<&RepairContext<'_>>,
+) -> Result<EmbeddingFailureOutcome, ConstellationError> {
 
     if !is_admitting() {
         return Err(ConstellationError::IndexBusy {
@@ -2770,7 +3825,6 @@ pub async fn fail_embedding_batch(
     // Owner first, then CURRENT — the same order as admission. A failure
     // record written against a generation another process has already
     // replaced would mark rows the new generation does not own.
-    let publisher = IndexPublisher::acquire(&index_root, inner_store_for(&index_root))?;
     let descriptor = super::storage::read_current(&index_root)?.ok_or_else(|| {
         ConstellationError::IndexGenerationUnavailable {
             detail: "the index published no generation; there is nothing to record against"
@@ -2778,6 +3832,7 @@ pub async fn fail_embedding_batch(
         }
     })?;
     let published = Arc::new(super::storage::read_manifest(&index_root, &descriptor)?);
+    published.require_addressable()?;
 
     // The same two fences completion applies, for the same reason. A failure
     // record is a write like any other: it moves rows to `failed`, advances
@@ -2800,14 +3855,15 @@ pub async fn fail_embedding_batch(
 
     let baseline = published_baseline(&descriptor, &published)?;
     let marker = marker_for(&published);
-    let tables = open_active_tables(
-        &index_root,
-        &marker,
-        Arc::clone(publisher.tracking_store()),
-        capability.workspace(),
-    )
-    .await?;
-    restore_diverged_heads(&tables, &baseline, capability.workspace()).await?;
+    let tables = match repair {
+        Some(repair) => super::lance_tables::open_active_tables_for_repair(
+            &index_root, &marker, Arc::clone(publisher.tracking_store()), &workspace, repair,
+        ).await?,
+        None => super::lance_tables::open_active_tables(
+            &index_root, &marker, Arc::clone(publisher.tracking_store()), &workspace,
+        ).await?,
+    };
+    restore_diverged_heads(&tables, &baseline, &workspace, repair).await?;
 
     let now = chrono::Utc::now();
     let mut remaining = published.pending_jobs.clone();
@@ -2833,11 +3889,7 @@ pub async fn fail_embedding_batch(
         let until = super::jobs::retry_after_at(job.attempt, now);
         let binding = job.binding();
 
-        let guard = crate::workspace::acquire_workspace_lock(&workspace)
-            .await
-            .map_err(|e| ConstellationError::Io {
-                detail: format!("cannot take the workspace lock for a failure record: {e}"),
-            })?;
+        let guard = acquire_index_workspace_lock(&workspace, repair).await?;
         let outcome = match job.row_role() {
             super::jobs::EmbeddingRowRole::Artifact => {
                 tables
@@ -2876,11 +3928,7 @@ pub async fn fail_embedding_batch(
             remaining,
             tables.head_versions().await?,
         );
-        let guard = crate::workspace::acquire_workspace_lock(&workspace)
-            .await
-            .map_err(|e| ConstellationError::Io {
-                detail: format!("cannot take the workspace lock to publish failures: {e}"),
-            })?;
+        let guard = acquire_index_workspace_lock(&workspace, repair).await?;
         // Carries the fenced served space forward, or makes the first claim —
         // see the same call in `complete_embedding_batch`.
         publisher.publish(&next, Some(&profile_id))?;
@@ -2906,18 +3954,13 @@ pub async fn fail_embedding_batch(
             next.profile_id = Some(profile_id.clone());
         }
         if next != descriptor {
-            let guard = crate::workspace::acquire_workspace_lock(&workspace)
-                .await
-                .map_err(|e| ConstellationError::Io {
-                    detail: format!("cannot take the workspace lock to record the profile: {e}"),
-                })?;
+            let guard = acquire_index_workspace_lock(&workspace, repair).await?;
             publisher.republish_current(&next)?;
             drop(guard);
         }
     }
 
     drop(tables);
-    drop(publisher);
 
     Ok(EmbeddingFailureOutcome {
         profile_id,
@@ -3340,6 +4383,7 @@ pub(super) async fn tables_eligibility_report(
         return Ok(super::jobs::EligibilityReport::default());
     };
     let published = Arc::new(super::storage::read_manifest(&index_root, &descriptor)?);
+    published.require_addressable()?;
     let tables = open_active_tables(
         &index_root,
         &marker_for(&published),
@@ -3508,6 +4552,7 @@ pub async fn list_pinned_documents(
     // no TTL, and nothing under the index root is created or modified.
     let pinned = super::storage::pin_generation_read(index_root, &descriptor)?;
     let manifest = pinned.manifest();
+    manifest.require_addressable()?;
     let artifacts_version = descriptor.effective_artifacts_version(manifest)?;
     let marker = marker_for(manifest);
     let table = super::lance_tables::open_table_at_version(
@@ -3573,6 +4618,7 @@ pub async fn list_pinned_graph(index_root: &Path) -> Result<PinnedGraph, Constel
     // whole read; see [`super::storage::pin_generation_read`].
     let pinned = super::storage::pin_generation_read(index_root, &descriptor)?;
     let manifest = pinned.manifest();
+    manifest.require_addressable()?;
     let artifacts_version = descriptor.effective_artifacts_version(manifest)?;
     let marker = marker_for(manifest);
     let artifacts = super::lance_tables::open_table_at_version(
@@ -3674,6 +4720,7 @@ pub async fn search_pinned_lexical(
     // whole read; see [`super::storage::pin_generation_read`].
     let pinned = super::storage::pin_generation_read(index_root, &descriptor)?;
     let manifest = pinned.manifest();
+    manifest.require_addressable()?;
     let artifacts_version = descriptor.effective_artifacts_version(manifest)?;
     if !manifest.table_versions.is_publishable() {
         return Err(ConstellationError::IndexGenerationUnavailable {
@@ -4068,6 +5115,7 @@ pub async fn search_semantic_in_view(
             (pin.descriptor(), pin.manifest(), Some(captured.as_ref()))
         }
     };
+    manifest.require_addressable()?;
     // The root must still resolve **this** manifest. `CURRENT` is deliberately
     // not read: it says nothing about generation G once H has been published,
     // and trusting it here would reintroduce the substitution one branch up.
@@ -4173,6 +5221,7 @@ pub async fn count_eligible_semantic(
             None => return Ok(0),
         },
     };
+    manifest.require_addressable()?;
     let artifacts_version = descriptor.effective_artifacts_version(manifest)?;
     let marker = marker_for(manifest);
     let ready = format!(
@@ -4230,6 +5279,7 @@ async fn search_semantic_at(
     filter: &PinnedFilter,
     captured: Option<&CapturedSourceView>,
 ) -> Result<SemanticSearchOutcome, ConstellationError> {
+    manifest.require_addressable()?;
     let artifacts_version = descriptor.effective_artifacts_version(manifest)?;
     if !manifest.table_versions.is_publishable() {
         return Err(ConstellationError::IndexGenerationUnavailable {
@@ -4498,6 +5548,7 @@ pub async fn read_pinned_artifacts(
 ) -> Result<Vec<PinnedArtifact>, ConstellationError> {
     let pinned = super::storage::pin_generation_read(index_root, descriptor)?;
     let manifest = pinned.manifest();
+    manifest.require_addressable()?;
     let artifacts_version = descriptor.effective_artifacts_version(manifest)?;
     let table = super::lance_tables::open_table_at_version(
         index_root,
@@ -4554,9 +5605,11 @@ pub async fn get_pinned_artifact(
     key_or_id: &str,
 ) -> Result<Option<(PinnedArtifact, String, u64)>, ConstellationError> {
     if key_or_id.trim().is_empty() {
-        return Err(ConstellationError::Io {
-            detail: "an empty key cannot identify an artifact".to_string(),
-        });
+        return Err(ConstellationError::Resolve(
+            crate::artifact::canonical_key::ResolveError::InvalidSelector {
+                input: key_or_id.to_string(),
+            },
+        ));
     }
     let descriptor = super::storage::read_current(index_root)?.ok_or_else(|| {
         ConstellationError::IndexGenerationUnavailable {
@@ -4599,22 +5652,29 @@ pub async fn get_pinned_artifact(
                     canonical_key: key,
                     display_id,
                     title,
-                    relative_path: std::path::PathBuf::new(),
+                    relative_path: pinned_artifact_string(batch, "relative_path", row)
+                        .map(std::path::PathBuf::from).unwrap_or_default(),
                 },
                 batch_index,
                 row,
             ));
         }
     }
-    let resolver_candidates: Vec<_> = candidates
+    let mut resolver_candidates: Vec<_> = candidates
         .iter()
         .map(|(candidate, _, _)| candidate.clone())
         .collect();
+    resolver_candidates.extend(manifest.conflict_inventory.iter().map(|source| {
+        crate::artifact::canonical_key::ArtifactCandidate {
+            canonical_key: source.canonical_key.clone(),
+            display_id: source.display_id.clone(),
+            title: source.title.clone(),
+            relative_path: std::path::PathBuf::from(&source.relative_path),
+        }
+    }));
     let Some(resolved) =
         crate::artifact::canonical_key::resolve_artifact(key_or_id, &resolver_candidates)
-            .map_err(|error| ConstellationError::Io {
-                detail: error.to_string(),
-            })?
+            .map_err(ConstellationError::Resolve)?
     else {
         return Ok(None);
     };
@@ -4685,6 +5745,16 @@ mod tests {
     use crate::workspace::ARTIFACT_DIRS;
     use tempfile::TempDir;
 
+    #[test]
+    fn exact_edges_reject_equal_size_wrong_set_and_duplicates() {
+        let edge = |target: &str| ("source".to_string(), target.to_string(), "based_on".to_string(), "digest".to_string(), 1, 1);
+        let expected = [edge("a"), edge("b")].into_iter().collect();
+        assert!(exact_edge_set(&expected, [edge("a"), edge("b")]).is_ok());
+        assert!(exact_edge_set(&expected, [edge("a"), edge("c")]).is_err());
+        assert!(exact_edge_set(&expected, [edge("a"), edge("a")]).is_err());
+        assert!(exact_edge_set(&expected, [edge("a")]).is_err());
+    }
+
     /// The unrestricted filter, shared by every search call in this module
     /// that is not about filtering.
     const NO_FILTER: PinnedFilter = PinnedFilter {
@@ -4703,6 +5773,408 @@ mod tests {
         )
         .unwrap();
         tmp
+    }
+
+    #[tokio::test]
+    async fn repair_refuses_unknown_transaction_on_repeated_calls() {
+        let tmp = workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let artifact = root.join("prds/PRD-001-auth.md");
+        let before = std::fs::read(&artifact).unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root);
+        for _ in 0..2 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            assert!(reconcile_identity_repair(&capability, "missing-transaction", deadline).await.is_err());
+            assert_eq!(std::fs::read(&artifact).unwrap(), before);
+        }
+    }
+
+    #[tokio::test]
+    async fn ordinary_mutation_guard_checks_full_census_without_current() {
+        let tmp = workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(&root).await.unwrap();
+        assert!(ensure_ordinary_mutation_allowed(&root).is_ok());
+        let original = root.join("prds/PRD-001-auth.md");
+        let duplicate = root.join("prds/PRD-001-copy.md");
+        std::fs::copy(&original, &duplicate).unwrap();
+        match ensure_ordinary_mutation_allowed(&root).unwrap_err() {
+            ConstellationError::Resolve(crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey { key, candidates }) => {
+                assert_eq!(key, "PRD-001");
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates.iter().any(|candidate| candidate.relative_path == std::path::Path::new("prds/PRD-001-auth.md")));
+                assert!(candidates.iter().any(|candidate| candidate.relative_path == std::path::Path::new("prds/PRD-001-copy.md")));
+            }
+            error => panic!("expected structured conflict, got {error:?}"),
+        }
+        match resolve_workspace_selector_with_permit(&root, &guard, "PRD-001").await.unwrap_err() {
+            ConstellationError::Resolve(crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey { candidates, .. }) => {
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates.iter().all(|candidate| candidate.title == "Auth"));
+            }
+            error => panic!("expected selector conflict with candidates, got {error:?}"),
+        }
+        let complete_census = capture_full_workspace_with_permit(&root, &guard).await.unwrap();
+        assert_eq!(complete_census.conflict_artifacts.len(), 2);
+        assert!(complete_census.diagnostic_inventory().is_some());
+        assert!(open_workspace_read_with_permit(&root, &guard).await.is_err());
+        std::fs::remove_file(&duplicate).unwrap();
+        std::fs::write(root.join("prds/PRD-002-invalid.md"), b"\xff\xfe").unwrap();
+        assert!(ensure_ordinary_mutation_allowed(&root).is_err());
+        assert!(capture_full_workspace_with_permit(&root, &guard).await.is_err());
+        assert!(resolve_workspace_selector_with_permit(&root, &guard, "PRD-001").await.is_err());
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn workspace_read_permit_is_bound_and_does_not_relock() {
+        let first = workspace();
+        let second = workspace();
+        let root = first.path().canonicalize().unwrap();
+        let other = second.path().canonicalize().unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(&root).await.unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            open_workspace_read_with_permit(&root, &guard),
+        ).await.expect("read under a held guard must not wait for another lock");
+        assert!(result.is_ok());
+        assert!(open_workspace_read_with_permit(&other, &guard).await.is_err());
+    }
+
+    async fn pending_real_collision_repair() -> (
+        TempDir,
+        MaintainCapability,
+        crate::artifact::identity_repair::Census,
+        crate::artifact::identity_repair::RepairPlan,
+        crate::artifact::identity_repair::ApplyOutcome,
+    ) {
+        use crate::artifact::identity_repair::{
+            ReferenceDecision, apply_repair_plan, build_repair_plan, census_workspace,
+        };
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let workspace = crate::workspace::init::init_workspace(&root, "repair-test").unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(workspace.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        // The old pin contains one would-be claimant; after the second arrives
+        // it is not a valid representative of the restored collision.
+        std::fs::write(workspace.join("prds/PRD-001-a.md"),
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: First\n---\n\nFirst body.\n").unwrap();
+        maintain_index(&capability, CaptureLimits::default(), deadline).await.unwrap();
+        for (path, content) in [
+            ("prds/PRD-001-a.md", "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: First\n---\n\nFirst body.\n"),
+            ("prds/PRD-001-b.md", "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Second\n---\n\nSecond body.\n"),
+            ("prds/PRD-002.md", "---\nid: PRD-002\nkind: prd\nstatus: draft\ntitle: Other\n---\n\nOther body.\n"),
+            ("evidence/EVID-001.md", "---\nid: EVID-001\nkind: evidence\nstatus: draft\ntitle: Evidence\nlinks:\n- target: PRD-001\n  relation: informs\n---\n\nEvidence body.\n"),
+        ] {
+            std::fs::write(workspace.join(path), content).unwrap();
+        }
+        let census = census_workspace(&workspace).unwrap();
+        let decisions = [ReferenceDecision {
+            source_path: "evidence/EVID-001.md".to_string(),
+            occurrence: Some(0),
+            source_sha256: Some(census.documents.iter().find(|doc| doc.relative_path == "evidence/EVID-001.md").unwrap().hashes.file_sha256.clone()),
+            field: "links".to_string(),
+            from: "PRD-001".to_string(),
+            target_path: "prds/PRD-001-b.md".to_string(),
+        }];
+        let plan = build_repair_plan(&workspace, &census, &decisions).unwrap();
+        assert_eq!(plan.sources.len(), 2);
+        let outcome = apply_repair_plan(&workspace, &plan).unwrap();
+        (tmp, capability, census, plan, outcome)
+    }
+
+    #[tokio::test]
+    async fn real_apply_pending_reconciles_exact_graph_and_unblocks_writes() {
+        use crate::artifact::identity_repair::{inspect_repair_journal, JournalStatus};
+        let (_tmp, capability, census, plan, outcome) = pending_real_collision_repair().await;
+        let workspace = capability.workspace();
+        assert_eq!(outcome.status, JournalStatus::CanonicalCommittedIndexPending);
+        assert!(crate::workspace::acquire_workspace_lock(workspace).await.is_err());
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        reconcile_identity_repair(&capability, &outcome.transaction_id, deadline).await.unwrap();
+        assert_eq!(
+            inspect_repair_journal(workspace, &outcome.transaction_id).unwrap().status,
+            JournalStatus::CanonicalCommitted,
+        );
+        let graph = list_pinned_graph(capability.index_root()).await.unwrap();
+        let expected_keys: std::collections::BTreeSet<_> = census.documents.iter().map(|document| {
+            plan.sources.iter().find(|source| source.relative_path == document.relative_path)
+                .map_or_else(|| document.canonical_key.clone(), |source| source.new_key.clone())
+        }).collect();
+        let actual_keys: std::collections::BTreeSet<_> = graph.nodes.iter().map(|node| node.0.clone()).collect();
+        assert_eq!(graph.nodes.len(), expected_keys.len());
+        assert_eq!(actual_keys, expected_keys);
+        let evidence_key = census.documents.iter().find(|document| document.relative_path == "evidence/EVID-001.md")
+            .unwrap().canonical_key.clone();
+        let target = plan.sources.iter().find(|source| source.relative_path == "prds/PRD-001-b.md")
+            .unwrap().new_key.clone();
+        assert_eq!(graph.edges, vec![(evidence_key, target, "informs".to_string())]);
+
+        let guard = crate::workspace::acquire_workspace_lock(workspace).await.unwrap();
+        let path = workspace.join("prds/PRD-002.md");
+        std::fs::write(&path, "---\nid: PRD-002\nkind: prd\nstatus: draft\ntitle: Changed\n---\n\nEdited after repair.\n").unwrap();
+        drop(guard);
+        assert!(std::fs::read_to_string(path).unwrap().contains("Edited after repair."));
+    }
+
+    #[tokio::test]
+    async fn real_apply_external_change_refuses_then_retry_finishes() {
+        use crate::artifact::identity_repair::{inspect_repair_journal, JournalStatus};
+        let (_tmp, capability, _census, _plan, outcome) = pending_real_collision_repair().await;
+        let workspace = capability.workspace();
+        let path = workspace.join("prds/PRD-001-a.md");
+        let postimage = std::fs::read(&path).unwrap();
+        std::fs::write(&path, b"external unrelated edit").unwrap();
+        for _ in 0..2 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            assert!(reconcile_identity_repair(&capability, &outcome.transaction_id, deadline).await.is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"external unrelated edit");
+            assert_eq!(inspect_repair_journal(workspace, &outcome.transaction_id).unwrap().status,
+                JournalStatus::CanonicalCommittedIndexPending);
+            assert!(crate::workspace::acquire_workspace_lock(workspace).await.is_err());
+        }
+        std::fs::write(&path, &postimage).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        reconcile_identity_repair(&capability, &outcome.transaction_id, deadline).await.unwrap();
+        assert_eq!(inspect_repair_journal(workspace, &outcome.transaction_id).unwrap().status,
+            JournalStatus::CanonicalCommitted);
+        assert!(crate::workspace::acquire_workspace_lock(workspace).await.is_ok());
+        assert!(reconcile_identity_repair(&capability, &outcome.transaction_id, deadline).await.is_err());
+        assert_eq!(inspect_repair_journal(workspace, &outcome.transaction_id).unwrap().status,
+            JournalStatus::CanonicalCommitted);
+    }
+
+    #[tokio::test]
+    async fn real_rollback_publishes_diagnostics_and_allows_a_new_repair() {
+        use crate::artifact::identity_repair::{
+            apply_repair_plan, build_repair_plan, census_workspace, inspect_repair_journal,
+            rollback_repair, JournalStatus, ReferenceDecision,
+        };
+        let (_tmp, capability, _census, _plan, outcome) = pending_real_collision_repair().await;
+        let workspace = capability.workspace();
+        let rollback = rollback_repair(workspace, &outcome.transaction_id).unwrap();
+        assert_eq!(rollback.status, JournalStatus::RolledBackIndexPending);
+        let before = std::fs::read(workspace.join("prds/PRD-001-a.md")).unwrap();
+        assert!(crate::workspace::acquire_workspace_lock(workspace).await.is_err());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let result = reconcile_identity_repair(&capability, &outcome.transaction_id, deadline).await.unwrap();
+        let RepairReconcileOutcome::RollbackDiagnostic { proof, conflicts, semantic } = result else {
+            panic!("colliding rollback must be diagnostic, not healthy");
+        };
+        assert!(matches!(semantic, SemanticRecoveryState::BlockedByIdentityConflicts));
+        assert_eq!(conflicts.len(), 2);
+        assert_eq!(conflicts[0].relative_path, "prds/PRD-001-a.md");
+        assert_eq!(conflicts[1].relative_path, "prds/PRD-001-b.md");
+        assert_eq!(conflicts[0].canonical_key, conflicts[1].canonical_key);
+        assert_eq!(inspect_repair_journal(workspace, &outcome.transaction_id).unwrap().status, JournalStatus::RolledBack);
+        assert_eq!(std::fs::read(workspace.join("prds/PRD-001-a.md")).unwrap(), before);
+        let descriptor = storage::read_current(capability.index_root()).unwrap().unwrap();
+        let manifest = storage::read_manifest(capability.index_root(), &descriptor).unwrap();
+        assert_eq!(manifest.generation_id, proof.generation_id);
+        assert_eq!(manifest.conflict_inventory, conflicts);
+        assert!(manifest.is_diagnostic());
+        assert!(manifest.identity_retirements.get(&conflicts[0].canonical_key).copied().unwrap_or(0) >= 1);
+        assert!(manifest.pending_jobs.is_empty());
+        assert_eq!(manifest.semantic_blocked_paths.len(), 4);
+        let table = super::super::lance_tables::open_table_at_version(
+            capability.index_root(), &marker_for(&manifest), "artifacts", manifest.table_versions.artifacts,
+        ).await.unwrap();
+        let mut served = Vec::new();
+        for batch in table.query_batches().await.unwrap() {
+            let keys = batch.column_by_name("canonical_key").unwrap().as_any()
+                .downcast_ref::<arrow_array::StringArray>().unwrap();
+            served.extend(keys.iter().map(|key| key.unwrap().to_string()));
+        }
+        assert_eq!(served.len(), 2);
+        assert!(!served.contains(&conflicts[0].canonical_key), "a prior winner must not survive quarantine");
+        assert!(list_pinned_graph(capability.index_root()).await.is_err());
+        assert!(list_pinned_documents(capability.index_root(), 0, 100).await.is_err());
+        match get_pinned_artifact(capability.index_root(), &conflicts[0].canonical_key).await.unwrap_err() {
+            ConstellationError::Resolve(crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey { candidates, .. }) => {
+                assert_eq!(candidates.len(), 2);
+                assert_eq!(candidates[0].title, "First");
+                assert_eq!(candidates[1].title, "Second");
+                assert_eq!(candidates[0].relative_path, std::path::Path::new("prds/PRD-001-a.md"));
+                assert_eq!(candidates[1].relative_path, std::path::Path::new("prds/PRD-001-b.md"));
+            }
+            error => panic!("expected structured conflicting key, got {error:?}"),
+        }
+        match super::super::federation::federated_get(
+            &[super::super::federation::SourceSpec::new(workspace)],
+            &conflicts[0].canonical_key,
+            super::super::federation::QueryMode::Strict,
+        ).await.unwrap_err() {
+            ConstellationError::Resolve(crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey { candidates, .. }) => {
+                assert_eq!(candidates.len(), 2);
+                assert_eq!(candidates[0].title, "First");
+                assert_eq!(candidates[1].title, "Second");
+            }
+            error => panic!("federated pinned get lost conflict candidates: {error:?}"),
+        }
+        let unique = get_pinned_artifact(capability.index_root(), "PRD-002").await.unwrap().unwrap().0;
+        assert_eq!(unique.title, "Other");
+        let guard = crate::workspace::acquire_workspace_lock(workspace).await.unwrap();
+        assert!(ensure_ordinary_mutation_allowed(workspace).is_err());
+        drop(guard);
+        let captured = capture_source(&CaptureRequest::new(workspace), CaptureLimits::default()).await.unwrap();
+        match resolve_diagnostic_artifact(&captured, &conflicts[0].canonical_key).unwrap_err() {
+            crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey { candidates, .. } => {
+                assert_eq!(candidates.len(), 2);
+                assert_eq!(candidates[0].title, "First");
+                assert_eq!(candidates[1].title, "Second");
+            }
+            error => panic!("expected complete conflict candidates, got {error:?}"),
+        }
+
+        // Terminal journal removes only the transaction barrier. The next
+        // preserve-all plan still uses the full collision census and reviewed edge.
+        let census = census_workspace(workspace).unwrap();
+        let decision = [ReferenceDecision {
+            source_path: "evidence/EVID-001.md".into(), field: "links".into(),
+            occurrence: Some(0),
+            source_sha256: Some(census.documents.iter().find(|doc| doc.relative_path == "evidence/EVID-001.md").unwrap().hashes.file_sha256.clone()),
+            from: "PRD-001".into(), target_path: "prds/PRD-001-b.md".into(),
+        }];
+        let plan = build_repair_plan(workspace, &census, &decision).unwrap();
+        let next = apply_repair_plan(workspace, &plan).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        assert!(matches!(reconcile_identity_repair(&capability, &next.transaction_id, deadline).await.unwrap(),
+            RepairReconcileOutcome::Healthy(_)));
+        assert_eq!(inspect_repair_journal(workspace, &next.transaction_id).unwrap().status,
+            JournalStatus::CanonicalCommitted);
+        let graph = list_pinned_graph(capability.index_root()).await.unwrap();
+        assert_eq!(graph.nodes.len(), 4);
+        assert_eq!(graph.edges.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rollback_collision_with_unreadable_source_remains_pending_until_fixed() {
+        use crate::artifact::identity_repair::{inspect_repair_journal, rollback_repair, JournalStatus};
+        let (_tmp, capability, _census, _plan, outcome) = pending_real_collision_repair().await;
+        let workspace = capability.workspace();
+        rollback_repair(workspace, &outcome.transaction_id).unwrap();
+        let previous = storage::read_current(capability.index_root()).unwrap().unwrap();
+        let invalid = workspace.join("prds/PRD-003-invalid.md");
+        std::fs::write(&invalid, b"\xff\xfe").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        assert!(reconcile_identity_repair(&capability, &outcome.transaction_id, deadline).await.is_err());
+        assert_eq!(storage::read_current(capability.index_root()).unwrap().unwrap(), previous);
+        assert_eq!(inspect_repair_journal(workspace, &outcome.transaction_id).unwrap().status,
+            JournalStatus::RolledBackIndexPending);
+        assert_eq!(std::fs::read(&invalid).unwrap(), b"\xff\xfe");
+        std::fs::remove_file(&invalid).unwrap();
+        assert!(matches!(reconcile_identity_repair(&capability, &outcome.transaction_id, deadline).await.unwrap(),
+            RepairReconcileOutcome::RollbackDiagnostic { .. }));
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[tokio::test]
+    async fn diagnostic_crash_child() {
+        let Ok(workspace) = std::env::var("FORGEPLAN_DIAGNOSTIC_CRASH_WORKSPACE") else { return };
+        let transaction = std::env::var("FORGEPLAN_DIAGNOSTIC_CRASH_TRANSACTION").unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(std::path::PathBuf::from(workspace));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let _ = reconcile_identity_repair(&capability, &transaction, deadline).await;
+        panic!("fault child must be killed at the acknowledged CURRENT barrier");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[tokio::test]
+    async fn diagnostic_publication_crash_retries_from_real_pending_journal() {
+        use std::io::BufRead;
+        use crate::artifact::identity_repair::{inspect_repair_journal, rollback_repair, JournalStatus};
+        let (_tmp, capability, _census, _plan, outcome) = pending_real_collision_repair().await;
+        let workspace = capability.workspace();
+        rollback_repair(workspace, &outcome.transaction_id).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let token = "diagnostic-rollback-crash";
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("constellation::facade::tests::diagnostic_crash_child")
+            .arg("--nocapture")
+            .env("FORGEPLAN_DIAGNOSTIC_CRASH_WORKSPACE", workspace)
+            .env("FORGEPLAN_DIAGNOSTIC_CRASH_TRANSACTION", &outcome.transaction_id)
+            .env(super::super::fault_barrier::ENV_ENDPOINT, listener.local_addr().unwrap().to_string())
+            .env(super::super::fault_barrier::ENV_TOKEN, token)
+            .env(super::super::fault_barrier::ENV_STAGE, "after_current_ack")
+            .spawn().unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(child.try_wait().unwrap().is_none(), "fault child exited before publication");
+                    assert!(std::time::Instant::now() < until, "fault child did not reach publication");
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => panic!("fault listener failed: {error}"),
+            }
+        };
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(stream).read_line(&mut line).unwrap();
+        let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(message["token"], token);
+        assert_eq!(message["stage"], "after_current_ack");
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        assert_eq!(inspect_repair_journal(workspace, &outcome.transaction_id).unwrap().status,
+            JournalStatus::RolledBackIndexPending);
+        let descriptor = storage::read_current(capability.index_root()).unwrap().unwrap();
+        assert!(storage::read_manifest(capability.index_root(), &descriptor).unwrap().is_diagnostic());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        assert!(matches!(reconcile_identity_repair(&capability, &outcome.transaction_id, deadline).await.unwrap(),
+            RepairReconcileOutcome::RollbackDiagnostic { .. }));
+        assert_eq!(inspect_repair_journal(workspace, &outcome.transaction_id).unwrap().status,
+            JournalStatus::RolledBack);
+    }
+
+    #[tokio::test]
+    async fn changed_edge_after_publication_is_not_a_matching_pin() {
+        let tmp = workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let path = root.join("prds/PRD-001-auth.md");
+        let source = |target: &str| format!(
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\nlinks:\n  - target: {target}\n    relation: refines\n---\n\nBody.\n"
+        );
+        std::fs::write(&path, source("ADR-002")).unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let (published, _) = maintain_index(&capability, CaptureLimits::default(), deadline).await.unwrap();
+        let marker = marker_for(&published.manifest);
+        let reader = super::super::lance_tables::open_table_at_version(
+            capability.index_root(), &marker, "relations",
+            published.descriptor.effective_relations_version(&published.manifest).unwrap(),
+        ).await.unwrap();
+        let original = super::super::publisher::capture_under_workspace_lock(
+            &root, CaptureLimits::default(), Some(Arc::clone(&published.manifest)),
+        ).await.unwrap();
+        assert!(verify_captured_edges(&reader, &original).await.is_ok());
+        std::fs::write(&path, source("ADR-003")).unwrap();
+        let changed = super::super::publisher::capture_under_workspace_lock(
+            &root, CaptureLimits::default(), Some(Arc::clone(&published.manifest)),
+        ).await.unwrap();
+        assert_eq!(original.artifacts[0].outgoing.len(), changed.artifacts[0].outgoing.len());
+        let expected: BTreeMap<_, _> = published.manifest.source_entries.iter()
+            .map(|entry| (entry.canonical_key.clone(), entry.source_digest.clone())).collect();
+        let sections = super::super::publisher::SectionsExpectation {
+            version: published.manifest.table_versions.sections,
+            digests: published.manifest.section_bindings.iter()
+                .map(|section| (section.section_key.clone(), expected[&section.parent_key].clone())).collect(),
+        };
+        assert!(super::super::publisher::verify_staged(
+            capability.index_root(), &marker, published.manifest.table_versions.artifacts, &expected,
+            published.manifest.table_versions.relations, 1, &original, &sections,
+        ).await.is_ok());
+        assert!(super::super::publisher::verify_staged(
+            capability.index_root(), &marker, published.manifest.table_versions.artifacts, &expected,
+            published.manifest.table_versions.relations, 1, &changed, &sections,
+        ).await.is_err());
+        assert!(verify_captured_edges(&reader, &changed).await.is_err());
     }
 
     async fn capture(root: &Path) -> Arc<CapturedSourceView> {
@@ -5196,6 +6668,28 @@ mod tests {
         );
     }
 
+    #[cfg(not(unix))]
+    #[test]
+    fn rebind_refuses_before_creating_an_owner_on_unsupported_platforms() {
+        let tmp = workspace();
+        let root = tmp.path().join("lance");
+        let before: std::collections::BTreeSet<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(matches!(
+            rebind_index_identity(&root),
+            Err(ConstellationError::UnsupportedIndexFilesystem { .. })
+        ));
+        let after: std::collections::BTreeSet<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(before, after);
+        assert!(!root.exists());
+    }
+
+    #[cfg(unix)]
     #[test]
     fn rebind_of_a_root_with_no_marker_rewrites_nothing() {
         let tmp = workspace();
@@ -5210,6 +6704,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn rebind_rewrites_a_moved_marker_and_burns_an_epoch() {
         let tmp = workspace();
@@ -5628,6 +7123,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_persisted_reads_bind_updated_and_renamed_rows_to_manifest_identity() {
+        resume_admission();
+        for linked in [false, true] {
+            let tmp = linked_workspace();
+            let root = tmp.path().canonicalize().unwrap();
+            let path = root.join("prds/PRD-001-auth.md");
+            let content = |body: &str| format!(
+                "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\n{}---\n\n{body}\n",
+                if linked { "links:\n  - target: ADR-002\n    relation: refines\n" } else { "" }
+            );
+            std::fs::write(&path, content("First body.")).unwrap();
+            let capability = MaintainCapability::for_strict_maintenance(root.clone());
+            let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+            maintain_index(&capability, CaptureLimits::default(), deadline()).await.unwrap();
+            std::fs::write(&path, content("Updated body.")).unwrap();
+            let (updated, _) = maintain_index(&capability, CaptureLimits::default(), deadline()).await.unwrap();
+            let updated_entry = updated.manifest.source_entries.iter()
+                .find(|entry| entry.canonical_key == "PRD-001").unwrap();
+            assert_eq!(updated_entry.row_revision, 2);
+            let read = open_workspace_read(&root, None, CaptureLimits::default()).await.unwrap();
+            assert!(read.is_persisted());
+            assert_eq!(read.get_record("PRD-001").unwrap().body.trim(), "Updated body.");
+
+            let renamed = root.join("prds/PRD-001-renamed.md");
+            std::fs::rename(&path, &renamed).unwrap();
+            let (renamed_view, _) = maintain_index(&capability, CaptureLimits::default(), deadline()).await.unwrap();
+            let renamed_entry = renamed_view.manifest.source_entries.iter()
+                .find(|entry| entry.canonical_key == "PRD-001").unwrap();
+            assert_eq!(renamed_entry.incarnation, 2);
+            let read = open_workspace_read(&root, None, CaptureLimits::default()).await.unwrap();
+            assert!(read.is_persisted());
+            assert_eq!(read.get_record("PRD-001").unwrap().body.trim(), "Updated body.");
+
+            let mut invalid = renamed_view.manifest.as_ref().clone();
+            let entry = invalid.source_entries.iter_mut()
+                .find(|entry| entry.canonical_key == "PRD-001").unwrap();
+            entry.relative_path = "prds/unrelated.md".into();
+            assert!(capture_with_published_identity(read.captured(), &invalid).is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn an_incomplete_canonical_read_is_unavailable_not_an_empty_workspace() {
         let tmp = linked_workspace();
         std::fs::write(
@@ -5801,7 +7338,7 @@ mod tests {
         let ambiguity = get_pinned_artifact(capability.index_root(), "PRD-001")
             .await
             .unwrap_err();
-        assert!(matches!(ambiguity, ConstellationError::Io { .. }));
+        assert!(matches!(ambiguity, ConstellationError::Resolve(crate::artifact::canonical_key::ResolveError::Ambiguous { .. })));
         let (alpha, _, _) = get_pinned_artifact(
             capability.index_root(),
             "prd-alpha-k11111111111111111111111111111111",
@@ -6011,6 +7548,161 @@ mod tests {
             // this fixture exercises that one difference and not two.
             section_layout_fingerprint: "layout-fixture".to_string(),
         }
+    }
+
+    #[cfg(feature = "semantic-search")]
+    #[tokio::test]
+    async fn fresh_persisted_read_accepts_durable_embedding_failure_diagnostics() {
+        use arrow_array::StringArray;
+        resume_admission();
+        let tmp = linked_workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root.clone());
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+        maintain_index(&capability, CaptureLimits::default(), deadline()).await.unwrap();
+        let prepared = prepare_embedding_batch(&capability, &test_profile(2000), deadline()).await.unwrap();
+        let job = prepared.inputs.iter()
+            .find(|input| input.job.row_role() == super::super::jobs::EmbeddingRowRole::Artifact)
+            .expect("fixture must admit an artifact").job.clone();
+        let outcome = fail_embedding_batch(
+            &capability, &prepared, std::slice::from_ref(&job), "model failed deliberately", deadline(),
+        ).await.unwrap();
+        assert!(outcome.failed.contains(&job.canonical_key));
+        let read = open_workspace_read(&root, None, CaptureLimits::default()).await.unwrap();
+        assert!(read.is_persisted());
+        assert!(read.get_record(&job.canonical_key).is_some());
+
+        let descriptor = storage::read_current(capability.index_root()).unwrap().unwrap();
+        let manifest = storage::read_manifest(capability.index_root(), &descriptor).unwrap();
+        let marker = marker_for(&manifest);
+        let bound = capture_with_published_identity(read.captured(), &manifest).unwrap();
+        verify_captured_rows_at_versions(capability.index_root(), &marker, manifest.table_versions, &bound)
+            .await.unwrap();
+        let reader = super::super::lance_tables::open_table_at_version(
+            capability.index_root(), &marker, "artifacts", manifest.table_versions.artifacts,
+        ).await.unwrap();
+        let mut checked = false;
+        for batch in reader.query_batches().await.unwrap() {
+            let keys = batch.column_by_name("canonical_key").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+            let states = batch.column_by_name("semantic_state").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+            let diagnostics = batch.column_by_name("diagnostics").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+            for row in 0..batch.num_rows() {
+                if keys.value(row) == job.canonical_key {
+                    assert_eq!(states.value(row), "failed");
+                    assert_eq!(diagnostics.value(row), "model failed deliberately");
+                    checked = true;
+                }
+            }
+        }
+        assert!(checked, "failed artifact must exist at the published pin");
+    }
+
+    #[cfg(feature = "semantic-search")]
+    #[tokio::test]
+    async fn delete_only_maintenance_preserves_survivors_durable_embedding_failure() {
+        use arrow_array::StringArray;
+
+        resume_admission();
+        let tmp = linked_workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        // Keep A independent of B so removing B changes no surviving artifact.
+        std::fs::write(
+            root.join("prds/PRD-001-auth.md"),
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\n---\n\nSurviving body.\n",
+        ).unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root.clone());
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+        maintain_index(&capability, CaptureLimits::default(), deadline()).await.unwrap();
+        let prepared = prepare_embedding_batch(&capability, &test_profile(2000), deadline()).await.unwrap();
+        let job = prepared.inputs.iter()
+            .find(|input| input.job.canonical_key == "PRD-001"
+                && input.job.row_role() == super::super::jobs::EmbeddingRowRole::Artifact)
+            .expect("surviving artifact A must have an admitted job").job.clone();
+        let failure = fail_embedding_batch(
+            &capability, &prepared, std::slice::from_ref(&job), "durable model failure", deadline(),
+        ).await.unwrap();
+        assert!(failure.failed.contains(&job.canonical_key));
+        let before = storage::read_current(capability.index_root()).unwrap().unwrap();
+        let before_manifest = storage::read_manifest(capability.index_root(), &before).unwrap();
+        assert!(before_manifest.source_entries.iter().any(|entry| entry.canonical_key == "ADR-002"));
+
+        std::fs::remove_file(root.join("adrs/ADR-002-storage.md")).unwrap();
+        let (published, outcome) = maintain_index(&capability, CaptureLimits::default(), deadline()).await
+            .expect("delete-only maintenance must accept operational diagnostics");
+        assert!(outcome.commits.iter().any(|commit| commit.kind == "delete" && commit.rows_affected == 1));
+        assert!(outcome.commits.iter().all(|commit| commit.kind != "merge"),
+            "surviving artifacts must not be rewritten: {:?}", outcome.commits);
+        assert!(outcome.verification.is_some());
+        let after = storage::read_current(capability.index_root()).unwrap().unwrap();
+        assert_ne!(before.generation_id, after.generation_id);
+        assert_eq!(after, published.descriptor);
+        let manifest = storage::read_manifest(capability.index_root(), &after).unwrap();
+        assert!(!manifest.source_entries.iter().any(|entry| entry.canonical_key == "ADR-002"));
+        assert!(manifest.source_entries.iter().any(|entry| entry.canonical_key == job.canonical_key));
+
+        let marker = marker_for(&manifest);
+        let reader = super::super::lance_tables::open_table_at_version(
+            capability.index_root(), &marker, "artifacts", manifest.table_versions.artifacts,
+        ).await.unwrap();
+        let mut checked = false;
+        for batch in reader.query_batches().await.unwrap() {
+            let keys = batch.column_by_name("canonical_key").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+            let states = batch.column_by_name("semantic_state").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+            let diagnostics = batch.column_by_name("diagnostics").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+            for row in 0..batch.num_rows() {
+                if keys.value(row) == job.canonical_key {
+                    assert_eq!(states.value(row), "failed");
+                    assert_eq!(diagnostics.value(row), "durable model failure");
+                    checked = true;
+                }
+            }
+        }
+        assert!(checked, "A's failed row must remain in the published generation");
+        let read = open_workspace_read(&root, None, CaptureLimits::default()).await.unwrap();
+        assert!(read.is_persisted());
+        assert_eq!(read.get_record("PRD-001").unwrap().body.trim(), "Surviving body.");
+        assert!(read.get_record("ADR-002").is_none());
+    }
+
+    #[cfg(feature = "semantic-search")]
+    #[tokio::test]
+    async fn one_owner_publishes_reconcile_full_backlog_and_multiple_batches() {
+        use super::super::capture::CaptureLimits;
+        let tmp = workspace();
+        for n in 2..=70 {
+            std::fs::write(
+                tmp.path().join("prds").join(format!("PRD-{n:03}-item.md")),
+                format!("---\nid: PRD-{n:03}\nkind: prd\nstatus: draft\ntitle: Item {n}\n---\n\nBody {n}.\n"),
+            ).unwrap();
+        }
+        let capability = MaintainCapability::for_strict_maintenance(tmp.path().canonicalize().unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        let publisher = super::super::publisher::IndexPublisher::acquire(
+            capability.index_root(), inner_store_for(capability.index_root()),
+        ).unwrap();
+        maintain_index_owned(&capability, CaptureLimits::default(), deadline, &publisher, None).await.unwrap();
+        let profile = test_profile(2000);
+        prepare_embedding_batch_owned(&capability, &profile, deadline, &publisher, None, true).await.unwrap();
+        let descriptor = storage::read_current(capability.index_root()).unwrap().unwrap();
+        let manifest = storage::read_manifest(capability.index_root(), &descriptor).unwrap();
+        assert!(manifest.pending_jobs.len() > MAX_PREPARED_BATCH);
+        let mut batches = 0;
+        loop {
+            let prepared = prepare_embedding_batch_owned(&capability, &profile, deadline, &publisher, None, false).await.unwrap();
+            if prepared.inputs.is_empty() { break; }
+            let results: Vec<_> = prepared.inputs.iter().map(|input| super::super::jobs::ComputedEmbedding {
+                job: input.job.clone(),
+                vector: vec![0.25; crate::db::schema::EMBEDDING_DIM as usize],
+            }).collect();
+            let outcome = complete_embedding_batch_owned(&capability, &prepared, &results, deadline, &publisher, None).await.unwrap();
+            assert!(outcome.stale.is_empty());
+            assert_eq!(outcome.published.len(), results.len());
+            batches += 1;
+        }
+        assert!(batches > 1);
+        let descriptor = storage::read_current(capability.index_root()).unwrap().unwrap();
+        let manifest = storage::read_manifest(capability.index_root(), &descriptor).unwrap();
+        assert!(manifest.pending_jobs.is_empty());
     }
 
     /// Admit, compute a constant fill, and complete — one full cycle, with no

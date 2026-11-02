@@ -369,9 +369,9 @@ mod tests {
             assert!(!ws.join("lance").join(table).exists());
         }
 
-        let legacy = LanceStore::init(&tmp.path().join("legacy/.forgeplan"))
-            .await
-            .unwrap();
+        let legacy_ws = tmp.path().join("legacy/.forgeplan");
+        let guard = crate::workspace::lock::acquire_workspace_lock(&legacy_ws).await.unwrap();
+        let legacy = LanceStore::init_new(&legacy_ws, &guard).await.unwrap();
         legacy.insert_fpf_chunks(&chunks, None).await.unwrap();
         assert_eq!(
             build_fpf_context(&legacy, title, "Unused body.")

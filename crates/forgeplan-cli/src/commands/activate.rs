@@ -13,32 +13,27 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     // exactly the bytes that are the source of truth, and the status flip is
     // a file-first write. Nothing here opens a retired table; `open_store_locked_tolerating_constellation`
     // decides the index owner BEFORE any store open, from the filesystem.
-    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (ws, _lock, store) = common::open_store_locked_checked(&[(id, true)]).await?;
 
     let Some(store) = store else {
         return run_file_first(ws, _lock, id, force).await;
     };
 
-    // PROB-060 / SPEC-005 Phase 1.5b — accept slug or display id.
-    // Resolve once at the top; propagate canonical id throughout so
-    // lifecycle, relations, projection, and log_change all see the same
-    // value regardless of whether user passed slug or display form.
-    let id = store
-        .resolve_id(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let resolution = common::resolve_against_workspace(&ws, id).await?;
+    let (id, display_id) = common::require_found_identity(id, &resolution)?;
     let id = id.as_str();
 
     // Capture old status before transition
     let old_status = store
-        .get_record(id)
+        .get_record(&_lock, id)
         .await?
         .map(|r| r.status)
         .unwrap_or_else(|| "draft".to_string());
 
     // Sync file→LanceDB before lifecycle call (preserve user edits)
-    if let Some(record) = store.get_record(id).await? {
-        projection::sync_file_to_store(&store, &ws, &record).await?;
+    common::ensure_ordinary_mutation_allowed(&ws)?;
+    if let Some(record) = store.get_record(&_lock, id).await? {
+        projection::sync_file_to_store(&_lock, &store, &ws, &record).await?;
 
         // #360 / PRD-082: activate-time git-delta provenance gate. `--force`
         // bypasses it (same escape hatch as the methodology gates below). Cheap
@@ -49,7 +44,7 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         // newer markdown edit (a teammate's fix to a bad base/result_sha). The
         // gate must see the source of truth, not the stale copy — mirrors the
         // MCP handler's post-sync fetch.
-        if !force && let Some(synced) = store.get_record(id).await? {
+        if !force && let Some(synced) = store.get_record(&_lock, id).await? {
             let mode = workspace::load_config(&ws)
                 .map(|c| GateMode::from_config(&c.integrity.evidence_provenance_gate))
                 .unwrap_or(GateMode::Warn);
@@ -66,9 +61,12 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         }
     }
 
-    let result = lifecycle::activate(&store, id, force)
+    let result = lifecycle::activate(&_lock, &store, id, force)
         .await
-        .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id))?;
+        .map_err(|e| common::describe_possible_legacy_partial_commit(
+            true,
+            anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id),
+        ))?;
 
     // PRD-075 FR-003 (Round 8 audit MED-3): recompute the cached R_eff BEFORE
     // re-rendering the markdown so that if the process crashes between the
@@ -77,61 +75,34 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
     // of truth and `scan-import` later re-imports it). Doing it AFTER render
     // would leave a stale-r_eff "active" markdown on disk on crash, which is
     // exactly the leak PROB-057 closes.
-    common::sync_score_target_or_warn(&store, id).await;
+    common::sync_score_target_or_warn(&store, &_lock, id).await;
 
     // Re-render projection with updated status (now picks up fresh R_eff via
     // the record reload).
-    if let Some(record) = store.get_record(id).await? {
-        let links = store.get_relations(id).await.unwrap_or_default();
-        projection::render_projection(
-            &ws,
-            &record.id,
-            &record.kind,
-            &record.title,
-            &record.status,
-            &record.depth,
-            record.author.as_deref(),
-            record.parent_epic.as_deref(),
-            record.valid_until.as_deref(),
-            &record.body,
-            &links,
-        )
-        .await?;
+    if let Some(record) = store.get_record(&_lock, id).await.map_err(|e| common::describe_possible_legacy_partial_commit(true, e))? {
+        let links = store.get_relations(&_lock, &record.canonical_key).await
+            .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?;
+        projection::render_projection_record(&ws, &record, &links).await
+            .map_err(|e| common::describe_possible_legacy_partial_commit(true, e.into()))?;
     }
 
-    common::log_change_field(
-        &ws,
-        Some(&store),
-        id,
-        "update",
-        ("status", Some(&old_status), Some("active")),
-        "cli",
-    )
+    common::log_change_field(&ws, &_lock, Some(&store), id,
+    "update",
+    ("status", Some(&old_status), Some("active")),
+    "cli",)
     .await;
 
-    if result.forced {
-        println!("  Activated {id} ({old_status} → active)");
-        println!(
-            "  Warning: Activated with {} validation error{}",
-            result.must_errors.len(),
-            if result.must_errors.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        );
-    } else {
-        println!("  Activated {id} ({old_status} → active)");
-    }
 
     // Hints: suggest evidence if not linked, then reconcile parents.
     // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — pass the canonical
     // reference form (slug pre-merge / display id post-merge) so emitted
     // hints stay consistent with commit `Refs:` conventions.
     let mut emitted: Vec<Hint> = Vec::new();
-    if let Some(record) = store.get_record(id).await? {
-        let rels = store.get_relations(id).await.unwrap_or_default();
-        let incoming = store.get_incoming_relations(id).await.unwrap_or_default();
+    if let Some(record) = store.get_record(&_lock, id).await.map_err(|e| common::describe_possible_legacy_partial_commit(true, e))? {
+        let rels = store.get_relations(&_lock, &record.canonical_key).await
+            .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?;
+        let incoming = store.get_incoming_relations(&_lock, &record.canonical_key).await
+            .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?;
         // The endpoint is a canonical key for a minted document and a display
         // id for a legacy one: the key spells the kind out (`evidence-…`),
         // the display id abbreviates it (`EVID-…`).
@@ -146,10 +117,29 @@ pub async fn run(id: &str, force: bool) -> anyhow::Result<()> {
         let ref_form =
             forgeplan_core::artifact::frontmatter::refs_form_from_body(&record.body, &record.id);
         emitted = forgeplan_core::hints::activate_hints(&ref_form, true, has_evidence, &kind);
-        if !emitted.is_empty() {
-            print!("{}", forgeplan_core::hints::format_hints(&emitted));
-        }
     }
+    drop(store);
+    drop(_lock);
+    common::drain_legacy_semantic_after_mutation(&ws).await?;
+
+    if result.forced {
+        println!("  Activated {display_id} ({old_status} → active)");
+        println!(
+            "  Warning: Activated with {} validation error{}",
+            result.must_errors.len(),
+            if result.must_errors.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
+    } else {
+        println!("  Activated {display_id} ({old_status} → active)");
+    }
+    if !emitted.is_empty() {
+        print!("{}", forgeplan_core::hints::format_hints(&emitted));
+    }
+
 
     // PRD-075 FR-009: per-target rescore is already done; the next sensible
     // action is parent reconciliation (or whatever activate_hints surfaced
@@ -181,10 +171,9 @@ async fn run_file_first(
     id: &str,
     force: bool,
 ) -> anyhow::Result<()> {
-    let read = common::workspace_read(&ws).await?;
-    let canonical = read
-        .resolve_id(id)
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock).await?;
+    let resolution = common::resolve_against_capture(&read, id);
+    let (canonical, display_id) = common::require_found_identity(id, &resolution)?;
 
     // Capture the pre-transition status from the same view the gates read, so
     // the reported `draft → active` cannot disagree with what was validated.
@@ -214,6 +203,7 @@ async fn run_file_first(
 
     // Scoped so the context's borrow of the lock guard ends before the
     // reconcile pass below — that pass re-acquires the same lock.
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     let result = {
         let ctx = projection::MutationContext::new(&ws, &lock, None);
         forgeplan_core::lifecycle::canonical::activate_captured(&ctx, &read, &canonical, force)
@@ -221,14 +211,10 @@ async fn run_file_first(
             .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
     };
 
-    common::log_change_field(
-        &ws,
-        None,
-        &canonical,
-        "update",
-        ("status", Some(&old_status), Some("active")),
-        "cli",
-    )
+    common::log_change_field(&ws, &lock, None, &canonical,
+    "update",
+    ("status", Some(&old_status), Some("active")),
+    "cli",)
     .await;
 
     let ref_form = forgeplan_core::lifecycle::canonical::refs_form(&read, &canonical);
@@ -253,7 +239,7 @@ async fn run_file_first(
     drop(lock);
     let published = common::reconcile_after_file_mutation(&ws).await;
 
-    println!("  Activated {canonical} ({old_status} → active)");
+    println!("  Activated {display_id} ({old_status} → active)");
     if result.forced {
         println!(
             "  Warning: Activated with {} validation error{}",

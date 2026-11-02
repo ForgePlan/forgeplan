@@ -48,9 +48,9 @@ fn body_of(env: &common::CallToolEnvelope) -> String {
 /// This is mechanism A exercised through the full MCP stack.
 #[tokio::test]
 async fn repro_seed_then_update_get_no_ws() {
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         store
-            .create_artifact_for_test(&seed_artifact("PRD-700"))
+            .create_artifact_for_test(&seed_guard, &seed_artifact("PRD-700"))
             .await
             .expect("seed PRD-700");
     })
@@ -80,9 +80,9 @@ async fn repro_seed_then_update_get_no_ws() {
 /// repro, which passed `workspace=WS` on both calls.
 #[tokio::test]
 async fn repro_seed_then_update_get_with_ws() {
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         store
-            .create_artifact_for_test(&seed_artifact("PRD-701"))
+            .create_artifact_for_test(&seed_guard, &seed_artifact("PRD-701"))
             .await
             .expect("seed PRD-701");
     })
@@ -124,9 +124,9 @@ async fn repro_seed_then_update_get_with_ws() {
 /// remaining structural way a single session can serve a stale read.
 #[tokio::test]
 async fn repro_get_first_then_update_then_get_with_ws() {
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         store
-            .create_artifact_for_test(&seed_artifact("PRD-702"))
+            .create_artifact_for_test(&seed_guard, &seed_artifact("PRD-702"))
             .await
             .expect("seed PRD-702");
     })

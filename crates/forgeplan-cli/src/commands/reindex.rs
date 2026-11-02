@@ -1,5 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::collections::BTreeMap;
 
 use forgeplan_core::artifact::canonical_key::canonical_key_from_document;
 use forgeplan_core::projection;
@@ -45,45 +44,83 @@ pub(super) async fn published_history_records(
     Ok(records)
 }
 
-/// Preserve the legacy Phase 2 predicate, including title/filename renames.
-pub(super) async fn orphan_reason(
-    ws: &std::path::Path,
-    id: &str,
-    kind: &str,
-    title: &str,
+/// Decide absence from one complete, parsed document set, never from filenames.
+pub(super) fn orphan_reason(
+    candidates: &[forgeplan_core::artifact::canonical_key::ArtifactCandidate],
     canonical_key: &str,
-) -> Option<&'static str> {
-    let Ok(kind) = kind.parse::<forgeplan_core::artifact::types::ArtifactKind>() else {
-        return Some("corrupt kind field");
-    };
-    let dir = ws.join(kind.dir_name());
-    let slug = forgeplan_core::artifact::types::slugify(title);
-    // A document minted under a key is filed as `<canonical_key>.md`; one
-    // that predates the key keeps its historical `{id}-{slug}.md`. Both are
-    // live files, so neither is an orphan.
-    if !canonical_key.is_empty() && dir.join(format!("{canonical_key}.md")).exists() {
-        return None;
+) -> anyhow::Result<Option<&'static str>> {
+    match common::resolve_in_document_set(canonical_key, candidates) {
+        common::Resolution::Found(found) if found.identity.canonical_key == canonical_key => Ok(None),
+        common::Resolution::Found(_) => anyhow::bail!(
+            "cannot prove canonical key '{canonical_key}' absent: it resolves as another document's alias"
+        ),
+        common::Resolution::NotFound => Ok(Some("no canonical document found")),
+        outcome => Err(common::refuse_resolution(canonical_key, &outcome, candidates)),
     }
-    if dir.join(format!("{id}-{slug}.md")).exists() {
-        return None;
-    }
-    if dir.exists()
-        && let Ok(mut entries) = tokio::fs::read_dir(&dir).await
-    {
-        let prefix = format!("{}-", id.to_uppercase());
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.to_uppercase().starts_with(&prefix) && name.ends_with(".md") {
-                return None;
+}
+/// Resolve all local structural references against the complete source set,
+/// including documents which have not yet been inserted into the index.
+pub(super) async fn preflight_batch_references(
+    ws: &std::path::Path,
+    paths: Option<&[std::path::PathBuf]>,
+) -> anyhow::Result<Vec<Option<String>>> {
+    let candidates = forgeplan_core::artifact::documents::workspace_candidates(ws).await?;
+    let mut resolved = Vec::new();
+    for candidate in &candidates {
+        match common::resolve_in_document_set(&candidate.canonical_key, &candidates) {
+            common::Resolution::Found(found) if found.identity.canonical_key == candidate.canonical_key => {
+                resolved.push(Some(found.identity.canonical_key));
+            }
+            outcome => return Err(common::refuse_resolution(&candidate.canonical_key, &outcome, &candidates)),
+        }
+        if paths.is_some_and(|paths| !paths.iter().any(|path| path == &ws.join(&candidate.relative_path))) {
+            continue;
+        }
+        let content = tokio::fs::read_to_string(ws.join(&candidate.relative_path)).await?;
+        let (fm, _) = forgeplan_core::artifact::frontmatter::parse_frontmatter(&content)?;
+        let mut targets = Vec::new();
+        if let Some(parent) = fm.get("parent_epic").and_then(|v| v.as_str()) {
+            targets.push(parent);
+        }
+        if let Some(links) = fm.get("links").and_then(|v| v.as_sequence()) {
+            for link in links {
+                if let Some(target) = link.get("target").and_then(|v| v.as_str()) {
+                    targets.push(target);
+                }
+            }
+        }
+        for target in targets {
+            if target.contains('@') {
+                if forgeplan_core::db::store::validate_link_target(target).is_err() {
+                    let outcome = common::Resolution::InvalidSelector { input: target.to_string() };
+                    return Err(common::refuse_resolution(target, &outcome, &candidates));
+                }
+                resolved.push(Some(target.to_string()));
+            } else {
+                let outcome: common::Resolution =
+                    forgeplan_core::artifact::canonical_key::resolve_structural_target(target, &candidates).into();
+                match outcome {
+                    common::Resolution::Found(found) => resolved.push(Some(found.identity.canonical_key)),
+                    common::Resolution::NotFound => resolved.push(Some(target.to_string())),
+                    outcome => return Err(common::refuse_resolution(target, &outcome, &candidates)),
+                }
             }
         }
     }
-    Some("no .md file found")
+    Ok(resolved)
 }
 
-async fn audit_captured_reindex(ws: &std::path::Path) -> anyhow::Result<()> {
+
+async fn audit_captured_reindex(ws: &std::path::Path, guard: &forgeplan_core::workspace::lock::WorkspaceLock) -> anyhow::Result<()> {
     let previous = published_history_records(ws).await?;
-    let current = common::workspace_read(ws).await?;
+    let current = forgeplan_core::constellation::facade::open_workspace_read_with_permit(ws, guard).await?;
+    if !current.captured().is_complete() {
+        anyhow::bail!("reindex: incomplete capture; refusing orphan decisions");
+    }
+    let candidates = forgeplan_core::artifact::documents::capture_candidates(&current);
+    for candidate in &candidates {
+        orphan_reason(&candidates, &candidate.canonical_key)?;
+    }
     // Every receipt names the document it is about twice: the display id a
     // person reads, and the canonical key that names exactly one document.
     let mut changes: Vec<(String, String, &str)> = Vec::new();
@@ -102,19 +139,10 @@ async fn audit_captured_reindex(ws: &std::path::Path) -> anyhow::Result<()> {
         }
     }
     for (key, record) in &previous {
-        if orphan_reason(
-            ws,
-            &record.display_id.clone().unwrap_or_else(|| key.clone()),
-            record.kind.as_deref().unwrap_or_default(),
-            &record.title,
-            &record.canonical_key,
-        )
-        .await
-        .is_some()
-        {
+        if orphan_reason(&candidates, key)?.is_some() {
             changes.push((
                 record.display_id.clone().unwrap_or_else(|| key.clone()),
-                record.canonical_key.clone(),
+                key.clone(),
                 "delete",
             ));
         }
@@ -216,8 +244,9 @@ pub async fn run() -> anyhow::Result<()> {
                 })
             })
         });
+    let reference_plan = preflight_batch_references(&ws, None).await?;
     if constellation_owned {
-        audit_captured_reindex(&ws)
+        audit_captured_reindex(&ws, &_lock)
             .await
             .map_err(|error| anyhow::anyhow!("reindex: Constellation reconcile failed: {error}"))?;
         drop(_lock);
@@ -227,7 +256,17 @@ pub async fn run() -> anyhow::Result<()> {
         );
         return common::reconcile_and_drain(&ws, "reindex").await;
     }
-    let store = forgeplan_core::db::store::LanceStore::init(&ws).await?;
+    // Shared display aliases are valid, but conflicting keys must be refused
+    // before opening the writer or changing any derived rows.
+    let candidates = forgeplan_core::artifact::documents::workspace_candidates(&ws).await?;
+    let selectors: Vec<_> = candidates.iter()
+        .map(|candidate| (candidate.canonical_key.as_str(), true))
+        .collect();
+    common::preflight_selectors(&ws, &selectors).await?;
+    let store = forgeplan_core::db::store::LanceStore::open_for_write(&ws, &_lock).await?;
+    if reference_plan != preflight_batch_references(&ws, None).await? {
+        anyhow::bail!("artifact references changed during write preparation");
+    }
 
     println!("Reindexing from .forgeplan/ markdown files...\n");
 
@@ -235,22 +274,18 @@ pub async fn run() -> anyhow::Result<()> {
     let mut skipped = 0usize;
     let mut errors = 0usize;
 
-    // #394: detect duplicate-id collisions. Two `.md` files that carry the
-    // same frontmatter `id` both resolve to a single LanceDB row; Phase 1
-    // processes them in `read_dir` order (which is not even stable) and the
-    // last one silently overwrites the first — last-writer-wins with no
-    // anomaly surfaced. The scan-import surface already flags this via
-    // `find_duplicate_ids`; reindex was the blind spot. Record every file per
-    // id here and report after the walk.
-    let mut id_to_paths: HashMap<String, Vec<PathBuf>> = HashMap::new();
 
     for dir_name in forgeplan_core::workspace::ARTIFACT_DIRS {
         let dir = ws.join(dir_name);
         if !dir.exists() {
             continue;
         }
-        let mut read_dir = tokio::fs::read_dir(&dir).await?;
-        while let Some(entry) = read_dir.next_entry().await? {
+        let mut read_dir = tokio::fs::read_dir(&dir).await.map_err(|e| {
+            common::describe_possible_legacy_partial_commit(true, e.into())
+        })?;
+        while let Some(entry) = read_dir.next_entry().await.map_err(|e| {
+            common::describe_possible_legacy_partial_commit(true, e.into())
+        })? {
             let path = entry.path();
             if path.extension().is_none_or(|e| e != "md") {
                 continue;
@@ -284,16 +319,12 @@ pub async fn run() -> anyhow::Result<()> {
                 }
             };
 
-            // #394: remember every file that resolves to this id so a
-            // duplicate-id collision (two files, same id) is reported after
-            // the walk instead of silently overwriting during the upsert below.
-            id_to_paths
-                .entry(id.clone())
-                .or_default()
-                .push(path.clone());
+            let canonical = canonical_key_from_document(&id, &content);
 
             // Check if artifact exists in LanceDB
-            match store.get_record(&id).await? {
+            match store.get_record(&_lock, &canonical).await.map_err(|e| {
+                common::describe_possible_legacy_partial_commit(true, e)
+            })? {
                 Some(record) => {
                     // Compare body — sync if different.
                     //
@@ -319,7 +350,7 @@ pub async fn run() -> anyhow::Result<()> {
                         // files even when individual files fail to sync.
                         match projection::sync_body_from_file(
                             &projection::MutationContext::new(&ws, &_lock, Some(&store)),
-                            &id,
+                            &canonical,
                             &record.kind,
                             file_title,
                             &body,
@@ -327,7 +358,7 @@ pub async fn run() -> anyhow::Result<()> {
                         .await
                         {
                             Ok(()) => {
-                                common::log_change(&ws, Some(&store), &id, "update", "reindex")
+                                common::log_change(&ws, &_lock, Some(&store), &id, "update", "reindex")
                                     .await;
                                 println!("  SYNC {} — body updated from file", id);
                                 synced += 1;
@@ -358,7 +389,7 @@ pub async fn run() -> anyhow::Result<()> {
                         // ADR-030: the canonical key of a document read from
                         // disk is the slug its frontmatter declares, and its
                         // display id when it declares none.
-                        canonical_key: canonical_key_from_document(&id, &content),
+                        canonical_key: canonical.clone(),
                         id: id.clone(),
                         kind: kind.to_string(),
                         status: status.to_lowercase(),
@@ -387,7 +418,7 @@ pub async fn run() -> anyhow::Result<()> {
                     .await
                     {
                         Ok(()) => {
-                            common::log_change(&ws, Some(&store), &id, "create", "reindex").await;
+                            common::log_change(&ws, &_lock, Some(&store), &id, "create", "reindex").await;
                             println!("  NEW  {} — created from file", id);
                             synced += 1;
                         }
@@ -403,7 +434,8 @@ pub async fn run() -> anyhow::Result<()> {
             if let Some(links_val) = fm.get("links")
                 && let Some(links_arr) = links_val.as_sequence()
             {
-                let existing_relations = store.get_relations(&id).await.unwrap_or_default();
+                let existing_relations = store.get_relations(&_lock, &canonical).await
+                    .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?;
                 for link in links_arr {
                     let target = link.get("target").and_then(|v| v.as_str());
                     let relation = link.get("relation").and_then(|v| v.as_str());
@@ -412,19 +444,15 @@ pub async fn run() -> anyhow::Result<()> {
                         let already_exists =
                             existing_relations.iter().any(|(et, er)| et == t && er == r);
                         if !already_exists {
-                            if let Err(e) = projection::sync_relation_from_file(
+                            projection::sync_relation_from_file(
                                 &projection::MutationContext::new(&ws, &_lock, Some(&store)),
-                                &id,
+                                &canonical,
                                 t,
                                 r,
                             )
-                            .await
-                            {
-                                eprintln!("  WARN {} — link to {} failed: {}", id, t, e);
-                            } else {
-                                println!("  LINK {} --{}--> {}", id, r, t);
-                                synced += 1;
-                            }
+                            .await.map_err(|e| common::describe_possible_legacy_partial_commit(true, e.into()))?;
+                            println!("  LINK {} --{}--> {}", id, r, t);
+                            synced += 1;
                         }
                     }
                 }
@@ -432,58 +460,28 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
-    // #394: surface the duplicate-id collisions gathered during Phase 1.
-    // Non-fatal (same convention as the per-file errors above) so an
-    // onboarding `git clone && forgeplan reindex` still completes on a repo
-    // that already carries a collision — but it is now LOUD on stderr and
-    // counted in the summary, never silent. `id_to_paths` is consumed here.
-    let mut id_collisions: Vec<(String, Vec<PathBuf>)> = id_to_paths
-        .into_iter()
-        .filter(|(_, paths)| paths.len() > 1)
-        .collect();
-    id_collisions.sort_by(|a, b| a.0.cmp(&b.0));
-    for (_, paths) in id_collisions.iter_mut() {
-        paths.sort();
-    }
-    if !id_collisions.is_empty() {
-        eprintln!(
-            "\n⚠ {} duplicate-id collision(s): multiple files claim the same artifact id.",
-            id_collisions.len()
-        );
-        eprintln!("  Reindex is last-writer-wins — the shadowed file(s) never reach the index");
-        eprintln!("  (ADR-003: one id = one file). Resolve before trusting the index:");
-        for (cid, paths) in &id_collisions {
-            eprintln!("    {cid}");
-            for p in paths {
-                let rel = p.strip_prefix(&ws).unwrap_or(p);
-                eprintln!("      {}", rel.display());
-            }
-        }
-        eprintln!(
-            "  Resolution: keep one file per id (renumber or delete the duplicate), then rerun forgeplan reindex.\n"
-        );
-    }
 
-    // Phase 2: Remove DB records whose .md file no longer exists (files-first cleanup)
-    //
-    // PRD-044 fix: previously `parse::<ArtifactKind>()` returning Err caused
-    // `continue`, which let rows with corrupt/empty kind escape trim forever
-    // (the NOTE-037/NOTE-040 phantom bug observed in v0.17.0 dogfood audit).
-    // Now we treat unparseable kind as a definite orphan: no valid kind =
-    // no valid directory = no possible file = trim it.
+    // Phase 2 removes rows only when the complete source set proves the
+    // canonical key is absent. A corrupt row kind alone does not prove that.
     let mut removed = 0usize;
-    let all_records = store.list_records(None).await?;
-    for record in &all_records {
-        if let Some(reason) =
-            orphan_reason(&ws, &record.id, &record.kind, &record.title, &record.canonical_key)
-                .await
-        {
+    let all_records = store.list_records(&_lock, None).await.map_err(|e| {
+        common::describe_possible_legacy_partial_commit(true, e)
+    })?;
+    // Decide every orphan before deleting any row. An ambiguous selector must
+    // not leave Phase 2 half-complete.
+    let orphans: Vec<_> = all_records.iter().map(|record| {
+        orphan_reason(&candidates, &record.canonical_key)
+            .map(|reason| (record, reason))
+    }).collect::<anyhow::Result<_>>()?;
+    for (record, reason) in orphans {
+        if let Some(reason) = reason {
             projection::delete_orphan_artifact(
                 &projection::MutationContext::new(&ws, &_lock, Some(&store)),
-                &record.id,
+                &record.canonical_key,
             )
-            .await?;
-            common::log_change(&ws, Some(&store), &record.id, "delete", "reindex").await;
+            .await
+            .map_err(|e| common::describe_possible_legacy_partial_commit(true, e.into()))?;
+            common::log_change(&ws, &_lock, Some(&store), &record.id, "delete", "reindex").await;
             println!("  DEL  {} — {}, removed from DB", record.id, reason);
             removed += 1;
         }
@@ -494,7 +492,9 @@ pub async fn run() -> anyhow::Result<()> {
     // caused phantom rows in `forgeplan tree` rendering (NOTE-037/038/040 bug
     // from v0.17.0 dogfood audit). PRD-044 FR-001 extended scope.
     let mut orphan_relations = 0usize;
-    let all_relations = store.get_all_relations().await?;
+    let all_relations = store.get_all_relations(&_lock).await.map_err(|e| {
+        common::describe_possible_legacy_partial_commit(true, e)
+    })?;
     if !all_relations.is_empty() {
         // Re-fetch fresh artifact ID set after Phase 2 trims so cascade works.
         //
@@ -506,7 +506,9 @@ pub async fn run() -> anyhow::Result<()> {
         // a keyed index an orphan and delete the graph with it.
         let mut surviving_ids: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        for record in store.list_records(None).await? {
+        for record in store.list_records(&_lock, None).await.map_err(|e| {
+            common::describe_possible_legacy_partial_commit(true, e)
+        })? {
             surviving_ids.insert(record.canonical_key);
             surviving_ids.insert(record.id);
         }
@@ -548,31 +550,19 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
+    drop(store);
+    drop(_lock);
+    common::drain_legacy_semantic_after_mutation(&ws).await?;
+
     println!(
-        "\nReindex complete: {} synced, {} unchanged, {} removed, {} orphan relations, {} errors, {} id-collisions.",
-        synced,
-        skipped,
-        removed,
-        orphan_relations,
-        errors,
-        id_collisions.len()
+        "\nReindex complete: {} synced, {} unchanged, {} removed, {} orphan relations, {} errors.",
+        synced, skipped, removed, orphan_relations, errors
     );
 
     // PRD-071 hint contract: reindex is a maintenance op — point user to
     // health for next-action surfacing (or to scan-import for new docs).
     let mut next_hints: Vec<forgeplan_core::hints::Hint> = Vec::new();
-    if !id_collisions.is_empty() {
-        // #394: a duplicate-id collision means the index no longer faithfully
-        // mirrors the markdown (one row shadows another) — surface it above a
-        // plain parse/sync error.
-        next_hints.push(
-            forgeplan_core::hints::Hint::warning(format!(
-                "{} duplicate-id collision(s) — one id maps to multiple files; index is last-writer-wins",
-                id_collisions.len()
-            ))
-            .with_action("forgeplan health"),
-        );
-    } else if errors > 0 {
+    if errors > 0 {
         next_hints.push(
             forgeplan_core::hints::Hint::warning(format!(
                 "{} parse/sync errors during reindex",

@@ -619,3 +619,158 @@ fn captured_reports_follow_file_edits_without_republishing_or_opening_shadow_tab
         "not a legacy table"
     );
 }
+
+#[test]
+fn migrated_get_resolves_collision_inventory_without_listing_it() {
+    let fixture = Fixture::new();
+    fixture.seed_graph();
+    fixture.migrate();
+    fixture.write("prds/PRD-020-alpha.md", "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha body\n");
+    fixture.write("prds/PRD-021-beta.md", "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta body\n");
+    for selector in ["prd-contested", "PRD-020", "PRD-021"] {
+        let output = fixture.run(&["get", selector]);
+        assert_eq!(output.status.code(), Some(4));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("Alpha") && error.contains("Beta"), "{error}");
+        assert!(error.contains("PRD-020-alpha.md") && error.contains("PRD-021-beta.md"), "{error}");
+    }
+    let unique = fixture.json(&["get", "rfc-session-store", "--json"]);
+    assert!(unique["body"].as_str().unwrap().contains("Persist sessions"));
+    assert!(!fixture.run(&["list", "--json"]).status.success());
+    assert!(!fixture.run(&["search", "session", "--json"]).status.success());
+    fixture.write("prds/broken.md", "---\nid: [unclosed\n");
+    let output = fixture.run(&["get", "rfc-session-store"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("incomplete"));
+}
+
+#[test]
+fn migrated_get_rejects_corrupt_managed_index_for_unique_and_missing_selectors() {
+    use forgeplan_core::constellation::{manifest::TABLE_ARTIFACTS_V1, storage};
+    for collision in [false, true] {
+        for damage in ["current", "manifest", "table"] {
+            let fixture = Fixture::new();
+            fixture.seed_graph();
+            fixture.migrate();
+            if collision {
+                fixture.write("prds/PRD-020-alpha.md", "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha\n");
+                fixture.write("prds/PRD-021-beta.md", "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta\n");
+            }
+            let before = fixture.json(&["get", "rfc-session-store", "--json"]);
+            assert!(before["body"].as_str().unwrap().contains("Persist sessions"));
+            let root = fixture.workspace().join("lance");
+            let descriptor = storage::read_current(&root).unwrap().unwrap();
+            match damage {
+                "current" => std::fs::write(root.join("CURRENT.json"), b"{broken").unwrap(),
+                "manifest" => std::fs::write(root.join(descriptor.manifest_path), b"{broken").unwrap(),
+                "table" => std::fs::remove_dir_all(root.join(format!("{TABLE_ARTIFACTS_V1}.lance"))).unwrap(),
+                _ => unreachable!(),
+            }
+            for selector in ["rfc-session-store", "PRD-999"] {
+                let result = fixture.run(&["get", selector]);
+                assert!(!result.status.success(), "{damage}, collision={collision}, {selector}");
+                assert_ne!(result.status.code(), Some(3), "{damage}, collision={collision}, {selector}");
+            }
+            if collision {
+                let result = fixture.run(&["get", "PRD-020"]);
+                assert_eq!(result.status.code(), Some(4));
+                let error = String::from_utf8_lossy(&result.stderr);
+                assert!(error.contains("Alpha") && error.contains("Beta"), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn scoped_read_routes_keep_collision_diagnostics_and_unique_payloads() {
+    let fixture = Fixture::new();
+    fixture.seed_graph();
+    fixture.migrate();
+    fixture.write("prds/PRD-020-alpha.md", "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha\n");
+    fixture.write("prds/PRD-021-beta.md", "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta\n");
+    fixture.write("notes/NOTE-001-unique.md", "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Unique\nslug: note-unique\ndepth: tactical\n---\n\nA complete note.\n");
+    let session_path = fixture.workspace().join("session.yaml");
+    let session_before = std::fs::read(&session_path).ok();
+    fixture.write("prds/PRD-030-one.md", "---\nid: PRD-030\nkind: prd\nstatus: draft\ntitle: One\nslug: prd-one\n---\nOne\n");
+    fixture.write("prds/PRD-030-two.md", "---\nid: PRD-030\nkind: prd\nstatus: draft\ntitle: Two\nslug: prd-two\n---\nTwo\n");
+    for command in ["phase", "validate"] {
+        let result = fixture.run(&[command, "PRD-020"]);
+        assert_eq!(result.status.code(), Some(4), "{command}: {}", String::from_utf8_lossy(&result.stderr));
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains("Alpha") && error.contains("Beta"), "{command}: {error}");
+        let ambiguous = fixture.run(&[command, "PRD-030"]);
+        assert_eq!(ambiguous.status.code(), Some(5), "{command}: {}", String::from_utf8_lossy(&ambiguous.stderr));
+        let stderr = String::from_utf8_lossy(&ambiguous.stderr);
+        assert!(stderr.contains("One") && stderr.contains("Two"), "{command}: {stderr}");
+    }
+    let phase = fixture.json(&["phase", "rfc-session-store", "--json"]);
+    assert_eq!(phase["canonical_key"], "rfc-session-store");
+    let validate = fixture.run(&["validate", "rfc-session-store", "--json"]);
+    let payload: serde_json::Value = serde_json::from_slice(&validate.stdout).unwrap();
+    assert_eq!(payload["results"][0]["canonical_key"], "rfc-session-store");
+    let valid = fixture.run(&["validate", "note-unique", "--json"]);
+    let valid_json: serde_json::Value = serde_json::from_slice(&valid.stdout).unwrap();
+    assert_eq!(valid_json["results"][0]["passed"], true);
+    assert_eq!(std::fs::read(session_path).ok(), session_before);
+    assert!(!fixture.workspace().join("state/note-unique.yaml").exists());
+    assert!(!fixture.run(&["validate", "--json"]).status.success());
+}
+
+#[test]
+fn selected_phase_and_validate_reject_invalid_integrity_config() {
+    let fixture = Fixture::new();
+    fixture.seed_graph();
+    fixture.migrate();
+    let workspace = fixture.workspace();
+    let mut config = forgeplan_core::workspace::load_config(&workspace).unwrap();
+    config.integrity.duplicate_threshold = 1.5;
+    std::fs::write(workspace.join("config.yaml"), serde_yaml::to_string(&config).unwrap()).unwrap();
+    for command in ["phase", "validate"] {
+        let output = fixture.run(&[command, "rfc-session-store", "--json"]);
+        assert!(!output.status.success(), "{command} accepted invalid integrity config");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate_threshold"),
+            "{command}: {}", String::from_utf8_lossy(&output.stderr));
+    }
+}
+
+#[test]
+fn phase_and_validate_selector_integrity_and_refusals_do_not_write_sidecars() {
+    use forgeplan_core::constellation::{manifest::TABLE_ARTIFACTS_V1, storage};
+    for damage in ["current", "manifest", "table"] {
+        let fixture = Fixture::new();
+        fixture.seed_graph();
+        fixture.migrate();
+        let workspace = fixture.workspace();
+        fixture.write("prds/PRD-020-alpha.md", "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha\n");
+        fixture.write("prds/PRD-021-beta.md", "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta\n");
+        let state_dir = workspace.join("state");
+        let session_path = workspace.join("session.yaml");
+        let session_before = std::fs::read(&session_path).ok();
+        for command in ["phase", "validate"] {
+            let missing = fixture.run(&[command, "PRD-999"]);
+            assert_eq!(missing.status.code(), Some(3), "{command}: {}", String::from_utf8_lossy(&missing.stderr));
+            let collision = fixture.run(&[command, "PRD-020"]);
+            assert_eq!(collision.status.code(), Some(4), "{command}: {}", String::from_utf8_lossy(&collision.stderr));
+        }
+        assert!(!state_dir.join("PRD-020.yaml").exists());
+        assert!(!state_dir.join("prd-contested.yaml").exists());
+        assert_eq!(std::fs::read(&session_path).ok(), session_before);
+        let root = workspace.join("lance");
+        let descriptor = storage::read_current(&root).unwrap().unwrap();
+        match damage {
+            "current" => std::fs::write(root.join("CURRENT.json"), b"{broken").unwrap(),
+            "manifest" => std::fs::write(root.join(descriptor.manifest_path), b"{broken").unwrap(),
+            "table" => std::fs::remove_dir_all(root.join(format!("{TABLE_ARTIFACTS_V1}.lance"))).unwrap(),
+            _ => unreachable!(),
+        }
+        for command in ["phase", "validate"] {
+            for selector in ["rfc-session-store", "PRD-999"] {
+                let output = fixture.run(&[command, selector]);
+                assert!(!output.status.success() && output.status.code() != Some(3),
+                    "{damage}, {command}, {selector}: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        assert!(!state_dir.join("rfc-session-store.yaml").exists());
+        assert_eq!(std::fs::read(session_path).ok(), session_before);
+    }
+}

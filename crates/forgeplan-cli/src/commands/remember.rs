@@ -31,7 +31,7 @@ pub async fn run(
 }
 
 async fn run_remember(text: &str, category: &str) -> Result<()> {
-    let (workspace, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (workspace, lock, store) = common::open_store_locked_checked(&[]).await?;
 
     // Title = first 80 chars
     let title: String = text.chars().take(80).collect();
@@ -79,6 +79,7 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
             tags: Vec::new(),
         })
     };
+    common::ensure_ordinary_mutation_allowed(&workspace)?;
     let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
         &workspace,
         &lock,
@@ -88,7 +89,8 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
         &title,
         &build,
     )
-    .await?;
+    .await
+    .map_err(|e| common::describe_possible_legacy_partial_commit(store.is_some(), e))?;
     let id = created.id;
     let canonical_key = created.canonical_key;
 
@@ -98,6 +100,10 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
         // storage commit, and a held guard would time the capture out.
         drop(lock);
         common::reconcile_after_file_mutation(&workspace).await;
+    } else {
+        drop(store);
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&workspace).await?;
     }
 
     println!("  Remembered: {} — \"{}\"", style(&id).bold(), title);
@@ -113,7 +119,7 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
 }
 
 async fn run_list() -> Result<()> {
-    let (_workspace, source) = common::open_read_source().await?;
+    let (_workspace, source, _read_guard) = common::open_read_source().await?;
 
     let filter = ArtifactFilter {
         kind: Some("memory".to_string()),
@@ -122,7 +128,7 @@ async fn run_list() -> Result<()> {
     let stored;
     let records: Vec<_> = match &source {
         common::ReadSource::Legacy(store) => {
-            stored = store.list_records(Some(&filter)).await?;
+            stored = store.list_records(&_read_guard, Some(&filter)).await?;
             stored.iter().collect()
         }
         common::ReadSource::Captured(read) => read
@@ -207,7 +213,7 @@ async fn run_list() -> Result<()> {
 }
 
 async fn run_forget(id: &str) -> Result<()> {
-    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (ws, lock, store) = common::open_store_locked_checked(&[(id, true)]).await?;
 
     // Verify it exists and is a memory. On a migrated workspace the
     // authoritative answer comes from the canonical markdown (what
@@ -215,11 +221,11 @@ async fn run_forget(id: &str) -> Result<()> {
     // legacy row.
     let record = match &store {
         Some(store) => store
-            .get_record(id)
+            .get_record(&lock, id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", id))?,
         None => {
-            let read = common::workspace_read(&ws).await?;
+            let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock).await?;
             let canonical = read
                 .resolve_id(id)
                 .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", id))?;
@@ -236,6 +242,7 @@ async fn run_forget(id: &str) -> Result<()> {
     // PRD-073 file-first: helper removes file first, then cascades DB.
     // With a `None` sink the same helper removes the canonical markdown and
     // stops there — reconcile drops the derived row.
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     projection::delete_artifact_with_projection(
         &projection::MutationContext::new(&ws, &lock, store.as_ref()),
         id,
@@ -246,6 +253,10 @@ async fn run_forget(id: &str) -> Result<()> {
         common::note_constellation_owns_index();
         drop(lock);
         common::reconcile_after_file_mutation(&ws).await;
+    } else {
+        drop(store);
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&ws).await?;
     }
 
     println!("  Forgotten: {}", style(id).bold());

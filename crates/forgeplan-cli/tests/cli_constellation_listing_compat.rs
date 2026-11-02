@@ -134,14 +134,14 @@ fn seed_legacy_source_bodies(root: &Path, sources: &[(&str, &str)]) {
             )
             .await
             .unwrap_or_else(|error| panic!("full-body seed for {relative} failed: {error}"));
-            let record = store.get_record(id).await.unwrap().unwrap();
+            let record = store.get_record(&guard, id).await.unwrap().unwrap();
             assert_eq!(
                 record.body, *content,
                 "legacy seed lost metadata for {relative}"
             );
             if let Some(slug) = frontmatter::slug_from_frontmatter(&fm) {
                 assert_eq!(
-                    store.resolve_id(slug).await.unwrap().as_deref(),
+                    store.resolve_id(&guard, slug).await.unwrap().as_deref(),
                     Some(id),
                     "legacy seed did not preserve slug {slug}"
                 );
@@ -571,9 +571,9 @@ fn empty_workspaces_keep_all_existing_empty_shapes_and_hints() {
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.starts_with("No artifacts found.\n"));
     assert!(text.contains("Next: forgeplan new prd \"<title>\""));
-    for args in [vec!["calibrate"], vec!["calibrate", "RFC-999"]] {
-        assert_eq!(pair.ok(&args).stdout, b"No artifacts found.\n");
-    }
+    assert_eq!(pair.ok(&["calibrate"]).stdout, b"No artifacts found.\n");
+    let missing = pair.error(&["calibrate", "RFC-999"]);
+    assert_eq!(missing.status.code(), Some(3));
 }
 
 #[test]

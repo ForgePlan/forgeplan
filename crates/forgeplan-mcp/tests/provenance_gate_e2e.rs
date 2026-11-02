@@ -37,10 +37,12 @@ async fn setup_block() -> (TempDir, std::path::PathBuf, String) {
 
     let ws = forgeplan_core::workspace::init_workspace(&root, "mcp-gate-e2e").unwrap();
     // `new_rooted` only OPENS the store; create the LanceDB tables first, the
-    // way `McpFixture::new()` does via LanceStore::init.
-    forgeplan_core::db::store::LanceStore::init(&ws)
+    // way `McpFixture::new()` does via LanceStore::init_new.
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    forgeplan_core::db::store::LanceStore::init_new(&ws, &lock)
         .await
         .expect("init lance store");
+    drop(lock);
 
     let cfg = root.join(".forgeplan/config.yaml");
     let text = std::fs::read_to_string(&cfg).unwrap();

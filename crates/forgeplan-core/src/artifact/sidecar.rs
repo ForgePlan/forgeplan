@@ -121,24 +121,75 @@ pub async fn resolve_sidecar_path(
     display_alias: &str,
     extension: &str,
 ) -> std::io::Result<PathBuf> {
+    // A failed scan cannot prove ownership of an old alias or the uniqueness
+    // of a key, including when a keyed sidecar already exists.
+    let workspace = dir.parent().unwrap_or(dir);
+    let candidates = crate::artifact::documents::workspace_candidates(workspace)
+        .await
+        .map_err(std::io::Error::other)?;
+    use crate::artifact::canonical_key::{resolve_artifact, ResolveError};
+
+    let key_resolution = resolve_artifact(canonical_key, &candidates);
+    if let Err(error @ ResolveError::ConflictingCanonicalKey { .. }) = &key_resolution {
+        return Err(std::io::Error::other(error.clone()));
+    }
+    let display_alias = if display_alias == canonical_key {
+        candidates.iter().find(|candidate| candidate.canonical_key == canonical_key)
+            .map_or(display_alias, |candidate| candidate.display_id.as_str())
+    } else {
+        display_alias
+    };
     let keyed = sidecar_path(dir, canonical_key, extension);
-    if tokio::fs::try_exists(&keyed).await? {
+    let keyed_exists = tokio::fs::try_exists(&keyed).await?;
+    if keyed_exists {
+        if let Err(error @ ResolveError::Ambiguous { .. }) = key_resolution {
+            return Err(std::io::Error::other(error));
+        }
+        if !display_alias.eq_ignore_ascii_case(canonical_key) {
+            return Ok(keyed);
+        }
+    }
+    let owner = match resolve_artifact(display_alias, &candidates) {
+        Ok(owner) => owner,
+        Err(error @ ResolveError::Ambiguous { .. }) => {
+            let mut entries = match tokio::fs::read_dir(dir).await {
+                Ok(entries) => Some(entries),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error),
+            };
+            while let Some(entry) = match &mut entries {
+                Some(entries) => entries.next_entry().await?,
+                None => None,
+            } {
+                let name = entry.file_name();
+                let path = Path::new(&name);
+                if path.extension().and_then(|value| value.to_str()) != Some(extension) {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                if let Err(ResolveError::Ambiguous { candidates: owners, .. }) =
+                    resolve_artifact(stem, &candidates)
+                {
+                    if owners.iter().any(|owner| owner.canonical_key == canonical_key) {
+                        return Err(std::io::Error::other(error));
+                    }
+                }
+            }
+            None
+        }
+        Err(ResolveError::InvalidSelector { .. })
+            if !candidates.iter().any(|candidate| candidate.canonical_key == canonical_key) => None,
+        Err(error) => return Err(std::io::Error::other(error)),
+    };
+    if keyed_exists {
         return Ok(keyed);
     }
-
-    // Alias-named legacy state is readable only when the full workspace scan
-    // proves that this alias has exactly one owner, and that owner is this key.
-    let workspace = dir.parent().unwrap_or(dir);
-    if let Ok(candidates) = crate::artifact::documents::workspace_candidates(workspace).await {
-        let owners: Vec<_> = candidates
-            .iter()
-            .filter(|candidate| candidate.display_id.eq_ignore_ascii_case(display_alias))
-            .collect();
-        if owners.len() == 1 && owners[0].canonical_key == canonical_key {
-            for legacy in legacy_sidecar_paths(dir, canonical_key, display_alias, extension) {
-                if legacy != keyed && tokio::fs::try_exists(&legacy).await? {
-                    return Ok(legacy);
-                }
+    if owner.is_some_and(|owner| owner.identity.canonical_key == canonical_key) {
+        for legacy in legacy_sidecar_paths(dir, canonical_key, display_alias, extension) {
+            if legacy != keyed && tokio::fs::try_exists(&legacy).await? {
+                return Ok(legacy);
             }
         }
     }
@@ -272,11 +323,14 @@ mod tests {
             "prd-alpha-k11111111111111111111111111111111",
             "prd-beta-k22222222222222222222222222222222",
         ] {
-            let resolved = resolve_sidecar_path(&dir, key, "PRD-001", "yaml")
+            let error = resolve_sidecar_path(&dir, key, "PRD-001", "yaml")
                 .await
-                .unwrap();
-            assert_eq!(resolved, sidecar_path(&dir, key, "yaml"));
-            assert!(!resolved.exists());
+                .unwrap_err();
+            assert!(matches!(
+                error.get_ref().and_then(|source| source.downcast_ref::<crate::artifact::canonical_key::ResolveError>()),
+                Some(crate::artifact::canonical_key::ResolveError::Ambiguous { .. })
+            ));
+            assert!(!sidecar_path(&dir, key, "yaml").exists());
         }
         assert_eq!(tokio::fs::read_to_string(legacy).await.unwrap(), "shared legacy state");
     }
@@ -303,6 +357,98 @@ mod tests {
         // The pre-key file is left alone: it is data, and the keyed file is
         // the one that counts.
         assert!(dir.join("PRD-001.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn normalized_aliases_refuse_shared_phase_reads_and_writes() {
+        use crate::artifact::canonical_key::ResolveError;
+        use crate::phase::{store, Phase};
+
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join(".forgeplan");
+        let prds = workspace.join("prds");
+        let state = workspace.join("state");
+        tokio::fs::create_dir_all(&prds).await.unwrap();
+        tokio::fs::create_dir_all(&state).await.unwrap();
+        let docs = [
+            ("alpha.md", "PRD-001", "prd-alpha-k11111111111111111111111111111111"),
+            ("beta.md", "PRD-1", "prd-beta-k22222222222222222222222222222222"),
+        ];
+        for (file, id, key) in docs {
+            tokio::fs::write(prds.join(file), format!(
+                "---\nid: {id}\nslug: {key}\ntitle: {key}\nkind: prd\n---\n"
+            )).await.unwrap();
+        }
+        let legacy = state.join("PRD-001.yaml");
+        let bytes = b"artifact_id: PRD-001\ncurrent_phase: shape\n";
+        tokio::fs::write(&legacy, bytes).await.unwrap();
+        for (_, id, key) in docs {
+            for error in [
+                store::read_phase_for(&workspace, key, id).await.unwrap_err(),
+                store::read_phase(&workspace, key).await.unwrap_err(),
+                store::advance_phase_unchecked(&workspace, key, Phase::Code, None).await.unwrap_err(),
+                store::advance_phase_for(&workspace, key, id, Phase::Code, None).await.unwrap_err(),
+            ] {
+                assert!(matches!(error.downcast_ref::<ResolveError>(),
+                    Some(ResolveError::Ambiguous { candidates, .. }) if candidates.len() == 2
+                ), "{error:#}");
+            }
+            assert!(!sidecar_path(&state, key, "yaml").exists());
+        }
+        assert_eq!(tokio::fs::read(&legacy).await.unwrap(), bytes);
+        tokio::fs::remove_file(&legacy).await.unwrap();
+        let alternate = state.join("PRD-0001.yaml");
+        tokio::fs::write(&alternate, bytes).await.unwrap();
+        for (_, _, key) in docs {
+            for alias in ["PRD-0001", "PRD-001", "PRD-1"] {
+                let error = store::read_phase_for(&workspace, key, alias).await.unwrap_err();
+                assert!(matches!(error.downcast_ref::<ResolveError>(),
+                    Some(ResolveError::Ambiguous { candidates, .. }) if candidates.len() == 2
+                ), "{error:#}");
+                let error = store::advance_phase_for(&workspace, key, alias, Phase::Code, None).await.unwrap_err();
+                assert!(matches!(error.downcast_ref::<ResolveError>(),
+                    Some(ResolveError::Ambiguous { candidates, .. }) if candidates.len() == 2
+                ), "{error:#}");
+            }
+            assert!(!sidecar_path(&state, key, "yaml").exists());
+        }
+        assert_eq!(tokio::fs::read(&alternate).await.unwrap(), bytes);
+        tokio::fs::write(&legacy, bytes).await.unwrap();
+        let keyed = sidecar_path(&state, docs[0].2, "yaml");
+        tokio::fs::write(&keyed, b"keyed").await.unwrap();
+        assert_eq!(resolve_sidecar_path(&state, docs[0].2, docs[0].1, "yaml").await.unwrap(), keyed);
+        assert_eq!(tokio::fs::read(&legacy).await.unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn phase_preserves_conflicting_canonical_key_error() {
+        use crate::artifact::canonical_key::ResolveError;
+        use crate::phase::{store, Phase};
+
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join(".forgeplan");
+        let prds = workspace.join("prds");
+        let state = workspace.join("state");
+        tokio::fs::create_dir_all(&prds).await.unwrap();
+        tokio::fs::create_dir_all(&state).await.unwrap();
+        let key = "prd-alpha-k11111111111111111111111111111111";
+        for (file, id) in [("alpha.md", "PRD-001"), ("beta.md", "PRD-002")] {
+            tokio::fs::write(prds.join(file), format!(
+                "---\nid: {id}\nslug: {key}\ntitle: {id}\nkind: prd\n---\n"
+            )).await.unwrap();
+        }
+        let keyed = sidecar_path(&state, key, "yaml");
+        let bytes = b"unchanged";
+        tokio::fs::write(&keyed, bytes).await.unwrap();
+        for error in [
+            store::read_phase_for(&workspace, key, "PRD-001").await.unwrap_err(),
+            store::advance_phase_for(&workspace, key, "PRD-001", Phase::Code, None).await.unwrap_err(),
+        ] {
+            assert!(matches!(error.downcast_ref::<ResolveError>(),
+                Some(ResolveError::ConflictingCanonicalKey { candidates, .. }) if candidates.len() == 2
+            ), "{error:#}");
+        }
+        assert_eq!(tokio::fs::read(&keyed).await.unwrap(), bytes);
     }
 
     #[tokio::test]

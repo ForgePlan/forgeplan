@@ -146,3 +146,63 @@ fn advance_without_workspace_errors_clearly() {
             predicate::str::contains("forgeplan init").or(predicate::str::contains(".forgeplan")),
         );
 }
+
+#[test]
+fn phase_by_key_refuses_normalized_ambiguous_legacy_state() {
+    use forgeplan_core::db::store::{LanceStore, NewArtifact};
+
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+    let workspace = tmp.path().join(".forgeplan");
+    let docs = [
+        ("prd-alpha-k11111111111111111111111111111111", "PRD-001"),
+        ("prd-beta-k22222222222222222222222222222222", "PRD-1"),
+    ];
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        let guard = forgeplan_core::workspace::acquire_workspace_lock(&workspace).await.unwrap();
+        let store = LanceStore::open(&workspace).await.unwrap();
+        for (key, id) in docs {
+            let record = NewArtifact {
+                canonical_key: key.to_string(),
+                id: id.to_string(),
+                kind: "prd".to_string(),
+                status: "draft".to_string(),
+                title: key.to_string(),
+                body: "Phase alias regression.".to_string(),
+                depth: "standard".to_string(),
+                ..Default::default()
+            };
+            store.create_artifact_for_test(&guard, &record).await.unwrap();
+            let stored = store.get_record(&guard, key).await.unwrap().unwrap();
+            forgeplan_core::projection::render_projection_record_with_body(&workspace, &stored, &[])
+                .await.unwrap();
+        }
+    });
+    let state = workspace.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let legacy = state.join("PRD-001.yaml");
+    let bytes = b"artifact_id: PRD-001\ncurrent_phase: shape\n";
+    std::fs::write(&legacy, bytes).unwrap();
+    for (key, _) in docs {
+        for args in [
+            vec!["phase", key, "--json"],
+            vec!["phase-advance", key, "--to", "code"],
+        ] {
+            let output = forgeplan().args(&args).current_dir(tmp.path()).output().unwrap();
+            assert!(!output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stdout));
+            assert!(String::from_utf8_lossy(&output.stderr).contains("matches 2 documents"), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        assert!(!state.join(format!("{key}.yaml")).exists());
+    }
+    assert_eq!(std::fs::read(&legacy).unwrap(), bytes);
+    let key = docs[0].0;
+    let keyed = state.join(format!("{key}.yaml"));
+    std::fs::write(&keyed, format!(
+        "artifact_id: PRD-001\ncanonical_key: {key}\ncurrent_phase: shape\nadvanced_at: '2025-01-01T00:00:00Z'\nhistory: []\n"
+    )).unwrap();
+    forgeplan().args(["phase-advance", key, "--to", "code"])
+        .current_dir(tmp.path()).assert().success();
+    let keyed_after: serde_yaml::Value = serde_yaml::from_slice(&std::fs::read(&keyed).unwrap()).unwrap();
+    assert_eq!(keyed_after["current_phase"].as_str(), Some("code"));
+    assert_eq!(std::fs::read(&legacy).unwrap(), bytes);
+}

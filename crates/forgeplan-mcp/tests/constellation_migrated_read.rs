@@ -184,6 +184,8 @@ async fn migrated_graph_and_validate_answer_and_create_no_legacy_tables() {
         .call_tool_json("forgeplan_validate", json!({ "id": "PRD-001" }))
         .await;
     assert_eq!(validated.assert_ok()["total_artifacts"], 1);
+    let all = server.call_tool_json("forgeplan_validate", json!({})).await;
+    assert_eq!(all.assert_ok()["total_artifacts"], 2);
 
     assert!(
         legacy_tables(&ws).is_empty(),
@@ -277,11 +279,12 @@ async fn a_non_migrated_workspace_still_answers_from_the_legacy_store() {
 
     // A legacy workspace is one the store owns. Seed it the way the existing
     // fixture does so the branch under test is the source, not the data.
-    let store = forgeplan_core::db::store::LanceStore::init(&ws)
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    let store = forgeplan_core::db::store::LanceStore::init_new(&ws, &lock)
         .await
         .expect("init legacy store");
     store
-        .create_artifact_for_test(&forgeplan_core::db::store::NewArtifact {
+        .create_artifact_for_test(&lock, &forgeplan_core::db::store::NewArtifact {
             canonical_key: "PRD-001".into(),
             id: "PRD-001".into(),
             kind: "prd".into(),
@@ -296,6 +299,11 @@ async fn a_non_migrated_workspace_still_answers_from_the_legacy_store() {
         })
         .await
         .expect("seed legacy row");
+    std::fs::write(
+        ws.join("prds/PRD-001-legacy-artifact.md"),
+        "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Legacy artifact\n---\n\n## Summary\n\nLegacy body.\n",
+    ).expect("seed the canonical legacy document");
+    drop(lock);
     drop(store);
 
     assert!(
@@ -313,6 +321,12 @@ async fn a_non_migrated_workspace_still_answers_from_the_legacy_store() {
         "the legacy fallback still answers reads, got {}",
         got.raw_text
     );
+    let phase = server.call_tool_json("forgeplan_phase", json!({"id": "PRD-001"})).await;
+    assert_eq!(phase.assert_ok()["current_phase"], "unknown");
+    let targeted = server.call_tool_json("forgeplan_validate", json!({"id": "PRD-001"})).await;
+    assert_eq!(targeted.assert_ok()["total_artifacts"], 1);
+    let all = server.call_tool_json("forgeplan_validate", json!({})).await;
+    assert_eq!(all.assert_ok()["total_artifacts"], 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -584,4 +598,187 @@ async fn a_superseded_pack_leaves_the_min_on_a_migrated_workspace() {
         "a migrated score must not create legacy tables, found {:?}",
         legacy_tables(&ws)
     );
+}
+
+#[tokio::test]
+async fn migrated_get_uses_collision_inventory_but_list_and_search_refuse_it() {
+    let tmp = TempDir::new().unwrap();
+    let ws = publish_workspace(tmp.path(), "unique payload marker").await;
+    write_artifact(&ws, "prds", "PRD-020-alpha.md",
+        "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha body\n");
+    write_artifact(&ws, "prds", "PRD-021-beta.md",
+        "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta body\n");
+    let server = server_at(tmp.path()).await;
+    for selector in ["prd-contested", "PRD-020", "PRD-021"] {
+        let result = server.call_tool_json("forgeplan_get", json!({"id": selector})).await;
+        assert!(result.is_error, "{}", result.raw_text);
+        for expected in ["conflicting_canonical_key", "Alpha", "Beta", "PRD-020-alpha.md", "PRD-021-beta.md"] {
+            assert!(result.raw_text.contains(expected), "missing {expected}: {}", result.raw_text);
+        }
+    }
+    let result = server.call_tool_json("forgeplan_get", json!({"id": "PRD-001"})).await;
+    assert!(result.assert_ok()["body"].as_str().unwrap().contains("unique payload marker"));
+    assert!(server.call_tool_json("forgeplan_list", json!({})).await.is_error);
+    assert!(server.call_tool_json("forgeplan_search", json!({"query": "unique"})).await.is_error);
+    write_artifact(&ws, "prds", "broken.md", "---\nid: [unclosed\n");
+    let result = server.call_tool_json("forgeplan_get", json!({"id": "PRD-001"})).await;
+    assert!(result.is_error && result.raw_text.contains("incomplete_capture"), "{}", result.raw_text);
+}
+
+#[tokio::test]
+async fn selector_get_checks_managed_index_integrity_before_success_or_absence() {
+    use forgeplan_core::constellation::{manifest::TABLE_ARTIFACTS_V1, storage};
+    for collision in [false, true] {
+        for damage in ["current", "manifest", "table"] {
+            let tmp = TempDir::new().unwrap();
+            let ws = publish_workspace(tmp.path(), "integrity payload").await;
+            if collision {
+                write_artifact(&ws, "prds", "PRD-020-alpha.md",
+                    "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha\n");
+                write_artifact(&ws, "prds", "PRD-021-beta.md",
+                    "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta\n");
+            }
+            let server = server_at(tmp.path()).await;
+            let before = server.call_tool_json("forgeplan_get", json!({"id": "PRD-001"})).await;
+            assert!(before.assert_ok()["body"].as_str().unwrap().contains("integrity payload"));
+            let root = ws.join("lance");
+            let descriptor = storage::read_current(&root).unwrap().unwrap();
+            match damage {
+                "current" => std::fs::write(root.join("CURRENT.json"), b"{broken").unwrap(),
+                "manifest" => std::fs::write(root.join(descriptor.manifest_path), b"{broken").unwrap(),
+                "table" => std::fs::remove_dir_all(root.join(format!("{TABLE_ARTIFACTS_V1}.lance"))).unwrap(),
+                _ => unreachable!(),
+            }
+            for selector in ["PRD-001", "PRD-999"] {
+                let result = server.call_tool_json("forgeplan_get", json!({"id": selector})).await;
+                assert!(result.is_error, "{damage}, collision={collision}, {selector}: {}", result.raw_text);
+                assert!(!result.raw_text.contains("not_found"), "{damage}, collision={collision}, {selector}: {}", result.raw_text);
+            }
+            if collision {
+                let result = server.call_tool_json("forgeplan_get", json!({"id": "prd-contested"})).await;
+                assert!(result.is_error && result.raw_text.contains("conflicting_canonical_key"), "{}", result.raw_text);
+                assert!(result.raw_text.contains("Alpha") && result.raw_text.contains("Beta"), "{}", result.raw_text);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn phase_and_targeted_validate_use_selector_capture_without_partial_writes() {
+    let tmp = TempDir::new().unwrap();
+    let ws = publish_workspace(tmp.path(), "unique").await;
+    write_artifact(&ws, "notes", "NOTE-001-unique.md",
+        "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Unique\nslug: note-unique\ndepth: tactical\n---\n\nA complete note.\n");
+    write_artifact(&ws, "notes", "NOTE-002-no-sidecar.md",
+        "---\nid: NOTE-002\nkind: note\nstatus: draft\ntitle: No sidecar\nslug: note-no-sidecar\ndepth: tactical\n---\n\nA complete note.\n");
+    write_artifact(&ws, "prds", "PRD-020-alpha.md",
+        "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha\n");
+    write_artifact(&ws, "prds", "PRD-021-beta.md",
+        "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta\n");
+    for (name, slug) in [("PRD-030-one.md", "prd-one"), ("PRD-030-two.md", "prd-two")] {
+        write_artifact(&ws, "prds", name, &format!(
+            "---\nid: PRD-030\nkind: prd\nstatus: draft\ntitle: {slug}\nslug: {slug}\n---\nBody\n"
+        ));
+    }
+    let mut state = forgeplan_core::phase::initial_state("NOTE-001", None);
+    state.canonical_key = Some("note-unique".into());
+    forgeplan_core::phase::store::write_phase(&ws, &state).await.unwrap();
+    let state_path = forgeplan_core::phase::state_path(&ws, "note-unique");
+    let before = std::fs::read(&state_path).unwrap();
+    let server = server_at(tmp.path()).await;
+    for tool in ["forgeplan_phase", "forgeplan_validate"] {
+        for selector in ["prd-contested", "PRD-020", "PRD-021"] {
+            let result = server.call_tool_json(tool, json!({"id": selector})).await;
+            assert!(result.is_error && result.raw_text.contains("conflicting_canonical_key"), "{tool}: {}", result.raw_text);
+        }
+        let ambiguous = server.call_tool_json(tool, json!({"id": "PRD-030"})).await;
+        assert!(ambiguous.is_error && ambiguous.raw_text.contains("ambiguous"), "{tool}: {}", ambiguous.raw_text);
+    }
+    let phase = server.call_tool_json("forgeplan_phase", json!({"id": "NOTE-001"})).await;
+    assert_eq!(phase.assert_ok()["current_phase"], "shape");
+    let validation = server.call_tool_json("forgeplan_validate", json!({"id": "NOTE-001"})).await;
+    let result = validation.assert_ok();
+    assert_eq!(result["total_passed"], 1);
+    assert_eq!(result["results"][0]["canonical_key"], "note-unique");
+    let fresh_sidecar = forgeplan_core::phase::state_path(&ws, "note-no-sidecar");
+    let session_path = ws.join("session.yaml");
+    let session_before = std::fs::read(&session_path).ok();
+    let fresh = server.call_tool_json("forgeplan_validate", json!({"id": "NOTE-002"})).await;
+    assert_eq!(fresh.assert_ok()["total_passed"], 1);
+    assert!(!fresh_sidecar.exists());
+    assert_eq!(std::fs::read(session_path).ok(), session_before);
+    assert_eq!(std::fs::read(&state_path).unwrap(), before);
+    assert!(server.call_tool_json("forgeplan_validate", json!({})).await.is_error);
+    assert!(legacy_tables(&ws).is_empty());
+
+    write_artifact(&ws, "prds", "broken.md", "---\nid: [unclosed\n");
+    for tool in ["forgeplan_phase", "forgeplan_validate"] {
+        let result = server.call_tool_json(tool, json!({"id": "NOTE-001"})).await;
+        assert!(result.is_error && result.raw_text.contains("incomplete_capture"), "{tool}: {}", result.raw_text);
+    }
+    assert_eq!(std::fs::read(state_path).unwrap(), before);
+}
+
+#[tokio::test]
+async fn phase_resolves_legacy_alias_sidecar_without_moving_it() {
+    let tmp = TempDir::new().unwrap();
+    let ws = publish_workspace(tmp.path(), "unique").await;
+    write_artifact(&ws, "notes", "NOTE-001-unique.md",
+        "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Unique\nslug: note-unique\n---\n\nA note.\n");
+    let mut state = forgeplan_core::phase::initial_state("NOTE-001", None);
+    state.canonical_key = None;
+    forgeplan_core::phase::store::write_phase(&ws, &state).await.unwrap();
+    let alias_path = forgeplan_core::phase::state_path(&ws, "NOTE-001");
+    let before = std::fs::read(&alias_path).unwrap();
+    let server = server_at(tmp.path()).await;
+    let phase = server.call_tool_json("forgeplan_phase", json!({"id": "note-unique"})).await;
+    assert_eq!(phase.assert_ok()["current_phase"], "shape");
+    assert_eq!(std::fs::read(alias_path).unwrap(), before);
+    assert!(!forgeplan_core::phase::state_path(&ws, "note-unique").exists());
+}
+
+#[tokio::test]
+async fn phase_and_validate_refuse_damaged_managed_indexes() {
+    use forgeplan_core::constellation::{manifest::TABLE_ARTIFACTS_V1, storage};
+    for (collision, damage) in [false, true].into_iter().flat_map(|collision|
+        ["current", "manifest", "table"].into_iter().map(move |damage| (collision, damage))) {
+        let tmp = TempDir::new().unwrap();
+        let ws = publish_workspace(tmp.path(), "integrity").await;
+        if collision {
+            write_artifact(&ws, "prds", "PRD-020-alpha.md",
+                "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha\n");
+            write_artifact(&ws, "prds", "PRD-021-beta.md",
+                "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta\n");
+        }
+        let server = server_at(tmp.path()).await;
+        let state_dir = ws.join("state");
+        let session = ws.join("session.yaml");
+        let session_before = std::fs::read(&session).ok();
+        for tool in ["forgeplan_phase", "forgeplan_validate"] {
+            let missing = server.call_tool_json(tool, json!({"id": "PRD-999"})).await;
+            assert!(missing.is_error && missing.raw_text.contains("not found"), "{tool}: {}", missing.raw_text);
+            if collision {
+                let contested = server.call_tool_json(tool, json!({"id": "PRD-020"})).await;
+                assert!(contested.is_error && contested.raw_text.contains("conflicting_canonical_key"), "{tool}: {}", contested.raw_text);
+            }
+        }
+        let root = ws.join("lance");
+        let descriptor = storage::read_current(&root).unwrap().unwrap();
+        match damage {
+            "current" => std::fs::write(root.join("CURRENT.json"), b"{broken").unwrap(),
+            "manifest" => std::fs::write(root.join(descriptor.manifest_path), b"{broken").unwrap(),
+            "table" => std::fs::remove_dir_all(root.join(format!("{TABLE_ARTIFACTS_V1}.lance"))).unwrap(),
+            _ => unreachable!(),
+        }
+        for tool in ["forgeplan_phase", "forgeplan_validate"] {
+            for selector in ["PRD-001", "PRD-999"] {
+                let result = server.call_tool_json(tool, json!({"id": selector})).await;
+                assert!(result.is_error && !result.raw_text.contains("not_found"), "{damage}, {tool}: {}", result.raw_text);
+            }
+        }
+        assert!(!state_dir.join("PRD-001.yaml").exists());
+        assert!(!state_dir.join("PRD-020.yaml").exists());
+        assert!(!state_dir.join("prd-contested.yaml").exists());
+        assert_eq!(std::fs::read(session).ok(), session_before);
+    }
 }

@@ -7,6 +7,7 @@ pub mod canonical;
 pub mod transitions;
 
 use crate::db::store::LanceStore;
+use crate::workspace::lock::{WorkspaceLock, WorkspaceReadPermit};
 use crate::validation::{self, Severity};
 
 /// Result of a review operation.
@@ -144,14 +145,12 @@ impl GatesReport {
 /// Gates run only for [`LIFECYCLE_KINDS`]; lightweight kinds (note, problem)
 /// get an all-pass report.
 pub async fn collect_activation_gates(
+    permit: &dyn WorkspaceReadPermit,
     store: &LanceStore,
     record: &crate::db::store::ArtifactRecord,
 ) -> anyhow::Result<GatesReport> {
-    let outgoing = store.get_relations(&record.id).await.unwrap_or_default();
-    let incoming = store
-        .get_incoming_relations(&record.id)
-        .await
-        .unwrap_or_default();
+    let outgoing = store.get_relations(permit, &record.canonical_key).await?;
+    let incoming = store.get_incoming_relations(permit, &record.canonical_key).await?;
     Ok(activation_gates_from(record, &outgoing, &incoming))
 }
 
@@ -245,9 +244,13 @@ pub fn activation_gates_from(
 }
 
 /// Review an artifact: run validation and check lifecycle warnings.
-pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<ReviewResult> {
+pub async fn review(
+    permit: &dyn WorkspaceReadPermit,
+    store: &LanceStore,
+    artifact_id: &str,
+) -> anyhow::Result<ReviewResult> {
     let record = store
-        .get_record(artifact_id)
+        .get_record(permit, artifact_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
 
@@ -257,7 +260,7 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
         .parse()
         .unwrap_or(crate::artifact::types::Mode::Standard);
     // #446 — see LanceStore::frontmatter_map_with_links.
-    let fm = store.frontmatter_map_with_links(&record).await;
+    let fm = store.frontmatter_map_with_links(permit, &record).await?;
 
     let result = validation::validate(artifact_id, &record.body, &fm, &kind, &depth);
 
@@ -277,9 +280,13 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
 
     // Lifecycle warnings: check build-on-draft
     let mut warnings = Vec::new();
-    let relations = store.get_relations(artifact_id).await.unwrap_or_default();
+    let relations = store.get_relations(permit, artifact_id).await?;
     for (target_id, _relation) in &relations {
-        if let Ok(Some(target)) = store.get_record(target_id).await
+        // Qualified endpoints refer to another source, not a local row.
+        if target_id.contains('@') {
+            continue;
+        }
+        if let Some(target) = store.get_record(permit, target_id).await?
             && target.status == "draft"
         {
             warnings.push(format!(
@@ -290,7 +297,7 @@ pub async fn review(store: &LanceStore, artifact_id: &str) -> anyhow::Result<Rev
     }
 
     // Methodology gates — single source of truth, shared with activate().
-    let gates = collect_activation_gates(store, &record).await?;
+    let gates = collect_activation_gates(permit, store, &record).await?;
     for err in gates.errors() {
         warnings.push(err.to_string());
     }
@@ -319,12 +326,13 @@ pub struct ActivateResult {
 /// If `force` is true, activation proceeds even with MUST validation errors.
 /// Returns `ActivateResult` so the caller can display warnings when forced.
 pub async fn activate(
+    guard: &WorkspaceLock,
     store: &LanceStore,
     artifact_id: &str,
     force: bool,
 ) -> anyhow::Result<ActivateResult> {
     let record = store
-        .get_record(artifact_id)
+        .get_record(guard, artifact_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
 
@@ -351,7 +359,7 @@ pub async fn activate(
     // Lightweight kinds skip validation gate
     if !supports_lifecycle(&record.kind) {
         store
-            .update_artifact(artifact_id, Some("active"), None)
+            .update_artifact(guard, artifact_id, Some("active"), None)
             .await?;
         return Ok(ActivateResult {
             artifact_id: artifact_id.to_string(),
@@ -362,7 +370,7 @@ pub async fn activate(
 
     // Methodology enforcement — shared gates with review() (M-4 DRY fix).
     // collect_activation_gates runs length, evidence, and stub checks (incl. PRD-043 FR-003).
-    let gates = collect_activation_gates(store, &record).await?;
+    let gates = collect_activation_gates(guard, store, &record).await?;
     if !gates.all_pass() && !force {
         // Issue #294: the refusal itself teaches the canonical fix order, so
         // operators don't reach for --force as a shortcut. Shared with the
@@ -383,7 +391,7 @@ pub async fn activate(
         .parse()
         .unwrap_or(crate::artifact::types::Mode::Standard);
     // #446 — see LanceStore::frontmatter_map_with_links.
-    let fm = store.frontmatter_map_with_links(&record).await;
+    let fm = store.frontmatter_map_with_links(guard, &record).await?;
     let validation_result = validation::validate(artifact_id, &record.body, &fm, &kind, &depth);
     let must_findings: Vec<String> = validation_result
         .findings
@@ -406,7 +414,7 @@ pub async fn activate(
     }
 
     store
-        .update_artifact(artifact_id, Some("active"), None)
+        .update_artifact(guard, artifact_id, Some("active"), None)
         .await?;
 
     Ok(ActivateResult {
@@ -427,18 +435,19 @@ pub struct SupersedeResult {
 
 /// Supersede an artifact: Active → Superseded, link to replacement.
 pub async fn supersede(
+    guard: &WorkspaceLock,
     store: &LanceStore,
     artifact_id: &str,
     replacement_id: &str,
 ) -> anyhow::Result<SupersedeResult> {
     let record = store
-        .get_record(artifact_id)
+        .get_record(guard, artifact_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
 
     // Verify replacement exists
     let replacement = store
-        .get_record(replacement_id)
+        .get_record(guard, replacement_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Replacement not found: {replacement_id}"))?;
 
@@ -462,16 +471,16 @@ pub async fn supersede(
 
     // Create supersedes link
     store
-        .add_relation(artifact_id, replacement_id, "supersedes")
+        .add_relation(guard, artifact_id, replacement_id, "supersedes")
         .await?;
 
     // Update status
     store
-        .update_artifact(artifact_id, Some("superseded"), None)
+        .update_artifact(guard, artifact_id, Some("superseded"), None)
         .await?;
 
     // Find dependents and warn
-    let all_relations = store.get_all_relations().await.unwrap_or_default();
+    let all_relations = store.get_all_relations(guard).await?;
     let dependents: Vec<String> = all_relations
         .iter()
         .filter(|(_src, tgt, _rel)| tgt == artifact_id)
@@ -486,12 +495,13 @@ pub async fn supersede(
 
 /// Deprecate an artifact: Active/Stale → Deprecated with reason.
 pub async fn deprecate(
+    guard: &WorkspaceLock,
     store: &LanceStore,
     artifact_id: &str,
     reason: &str,
 ) -> anyhow::Result<Vec<String>> {
     let record = store
-        .get_record(artifact_id)
+        .get_record(guard, artifact_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
 
@@ -501,14 +511,14 @@ pub async fn deprecate(
     let today = chrono::Utc::now().format("%Y-%m-%d");
     let deprecation_section = format!("\n\n## Deprecation\n\nReason: {reason}\nDate: {today}");
     let new_body = format!("{}{}", record.body, deprecation_section);
-    store.update_body(artifact_id, &new_body).await?;
+    store.update_body(guard, artifact_id, &new_body).await?;
 
     store
-        .update_artifact(artifact_id, Some("deprecated"), None)
+        .update_artifact(guard, artifact_id, Some("deprecated"), None)
         .await?;
 
     // Find dependents and warn
-    let all_relations = store.get_all_relations().await.unwrap_or_default();
+    let all_relations = store.get_all_relations(guard).await?;
     let dependents: Vec<String> = all_relations
         .iter()
         .filter(|(_src, tgt, _rel)| tgt == artifact_id)
@@ -545,6 +555,7 @@ pub(super) fn validate_date(date_str: &str) -> anyhow::Result<chrono::NaiveDate>
 
 /// Renew a stale artifact: Stale → Active, extend valid_until (ADR-005).
 pub async fn renew(
+    guard: &WorkspaceLock,
     store: &LanceStore,
     artifact_id: &str,
     reason: &str,
@@ -554,7 +565,7 @@ pub async fn renew(
     validate_date(new_valid_until)?;
 
     let record = store
-        .get_record(artifact_id)
+        .get_record(guard, artifact_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
 
@@ -569,14 +580,14 @@ pub async fn renew(
         "\n\n## Renewal ({today})\n\nReason: {safe_reason}\nExtended until: {new_valid_until}"
     );
     let new_body = format!("{}{}", record.body, renewal_section);
-    store.update_body(artifact_id, &new_body).await?;
+    store.update_body(guard, artifact_id, &new_body).await?;
 
     // Update status and valid_until
     store
-        .update_artifact(artifact_id, Some("active"), None)
+        .update_artifact(guard, artifact_id, Some("active"), None)
         .await?;
     store
-        .update_valid_until(artifact_id, new_valid_until)
+        .update_valid_until(guard, artifact_id, new_valid_until)
         .await?;
 
     Ok(RenewResult {
@@ -600,13 +611,14 @@ pub struct ReopenResult {
 ///
 /// Operation order: validate all preconditions → create new → deprecate old (audit C3: atomicity).
 pub async fn reopen(
+    guard: &WorkspaceLock,
     store: &LanceStore,
     artifact_id: &str,
     reason: &str,
     new_id: &str,
 ) -> anyhow::Result<ReopenResult> {
     let record = store
-        .get_record(artifact_id)
+        .get_record(guard, artifact_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
 
@@ -630,7 +642,7 @@ pub async fn reopen(
     }
 
     // Check new_id doesn't already exist (audit logic C3: race condition guard)
-    if store.get_record(new_id).await?.is_some() {
+    if store.get_record(guard, new_id).await?.is_some() {
         anyhow::bail!(
             "Cannot reopen: artifact '{}' already exists. Try again.",
             new_id
@@ -673,18 +685,18 @@ pub async fn reopen(
         valid_until: None,
         tags: record.tags.clone(),
     };
-    store.create_artifact(&new_artifact).await?;
+    store.create_artifact(guard, &new_artifact).await?;
 
     // Step 2: Link new → old (based_on)
-    store.add_relation(new_id, artifact_id, "based_on").await?;
+    store.add_relation(guard, new_id, artifact_id, "based_on").await?;
 
     // Step 3: Deprecate the old artifact (after new is safely created)
     let deprecation_section =
         format!("\n\n## Reopened ({today})\n\nReason: {safe_reason}\nReplacement: {new_id}");
     let new_body = format!("{}{}", record.body, deprecation_section);
-    store.update_body(artifact_id, &new_body).await?;
+    store.update_body(guard, artifact_id, &new_body).await?;
     store
-        .update_artifact(artifact_id, Some("deprecated"), None)
+        .update_artifact(guard, artifact_id, Some("deprecated"), None)
         .await?;
 
     Ok(ReopenResult {
@@ -701,9 +713,11 @@ mod tests {
     use crate::db::store::NewArtifact;
     use tempfile::TempDir;
 
-    async fn make_store(tmp: &TempDir) -> LanceStore {
+    async fn make_store(tmp: &TempDir) -> (LanceStore, WorkspaceLock) {
         let ws = tmp.path().join(".forgeplan");
-        LanceStore::init(&ws).await.unwrap()
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+        (store, guard)
     }
 
     fn active_note(id: &str) -> NewArtifact {
@@ -725,7 +739,7 @@ mod tests {
     #[tokio::test]
     async fn review_flags_stub_body_and_missing_evidence() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         // Create a PRD with short body (stub) and no evidence
         let art = NewArtifact {
@@ -741,9 +755,9 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
-        let result = review(&store, "PRD-001").await.unwrap();
+        let result = review(&guard, &store, "PRD-001").await.unwrap();
 
         // Review must report can_activate = false
         assert!(
@@ -766,17 +780,17 @@ mod tests {
     #[tokio::test]
     async fn deprecate_stores_reason_in_body() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&active_note("NOTE-099"))
+            .create_artifact(&guard, &active_note("NOTE-099"))
             .await
             .unwrap();
 
         let reason = "no longer needed";
-        deprecate(&store, "NOTE-099", reason).await.unwrap();
+        deprecate(&guard, &store, "NOTE-099", reason).await.unwrap();
 
-        let record = store.get_record("NOTE-099").await.unwrap().unwrap();
+        let record = store.get_record(&guard, "NOTE-099").await.unwrap().unwrap();
         assert_eq!(record.status, "deprecated");
         assert!(
             record.body.contains("## Deprecation"),
@@ -811,10 +825,11 @@ mod tests {
     #[tokio::test]
     async fn renew_stale_to_active() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store.create_artifact(&stale_prd("PRD-100")).await.unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store.create_artifact(&guard, &stale_prd("PRD-100")).await.unwrap();
 
         let result = renew(
+            &guard,
             &store,
             "PRD-100",
             "still relevant, updated evidence",
@@ -826,7 +841,7 @@ mod tests {
         assert_eq!(result.artifact_id, "PRD-100");
         assert_eq!(result.new_valid_until, "2026-12-01");
 
-        let record = store.get_record("PRD-100").await.unwrap().unwrap();
+        let record = store.get_record(&guard, "PRD-100").await.unwrap().unwrap();
         assert_eq!(record.status, "active");
         assert!(record.body.contains("## Renewal"));
         assert!(record.body.contains("still relevant"));
@@ -835,23 +850,23 @@ mod tests {
     #[tokio::test]
     async fn renew_active_fails() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&active_note("NOTE-100"))
+            .create_artifact(&guard, &active_note("NOTE-100"))
             .await
             .unwrap();
 
-        let result = renew(&store, "NOTE-100", "try renew active", "2027-01-01").await;
+        let result = renew(&guard, &store, "NOTE-100", "try renew active", "2027-01-01").await;
         assert!(result.is_err(), "renew on active artifact should fail");
     }
 
     #[tokio::test]
     async fn renew_invalid_date_fails() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store.create_artifact(&stale_prd("PRD-110")).await.unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store.create_artifact(&guard, &stale_prd("PRD-110")).await.unwrap();
 
-        let result = renew(&store, "PRD-110", "reason", "not-a-date").await;
+        let result = renew(&guard, &store, "PRD-110", "reason", "not-a-date").await;
         assert!(result.is_err());
         assert!(
             result
@@ -864,10 +879,11 @@ mod tests {
     #[tokio::test]
     async fn renew_sanitizes_reason() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store.create_artifact(&stale_prd("PRD-120")).await.unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store.create_artifact(&guard, &stale_prd("PRD-120")).await.unwrap();
 
         renew(
+            &guard,
             &store,
             "PRD-120",
             "reason\n\n## Injected Section\nevil",
@@ -875,7 +891,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let record = store.get_record("PRD-120").await.unwrap().unwrap();
+        let record = store.get_record(&guard, "PRD-120").await.unwrap().unwrap();
         // Newlines stripped — "## Injected" can't start a new markdown heading
         assert!(
             !record.body.contains("\n## Injected"),
@@ -886,19 +902,19 @@ mod tests {
     #[tokio::test]
     async fn reopen_new_id_conflict_fails() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store.create_artifact(&stale_prd("PRD-300")).await.unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store.create_artifact(&guard, &stale_prd("PRD-300")).await.unwrap();
         store
-            .create_artifact(&active_note("PRD-301"))
+            .create_artifact(&guard, &active_note("PRD-301"))
             .await
             .unwrap();
 
         // PRD-301 already exists — reopen should fail early
-        let result = reopen(&store, "PRD-300", "reason", "PRD-301").await;
+        let result = reopen(&guard, &store, "PRD-300", "reason", "PRD-301").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
         // Old artifact should still be stale (not deprecated)
-        let old = store.get_record("PRD-300").await.unwrap().unwrap();
+        let old = store.get_record(&guard, "PRD-300").await.unwrap().unwrap();
         assert_eq!(
             old.status, "stale",
             "old artifact should remain stale on failure"
@@ -908,12 +924,12 @@ mod tests {
     #[tokio::test]
     async fn renew_deprecated_fails() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let mut art = active_note("NOTE-101");
         art.status = "deprecated".to_string();
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
-        let result = renew(&store, "NOTE-101", "try to renew", "2027-01-01").await;
+        let result = renew(&guard, &store, "NOTE-101", "try to renew", "2027-01-01").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("reopen"));
     }
@@ -923,10 +939,10 @@ mod tests {
     #[tokio::test]
     async fn reopen_stale_creates_new_and_deprecates_old() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store.create_artifact(&stale_prd("PRD-200")).await.unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store.create_artifact(&guard, &stale_prd("PRD-200")).await.unwrap();
 
-        let result = reopen(&store, "PRD-200", "need different approach", "PRD-201")
+        let result = reopen(&guard, &store, "PRD-200", "need different approach", "PRD-201")
             .await
             .unwrap();
 
@@ -935,13 +951,13 @@ mod tests {
         assert_eq!(result.new_kind, "prd");
 
         // Old artifact is now deprecated
-        let old = store.get_record("PRD-200").await.unwrap().unwrap();
+        let old = store.get_record(&guard, "PRD-200").await.unwrap().unwrap();
         assert_eq!(old.status, "deprecated");
         assert!(old.body.contains("## Reopened"));
         assert!(old.body.contains("PRD-201"));
 
         // New artifact is draft with lineage
-        let new = store.get_record("PRD-201").await.unwrap().unwrap();
+        let new = store.get_record(&guard, "PRD-201").await.unwrap().unwrap();
         assert_eq!(new.status, "draft");
         assert_eq!(new.kind, "prd");
         assert!(new.title.contains("reopened"));
@@ -949,21 +965,21 @@ mod tests {
         assert!(new.body.contains("PRD-200"));
 
         // Link exists: new → old
-        let rels = store.get_relations("PRD-201").await.unwrap();
+        let rels = store.get_relations(&guard, "PRD-201").await.unwrap();
         assert!(rels.iter().any(|(t, r)| t == "PRD-200" && r == "based_on"));
     }
 
     #[tokio::test]
     async fn reopen_mints_a_canonical_key_for_the_successor() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store.create_artifact(&stale_prd("PRD-300")).await.unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store.create_artifact(&guard, &stale_prd("PRD-300")).await.unwrap();
 
-        reopen(&store, "PRD-300", "need another approach", "PRD-301")
+        reopen(&guard, &store, "PRD-300", "need another approach", "PRD-301")
             .await
             .unwrap();
 
-        let new = store.get_record("PRD-301").await.unwrap().unwrap();
+        let new = store.get_record(&guard, "PRD-301").await.unwrap().unwrap();
         // The successor is a new document: its identity is a minted key,
         // not the display id it happens to be numbered with.
         assert_ne!(
@@ -986,12 +1002,12 @@ mod tests {
     #[tokio::test]
     async fn reopen_deprecated_fails() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let mut art = active_note("NOTE-200");
         art.status = "deprecated".to_string();
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
-        let result = reopen(&store, "NOTE-200", "try again", "NOTE-201").await;
+        let result = reopen(&guard, &store, "NOTE-200", "try again", "NOTE-201").await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         // deprecated→deprecated is invalid transition; error hints at reopen
@@ -1041,17 +1057,17 @@ mod tests {
     #[tokio::test]
     async fn test_collect_activation_gates_all_pass() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
-        store.create_artifact(&full_prd("PRD-400")).await.unwrap();
-        store.create_artifact(&evidence("EVID-400")).await.unwrap();
+        store.create_artifact(&guard, &full_prd("PRD-400")).await.unwrap();
+        store.create_artifact(&guard, &evidence("EVID-400")).await.unwrap();
         store
-            .add_relation("EVID-400", "PRD-400", "informs")
+            .add_relation(&guard, "EVID-400", "PRD-400", "informs")
             .await
             .unwrap();
 
-        let record = store.get_record("PRD-400").await.unwrap().unwrap();
-        let gates = collect_activation_gates(&store, &record).await.unwrap();
+        let record = store.get_record(&guard, "PRD-400").await.unwrap().unwrap();
+        let gates = collect_activation_gates(&guard, &store, &record).await.unwrap();
 
         assert!(gates.length_ok, "length gate should pass");
         assert!(gates.evidence_ok, "evidence gate should pass");
@@ -1063,7 +1079,7 @@ mod tests {
     #[tokio::test]
     async fn test_collect_activation_gates_length_blocks() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         let stub = NewArtifact {
             canonical_key: "PRD-401".to_string(),
@@ -1078,10 +1094,10 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&stub).await.unwrap();
+        store.create_artifact(&guard, &stub).await.unwrap();
 
-        let record = store.get_record("PRD-401").await.unwrap().unwrap();
-        let gates = collect_activation_gates(&store, &record).await.unwrap();
+        let record = store.get_record(&guard, "PRD-401").await.unwrap().unwrap();
+        let gates = collect_activation_gates(&guard, &store, &record).await.unwrap();
 
         assert!(!gates.length_ok);
         assert!(!gates.all_pass());
@@ -1095,14 +1111,14 @@ mod tests {
     #[tokio::test]
     async fn test_collect_activation_gates_lightweight_kinds_all_pass() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&active_note("NOTE-400"))
+            .create_artifact(&guard, &active_note("NOTE-400"))
             .await
             .unwrap();
 
-        let record = store.get_record("NOTE-400").await.unwrap().unwrap();
-        let gates = collect_activation_gates(&store, &record).await.unwrap();
+        let record = store.get_record(&guard, "NOTE-400").await.unwrap().unwrap();
+        let gates = collect_activation_gates(&guard, &store, &record).await.unwrap();
 
         // Notes skip gates entirely.
         assert!(gates.all_pass());
@@ -1114,7 +1130,7 @@ mod tests {
         // verdicts. Previously review could PASS on a stub PRD that activate
         // would then reject.
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         let stub = NewArtifact {
             canonical_key: "PRD-402".to_string(),
@@ -1129,12 +1145,12 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&stub).await.unwrap();
+        store.create_artifact(&guard, &stub).await.unwrap();
 
-        let review_result = review(&store, "PRD-402").await.unwrap();
+        let review_result = review(&guard, &store, "PRD-402").await.unwrap();
         assert!(!review_result.can_activate, "review must NOT pass on stub");
 
-        let activate_result = activate(&store, "PRD-402", false).await;
+        let activate_result = activate(&guard, &store, "PRD-402", false).await;
         assert!(activate_result.is_err(), "activate must bail on stub");
         let err = activate_result.unwrap_err().to_string();
         assert!(
@@ -1149,7 +1165,7 @@ mod tests {
     #[tokio::test]
     async fn activate_no_evidence_error_teaches_canonical_fix_order() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         // Body that passes length + stub gates but has no evidence linked.
         let body = "## Problem\n\nLong enough body to pass the 100-char gate \
@@ -1169,9 +1185,9 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&prd).await.unwrap();
+        store.create_artifact(&guard, &prd).await.unwrap();
 
-        let result = activate(&store, "PRD-294", false).await;
+        let result = activate(&guard, &store, "PRD-294", false).await;
         let err = result
             .expect_err("must fail — no evidence linked")
             .to_string();
@@ -1205,7 +1221,7 @@ mod tests {
     #[tokio::test]
     async fn activate_short_body_error_does_not_show_evidence_recipe() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         // Body short enough to fail the length gate.
         let prd = NewArtifact {
@@ -1221,7 +1237,7 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&prd).await.unwrap();
+        store.create_artifact(&guard, &prd).await.unwrap();
         // Link an EVID so the evidence gate passes — only body-length fails.
         let evid = NewArtifact {
             canonical_key: "EVID-294B".to_string(),
@@ -1236,13 +1252,13 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&evid).await.unwrap();
+        store.create_artifact(&guard, &evid).await.unwrap();
         store
-            .add_relation_for_test("EVID-294B", "PRD-294B", "informs")
+            .add_relation_for_test(&guard, "EVID-294B", "PRD-294B", "informs")
             .await
             .unwrap();
 
-        let err = activate(&store, "PRD-294B", false)
+        let err = activate(&guard, &store, "PRD-294B", false)
             .await
             .expect_err("must fail — body too short")
             .to_string();
@@ -1260,21 +1276,21 @@ mod tests {
     #[tokio::test]
     async fn reopen_active_works() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&active_note("NOTE-300"))
+            .create_artifact(&guard, &active_note("NOTE-300"))
             .await
             .unwrap();
 
         // Reopen from active (manual trigger — user decides to start fresh)
-        let _result = reopen(&store, "NOTE-300", "rethinking approach", "NOTE-301")
+        let _result = reopen(&guard, &store, "NOTE-300", "rethinking approach", "NOTE-301")
             .await
             .unwrap();
 
-        let old = store.get_record("NOTE-300").await.unwrap().unwrap();
+        let old = store.get_record(&guard, "NOTE-300").await.unwrap().unwrap();
         assert_eq!(old.status, "deprecated");
 
-        let new = store.get_record("NOTE-301").await.unwrap().unwrap();
+        let new = store.get_record(&guard, "NOTE-301").await.unwrap().unwrap();
         assert_eq!(new.status, "draft");
     }
 
@@ -1283,7 +1299,7 @@ mod tests {
     #[tokio::test]
     async fn test_activate_blocks_stub_body() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         // Body has 4+ template markers — should be detected as stub
         let stub_body = "## Problem\n\nЧто мы строим и почему это важно\n\n\
@@ -1309,7 +1325,7 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&prd).await.unwrap();
+        store.create_artifact(&guard, &prd).await.unwrap();
 
         // Add evidence so we pass the evidence gate and reach the stub-content gate
         let evid = NewArtifact {
@@ -1325,13 +1341,13 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&evid).await.unwrap();
+        store.create_artifact(&guard, &evid).await.unwrap();
         store
-            .add_relation("EVID-900", "PRD-900", "informs")
+            .add_relation(&guard, "EVID-900", "PRD-900", "informs")
             .await
             .unwrap();
 
-        let result = activate(&store, "PRD-900", false).await;
+        let result = activate(&guard, &store, "PRD-900", false).await;
         assert!(result.is_err(), "activate should reject stub body");
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -1343,7 +1359,7 @@ mod tests {
     #[tokio::test]
     async fn test_activate_allows_filled_body() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         // Real-looking PRD body without template markers
         let body = "## Problem\n\n\
@@ -1368,7 +1384,7 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&prd).await.unwrap();
+        store.create_artifact(&guard, &prd).await.unwrap();
 
         let evid = NewArtifact {
             canonical_key: "EVID-901".to_string(),
@@ -1383,14 +1399,14 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&evid).await.unwrap();
+        store.create_artifact(&guard, &evid).await.unwrap();
         store
-            .add_relation("EVID-901", "PRD-901", "informs")
+            .add_relation(&guard, "EVID-901", "PRD-901", "informs")
             .await
             .unwrap();
 
         // May still fail validation MUST rules, but must NOT fail with stub error
-        let result = activate(&store, "PRD-901", false).await;
+        let result = activate(&guard, &store, "PRD-901", false).await;
         if let Err(e) = &result {
             let msg = e.to_string();
             assert!(
@@ -1408,7 +1424,7 @@ mod tests {
     #[tokio::test]
     async fn activate_hypothesis_redirects_to_promote() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         let art = NewArtifact {
             canonical_key: "HYP-001".to_string(),
@@ -1426,14 +1442,122 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
-        let result = activate(&store, "HYP-001", false).await;
+        let result = activate(&guard, &store, "HYP-001", false).await;
         let err = result.expect_err("activate on HYP must error out");
         let msg = err.to_string();
         assert!(
             msg.contains("forgeplan_hypothesis_promote"),
             "error must redirect to canonical promote path, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_holds_shared_permit_until_all_results_are_materialized() {
+        use crate::workspace::lock::{
+            acquire_workspace_lock, acquire_workspace_lock_with_timeout,
+            acquire_workspace_read_lock,
+        };
+        use std::time::Duration;
+
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join(".forgeplan");
+        let (store, writer) = make_store(&tmp).await;
+        store.create_artifact(&writer, &full_prd("PRD-777")).await.unwrap();
+        store.create_artifact(&writer, &evidence("EVID-777")).await.unwrap();
+        store.add_relation(&writer, "EVID-777", "PRD-777", "informs").await.unwrap();
+        drop(writer);
+
+        let reader = acquire_workspace_read_lock(&workspace).await.unwrap();
+        let result = review(&reader, &store, "PRD-777").await.unwrap();
+        assert_eq!(result.artifact_id, "PRD-777");
+        assert!(!result.warnings.iter().any(|warning| warning.contains("No evidence linked")));
+        assert!(acquire_workspace_lock_with_timeout(&workspace, Duration::from_millis(50))
+            .await
+            .is_err(), "a writer must not enter while the read permit is held");
+        drop(reader);
+        let _writer = acquire_workspace_lock(&workspace).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn activate_reuses_exclusive_guard_for_nested_reads() {
+        use std::time::Duration;
+
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store.create_artifact(&guard, &full_prd("PRD-778")).await.unwrap();
+        store.create_artifact(&guard, &evidence("EVID-778")).await.unwrap();
+        store.add_relation(&guard, "EVID-778", "PRD-778", "informs").await.unwrap();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            activate(&guard, &store, "PRD-778", true),
+        )
+        .await
+        .expect("nested reads must not acquire a second lock")
+        .unwrap();
+        assert_eq!(result.artifact_id, "PRD-778");
+        assert_eq!(store.get_record(&guard, "PRD-778").await.unwrap().unwrap().status, "active");
+    }
+
+    #[tokio::test]
+    async fn review_preserves_ambiguous_selector_and_candidate_details() {
+        use crate::artifact::canonical_key::ResolveError;
+
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        let mut first = full_prd("PRD-779");
+        first.canonical_key = "prd-first".into();
+        let mut second = full_prd("PRD-779");
+        second.canonical_key = "prd-second".into();
+        store.create_artifact(&guard, &first).await.unwrap();
+        store.create_artifact(&guard, &second).await.unwrap();
+
+        let error = review(&guard, &store, "PRD-779").await.unwrap_err();
+        match error.downcast_ref::<ResolveError>() {
+            Some(ResolveError::Ambiguous { input, candidates }) => {
+                assert_eq!(input, "PRD-779");
+                assert_eq!(candidates.len(), 2);
+                assert_eq!(candidates[0].canonical_key, "prd-first");
+                assert_eq!(candidates[1].canonical_key, "prd-second");
+            }
+            other => panic!("expected typed ambiguous-selector error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn review_rejects_permit_from_another_workspace() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let (store, guard) = make_store(&first).await;
+        store.create_artifact(&guard, &full_prd("PRD-780")).await.unwrap();
+        let (_other_store, other_guard) = make_store(&second).await;
+
+        assert!(
+            review(&other_guard, &store, "PRD-780").await.is_err(),
+            "a lock for another workspace must not authorize a read",
+        );
+        assert_eq!(
+            review(&guard, &store, "PRD-780").await.unwrap().artifact_id,
+            "PRD-780"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_keeps_qualified_remote_links_without_local_lookup() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store.create_artifact(&guard, &full_prd("PRD-781")).await.unwrap();
+        store.add_relation(&guard, "PRD-781", "ADR-001@ws-beta", "based_on")
+            .await
+            .unwrap();
+
+        let report = review(&guard, &store, "PRD-781").await.unwrap();
+        assert_eq!(report.artifact_id, "PRD-781");
+        assert_eq!(
+            store.get_relations(&guard, "PRD-781").await.unwrap(),
+            vec![("ADR-001@ws-beta".to_string(), "based_on".to_string())]
         );
     }
 }

@@ -415,10 +415,25 @@ pub async fn resolve_in_workspace_files(workspace: &Path, input: &str) -> Resolu
 /// index would have written to.
 pub async fn resolve_in_legacy_index(
     store: &forgeplan_core::db::store::LanceStore,
+    permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
     workspace: &std::path::Path,
     input: &str,
 ) -> anyhow::Result<Resolution> {
-    let resolved = match store.resolve_canonical_key(input).await {
+    // The index can lag an edited canonical corpus. Refuse a selector that
+    // the complete file set already finds ambiguous before consulting rows or
+    // preparing a migration.
+    let documents = match forgeplan_core::artifact::documents::workspace_candidates(workspace).await {
+        Ok(documents) => documents,
+        Err(error) => return Ok(Resolution::IncompleteCapture { message: error.to_string() }),
+    };
+    match resolve_reference(input, &documents) {
+        refusal @ (Resolution::Ambiguous { .. }
+        | Resolution::ConflictingCanonicalKey { .. }
+        | Resolution::InvalidSelector { .. }
+        | Resolution::IncompleteCapture { .. }) => return Ok(refusal),
+        Resolution::Found(_) | Resolution::NotFound => {}
+    }
+    let resolved = match store.resolve_canonical_key(permit, input).await {
         Ok(found) => found,
         // The index refused: it named no single row. That refusal is
         // classified below, from the rows themselves, so the surface answers
@@ -434,7 +449,7 @@ pub async fn resolve_in_legacy_index(
         Err(error) => return Err(error),
     };
     if let Some(canonical_key) = resolved {
-        let summary = store.get_artifact(&canonical_key).await?;
+        let summary = store.get_artifact(permit, &canonical_key).await?;
         let display_id = summary
             .as_ref()
             .map(|summary| summary.id.clone())
@@ -454,7 +469,7 @@ pub async fn resolve_in_legacy_index(
     // The paths come from the workspace's own documents — the SAME scan the
     // file route reads — so a refusal points at a file an operator can open
     // without a second walk of the directories.
-    let records = store.list_records(None).await?;
+    let records = store.list_records(permit, None).await?;
     let mut candidates = candidates_from_records(&records);
     if !candidates.is_empty() {
         let paths = forgeplan_core::artifact::documents::workspace_document_paths(workspace).await?;

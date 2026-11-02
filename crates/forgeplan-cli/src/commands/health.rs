@@ -65,7 +65,7 @@ pub async fn run(
     fail_on: Option<String>,
     strict: bool,
 ) -> anyhow::Result<()> {
-    let (ws, source) = common::open_read_source().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
 
     let config = workspace::load_config(&ws)?;
     // PROB-051 L-H3 closure: route through `health_report_with_phase` so
@@ -82,7 +82,7 @@ pub async fn run(
     // capture failure is an ERROR here — it never degrades to an empty
     // "everything is fine" report.
     let (report, phase_mismatches) = match &source {
-        common::ReadSource::Legacy(store) => health::health_report_with_phase(store, &ws).await?,
+        common::ReadSource::Legacy(store) => health::health_report_with_phase(store, &_read_guard, &ws).await?,
         common::ReadSource::Captured(read) => {
             health::health_report_with_phase_captured(read, &ws).await?
         }

@@ -7,22 +7,22 @@ use forgeplan_core::hints::{self, Hint};
 use crate::commands::common;
 
 pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (workspace, source, _read_guard) = common::open_read_source().await?;
     let records: Cow<'_, [ArtifactRecord]> = match &source {
-        common::ReadSource::Legacy(store) => Cow::Owned(store.list_records(None).await?),
+        common::ReadSource::Legacy(store) => Cow::Owned(store.list_records(&_read_guard, None).await?),
         common::ReadSource::Captured(read) => Cow::Borrowed(read.records()),
     };
 
-    if records.is_empty() {
+    if records.is_empty() && id.is_none() {
         println!("No artifacts found.");
         return Ok(());
     }
 
     let to_check: Vec<_> = if let Some(target_id) = id {
-        let upper = target_id.to_uppercase();
+        let (canonical, _) = common::resolve_required_identity(&source, &workspace, target_id).await?;
         records
             .iter()
-            .filter(|r| r.id.to_uppercase() == upper)
+            .filter(|record| record.canonical_key == canonical)
             .collect()
     } else {
         records.iter().collect()
@@ -43,12 +43,10 @@ Fix: forgeplan list",
 
     for record in &to_check {
         let link_count = match &source {
-            common::ReadSource::Legacy(store) => store
-                .get_relations(&record.id)
-                .await
-                .unwrap_or_default()
+            common::ReadSource::Legacy(store) => store.get_relations(&_read_guard, &record.canonical_key)
+                .await?
                 .len(),
-            common::ReadSource::Captured(read) => read.get_relations(&record.id).len(),
+            common::ReadSource::Captured(read) => read.get_relations_by_key(&record.canonical_key).len(),
         };
         let result = depth::suggest_depth(record, link_count);
 

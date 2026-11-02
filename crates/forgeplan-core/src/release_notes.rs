@@ -39,7 +39,7 @@ use crate::git::validate_git_ref;
 /// building below runs once for both layouts instead of being written twice
 /// and left to disagree.
 enum Records<'a> {
-    Store(&'a LanceStore),
+    Store(&'a LanceStore, &'a dyn crate::workspace::lock::WorkspaceReadPermit),
     Read(&'a WorkspaceRead),
 }
 
@@ -48,7 +48,7 @@ impl Records<'_> {
     /// nothing in this source.
     async fn resolve_id(&self, candidate: &str) -> Result<Option<String>> {
         match self {
-            Self::Store(store) => store.resolve_id(candidate).await,
+            Self::Store(store, permit) => store.resolve_id(*permit, candidate).await,
             Self::Read(read) => Ok(read.resolve_id(candidate)),
         }
     }
@@ -56,7 +56,7 @@ impl Records<'_> {
     /// One record by canonical id, or `None`.
     async fn record(&self, id: &str) -> Result<Option<ArtifactRecord>> {
         match self {
-            Self::Store(store) => store.get_record(id).await,
+            Self::Store(store, permit) => store.get_record(*permit, id).await,
             Self::Read(read) => Ok(read.get_record(id).cloned()),
         }
     }
@@ -71,8 +71,8 @@ impl Records<'_> {
     /// only the captured side stops paying for the clone.
     async fn has_security_tag(&self, id: &str) -> Result<bool> {
         Ok(match self {
-            Self::Store(store) => store
-                .get_record(id)
+            Self::Store(store, permit) => store
+                .get_record(*permit, id)
                 .await?
                 .is_some_and(|r| r.tags.iter().any(|t| t.eq_ignore_ascii_case("security"))),
             Self::Read(read) => read
@@ -84,7 +84,7 @@ impl Records<'_> {
     /// Outgoing `(target, relation)` edges of one artifact.
     async fn outgoing(&self, id: &str) -> Result<Vec<(String, String)>> {
         match self {
-            Self::Store(store) => store.get_relations(id).await,
+            Self::Store(store, permit) => store.get_relations(*permit, id).await,
             Self::Read(read) => Ok(read.get_relations(id)),
         }
     }
@@ -92,7 +92,7 @@ impl Records<'_> {
     /// Incoming `(source, relation)` edges of one artifact.
     async fn incoming(&self, id: &str) -> Result<Vec<(String, String)>> {
         match self {
-            Self::Store(store) => store.get_incoming_relations(id).await,
+            Self::Store(store, permit) => store.get_incoming_relations(*permit, id).await,
             Self::Read(read) => Ok(read.get_incoming_relations(id)),
         }
     }
@@ -584,8 +584,8 @@ pub fn id_from_basename(basename: &str) -> Option<String> {
 
 /// Check whether `record` or any of its 1-hop neighbours (in either
 /// relation direction) carries tag `security`.
-pub async fn is_linked_to_security(store: &LanceStore, record: &ArtifactRecord) -> Result<bool> {
-    is_linked_to_security_in(&Records::Store(store), record).await
+pub async fn is_linked_to_security(store: &LanceStore, permit: &dyn crate::workspace::lock::WorkspaceReadPermit, record: &ArtifactRecord) -> Result<bool> {
+    is_linked_to_security_in(&Records::Store(store, permit), record).await
 }
 
 async fn is_linked_to_security_in(records: &Records<'_>, record: &ArtifactRecord) -> Result<bool> {
@@ -596,16 +596,16 @@ async fn is_linked_to_security_in(records: &Records<'_>, record: &ArtifactRecord
     {
         return Ok(true);
     }
-    let outgoing = records.outgoing(&record.id).await.unwrap_or_default();
+    let outgoing = records.outgoing(&record.id).await?;
     for (target, _rel) in &outgoing {
         // Tag-only probe: the neighbour's body is never read here.
-        if records.has_security_tag(target).await.unwrap_or(false) {
+        if records.has_security_tag(target).await? {
             return Ok(true);
         }
     }
-    let incoming = records.incoming(&record.id).await.unwrap_or_default();
+    let incoming = records.incoming(&record.id).await?;
     for (source, _rel) in &incoming {
-        if records.has_security_tag(source).await.unwrap_or(false) {
+        if records.has_security_tag(source).await? {
             return Ok(true);
         }
     }
@@ -617,9 +617,10 @@ async fn is_linked_to_security_in(records: &Records<'_>, record: &ArtifactRecord
 /// attachment in our methodology — CLAUDE.md "EvidencePack" section).
 pub async fn pick_closing_evid(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     record: &ArtifactRecord,
 ) -> Result<Option<String>> {
-    pick_closing_evid_in(&Records::Store(store), record).await
+    pick_closing_evid_in(&Records::Store(store, permit), record).await
 }
 
 async fn pick_closing_evid_in(
@@ -629,7 +630,7 @@ async fn pick_closing_evid_in(
     if record.kind == "evidence" {
         return Ok(None);
     }
-    let incoming = records.incoming(&record.id).await.unwrap_or_default();
+    let incoming = records.incoming(&record.id).await?;
     for (source_id, _rel) in incoming {
         if source_id.starts_with("EVID-") || source_id.to_lowercase().starts_with("evid-") {
             return Ok(Some(source_id));
@@ -643,12 +644,13 @@ async fn pick_closing_evid_in(
 /// records that no longer exist are silently dropped.
 pub async fn build_release_notes(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     touched: &Touched,
     since: &str,
     until: &str,
     draft: bool,
 ) -> Result<ReleaseNotes> {
-    build_release_notes_in(&Records::Store(store), touched, since, until, draft).await
+    build_release_notes_in(&Records::Store(store, permit), touched, since, until, draft).await
 }
 
 /// [`build_release_notes`] over one captured/pinned read view.
@@ -672,10 +674,7 @@ async fn build_release_notes_in(
         let Some(candidate_id) = id_from_basename(basename) else {
             continue;
         };
-        let canonical = match records.resolve_id(&candidate_id).await {
-            Ok(Some(c)) => c,
-            _ => continue,
-        };
+        let Some(canonical) = records.resolve_id(&candidate_id).await? else { continue };
         if !seen_ids.insert(canonical.clone()) {
             continue;
         }
@@ -716,6 +715,7 @@ async fn build_release_notes_in(
 /// callers choose markdown/text/json themselves.
 pub async fn generate(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     repo_root: &Path,
     since: Option<&str>,
     until: Option<&str>,
@@ -738,7 +738,7 @@ pub async fn generate(
 
     let touched = walk_artifact_changes(repo_root, &since_resolved, &until_resolved)?;
     let notes =
-        build_release_notes(store, &touched, &since_resolved, &until_resolved, draft).await?;
+        build_release_notes(store, permit, &touched, &since_resolved, &until_resolved, draft).await?;
     Ok(notes)
 }
 
@@ -1376,32 +1376,30 @@ mod tests {
     }
 
     async fn legacy_store_for(read: &WorkspaceRead) -> LanceStore {
-        let store = LanceStore::init(read.workspace()).await.unwrap();
+        let (store, guard) = { let ws = read.workspace().parent().unwrap().join("legacy-projection-fixture"); let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); let store = LanceStore::init_new(&ws, &guard).await.unwrap(); for name in crate::workspace::ARTIFACT_DIRS.iter().copied().chain(["state", "config.yaml"]) { let src = read.workspace().join(name); if !src.exists() { continue; } for entry in walkdir::WalkDir::new(&src).follow_links(false) { let entry = entry.unwrap(); let dest = ws.join(entry.path().strip_prefix(read.workspace()).unwrap()); if entry.file_type().is_dir() { std::fs::create_dir_all(&dest).unwrap(); } else { std::fs::create_dir_all(dest.parent().unwrap()).unwrap(); std::fs::copy(entry.path(), dest).unwrap(); } } } (store, guard) };
         // From `read.records()` (scores recomputed by `from_parts`), not
         // from `record_from_parsed` whose output is 0.0 for every record —
         // `classify`'s quality gate reads that score directly.
         for record in read.records() {
-            store
-                .create_artifact(&crate::db::store::NewArtifact {
-                    canonical_key: record.id.clone(),
-                    id: record.id.clone(),
-                    kind: record.kind.clone(),
-                    status: record.status.clone(),
-                    title: record.title.clone(),
-                    body: record.body.clone(),
-                    depth: record.depth.clone(),
-                    author: record.author.clone(),
-                    parent_epic: record.parent_epic.clone(),
-                    valid_until: record.valid_until.clone(),
-                    tags: record.tags.clone(),
-                })
+            store.create_artifact(&guard, &crate::db::store::NewArtifact {
+                canonical_key: record.id.clone(),
+                id: record.id.clone(),
+                kind: record.kind.clone(),
+                status: record.status.clone(),
+                title: record.title.clone(),
+                body: record.body.clone(),
+                depth: record.depth.clone(),
+                author: record.author.clone(),
+                parent_epic: record.parent_epic.clone(),
+                valid_until: record.valid_until.clone(),
+                tags: record.tags.clone(),
+            })
                 .await
                 .unwrap();
-            store.replace_record(record).await.unwrap();
+            store.replace_record(&guard, record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
-            store
-                .add_relation(&source, &target, &relation)
+            store.add_relation(&guard, &source, &target, &relation)
                 .await
                 .unwrap();
         }
@@ -1518,10 +1516,10 @@ mod tests {
     async fn captured_release_notes_match_the_legacy_projection_entry_for_entry() {
         let (_tmp, repo, ws) = release_repo();
         let read = open_read(&ws).await;
-        let store = legacy_store_for(&read).await;
+        let (store, guard) = { let store = legacy_store_for(&read).await; let guard = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path()).await.unwrap(); (store, guard) };
 
         for draft in [false, true] {
-            let legacy = generate(&store, &repo, Some("v0.1.0"), Some("HEAD"), draft)
+            let legacy = generate(&store, &guard, &repo, Some("v0.1.0"), Some("HEAD"), draft)
                 .await
                 .unwrap();
             let captured = generate_captured(&read, &repo, Some("v0.1.0"), Some("HEAD"), draft)

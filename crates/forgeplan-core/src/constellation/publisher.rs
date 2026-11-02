@@ -290,6 +290,8 @@ impl IndexPublisher {
         index_root: &Path,
         inner_store: Arc<dyn object_store::ObjectStore>,
     ) -> Result<Self, ConstellationError> {
+        #[cfg(not(unix))]
+        refuse_unpinned_non_unix_publisher()?;
         let location = IndexLocation::new(index_root);
         // Verify the canonical parent before anything else: the owner lock
         // lives there, and creating the root is bootstrap's job, after
@@ -419,6 +421,7 @@ impl IndexPublisher {
         //    rename `PublicationUncertain` rather than a plain error.
         storage::publish_current(index_root, descriptor, self.platform.as_ref())?;
         super::fault_barrier_if_selected("after_current_ack");
+        self.tracker.begin_stage(self.owner.epoch());
         Ok(())
     }
 
@@ -512,6 +515,7 @@ impl IndexPublisher {
         // descriptor's checksum and triple have been re-read below by the
         // caller. Nothing is left unproven at this point.
         super::fault_barrier_if_selected("after_current_ack");
+        self.tracker.begin_stage(self.owner.epoch());
 
         Ok(descriptor)
     }
@@ -708,6 +712,35 @@ pub async fn bootstrap_or_recover(
     workspace: &Path,
     capture_limits: super::capture::CaptureLimits,
 ) -> Result<BootstrapProgress, ConstellationError> {
+    bootstrap_or_recover_inner(publisher, workspace, capture_limits, None).await
+}
+
+/// Resume an existing published Constellation index for one pending repair.
+/// Never bootstraps a legacy or uninitialized index as a substitute.
+pub(crate) async fn bootstrap_or_recover_for_repair(
+    publisher: &IndexPublisher,
+    workspace: &Path,
+    capture_limits: super::capture::CaptureLimits,
+    admission: &crate::workspace::lock::RepairIndexAdmission<'_>,
+) -> Result<BootstrapProgress, ConstellationError> {
+    bootstrap_or_recover_inner(publisher, workspace, capture_limits, Some(admission)).await
+}
+
+async fn bootstrap_or_recover_inner(
+    publisher: &IndexPublisher,
+    workspace: &Path,
+    capture_limits: super::capture::CaptureLimits,
+    admission: Option<&crate::workspace::lock::RepairIndexAdmission<'_>>,
+) -> Result<BootstrapProgress, ConstellationError> {
+    #[cfg(not(unix))]
+    refuse_unpinned_non_unix_publisher()?;
+    if let Some(admission) = admission
+        && (!std::ptr::eq(admission.owner(), publisher) || admission.workspace() != workspace)
+    {
+        return Err(ConstellationError::IndexProtocolMismatch {
+            detail: "repair admission is bound to another owner or workspace".to_string(),
+        });
+    }
     let index_root = publisher.index_root().to_path_buf();
     let identity = identity_for(&index_root);
 
@@ -743,9 +776,17 @@ pub async fn bootstrap_or_recover(
                 ),
             });
         }
+        let workspace_guard = match admission {
+            Some(admission) => crate::workspace::lock::acquire_repair_workspace_lock(admission).await,
+            None => crate::workspace::acquire_workspace_lock(workspace).await,
+        }.map_err(|error| ConstellationError::Io {
+            detail: format!("cannot take the workspace lock to finish legacy archival: {error}"),
+        })?;
+        backup_legacy_tables(&index_root, || publisher.platform.sync_dir(&index_root))?;
         let mut marker =
             ProtocolMarker::initializing(identity.index_epoch(), identity.checkout_id(), 1);
         publisher.mark_active(&mut marker)?;
+        drop(workspace_guard);
         return Ok(BootstrapProgress::FinishedActivation {
             generation_id: generation_id.clone(),
         });
@@ -763,6 +804,11 @@ pub async fn bootstrap_or_recover(
             ),
         });
     }
+    if admission.is_some() {
+        return Err(ConstellationError::IndexGenerationUnavailable {
+            detail: "identity recovery requires an existing published Constellation index; legacy and uninitialized indexes remain pending".to_string(),
+        });
+    }
 
     // Serialize the ownership handoff with canonical writers. A mutator that
     // waited for this guard must observe the initializing marker before it
@@ -772,42 +818,24 @@ pub async fn bootstrap_or_recover(
         .map_err(|error| ConstellationError::Io {
             detail: format!("cannot take the workspace lock for migration: {error}"),
         })?;
-    // Legacy first, so there is never a moment with two live paths.
-    backup_legacy_tables(&index_root)?;
-
-    // The marker is written BEFORE the tables exist.
+    // Validate the legacy plane before changing ownership. Announce durable
+    // Constellation ownership before moving even the first legacy path, so a
+    // crash cannot turn a partially archived v5 index into a v4 fallback.
+    validate_legacy_archive(&index_root)?;
     let mut marker =
         publisher.announce_bootstrap(identity.checkout_id(), first_index_epoch()?, 1)?;
+    backup_legacy_tables(&index_root, || publisher.platform.sync_dir(&index_root))?;
     drop(workspace_guard);
 
-    // Create, or adopt what a previous attempt left behind.
-    let (tables, created) = match super::lance_tables::create_active_tables(
+    // CURRENT is absent and the physical owner is held. An interrupted
+    // bootstrap may have created any prefix of the three datasets.
+    let (tables, created) = super::lance_tables::resume_bootstrap_tables(
         &index_root,
         &marker,
         std::sync::Arc::clone(publisher.tracking_store()),
         workspace,
     )
-    .await
-    {
-        Ok(tables) => (tables, true),
-        Err(ConstellationError::TableAlreadyExists { .. }) => {
-            // The restart transition, not a failure: `create_empty` always
-            // errors on an existing dataset (`table.rs:1596-1600`), so this is
-            // what every second bootstrap sees. The existing tables are
-            // adopted through the *same* wrapper, so the stage keeps one
-            // tracker, and the baseline is rebuilt from a full capture rather
-            // than resumed from whatever the interrupted attempt left.
-            let tables = super::lance_tables::open_active_tables(
-                &index_root,
-                &marker,
-                std::sync::Arc::clone(publisher.tracking_store()),
-                workspace,
-            )
-            .await?;
-            (tables, false)
-        }
-        Err(e) => return Err(e),
-    };
+    .await?;
 
     // A complete capture, under the workspace lock, released before any write.
     //
@@ -818,50 +846,69 @@ pub async fn bootstrap_or_recover(
     // what `incarnation = 1` says.
     let captured = capture_under_workspace_lock(workspace, capture_limits, None).await?;
 
-    // Write the rows the manifest is about to claim. The generation must
-    // never name rows that do not exist — publishing a manifest over an
-    // unwritten table is exactly the silent-empty index this protocol exists
-    // to prevent. On a restart the adopted tables may hold a torn prefix;
-    // `full_source_batch` attaches the source-delete so the first generation
-    // also reclaims whatever the interrupted attempt left behind.
-    //
-    // There is **no baseline to preserve here**, and the empty maps say so
-    // rather than leaving it to a default: this branch runs only when no
-    // generation has ever been published (`FinishActivation` returned above),
-    // so there is no published head whose semantic columns could be spliced.
-    // An adopted table holds an interrupted attempt's torn prefix, which was
-    // never a published state and is rebuilt wholesale below.
-    let preserved_artifacts = BTreeMap::new();
-    let preserved_sections = BTreeMap::new();
-    if captured.is_complete() && !captured.artifacts.is_empty() {
-        let artifacts = artifacts_batch(
-            &captured.artifacts,
-            captured.index_epoch,
-            &captured.checkout_id,
-            &preserved_artifacts,
-        )?;
-        tables.merge_into_artifacts(artifacts, true).await?;
-        let relations = relations_batch(&captured.artifacts)?;
-        if relations.num_rows() > 0 {
-            tables.merge_into_relations(relations, true).await?;
-        }
-        // Sections get the same source-delete clause: a captured artifact
-        // always yields at least one section, so a non-empty capture has a
-        // non-empty batch, and the clause reclaims rows a torn earlier
-        // attempt left behind exactly as it does for artifacts.
-        let sections = sections_batch(&captured, &preserved_sections)?;
-        if sections.num_rows() > 0 {
-            tables.merge_into_sections(sections, true).await?;
-        }
+    // Reject incomplete captures before replacing any previously staged rows.
+    let generation_id = generation_id_for(&captured.evaluated_at);
+    first_generation(&captured, &generation_id, tables.head_versions().await?)?;
+    let artifacts = artifacts_batch(
+        &captured.artifacts,
+        captured.index_epoch,
+        &captured.checkout_id,
+        &BTreeMap::new(),
+    )?;
+    let relations = relations_batch(&captured.artifacts)?;
+    let sections = sections_batch(&captured, &BTreeMap::new())?;
+
+    // An empty merge is explicitly rejected by execute_merge, so clear that
+    // unpublished dataset instead. All three replacements run under the same
+    // owner and workspace barriers as normal staging.
+    let guard = crate::workspace::acquire_workspace_lock(workspace)
+        .await
+        .map_err(|error| ConstellationError::Io {
+            detail: format!("cannot take the workspace lock for bootstrap staging: {error}"),
+        })?;
+    if artifacts.num_rows() == 0 {
+        tables.clear_empty_bootstrap_dataset("artifacts").await?;
+    } else {
+        tables.merge_into_artifacts(Arc::clone(&artifacts), true).await?;
     }
+    if relations.num_rows() == 0 {
+        tables.clear_empty_bootstrap_dataset("relations").await?;
+    } else {
+        tables.merge_into_relations(relations, true).await?;
+    }
+    if sections.num_rows() == 0 {
+        tables.clear_empty_bootstrap_dataset("sections").await?;
+    } else {
+        tables.merge_into_sections(Arc::clone(&sections), true).await?;
+    }
+    drop(guard);
 
     // Versions are read AFTER the writes, so the manifest names the versions
     // a pinned reader will actually open.
     let versions = tables.head_versions().await?;
-    // Sanitised through the same rule as maintenance generations: the raw
-    // RFC3339 stamp carries `:` — illegal on NTFS — and this id becomes a
-    // filename verbatim.
-    let generation_id = generation_id_for(&captured.evaluated_at);
+    let expected = captured.entries.iter()
+        .map(|entry| (entry.canonical_key.clone(), entry.source_digest.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut section_digests = BTreeMap::new();
+    for section in &captured.sections {
+        let digest = expected.get(&section.parent_key).ok_or_else(|| ConstellationError::Io {
+            detail: format!("captured section {} has no parent entry", section.canonical_key),
+        })?;
+        section_digests.insert(section.canonical_key.clone(), digest.clone());
+    }
+    let section_expectation = SectionsExpectation {
+        version: versions.sections,
+        digests: section_digests,
+    };
+    let expected_edges = captured.artifacts.iter().map(|artifact| artifact.outgoing.len()).sum();
+    verify_staged(
+        &index_root, &marker, versions.artifacts, &expected, versions.relations,
+        expected_edges, &captured, &section_expectation,
+    ).await.map_err(|error| ConstellationError::Io {
+        detail: format!("bootstrap post-commit verification failed: {error}"),
+    })?;
+    verify_bootstrap_payload(&index_root, &marker, "artifacts", versions.artifacts, &artifacts).await?;
+    verify_bootstrap_payload(&index_root, &marker, "sections", versions.sections, &sections).await?;
 
     // `first_generation` refuses an incomplete capture through
     // `GenerationManifest::validate_for_publication`, so completeness is not
@@ -875,7 +922,7 @@ pub async fn bootstrap_or_recover(
     // `None`: a first generation claims no embedding space. Nothing can be
     // embedded before a generation is published — a drain writes onto rows —
     // so a profile here would be a claim no row backs.
-    publisher.publish(&manifest, None)?;
+    publish_verified_bootstrap(publisher, workspace, capture_limits, &captured, &manifest).await?;
     drop(tables);
     publisher.mark_active(&mut marker)?;
 
@@ -890,31 +937,283 @@ pub async fn bootstrap_or_recover(
     })
 }
 
-/// Rename the legacy tables aside. They are never deleted, never reopened as
-/// writers, and their vectors are never migrated: a vector without verified
-/// input/profile bindings is not current by definition.
-fn backup_legacy_tables(index_root: &Path) -> Result<(), ConstellationError> {
-    for legacy in crate::constellation::manifest::LEGACY_TABLES {
-        let source = index_root.join(format!("{legacy}.lance"));
-        if !source.exists() {
-            continue;
-        }
-        let destination = index_root.join(format!("{}.lance", legacy_backup_name(legacy)));
-        if destination.exists() {
-            // Already backed up. Overwriting would destroy the previous
-            // backup, so the source is left where it is and the marker — not
-            // the rename — records that the migration already happened.
-            continue;
-        }
-        std::fs::rename(&source, &destination).map_err(|e| ConstellationError::Io {
-            detail: format!(
-                "cannot back up the legacy {} table to {}: {e}",
-                source.display(),
-                destination.display()
-            ),
+/// Recheck the canonical source while holding the same guard through CURRENT.
+async fn publish_verified_bootstrap(
+    publisher: &IndexPublisher,
+    workspace: &Path,
+    limits: super::capture::CaptureLimits,
+    staged: &CapturedSourceView,
+    manifest: &GenerationManifest,
+) -> Result<(), ConstellationError> {
+    let guard = crate::workspace::acquire_workspace_lock(workspace)
+        .await
+        .map_err(|error| ConstellationError::Io {
+            detail: format!("cannot take the workspace lock for bootstrap publication: {error}"),
         })?;
+    let current = capture_while_locked(workspace, limits, None).await?;
+    if !current.is_complete() || current.checkout_id != staged.checkout_id {
+        return Err(ConstellationError::SourceBusy { attempts: 1, elapsed_ms: 0 });
+    }
+    candidate_is_current(
+        None, None, current.index_epoch, staged.index_epoch,
+        &current.source_set_digest, &staged.source_set_digest,
+        &current.config_digest, &staged.config_digest,
+    )?;
+    publisher.publish(manifest, None)?;
+    drop(guard);
+    Ok(())
+}
+
+/// Compare every column of an unpublished bootstrap batch against its pinned
+/// reader. This is separate from normal reconciliation, where semantic columns
+/// can legitimately be preserved from an earlier published generation.
+async fn verify_bootstrap_payload(
+    index_root: &Path,
+    marker: &ProtocolMarker,
+    role: &str,
+    version: u64,
+    expected: &arrow_array::RecordBatch,
+) -> Result<(), ConstellationError> {
+    verify_pinned_payload(index_root, marker, role, version, expected, true).await
+}
+
+async fn verify_pinned_payload(
+    index_root: &Path,
+    marker: &ProtocolMarker,
+    role: &str,
+    version: u64,
+    expected: &arrow_array::RecordBatch,
+    strict_bootstrap: bool,
+) -> Result<(), ConstellationError> {
+    let reader = super::lance_tables::open_table_at_version(index_root, marker, role, version).await?;
+    if reader.version().await? != version {
+        return Err(ConstellationError::Io {
+            detail: format!("{role} payload reader returned a different version"),
+        });
+    }
+    let schema = reader.schema().await?;
+    let batches = reader.query_batches().await?;
+    verify_payload_batches(role, expected, &schema, &batches, strict_bootstrap, true)
+}
+
+fn verify_payload_batches(
+    role: &str,
+    expected: &arrow_array::RecordBatch,
+    schema: &arrow_schema::Schema,
+    batches: &[arrow_array::RecordBatch],
+    strict_bootstrap: bool,
+    compare_source_diagnostics: bool,
+) -> Result<(), ConstellationError> {
+    use arrow_array::{Array, StringArray};
+
+    let error = |detail: String| ConstellationError::Io {
+        detail: format!("{role} payload verification failed: {detail}"),
+    };
+    let keys = expected.column_by_name("canonical_key")
+        .and_then(|column| column.as_any().downcast_ref::<StringArray>())
+        .ok_or_else(|| error("expected canonical_key is missing or not UTF-8".into()))?;
+    let mut expected_rows = BTreeMap::new();
+    for row in 0..expected.num_rows() {
+        if keys.is_null(row) || expected_rows.insert(keys.value(row), row).is_some() {
+            return Err(error("expected canonical keys are null or duplicated".into()));
+        }
+    }
+    let expected_schema = expected.schema();
+    if schema.fields().len() != expected_schema.fields().len()
+        || schema.fields().iter().zip(expected_schema.fields()).any(|(actual, wanted)| {
+            actual.name() != wanted.name() || actual.data_type() != wanted.data_type()
+        })
+    {
+        return Err(error("pinned schema differs from the expected schema".into()));
+    }
+    let mut seen = BTreeSet::new();
+    for batch in batches {
+        let found_keys = batch.column_by_name("canonical_key")
+            .and_then(|column| column.as_any().downcast_ref::<StringArray>())
+            .ok_or_else(|| error("pinned canonical_key is missing or not UTF-8".into()))?;
+        for row in 0..batch.num_rows() {
+            if found_keys.is_null(row) {
+                return Err(error("pinned canonical_key is null".into()));
+            }
+            let key = found_keys.value(row);
+            let wanted_row = *expected_rows.get(key)
+                .ok_or_else(|| error(format!("unexpected row {key}")))?;
+            if !seen.insert(key.to_owned()) {
+                return Err(error(format!("duplicate row {key}")));
+            }
+            for (index, field) in expected.schema().fields().iter().enumerate() {
+                // Reconciliation may preserve these non-source values from
+                // the published baseline. Bootstrap verifies even these.
+                if !strict_bootstrap && matches!(
+                    field.name().as_str(),
+                    "embedding" | "profile_id" | "semantic_state" | "retry_after"
+                        | "body_hash" | "r_eff_score" | "tags"
+                ) {
+                    continue;
+                }
+                // This column is also overwritten by model failure and may
+                // survive a later admission. Only a merge that rewrote the
+                // source row can assert the parser-derived value.
+                if !strict_bootstrap && !compare_source_diagnostics
+                    && field.name() == "diagnostics"
+                {
+                    continue;
+                }
+                let found = batch.column_by_name(field.name())
+                    .ok_or_else(|| error(format!("missing column {}", field.name())))?;
+                let wanted = expected.column(index);
+                if found.data_type() != wanted.data_type()
+                    || found.to_data().slice(row, 1) != wanted.to_data().slice(wanted_row, 1)
+                {
+                    return Err(error(format!("row {key} differs in column {}", field.name())));
+                }
+            }
+        }
+    }
+    if seen.len() != expected_rows.len() {
+        return Err(error("one or more expected rows are absent".into()));
     }
     Ok(())
+}
+
+/// The legacy derived plane. The v5 marker is deliberately last.
+fn legacy_archive_paths(index_root: &Path) -> Vec<(PathBuf, PathBuf, bool)> {
+    let tables = crate::constellation::manifest::LEGACY_TABLES.iter().copied().chain([
+        "evidence",
+        crate::db::migrate::IDENTITY_V5_ARTIFACTS_TABLE,
+        crate::db::migrate::IDENTITY_V5_RELATIONS_TABLE,
+        crate::db::migrate::IDENTITY_V5_EVIDENCE_TABLE,
+    ]);
+    let mut paths: Vec<_> = tables.map(|name| (
+        index_root.join(format!("{name}.lance")),
+        index_root.join(format!("{}.lance", legacy_backup_name(name))),
+        true,
+    )).collect();
+    paths.push((
+        index_root.join(crate::db::migrate::IDENTITY_V5_MARKER_FILE),
+        index_root.join("IDENTITY_V5.json.legacy-backup"),
+        false,
+    ));
+    paths
+}
+
+fn legacy_path_exists(path: &Path, directory: bool) -> Result<bool, ConstellationError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if !meta.file_type().is_symlink()
+            && if directory { meta.is_dir() } else { meta.is_file() } => Ok(true),
+        Ok(_) => Err(ConstellationError::IndexProtocolMismatch {
+            detail: format!("unsafe legacy archive path {}", path.display()),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(ConstellationError::Io {
+            detail: format!("cannot inspect {}: {error}", path.display()),
+        }),
+    }
+}
+
+fn validate_legacy_archive(index_root: &Path) -> Result<(), ConstellationError> {
+    let paths = legacy_archive_paths(index_root);
+    for (source, destination, directory) in &paths {
+        let live = legacy_path_exists(source, *directory)?;
+        let archived = legacy_path_exists(destination, *directory)?;
+        if live && archived {
+            return Err(ConstellationError::IndexProtocolMismatch {
+                detail: format!("both legacy source {} and backup {} exist", source.display(), destination.display()),
+            });
+        }
+    }
+    let (marker, backup, _) = paths.last().expect("the marker is always present in the path list");
+    let marker_path = if legacy_path_exists(marker, false)? {
+        Some(marker)
+    } else if legacy_path_exists(backup, false)? {
+        Some(backup)
+    } else {
+        None
+    };
+    if let Some(marker_path) = marker_path {
+        let bytes = std::fs::read(marker_path).map_err(|error| ConstellationError::Io {
+            detail: format!("cannot read {}: {error}", marker_path.display()),
+        })?;
+        let marker: crate::db::migrate::IdentityV5Marker = serde_json::from_slice(&bytes)
+            .map_err(|error| ConstellationError::IndexProtocolMismatch {
+                detail: format!("invalid identity v5 marker {}: {error}", marker_path.display()),
+            })?;
+        if marker.version != crate::db::migrate::IDENTITY_V5_VERSION || !marker.completed
+            || marker.artifacts_table != crate::db::migrate::IDENTITY_V5_ARTIFACTS_TABLE
+            || marker.relations_table != crate::db::migrate::IDENTITY_V5_RELATIONS_TABLE
+            || marker.evidence_table != crate::db::migrate::IDENTITY_V5_EVIDENCE_TABLE
+            || marker.source_digest.len() != 64
+            || !marker.source_digest.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(ConstellationError::IndexProtocolMismatch {
+                detail: format!("invalid identity v5 marker {}", marker_path.display()),
+            });
+        }
+        for (source, destination, _) in &paths[paths.len() - 4..paths.len() - 1] {
+            if !legacy_path_exists(source, true)? && !legacy_path_exists(destination, true)? {
+                return Err(ConstellationError::IndexProtocolMismatch {
+                    detail: format!("identity v5 marker names missing table {}", source.display()),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Archive without replacing a previous backup. Each rename is durable
+/// before the next, and the identity marker moves only after its three tables.
+fn backup_legacy_tables(
+    index_root: &Path,
+    mut sync: impl FnMut() -> Result<(), ConstellationError>,
+) -> Result<(), ConstellationError> {
+    #[cfg(not(unix))]
+    refuse_unpinned_non_unix_publisher()?;
+    validate_legacy_archive(index_root)?;
+    for (source, destination, directory) in legacy_archive_paths(index_root) {
+        if !legacy_path_exists(&source, directory)? {
+            continue;
+        }
+        rename_legacy_no_replace(&source, &destination).map_err(|error| ConstellationError::Io {
+            detail: format!("cannot archive {} as {}: {error}", source.display(), destination.display()),
+        })?;
+        sync()?;
+    }
+    // A previous rename may have succeeded before its directory sync failed.
+    sync()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn refuse_unpinned_non_unix_publisher() -> Result<(), ConstellationError> {
+    Err(ConstellationError::UnsupportedIndexFilesystem {
+        detail: "index publication is unavailable on non-Unix platforms until all namespace writes use pinned, no-reparse handles with durable barriers".to_string(),
+    })
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn rename_legacy_no_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let source = std::ffi::CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in source path"))?;
+    let destination = std::ffi::CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in destination path"))?;
+    // Both pointers are valid NUL-terminated paths for the duration of the
+    // syscall. The exclusive flag makes an occupied destination an error.
+    #[cfg(target_os = "macos")]
+    let result = unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
+        libc::renameat2(libc::AT_FDCWD, source.as_ptr(), libc::AT_FDCWD, destination.as_ptr(), libc::RENAME_NOREPLACE)
+    };
+    if result == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn rename_legacy_no_replace(_source: &Path, _destination: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic no-replace legacy archive is unavailable on this platform",
+    ))
 }
 
 /// Capture under the workspace lock, then **release** it before any write.
@@ -949,6 +1248,28 @@ pub(crate) async fn capture_under_workspace_lock(
         .await
         .map_err(|e| ConstellationError::Io {
             detail: format!("cannot take the workspace lock for capture: {e}"),
+        })?;
+    let captured = capture_while_locked(workspace, limits, previous).await?;
+    drop(guard);
+    Ok(captured)
+}
+
+/// Capture under the narrow, owner-bound lock for one pending repair.
+pub(crate) async fn capture_under_repair_lock(
+    workspace: &Path,
+    limits: super::capture::CaptureLimits,
+    previous: Option<std::sync::Arc<super::manifest::GenerationManifest>>,
+    admission: &crate::workspace::lock::RepairIndexAdmission<'_>,
+) -> Result<std::sync::Arc<super::capture::CapturedSourceView>, ConstellationError> {
+    if workspace != admission.workspace() {
+        return Err(ConstellationError::IndexProtocolMismatch {
+            detail: "repair capture workspace differs from its admission".to_string(),
+        });
+    }
+    let guard = crate::workspace::lock::acquire_repair_workspace_lock(admission)
+        .await
+        .map_err(|error| ConstellationError::Io {
+            detail: format!("cannot take the identity recovery workspace lock: {error}"),
         })?;
     let captured = capture_while_locked(workspace, limits, previous).await?;
     drop(guard);
@@ -2179,6 +2500,8 @@ pub enum VerificationError {
     },
     /// A row exists that the capture did not describe.
     UnexpectedRow { canonical_key: String },
+    /// More than one pinned row claims the same canonical key.
+    DuplicateRow { canonical_key: String },
     /// The reader is not on the version the commits reported.
     VersionMismatch { expected: u64, found: u64 },
     /// The relations reader is not on the version the commits reported.
@@ -2221,6 +2544,10 @@ impl std::fmt::Display for VerificationError {
             Self::UnexpectedRow { canonical_key } => write!(
                 f,
                 "unexpected_row: `{canonical_key}` is present but the capture does not describe it"
+            ),
+            Self::DuplicateRow { canonical_key } => write!(
+                f,
+                "duplicate_row: `{canonical_key}` occurs more than once at the pinned version"
             ),
             Self::VersionMismatch { expected, found } => write!(
                 f,
@@ -2305,12 +2632,10 @@ pub struct SectionsExpectation {
 ///
 /// # Boundedness
 ///
-/// Accumulation is `O(expected keys)`, not `O(corpus)`. The expected map is
-/// borrowed and never cloned; found keys are counted, not collected; and the
-/// first unexpected row returns immediately rather than being accumulated.
-/// That matters because the whole design rests on not copying the corpus per
-/// job — a verifier that materialised every row would reintroduce exactly the
-/// cost the capture avoided.
+/// The reader batches and the source-derived expected batches are retained for
+/// the comparison. Keys are indexed once; unexpected or mismatched rows fail
+/// immediately. Semantic columns may be preserved across reconciliation and
+/// are not derived from the capture.
 ///
 /// # Errors
 ///
@@ -2324,7 +2649,55 @@ pub async fn verify_staged(
     expected: &std::collections::BTreeMap<String, String>,
     expected_relations_version: u64,
     expected_edges: usize,
+    expected_capture: &super::capture::CapturedSourceView,
     expected_sections: &SectionsExpectation,
+) -> Result<VerificationReport, VerifyFailure> {
+    verify_staged_impl(index_root, marker, expected_version, expected, expected_relations_version,
+        expected_edges, Some(expected_capture), expected_sections, true).await
+}
+
+/// Verify a published or untouched row whose diagnostics may contain an
+/// operational embedding failure. Identity and all other source fields remain
+/// checked; this mode never relaxes bootstrap's full payload comparison.
+pub(super) async fn verify_staged_with_operational_diagnostics(
+    index_root: &std::path::Path,
+    marker: &crate::constellation::manifest::ProtocolMarker,
+    expected_version: u64,
+    expected: &std::collections::BTreeMap<String, String>,
+    expected_relations_version: u64,
+    expected_edges: usize,
+    expected_capture: &super::capture::CapturedSourceView,
+    expected_sections: &SectionsExpectation,
+) -> Result<VerificationReport, VerifyFailure> {
+    verify_staged_impl(index_root, marker, expected_version, expected, expected_relations_version,
+        expected_edges, Some(expected_capture), expected_sections, false).await
+}
+
+/// Check only the physical pins of a historical generation whose original
+/// edge oracle is unavailable. This never certifies a staged publication.
+pub(super) async fn verify_historical_pins(
+    index_root: &std::path::Path,
+    marker: &crate::constellation::manifest::ProtocolMarker,
+    expected_version: u64,
+    expected: &std::collections::BTreeMap<String, String>,
+    expected_relations_version: u64,
+    expected_edges: usize,
+    expected_sections: &SectionsExpectation,
+) -> Result<(), VerifyFailure> {
+    verify_staged_impl(index_root, marker, expected_version, expected, expected_relations_version,
+        expected_edges, None, expected_sections, false).await.map(|_| ())
+}
+
+async fn verify_staged_impl(
+    index_root: &std::path::Path,
+    marker: &crate::constellation::manifest::ProtocolMarker,
+    expected_version: u64,
+    expected: &std::collections::BTreeMap<String, String>,
+    expected_relations_version: u64,
+    expected_edges: usize,
+    expected_capture: Option<&super::capture::CapturedSourceView>,
+    expected_sections: &SectionsExpectation,
+    compare_source_diagnostics: bool,
 ) -> Result<VerificationReport, VerifyFailure> {
     use std::collections::BTreeSet;
 
@@ -2422,6 +2795,11 @@ pub async fn verify_staged(
             })?;
 
         for row in 0..batch.num_rows() {
+            if keys.is_null(row) || digests.is_null(row) {
+                return Err(VerifyFailure::Invariant(VerificationError::SchemaMismatch {
+                    detail: "pinned artifact has a null key or source digest".to_string(),
+                }));
+            }
             let key = keys.value(row).to_string();
             let Some(wanted_digest) = expected.get(&key) else {
                 // Returned immediately: accumulating unexpected keys would
@@ -2444,8 +2822,10 @@ pub async fn verify_staged(
             // Borrowed from `expected` rather than cloned: `seen` holds `&str`
             // so verification stays `O(expected keys)` with no allocation per
             // row.
-            if let Some((borrowed, _)) = expected.get_key_value(&key) {
-                seen.insert(borrowed.as_str());
+            if let Some((borrowed, _)) = expected.get_key_value(&key)
+                && !seen.insert(borrowed.as_str())
+            {
+                return Err(VerifyFailure::Invariant(VerificationError::DuplicateRow { canonical_key: key }));
             }
         }
     }
@@ -2460,11 +2840,22 @@ pub async fn verify_staged(
             }));
         }
     }
+    if let Some(captured) = expected_capture {
+        let batch = artifacts_batch(
+            &captured.artifacts, captured.index_epoch, &captured.checkout_id, &BTreeMap::new(),
+        ).map_err(|error| VerifyFailure::Invariant(VerificationError::Query {
+            detail: format!("cannot build expected artifact payload: {error}"),
+        }))?;
+        verify_payload_batches("artifacts", &batch, &reader_schema, &batches, false, compare_source_diagnostics)
+            .map_err(|error| VerifyFailure::Invariant(VerificationError::Query {
+                detail: error.to_string(),
+            }))?;
+    }
 
-    // The relations half. Same discipline: a separately opened reader pinned
-    // to the committed version, never `checkout_latest`. The check is the
-    // edge count, not per-edge digests — the artifact digest comparison is
-    // the integrity boundary; this proves the edge set is the right size.
+    // The reader is pinned to the committed version. When the capture is
+    // available, compare every edge binding, not just its cardinality.
+    // A historical generation whose source has moved has no captured edge
+    // oracle; callers may only check its pinned count in that case.
     let relations_reader = super::lance_tables::open_table_at_version(
         index_root,
         marker,
@@ -2501,6 +2892,12 @@ pub async fn verify_staged(
                 found: verified_edges,
             },
         ));
+    }
+    if let Some(captured) = expected_capture {
+        super::facade::verify_captured_edge_batches(&relation_batches, captured)
+            .map_err(|error| VerifyFailure::Invariant(VerificationError::Query {
+                detail: format!("pinned relation membership differs from capture: {error}"),
+            }))?;
     }
 
     // The sections half — **always** run. It used to be skipped when the
@@ -2563,6 +2960,11 @@ pub async fn verify_staged(
                     })
                 })?;
             for row in 0..batch.num_rows() {
+                if keys.is_null(row) || digests.is_null(row) {
+                    return Err(VerifyFailure::Invariant(VerificationError::SchemaMismatch {
+                        detail: "pinned section has a null key or source digest".to_string(),
+                    }));
+                }
                 let key = keys.value(row).to_string();
                 let Some(wanted) = expectation.digests.get(&key) else {
                     return Err(VerifyFailure::Invariant(VerificationError::UnexpectedRow {
@@ -2599,6 +3001,20 @@ pub async fn verify_staged(
                     canonical_key: key.clone(),
                 }));
             }
+        }
+        if let Some(captured) = expected_capture {
+            let batch = sections_batch(captured, &BTreeMap::new())
+                .map_err(|error| VerifyFailure::Invariant(VerificationError::Query {
+                    detail: format!("cannot build expected section payload: {error}"),
+                }))?;
+            let schema = sections_reader.schema().await
+                .map_err(|error| VerifyFailure::Invariant(VerificationError::Query {
+                    detail: format!("cannot read section schema: {error}"),
+                }))?;
+            verify_payload_batches("sections", &batch, &schema, &section_batches, false, compare_source_diagnostics)
+                .map_err(|error| VerifyFailure::Invariant(VerificationError::Query {
+                    detail: error.to_string(),
+                }))?;
         }
     }
 
@@ -2969,6 +3385,16 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
+    #[cfg(not(unix))]
+    #[test]
+    fn non_unix_publisher_refuses_before_creating_owner_or_index() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("lance");
+        let store = std::sync::Arc::new(object_store::memory::InMemory::new());
+        assert!(IndexPublisher::acquire(&root, store).is_err());
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
     // -------------------------------------------------------------------
     // Bootstrap planning
     // -------------------------------------------------------------------
@@ -3100,6 +3526,9 @@ mod tests {
             source_entries: Vec::new(),
             section_bindings: Vec::new(),
             tombstones: Vec::new(),
+            identity_retirements: Default::default(),
+            conflict_inventory: Vec::new(),
+            semantic_blocked_paths: Vec::new(),
             pending_jobs: Default::default(),
             coverage: Coverage {
                 expected: 0,
@@ -3247,6 +3676,7 @@ mod tests {
             tokenizer: None,
             body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
+            conflict_artifacts: Vec::new(),
             sections: Vec::new(),
             coverage: Coverage {
                 expected: enumerated.len(),
@@ -3511,6 +3941,291 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    fn bootstrap_test_publisher(root: &Path) -> IndexPublisher {
+        IndexPublisher::acquire(root, Arc::new(object_store::memory::InMemory::new())).unwrap()
+    }
+
+    #[cfg(unix)]
+    fn replace_test_column(
+        batch: &arrow_array::RecordBatch,
+        name: &str,
+        value: arrow_array::ArrayRef,
+    ) -> arrow_array::RecordBatch {
+        let index = batch.schema().index_of(name).unwrap();
+        let mut columns = batch.columns().to_vec();
+        columns[index] = value;
+        arrow_array::RecordBatch::try_new(batch.schema(), columns).unwrap()
+    }
+
+    #[cfg(unix)]
+    async fn create_partial_dataset(
+        publisher: &IndexPublisher,
+        marker: &ProtocolMarker,
+        role: &str,
+    ) {
+        let uri = super::super::storage::table_uri_for_role(marker, role, publisher.index_root()).unwrap();
+        let wrapper: Arc<dyn lance_io::object_store::WrappingObjectStore> =
+            publisher.tracking_store().clone();
+        lancedb::table::NativeTable::create_empty(
+            &uri, role, Vec::new(), super::super::lance_tables::schema_for_role(role).unwrap(),
+            Some(wrapper), None, None, None, false,
+        ).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bootstrap_recovers_each_partial_dataset_and_each_sequential_prefix() {
+        for roles in [
+            &["artifacts"][..], &["relations"][..], &["sections"][..],
+            &["artifacts", "relations"][..], &["artifacts", "relations", "sections"][..],
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let workspace = tmp.path().canonicalize().unwrap();
+            for dir in ARTIFACT_DIRS {
+                std::fs::create_dir_all(workspace.join(dir)).unwrap();
+            }
+            std::fs::write(workspace.join("prds/PRD-001-auth.md"),
+                "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\n---\n\nBody.\n").unwrap();
+            let root = workspace.join("lance");
+            let publisher = bootstrap_test_publisher(&root);
+            let checkout = IndexIdentity::path_bound_checkout_id(&IndexLocation::new(&root));
+            let marker = publisher.announce_bootstrap(&checkout, 1, 1).unwrap();
+            for role in roles {
+                create_partial_dataset(&publisher, &marker, role).await;
+            }
+            drop(publisher);
+
+            let publisher = bootstrap_test_publisher(&root);
+            let progress = bootstrap_or_recover(&publisher, &workspace, CaptureLimits::default())
+                .await.unwrap();
+            assert!(matches!(progress, BootstrapProgress::RestartedExistingTables { .. }));
+            let descriptor = super::super::storage::read_current(&root).unwrap().unwrap();
+            let manifest = super::super::storage::read_manifest(&root, &descriptor).unwrap();
+            assert_eq!(manifest.source_entries.len(), 1);
+            for (role, version) in [
+                ("artifacts", manifest.table_versions.artifacts),
+                ("relations", manifest.table_versions.relations),
+                ("sections", manifest.table_versions.sections),
+            ] {
+                let reader = super::super::lance_tables::open_table_at_version(
+                    &root, &marker, role, version,
+                ).await.unwrap();
+                let count: usize = reader.query_batches().await.unwrap().iter()
+                    .map(|batch| batch.num_rows()).sum();
+                if role == "artifacts" { assert_eq!(count, 1); }
+                if role == "relations" { assert_eq!(count, 0); }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bootstrap_refuses_source_changed_after_pinned_verification() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(workspace.join(dir)).unwrap();
+        }
+        let path = workspace.join("prds/PRD-001-auth.md");
+        std::fs::write(&path, "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\n---\n\nOriginal.\n").unwrap();
+        let root = workspace.join("lance");
+        let publisher = bootstrap_test_publisher(&root);
+        let checkout = IndexIdentity::path_bound_checkout_id(&IndexLocation::new(&root));
+        let marker = publisher.announce_bootstrap(&checkout, 1, 1).unwrap();
+        let (tables, _) = super::super::lance_tables::resume_bootstrap_tables(
+            &root, &marker, publisher.tracking_store().clone(), &workspace,
+        ).await.unwrap();
+        let captured = capture_under_workspace_lock(&workspace, CaptureLimits::default(), None).await.unwrap();
+        let artifact_batch = artifacts_batch(
+            &captured.artifacts, captured.index_epoch, &captured.checkout_id, &BTreeMap::new(),
+        ).unwrap();
+        let section_batch = sections_batch(&captured, &BTreeMap::new()).unwrap();
+        tables.merge_into_artifacts(Arc::clone(&artifact_batch), true).await.unwrap();
+        if section_batch.num_rows() != 0 {
+            tables.merge_into_sections(Arc::clone(&section_batch), true).await.unwrap();
+        }
+        let versions = tables.head_versions().await.unwrap();
+        let expected: BTreeMap<_, _> = captured.entries.iter()
+            .map(|entry| (entry.canonical_key.clone(), entry.source_digest.clone())).collect();
+        let section_digests = captured.sections.iter()
+            .map(|section| (section.canonical_key.clone(), expected[&section.parent_key].clone()))
+            .collect();
+        verify_staged(
+            &root, &marker, versions.artifacts, &expected, versions.relations, 0, &captured,
+            &SectionsExpectation { version: versions.sections, digests: section_digests },
+        ).await.unwrap();
+        verify_bootstrap_payload(&root, &marker, "artifacts", versions.artifacts, &artifact_batch).await.unwrap();
+        verify_bootstrap_payload(&root, &marker, "sections", versions.sections, &section_batch).await.unwrap();
+        let manifest = first_generation(&captured, "gen-before-edit", versions).unwrap();
+
+        // This edit happens deterministically after verification and before the
+        // exact publication helper used by bootstrap acquires its final guard.
+        std::fs::write(&path, "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\n---\n\nChanged.\n").unwrap();
+        let result = publish_verified_bootstrap(
+            &publisher, &workspace, CaptureLimits::default(), &captured, &manifest,
+        ).await;
+        assert!(matches!(result, Err(ConstellationError::SourceBusy { .. })));
+        assert!(super::super::storage::read_current(&root).unwrap().is_none());
+        std::fs::write(&path, "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\n---\n\nOriginal.\n").unwrap();
+        std::fs::write(workspace.join("config.yaml"), "embedding:\n  chunk_size: 10\n").unwrap();
+        let result = publish_verified_bootstrap(
+            &publisher, &workspace, CaptureLimits::default(), &captured, &manifest,
+        ).await;
+        assert!(matches!(result, Err(ConstellationError::SourceBusy { .. })));
+        assert!(super::super::storage::read_current(&root).unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interrupted_bootstrap_replaces_stale_rows_when_replacements_are_empty() {
+        for empty_artifacts in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let workspace = tmp.path().canonicalize().unwrap();
+            for dir in ARTIFACT_DIRS {
+                std::fs::create_dir_all(workspace.join(dir)).unwrap();
+            }
+            let path = workspace.join("prds/PRD-001-auth.md");
+            std::fs::write(&path, "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\nlinks:\n  - target: ADR-002\n    relation: refines\n---\n\nBody.\n").unwrap();
+            let root = workspace.join("lance");
+            let publisher = bootstrap_test_publisher(&root);
+            let checkout = IndexIdentity::path_bound_checkout_id(&IndexLocation::new(&root));
+            let marker = publisher.announce_bootstrap(&checkout, 1, 1).unwrap();
+            let (tables, _) = super::super::lance_tables::resume_bootstrap_tables(
+                &root, &marker, publisher.tracking_store().clone(), &workspace,
+            ).await.unwrap();
+            let captured = capture_under_workspace_lock(&workspace, CaptureLimits::default(), None)
+                .await.unwrap();
+            let mut old = captured.as_ref().clone();
+            let mut section = captured_section();
+            section.parent_key = old.entries[0].canonical_key.clone();
+            section.canonical_key = format!("{}#stale", section.parent_key);
+            old.sections = vec![section];
+            tables.merge_into_artifacts(artifacts_batch(
+                &old.artifacts, old.index_epoch, &old.checkout_id, &BTreeMap::new(),
+            ).unwrap(), true).await.unwrap();
+            tables.merge_into_relations(relations_batch(&old.artifacts).unwrap(), true).await.unwrap();
+            tables.merge_into_sections(sections_batch(&old, &BTreeMap::new()).unwrap(), true).await.unwrap();
+            if !empty_artifacts {
+                let versions = tables.head_versions().await.unwrap();
+                let artifact_batch = artifacts_batch(
+                    &old.artifacts, old.index_epoch, &old.checkout_id, &BTreeMap::new(),
+                ).unwrap();
+                let section_batch = sections_batch(&old, &BTreeMap::new()).unwrap();
+                verify_bootstrap_payload(&root, &marker, "artifacts", versions.artifacts, &artifact_batch).await.unwrap();
+                verify_bootstrap_payload(&root, &marker, "sections", versions.sections, &section_batch).await.unwrap();
+                let expected: BTreeMap<_, _> = old.entries.iter()
+                    .map(|entry| (entry.canonical_key.clone(), entry.source_digest.clone())).collect();
+                let section_expectation = SectionsExpectation {
+                    version: versions.sections,
+                    digests: old.sections.iter().map(|section| (
+                        section.canonical_key.clone(), expected[&section.parent_key].clone()
+                    )).collect(),
+                };
+                verify_staged(&root, &marker, versions.artifacts, &expected, versions.relations,
+                    1, &old, &section_expectation).await.unwrap();
+                let mut changed = old.clone();
+                Arc::make_mut(&mut changed.artifacts[0]).body = Arc::from("altered body");
+                assert!(verify_staged(&root, &marker, versions.artifacts, &expected,
+                    versions.relations, 1, &changed, &section_expectation).await.is_err());
+                let mut changed = old.clone();
+                changed.sections[0].content = Arc::from("altered section");
+                assert!(verify_staged(&root, &marker, versions.artifacts, &expected,
+                    versions.relations, 1, &changed, &section_expectation).await.is_err());
+                let mut changed = old.clone();
+                Arc::make_mut(&mut changed.artifacts[0]).row_revision += 1;
+                assert!(verify_staged(&root, &marker, versions.artifacts, &expected,
+                    versions.relations, 1, &changed, &section_expectation).await.is_err());
+                assert!(verify_staged_with_operational_diagnostics(&root, &marker, versions.artifacts,
+                    &expected, versions.relations, 1, &changed, &section_expectation).await.is_err());
+                let wrong_diagnostics = replace_test_column(
+                    &artifact_batch, "diagnostics",
+                    Arc::new(arrow_array::StringArray::from(vec!["different parser diagnostics"])),
+                );
+                let reader = super::super::lance_tables::open_table_at_version(
+                    &root, &marker, "artifacts", versions.artifacts,
+                ).await.unwrap();
+                let schema = reader.schema().await.unwrap();
+                let batches = reader.query_batches().await.unwrap();
+                assert!(verify_payload_batches("artifacts", &wrong_diagnostics, &schema, &batches, false, true).is_err());
+                assert!(verify_payload_batches("artifacts", &wrong_diagnostics, &schema, &batches, false, false).is_ok());
+                assert!(verify_payload_batches("artifacts", &wrong_diagnostics, &schema, &batches, true, false).is_err());
+                for (name, value) in [
+                    ("title", Arc::new(arrow_array::StringArray::from(vec!["changed"])) as arrow_array::ArrayRef),
+                    ("body", Arc::new(arrow_array::LargeStringArray::from(vec!["changed"])) as arrow_array::ArrayRef),
+                ] {
+                    let altered = replace_test_column(&artifact_batch, name, value);
+                    assert!(verify_bootstrap_payload(&root, &marker, "artifacts", versions.artifacts, &altered).await.is_err(), "{name}");
+                }
+                for (name, value) in [
+                    ("content", Arc::new(arrow_array::LargeStringArray::from(vec!["changed"])) as arrow_array::ArrayRef),
+                    ("input_digest", Arc::new(arrow_array::StringArray::from(vec!["changed"])) as arrow_array::ArrayRef),
+                    ("byte_start", Arc::new(arrow_array::UInt64Array::from(vec![999])) as arrow_array::ArrayRef),
+                    ("byte_end", Arc::new(arrow_array::UInt64Array::from(vec![999])) as arrow_array::ArrayRef),
+                ] {
+                    let altered = replace_test_column(&section_batch, name, value);
+                    assert!(verify_bootstrap_payload(&root, &marker, "sections", versions.sections, &altered).await.is_err(), "{name}");
+                }
+            }
+            if empty_artifacts {
+                // Each independent pinned reader must reject its own stale
+                // row, including when the expected cardinality is zero.
+                let mut empty = old.clone();
+                empty.artifacts.clear();
+                empty.entries.clear();
+                empty.sections.clear();
+                for role in ["artifacts", "relations", "sections"] {
+                    let versions = tables.head_versions().await.unwrap();
+                    let result = verify_staged(
+                        &root, &marker, versions.artifacts, &BTreeMap::new(),
+                        versions.relations, 0, &empty,
+                        &SectionsExpectation { version: versions.sections, digests: BTreeMap::new() },
+                    ).await;
+                    assert!(result.is_err(), "stale {role} rows must fail pinned verification");
+                    assert!(super::super::storage::read_current(&root).unwrap().is_none());
+                    tables.clear_empty_bootstrap_dataset(role).await.unwrap();
+                }
+                let versions = tables.head_versions().await.unwrap();
+                verify_staged(
+                    &root, &marker, versions.artifacts, &BTreeMap::new(),
+                    versions.relations, 0, &empty,
+                    &SectionsExpectation { version: versions.sections, digests: BTreeMap::new() },
+                ).await.unwrap();
+                // Restore the interrupted attempt for the actual retry.
+                tables.merge_into_artifacts(artifacts_batch(
+                    &old.artifacts, old.index_epoch, &old.checkout_id, &BTreeMap::new(),
+                ).unwrap(), true).await.unwrap();
+                tables.merge_into_relations(relations_batch(&old.artifacts).unwrap(), true).await.unwrap();
+                tables.merge_into_sections(sections_batch(&old, &BTreeMap::new()).unwrap(), true).await.unwrap();
+            }
+            drop(tables);
+            drop(publisher);
+            if empty_artifacts {
+                std::fs::remove_file(&path).unwrap();
+            } else {
+                std::fs::write(&path, "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\n---\n\nBody.\n").unwrap();
+            }
+            let expected = capture_under_workspace_lock(&workspace, CaptureLimits::default(), None)
+                .await.unwrap();
+            let publisher = bootstrap_test_publisher(&root);
+            bootstrap_or_recover(&publisher, &workspace, CaptureLimits::default()).await.unwrap();
+            let descriptor = super::super::storage::read_current(&root).unwrap().unwrap();
+            let manifest = super::super::storage::read_manifest(&root, &descriptor).unwrap();
+            for (role, version, count) in [
+                ("artifacts", manifest.table_versions.artifacts, expected.artifacts.len()),
+                ("relations", manifest.table_versions.relations, 0),
+                ("sections", manifest.table_versions.sections, expected.sections.len()),
+            ] {
+                let reader = super::super::lance_tables::open_table_at_version(
+                    &root, &marker, role, version,
+                ).await.unwrap();
+                let actual: usize = reader.query_batches().await.unwrap().iter()
+                    .map(|batch| batch.num_rows()).sum();
+                assert_eq!(actual, count, "{role}, empty_artifacts={empty_artifacts}");
+            }
+        }
+    }
+
     #[test]
     fn the_first_published_epoch_is_one_not_zero() {
         assert_eq!(first_index_epoch().unwrap(), 1);
@@ -3525,6 +4240,95 @@ mod tests {
             !is_legacy_table_name(crate::constellation::manifest::TABLE_ARTIFACTS_V1),
             "an active table must never be swept up by the legacy backup"
         );
+    }
+
+    #[test]
+    fn legacy_v5_archive_resumes_after_every_rename_without_losing_ownership() {
+        for interrupted_after in 1..=legacy_archive_paths(Path::new("/unused")).len() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().canonicalize().unwrap().join("lance");
+            std::fs::create_dir_all(&root).unwrap();
+            let paths = legacy_archive_paths(&root);
+            for (source, _, directory) in &paths {
+                if *directory {
+                    std::fs::create_dir(source).unwrap();
+                    std::fs::write(source.join("payload"), source.to_string_lossy().as_bytes()).unwrap();
+                }
+            }
+            let marker = crate::db::migrate::IdentityV5Marker {
+                version: crate::db::migrate::IDENTITY_V5_VERSION,
+                artifacts_table: crate::db::migrate::IDENTITY_V5_ARTIFACTS_TABLE.to_string(),
+                relations_table: crate::db::migrate::IDENTITY_V5_RELATIONS_TABLE.to_string(),
+                evidence_table: crate::db::migrate::IDENTITY_V5_EVIDENCE_TABLE.to_string(),
+                source_digest: "a".repeat(64),
+                document_count: 1,
+                completed: true,
+            };
+            std::fs::write(root.join(crate::db::migrate::IDENTITY_V5_MARKER_FILE), serde_json::to_vec(&marker).unwrap()).unwrap();
+            let publisher = IndexPublisher::acquire(&root, Arc::new(object_store::memory::InMemory::new())).unwrap();
+            publisher.announce_bootstrap("local-x", 1, 1).unwrap();
+            let mut synced = 0;
+            let failed = backup_legacy_tables(&root, || {
+                synced += 1;
+                if synced == interrupted_after {
+                    return Err(ConstellationError::Io { detail: "injected sync failure".to_string() });
+                }
+                Ok(())
+            });
+            assert!(failed.is_err());
+            assert!(matches!(super::storage::read_marker(&root).unwrap(), IndexProtocolState::Initializing(_)));
+            let (marker_source, marker_backup, _) = paths.last().unwrap();
+            if marker_backup.exists() {
+                assert!(paths[..paths.len() - 1].iter().all(|(source, backup, _)| !source.exists() && backup.exists()));
+            } else {
+                assert!(marker_source.exists());
+            }
+            backup_legacy_tables(&root, || Ok(())).unwrap();
+            backup_legacy_tables(&root, || Ok(())).unwrap();
+            for (source, backup, _) in &paths {
+                assert!(!source.exists());
+                assert!(backup.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_archive_refuses_simultaneous_source_and_backup() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("lance");
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = legacy_archive_paths(&root);
+        std::fs::create_dir(&paths[0].0).unwrap();
+        std::fs::create_dir(&paths[0].1).unwrap();
+        assert!(backup_legacy_tables(&root, || Ok(())).is_err());
+        assert!(paths[0].0.exists() && paths[0].1.exists());
+    }
+    #[test]
+    fn atomic_legacy_archive_never_replaces_a_concurrent_destination() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source");
+        let destination = tmp.path().join("destination");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(&destination, b"unrelated").unwrap();
+        assert!(rename_legacy_no_replace(&source, &destination).is_err());
+        assert_eq!(std::fs::read(source).unwrap(), b"source");
+        assert_eq!(std::fs::read(destination).unwrap(), b"unrelated");
+    }
+
+
+    #[test]
+    fn legacy_archive_refuses_a_damaged_v5_marker_before_any_rename() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("lance");
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = legacy_archive_paths(&root);
+        std::fs::create_dir(&paths[0].0).unwrap();
+        let marker = root.join(crate::db::migrate::IDENTITY_V5_MARKER_FILE);
+        std::fs::write(&marker, b"{broken").unwrap();
+        assert!(backup_legacy_tables(&root, || Ok(())).is_err());
+        assert!(paths[0].0.exists());
+        assert!(!paths[0].1.exists());
+        assert!(marker.exists());
     }
 
     #[test]

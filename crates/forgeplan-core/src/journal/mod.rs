@@ -51,10 +51,11 @@ fn decision_records_borrowed<'a>(
 /// Build decision journal — chronological timeline of ADR, Note, and capture artifacts.
 pub async fn build_journal(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     kind_filter: Option<&str>,
     risk_only: bool,
 ) -> anyhow::Result<Vec<JournalEntry>> {
-    let all = store.list_records(None).await?;
+    let all = store.list_records(permit, None).await?;
     // One selection rule for both layouts: an exact `kind` match, which is
     // what the `list_records(Some(&ArtifactFilter { kind }))` query this
     // path used to push down expressed anyway.
@@ -64,8 +65,8 @@ pub async fn build_journal(
         kind: Some("evidence".to_string()),
         status: None,
     };
-    let evidence_records = store.list_records(Some(&evidence_filter)).await?;
-    let all_relations = store.get_all_relations().await?;
+    let evidence_records = store.list_records(permit, Some(&evidence_filter)).await?;
+    let all_relations = store.get_all_relations(permit).await?;
 
     Ok(journal_from_records(
         &records,
@@ -384,31 +385,29 @@ mod tests {
     /// statuses, tags and timestamps and a divergence can only come from the
     /// report computation.
     async fn legacy_store_for(read: &WorkspaceRead) -> LanceStore {
-        let store = LanceStore::init(read.workspace()).await.unwrap();
+        let (store, guard) = { let ws = read.workspace().parent().unwrap().join("legacy-projection-fixture"); let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); let store = LanceStore::init_new(&ws, &guard).await.unwrap(); for name in crate::workspace::ARTIFACT_DIRS.iter().copied().chain(["state", "config.yaml"]) { let src = read.workspace().join(name); if !src.exists() { continue; } for entry in walkdir::WalkDir::new(&src).follow_links(false) { let entry = entry.unwrap(); let dest = ws.join(entry.path().strip_prefix(read.workspace()).unwrap()); if entry.file_type().is_dir() { std::fs::create_dir_all(&dest).unwrap(); } else { std::fs::create_dir_all(dest.parent().unwrap()).unwrap(); std::fs::copy(entry.path(), dest).unwrap(); } } } (store, guard) };
         // From `read.records()` (scores recomputed by `from_parts`), not
         // from `record_from_parsed` whose output is 0.0 for every record.
         for record in read.records() {
-            store
-                .create_artifact(&crate::db::store::NewArtifact {
-                    canonical_key: record.canonical_key.clone(),
-                    id: record.id.clone(),
-                    kind: record.kind.clone(),
-                    status: record.status.clone(),
-                    title: record.title.clone(),
-                    body: record.body.clone(),
-                    depth: record.depth.clone(),
-                    author: record.author.clone(),
-                    parent_epic: record.parent_epic.clone(),
-                    valid_until: record.valid_until.clone(),
-                    tags: record.tags.clone(),
-                })
+            store.create_artifact(&guard, &crate::db::store::NewArtifact {
+                canonical_key: record.canonical_key.clone(),
+                id: record.id.clone(),
+                kind: record.kind.clone(),
+                status: record.status.clone(),
+                title: record.title.clone(),
+                body: record.body.clone(),
+                depth: record.depth.clone(),
+                author: record.author.clone(),
+                parent_epic: record.parent_epic.clone(),
+                valid_until: record.valid_until.clone(),
+                tags: record.tags.clone(),
+            })
                 .await
                 .unwrap();
-            store.replace_record(record).await.unwrap();
+            store.replace_record(&guard, record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
-            store
-                .add_relation(&source, &target, &relation)
+            store.add_relation(&guard, &source, &target, &relation)
                 .await
                 .unwrap();
         }
@@ -548,7 +547,7 @@ mod tests {
     async fn captured_journal_matches_the_legacy_projection_entry_for_entry() {
         let (_tmp, ws) = journal_workspace();
         let read = open_read(&ws).await;
-        let store = legacy_store_for(&read).await;
+        let (store, guard) = { let store = legacy_store_for(&read).await; let guard = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path()).await.unwrap(); (store, guard) };
 
         for (kind_filter, risk_only) in [
             (None, false),
@@ -556,7 +555,7 @@ mod tests {
             (Some("adr"), false),
             (Some("prd"), true),
         ] {
-            let legacy = build_journal(&store, kind_filter, risk_only).await.unwrap();
+            let legacy = build_journal(&store, &guard, kind_filter, risk_only).await.unwrap();
             let captured = build_journal_captured(&read, kind_filter, risk_only)
                 .await
                 .unwrap();

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use arrow_array::{Int32Array, RecordBatch, StringArray};
+use arrow_array::{RecordBatch, StringArray};
 use lancedb::Table;
 use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use lancedb::table::NewColumnTransform;
@@ -63,26 +63,6 @@ pub async fn migrate_artifacts(table: &Table) -> anyhow::Result<()> {
             .await?;
     }
 
-    // Migration 4→5: add the canonical_key column (ADR-030).
-    //
-    // The column is the row's identity, so the in-place upgrade fills it
-    // with NULLs rather than guessing: only the Markdown knows whether a
-    // document declares a slug, and the staged identity-v5 migration rebuilds
-    // the index from the Markdown for exactly that reason. Until that
-    // migration publishes, the pre-migration rows keep their own bytes — the
-    // index that is preserved.
-    if !field_names.contains(&"canonical_key".to_string()) {
-        eprintln!("[migrate] Adding canonical_key column to artifacts");
-        use arrow_schema::{DataType, Field, Schema};
-        let key_schema = Arc::new(Schema::new(vec![Field::new(
-            "canonical_key",
-            DataType::Utf8,
-            true,
-        )]));
-        table
-            .add_columns(NewColumnTransform::AllNulls(key_schema), None)
-            .await?;
-    }
 
     Ok(())
 }
@@ -110,9 +90,8 @@ pub async fn migrate_relations(table: &Table) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ensure the change_log table exists. Called from LanceStore::open().
-/// Unlike other migrations, this creates the table if missing (since older workspaces
-/// don't have it). The table handle is passed as Option — None means "not found".
+/// Create a missing history table during locked write preparation. Opening a
+/// v4 workspace for reading does not create or migrate this table.
 pub async fn ensure_change_log(db: &lancedb::connection::Connection) -> anyhow::Result<()> {
     let tables = db.table_names().execute().await?;
     if !tables.contains(&"change_log".to_string()) {
@@ -255,25 +234,7 @@ pub const IDENTITY_V5_MARKER_FILE: &str = "IDENTITY_V5.json";
 pub const IDENTITY_V5_VERSION: u32 = 5;
 
 /// The workspace directories the staged migration reads the Markdown from.
-pub const IDENTITY_V5_SOURCE_DIRS: &[&str] = &[
-    "prds",
-    "epics",
-    "specs",
-    "rfcs",
-    "adrs",
-    "problems",
-    "solutions",
-    "evidence",
-    "notes",
-    "refresh",
-    "memory",
-    "use_cases",
-    "glossary",
-    "invariants",
-    "scenarios",
-    "hypotheses",
-    "domain_models",
-];
+pub const IDENTITY_V5_SOURCE_DIRS: &[&str] = crate::workspace::ARTIFACT_DIRS;
 
 /// The readiness marker of the identity-v5 index.
 ///
@@ -296,6 +257,34 @@ pub struct IdentityV5Marker {
     pub document_count: usize,
     /// Whether the build finished. A marker without it is damaged.
     pub completed: bool,
+    /// Provenance of vectors recomputed during this migration, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embeddings: Option<IdentityV5EmbeddingProvenance>,
+    /// Row-local semantic authority is enabled only after full backfill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<IdentityV5SemanticProtocol>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IdentityV5SemanticProtocol {
+    pub protocol: u32,
+    pub active_profile_digest: Option<String>,
+}
+
+
+/// Pinned model and exact per-identity inputs for migrated embeddings.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IdentityV5EmbeddingProvenance {
+    pub model: String,
+    pub repository: String,
+    pub snapshot_id: String,
+    pub snapshot_digest: String,
+    pub implementation: String,
+    pub profile_digest: String,
+    pub chunk_size: usize,
+    pub dimension: usize,
+    pub input_digests: BTreeMap<String, String>,
+    pub vector_digests: BTreeMap<String, String>,
 }
 
 /// The table names this workspace's legacy index lives in.
@@ -335,6 +324,8 @@ pub struct IdentityV5Document {
     pub title: String,
     /// The body, without the frontmatter block.
     pub body: String,
+    /// The exact Markdown bytes represented as UTF-8, including frontmatter.
+    pub full_text: String,
     /// The depth (`tactical`, `standard`, `deep`).
     pub depth: String,
     /// The author.
@@ -406,7 +397,7 @@ impl IdentityV5Report {
 }
 
 /// Lowercase hex of a byte string.
-fn hex_encode(bytes: &[u8]) -> String {
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
@@ -428,16 +419,39 @@ pub fn identity_v5_marker_path(lance_dir: &Path) -> PathBuf {
 /// marker must not make the store read the wrong tables.
 pub fn read_identity_v5_marker(lance_dir: &Path) -> anyhow::Result<Option<IdentityV5Marker>> {
     let path = identity_v5_marker_path(lance_dir);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            anyhow::bail!(
-                "cannot read the identity-v5 readiness marker {}: {err}",
-                path.display()
-            );
-        }
+        Err(err) => anyhow::bail!("cannot read the identity-v5 readiness marker {}: {err}", path.display()),
     };
+    let metadata = file.metadata()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            anyhow::bail!("the identity-v5 readiness marker {} is a reparse point", path.display());
+        }
+    }
+    if !metadata.is_file() {
+        anyhow::bail!("the identity-v5 readiness marker {} is not a regular file", path.display());
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
     let marker: IdentityV5Marker = serde_json::from_slice(&bytes).map_err(|err| {
         anyhow::anyhow!(
             "the identity-v5 readiness marker {} is damaged and cannot be parsed: {err}. \
@@ -461,33 +475,258 @@ pub fn read_identity_v5_marker(lance_dir: &Path) -> anyhow::Result<Option<Identi
             path.display()
         );
     }
+    if marker.artifacts_table != IDENTITY_V5_ARTIFACTS_TABLE
+        || marker.relations_table != IDENTITY_V5_RELATIONS_TABLE
+        || marker.evidence_table != IDENTITY_V5_EVIDENCE_TABLE
+        || marker.source_digest.len() != 64
+        || !marker.source_digest.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        anyhow::bail!("the identity-v5 readiness marker {} is damaged: invalid table names or source digest", path.display());
+    }
+    if let Some(profile) = &marker.embeddings {
+        let valid_digest = |value: &str| value.len() == 64
+            && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+        if profile.model.is_empty() || profile.repository.is_empty() || profile.snapshot_id.is_empty()
+            || !valid_digest(&profile.snapshot_digest) || profile.dimension != super::schema::EMBEDDING_DIM as usize
+            || profile.implementation.is_empty() || profile.profile_digest != identity_profile_digest(profile)
+            || (marker.semantic.is_none() && profile.input_digests.is_empty())
+            || profile.input_digests.iter().any(|(key, digest)| key.is_empty() || !valid_digest(digest))
+            || profile.vector_digests.len() != profile.input_digests.len()
+            || profile.vector_digests.iter().any(|(key, digest)| !profile.input_digests.contains_key(key) || !valid_digest(digest))
+        {
+            anyhow::bail!("the identity-v5 readiness marker {} has damaged embedding provenance", path.display());
+        }
+    }
+    if let Some(semantic) = &marker.semantic {
+        if semantic.protocol != 1 || semantic.active_profile_digest.as_deref()
+            != marker.embeddings.as_ref().map(|profile| profile.profile_digest.as_str())
+        {
+            anyhow::bail!("the identity-v5 readiness marker {} has an invalid semantic protocol", path.display());
+        }
+    }
     Ok(Some(marker))
 }
 
-/// Publish the identity-v5 index by writing its readiness marker.
-///
-/// The marker is written to a temporary file, fsynced, renamed over the final
-/// name, and the directory is fsynced: a reader sees either the old marker
-/// or the new one, never a partial file.
-pub fn publish_identity_v5_marker(
-    lance_dir: &Path,
-    marker: &IdentityV5Marker,
-) -> anyhow::Result<()> {
-    let path = identity_v5_marker_path(lance_dir);
-    let tmp = lance_dir.join(format!("{IDENTITY_V5_MARKER_FILE}.tmp"));
+/// Update an existing readiness marker while holding its publication lock.
+pub(crate) fn publish_identity_v5_marker(lance_dir: &Path, marker: &IdentityV5Marker) -> anyhow::Result<()> {
+    write_identity_v5_marker(lance_dir, marker, false)
+}
+
+/// Publish the first readiness marker without replacing an existing path.
+pub(crate) fn publish_identity_v5_marker_new(lance_dir: &Path, marker: &IdentityV5Marker) -> anyhow::Result<()> {
+    write_identity_v5_marker(lance_dir, marker, true)
+}
+
+#[cfg(windows)]
+fn write_identity_v5_marker(lance_dir: &Path, marker: &IdentityV5Marker, create_only: bool) -> anyhow::Result<()> {
+    use rand::TryRngCore;
+    use std::io::Write;
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    let (_, barrier, diagnostic) = crate::constellation::durability::windows_ntfs_primitive_barrier(lance_dir);
+    let barrier = barrier.ok_or_else(|| anyhow::anyhow!("identity marker durability unavailable: {diagnostic:?}"))?;
     let bytes = serde_json::to_vec_pretty(marker)?;
-    {
-        use std::io::Write;
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(&bytes)?;
-        file.flush()?;
-        file.sync_all()?;
+    if create_only {
+        crate::constellation::durability::install_immutable_file(
+            lance_dir, IDENTITY_V5_MARKER_FILE, &bytes, barrier.as_ref(),
+        )?;
+        return Ok(());
     }
-    std::fs::rename(&tmp, &path)?;
-    // The rename is durable only once the directory entry is on disk.
-    let dir = std::fs::File::open(lance_dir)?;
-    dir.sync_all()?;
+    let path = identity_v5_marker_path(lance_dir);
+    let metadata = std::fs::symlink_metadata(&path)?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        anyhow::bail!("identity-v5 readiness marker is not a real file");
+    }
+    let mut nonce = [0u8; 16];
+    rand::rngs::OsRng.try_fill_bytes(&mut nonce)
+        .map_err(|error| anyhow::anyhow!("cannot create identity marker transaction: {error}"))?;
+    let tmp = lance_dir.join(format!("{IDENTITY_V5_MARKER_FILE}.{}.tmp", hex_encode(&nonce)));
+    struct MarkerTemp(PathBuf);
+    impl Drop for MarkerTemp {
+        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+    }
+    let _temp_guard = MarkerTemp(tmp.clone());
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+    barrier.sync_file(&tmp)?;
+    barrier.replace_atomically(&tmp, &path)?;
+    barrier.sync_dir(lance_dir)?;
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn write_identity_v5_marker(lance_dir: &Path, marker: &IdentityV5Marker, create_only: bool) -> anyhow::Result<()> {
+    use rand::TryRngCore;
+    use std::io::Write;
+    let metadata = std::fs::symlink_metadata(lance_dir)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        anyhow::bail!("identity-v5 Lance directory is not a real directory");
+    }
+    let path = identity_v5_marker_path(lance_dir);
+    if !create_only {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            anyhow::bail!("identity-v5 readiness marker is not a real file");
+        }
+    }
+    let mut nonce = [0u8; 16];
+    rand::rngs::OsRng.try_fill_bytes(&mut nonce)
+        .map_err(|error| anyhow::anyhow!("cannot create identity marker transaction: {error}"))?;
+    let tmp = lance_dir.join(format!("{IDENTITY_V5_MARKER_FILE}.{}.tmp", hex_encode(&nonce)));
+    let bytes = serde_json::to_vec_pretty(marker)?;
+    struct MarkerTemp(PathBuf);
+    impl Drop for MarkerTemp {
+        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+    }
+    let _temp_guard = MarkerTemp(tmp.clone());
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
+    }
+    let mut file = options.open(&tmp)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+    let dir = std::fs::File::open(lance_dir)?;
+    if create_only {
+        // Both paths are in the same directory; link fails atomically if
+        // anything already occupies the final name, including a symlink.
+        std::fs::hard_link(&tmp, &path)?;
+        dir.sync_all()?;
+        std::fs::remove_file(&tmp)?;
+        dir.sync_all()?;
+    } else {
+        std::fs::rename(&tmp, &path)?;
+        dir.sync_all()?;
+    }
+    Ok(())
+}
+pub(crate) const SEMANTIC_COLUMNS: [&str; 6] = [
+    "semantic_input_digest", "semantic_profile_digest", "semantic_vector_digest",
+    "semantic_job_id", "semantic_attempt_token", "semantic_state",
+];
+
+/// Complete or resume row-local semantic activation under the workspace lock.
+/// Until the marker is switched, existing marker maps remain authoritative.
+pub(crate) async fn prepare_identity_semantic_protocol(
+    workspace: &Path,
+    db: &lancedb::connection::Connection,
+    lock: &crate::workspace::lock::WorkspaceLock,
+) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    anyhow::bail!("legacy semantic activation is unavailable on Windows");
+    use crate::workspace::lock::WorkspaceReadPermit;
+    lock.matches_workspace(workspace)?;
+    let lance = workspace.join("lance");
+    let mut marker = read_identity_v5_marker(&lance)?
+        .ok_or_else(|| anyhow::anyhow!("identity-v5 readiness marker is missing"))?;
+    let table = db.open_table(&marker.artifacts_table).execute().await?;
+    let schema = table.schema().await?;
+    for name in SEMANTIC_COLUMNS {
+        if let Ok(field) = schema.field_with_name(name) {
+            if field.data_type() != &arrow_schema::DataType::Utf8 || !field.is_nullable() {
+                anyhow::bail!("identity-v5 semantic column '{name}' has an incompatible type");
+            }
+        } else if marker.semantic.is_some() {
+            anyhow::bail!("published identity-v5 semantic column '{name}' is missing");
+        } else {
+            table.add_columns(
+                NewColumnTransform::SqlExpressions(vec![(name.to_string(), "CAST(NULL AS STRING)".to_string())]),
+                None,
+            ).await?;
+        }
+    }
+    if marker.semantic.is_some() {
+        return Ok(());
+    }
+    let rows = table_rows(db, &marker.artifacts_table).await?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut expected = BTreeMap::new();
+    for row in &rows {
+        let key = required_string(row, "canonical_key")?;
+        if !seen.insert(key.clone()) {
+            anyhow::bail!("duplicate semantic identity '{key}'");
+        }
+        let embedding = row.column_by_name("embedding")
+            .ok_or_else(|| anyhow::anyhow!("artifact '{key}' has no embedding column"))?;
+        let (input, profile, vector, state) = if embedding.is_null(0) {
+            (None, None, None, "pending")
+        } else {
+            let profile = marker.embeddings.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("artifact '{key}' has an unproven vector"))?;
+            let title = required_string(row, "title")?;
+            let body = super::store::record_large_string(row, "body", 0)
+                .ok_or_else(|| anyhow::anyhow!("artifact '{key}' has no body"))?;
+            let input = identity_input_digest(&format!("{} {}", title, body.chars().take(profile.chunk_size).collect::<String>()));
+            let values = super::convert::extract_embedding(row, 0)
+                .ok_or_else(|| anyhow::anyhow!("artifact '{key}' has an invalid vector"))?;
+            let vector = identity_vector_digest(&values);
+            if values.len() != profile.dimension || values.iter().any(|value| !value.is_finite())
+                || !values.iter().any(|value| *value != 0.0)
+                || profile.input_digests.get(&key) != Some(&input)
+                || profile.vector_digests.get(&key) != Some(&vector)
+            {
+                anyhow::bail!("artifact '{key}' does not match its migration embedding provenance");
+            }
+            (Some(input), Some(profile.profile_digest.clone()), Some(vector), "ready")
+        };
+        let sql = |value: Option<&str>| value.map(|value| format!("'{}'", value.replace('\'', "''")))
+            .unwrap_or_else(|| "NULL".to_string());
+        let result = table.update()
+            .only_if(format!("canonical_key = '{}'", key.replace('\'', "''")))
+            .column("semantic_input_digest", sql(input.as_deref()))
+            .column("semantic_profile_digest", sql(profile.as_deref()))
+            .column("semantic_vector_digest", sql(vector.as_deref()))
+            .column("semantic_job_id", "NULL")
+            .column("semantic_attempt_token", "NULL")
+            .column("semantic_state", format!("'{state}'"))
+            .execute().await?;
+        if result.rows_updated != 1 {
+            anyhow::bail!("semantic backfill changed {} rows for '{key}'", result.rows_updated);
+        }
+        expected.insert(key, (input, profile, vector, state, row.clone()));
+    }
+    let backfilled = table_rows(db, &marker.artifacts_table).await?;
+    if backfilled.len() != rows.len() {
+        anyhow::bail!("semantic backfill changed the artifact count");
+    }
+    for row in &backfilled {
+        let key = required_string(row, "canonical_key")?;
+        let (input, profile, vector, state, original) = expected.remove(&key)
+            .ok_or_else(|| anyhow::anyhow!("unexpected semantic row '{key}'"))?;
+        if !seen.remove(&key)
+            || super::store::record_string(row, "semantic_input_digest", 0) != input
+            || super::store::record_string(row, "semantic_profile_digest", 0) != profile
+            || super::store::record_string(row, "semantic_vector_digest", 0) != vector
+            || required_string(row, "semantic_state")? != state
+            || super::store::record_string(row, "semantic_job_id", 0).is_some()
+            || super::store::record_string(row, "semantic_attempt_token", 0).is_some()
+        {
+            anyhow::bail!("semantic backfill failed to verify '{key}'");
+        }
+        for field in original.schema().fields() {
+            if !field.name().starts_with("semantic_")
+                && original.column_by_name(field.name()).map(|column| column.to_data())
+                    != row.column_by_name(field.name()).map(|column| column.to_data())
+            {
+                anyhow::bail!("semantic backfill changed artifact payload '{key}'");
+            }
+        }
+    }
+    if !seen.is_empty() || read_identity_v5_marker(&lance)?.as_ref() != Some(&marker) {
+        anyhow::bail!("identity-v5 state changed during semantic activation");
+    }
+    marker.semantic = Some(IdentityV5SemanticProtocol {
+        protocol: 1,
+        active_profile_digest: marker.embeddings.as_ref().map(|profile| profile.profile_digest.clone()),
+    });
+    publish_identity_v5_marker(&lance, &marker)
 }
 
 /// The table names this workspace's legacy index lives in.
@@ -547,10 +786,13 @@ fn frontmatter_string(
 /// The key is the ADR-030 rule: the frontmatter slug when the document
 /// declares a valid one, the declared id otherwise. A document that declares
 /// neither cannot be mapped — the caller reports it and publication stops.
-fn parse_identity_v5_document(
+pub(crate) fn parse_identity_v5_document(
     relative_path: &str,
     text: &str,
+    fallback_timestamp: &str,
 ) -> anyhow::Result<IdentityV5Document> {
+    chrono::DateTime::parse_from_rfc3339(fallback_timestamp)
+        .map_err(|error| anyhow::anyhow!("invalid identity capture timestamp: {error}"))?;
     let (frontmatter, body) = crate::artifact::frontmatter::parse_frontmatter(text)
         .map_err(|err| anyhow::anyhow!("the frontmatter does not parse: {err}"))?;
 
@@ -582,13 +824,13 @@ fn parse_identity_v5_document(
     });
     let depth =
         frontmatter_string(&frontmatter, "depth").unwrap_or_else(|| "standard".to_string());
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = fallback_timestamp;
     let created_at = frontmatter_string(&frontmatter, "created_at")
         .or_else(|| frontmatter_string(&frontmatter, "created"))
-        .unwrap_or_else(|| now.clone());
+        .unwrap_or_else(|| now.to_string());
     let updated_at = frontmatter_string(&frontmatter, "updated_at")
         .or_else(|| frontmatter_string(&frontmatter, "updated"))
-        .unwrap_or(now);
+        .unwrap_or_else(|| now.to_string());
 
     Ok(IdentityV5Document {
         canonical_key,
@@ -601,6 +843,7 @@ fn parse_identity_v5_document(
             &body,
         )),
         body,
+        full_text: text.to_string(),
         depth,
         author: crate::artifact::frontmatter::author_from_frontmatter(&frontmatter),
         parent_epic: frontmatter_string(&frontmatter, "parent_epic"),
@@ -613,33 +856,64 @@ fn parse_identity_v5_document(
     })
 }
 
-/// Read every document of the workspace from the Markdown.
-///
-/// The Markdown is the only place that knows whether a document declares a
-/// slug, so the staged index is built from here and never from the rows of
-/// the pre-migration index.
-pub async fn read_identity_v5_source(workspace: &Path) -> anyhow::Result<IdentityV5Source> {
-    use sha2::{Digest, Sha256};
-
+/// Read the complete artifact source set without following symlinks.
+pub(crate) async fn read_identity_source_files(workspace: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     for dir in IDENTITY_V5_SOURCE_DIRS {
-        let path = workspace.join(dir);
-        let mut entries = match tokio::fs::read_dir(&path).await {
-            Ok(entries) => entries,
+        let root = workspace.join(dir);
+        match tokio::fs::symlink_metadata(&root).await {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => return Err(anyhow::anyhow!("cannot read {}: {err}", path.display())),
-        };
-        while let Some(entry) = entries.next_entry().await? {
-            let entry_path = entry.path();
-            if entry_path.extension().and_then(|ext| ext.to_str()) != Some("md") {
-                continue;
+            Err(err) => return Err(anyhow::anyhow!("cannot inspect {}: {err}", root.display())),
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                anyhow::bail!("artifact source {} is not a real directory", root.display());
             }
-            let bytes = tokio::fs::read(&entry_path).await?;
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            files.push((format!("{dir}/{file_name}"), bytes));
+            Ok(_) => {}
+        }
+        let mut pending = vec![root];
+        while let Some(path) = pending.pop() {
+            let mut entries = tokio::fs::read_dir(&path).await
+                .map_err(|err| anyhow::anyhow!("cannot read {}: {err}", path.display()))?;
+            while let Some(entry) = entries.next_entry().await? {
+                let entry_path = entry.path();
+                let kind = entry.file_type().await?;
+                if kind.is_symlink() {
+                    anyhow::bail!("artifact source contains a symlink: {}", entry_path.display());
+                }
+                if kind.is_dir() {
+                    pending.push(entry_path);
+                    continue;
+                }
+                if entry_path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+                    continue;
+                }
+                if !kind.is_file() {
+                    anyhow::bail!("artifact source is not a regular file: {}", entry_path.display());
+                }
+                let relative = entry_path.strip_prefix(workspace)?
+                    .to_str().ok_or_else(|| anyhow::anyhow!("artifact path is not UTF-8: {}", entry_path.display()))?
+                    .replace(std::path::MAIN_SEPARATOR, "/");
+                let bytes = tokio::fs::read(&entry_path).await?;
+                files.push((relative, bytes));
+            }
         }
     }
     files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
+}
+
+/// Read every document of the workspace from the Markdown.
+///
+/// The staged index is built from source bytes, never from legacy rows alone.
+pub async fn read_identity_v5_source(workspace: &Path) -> anyhow::Result<IdentityV5Source> {
+    read_identity_v5_source_at(workspace, &chrono::Utc::now().to_rfc3339()).await
+}
+
+/// Capture using one caller-supplied, durably frozen insertion timestamp.
+pub(crate) async fn read_identity_v5_source_at(workspace: &Path, fallback_timestamp: &str) -> anyhow::Result<IdentityV5Source> {
+    chrono::DateTime::parse_from_rfc3339(fallback_timestamp)
+        .map_err(|error| anyhow::anyhow!("invalid identity capture timestamp: {error}"))?;
+    use sha2::{Digest, Sha256};
+    let files = read_identity_source_files(workspace).await?;
 
     // The digest covers every source file: its path and its bytes.
     let mut hasher = Sha256::new();
@@ -652,8 +926,9 @@ pub async fn read_identity_v5_source(workspace: &Path) -> anyhow::Result<Identit
 
     let mut documents = Vec::with_capacity(files.len());
     for (relative, bytes) in &files {
-        let text = String::from_utf8_lossy(bytes);
-        match parse_identity_v5_document(relative, &text) {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|error| anyhow::anyhow!("{relative} is not valid UTF-8: {error}"))?;
+        match parse_identity_v5_document(relative, text, fallback_timestamp) {
             Ok(document) => documents.push(document),
             Err(reason) => {
                 anyhow::bail!(
@@ -706,190 +981,889 @@ pub fn verify_identity_v5_source(source: &IdentityV5Source) -> IdentityV5Report 
         }
     }
 
-    // The references: every target that names a document of this workspace
-    // must name exactly one.
-    let keys: std::collections::HashSet<&str> = source
-        .documents
-        .iter()
-        .map(|document| document.canonical_key.as_str())
-        .collect();
-    let aliases: std::collections::HashSet<&str> = source
-        .documents
-        .iter()
-        .map(|document| document.display_id.as_str())
-        .collect();
+    let candidates = identity_v5_candidates(source);
     for document in &source.documents {
         for (target, _relation) in &document.links {
             if target.contains('@') {
-                // A qualified cross-source reference is not a local selector.
                 continue;
             }
-            let known = keys.contains(target.as_str())
-                || aliases.contains(target.as_str())
-                || keys.contains(target.to_ascii_lowercase().as_str());
-            if !known {
-                report.unresolved_references.push(format!(
-                    "{} -> {}",
-                    document.relative_path, target
-                ));
+            match crate::artifact::canonical_key::resolve_structural_target(target, &candidates) {
+                Ok(Some(_)) => {}
+                Ok(None) => report.unresolved_references.push(format!(
+                    "{} -> {}", document.relative_path, target
+                )),
+                Err(error) => report.unmappable.push(format!(
+                    "{} -> {}: {}", document.relative_path, target, error
+                )),
             }
         }
     }
     report
 }
 
-/// An empty evidence batch, shaped like the evidence schema.
-fn empty_evidence_batch() -> anyhow::Result<RecordBatch> {
-    let schema = super::schema::evidence_schema();
-    Ok(RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(StringArray::from(Vec::<&str>::new())),
-            Arc::new(StringArray::from(Vec::<&str>::new())),
-            Arc::new(StringArray::from(Vec::<&str>::new())),
-            Arc::new(StringArray::from(Vec::<&str>::new())),
-            Arc::new(Int32Array::from(Vec::<i32>::new())),
-            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
-            Arc::new(StringArray::from(Vec::<&str>::new())),
-            Arc::new(StringArray::from(Vec::<&str>::new())),
-        ],
-    )?)
-}
 
 /// Write the three staged tables of the identity-v5 index.
 ///
 /// The old tables are not touched, and `fpf_spec` and `change_log` are not
 /// duplicated. Re-running before the marker exists rebuilds only these three
 /// tables.
-pub async fn write_identity_v5_tables(
+pub(crate) async fn write_identity_v5_tables(
     lance_dir: &Path,
+    guard: &crate::workspace::lock::WorkspaceLock,
     source: &IdentityV5Source,
     report: &mut IdentityV5Report,
 ) -> anyhow::Result<()> {
-    let db = lancedb::connect(
-        lance_dir
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("LanceDB path contains non-UTF-8 characters"))?,
-    )
-    .execute()
-    .await?;
-
-    let existing = db.table_names().execute().await?;
-    for table in [
-        IDENTITY_V5_ARTIFACTS_TABLE,
-        IDENTITY_V5_RELATIONS_TABLE,
-        IDENTITY_V5_EVIDENCE_TABLE,
-    ] {
-        if existing.iter().any(|name| name == table) {
-            db.drop_table(table, &[]).await?;
-        }
+    use crate::workspace::lock::WorkspaceReadPermit;
+    let workspace = lance_dir.parent().ok_or_else(|| anyhow::anyhow!("Lance path has no workspace parent"))?;
+    guard.matches_workspace(workspace)?;
+    if verify_identity_v5_source(source).is_blocked() {
+        anyhow::bail!("identity-v5 source contains conflicting or unmappable identities");
     }
+    if read_identity_v5_marker(lance_dir)?.is_some() {
+        anyhow::bail!("cannot rebuild a published identity-v5 index");
+    }
+    let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF-8 LanceDB path"))?)
+        .execute().await?;
+    let rows = prepare_identity_v5_rows(&db, source, false).await?;
+    report.relation_count = rows[1].len();
+    report.evidence_count = rows[2].len();
+    drop(db);
+    write_prepared_identity_v5_rows(lance_dir, &rows).await
+}
 
-    // The artifacts table: one row per document, keyed by its canonical key.
-    let schema = super::schema::artifacts_schema();
-    let mut rows: Vec<RecordBatch> = Vec::new();
-    for document in &source.documents {
-        let artifact = crate::db::store::NewArtifact {
-            canonical_key: document.canonical_key.clone(),
-            id: document.display_id.clone(),
-            kind: document.kind.clone(),
-            status: document.status.clone(),
-            title: document.title.clone(),
-            body: document.body.clone(),
-            depth: document.depth.clone(),
-            author: document.author.clone(),
-            parent_epic: document.parent_epic.clone(),
-            valid_until: document.valid_until.clone(),
-            tags: document.tags.clone(),
+#[cfg(windows)]
+pub(crate) async fn write_prepared_identity_v5_rows(
+    root: &Path,
+    rows: &[Vec<RecordBatch>; 3],
+) -> anyhow::Result<()> {
+    use rand::TryRngCore;
+    use crate::constellation::durability;
+
+    let (_, barrier, diagnostic) = durability::windows_ntfs_primitive_barrier(root);
+    let barrier = barrier.ok_or_else(|| anyhow::anyhow!("legacy stage durability unavailable: {diagnostic:?}"))?;
+    barrier.ensure_dir(root)?;
+    let canonical_root = std::fs::canonicalize(root)?;
+    let root = canonical_root.as_path();
+    let tracker = Arc::new(durability::StageTracker::default());
+    tracker.begin_stage(1);
+    let wrapper = durability::tracked_legacy_store(root, Arc::clone(&tracker), Arc::clone(&barrier));
+    let wrapper: Arc<dyn lance_io::object_store::WrappingObjectStore> = wrapper;
+    let names = [IDENTITY_V5_ARTIFACTS_TABLE, IDENTITY_V5_RELATIONS_TABLE, IDENTITY_V5_EVIDENCE_TABLE];
+    {
+    let uri = durability::windows_wrapped_uri(root)?;
+    let session = durability::windows_wrapped_session();
+    let connection = lancedb::connect(&uri).session(Arc::clone(&session)).execute().await?;
+    let database = Arc::clone(connection.database());
+    let schemas = [super::schema::artifacts_schema(), super::schema::relations_schema(), super::schema::evidence_schema()];
+    for ((name, schema), batches) in names.into_iter().zip(schemas).zip(rows) {
+        let live = root.join(format!("{name}.lance"));
+        match std::fs::symlink_metadata(&live) {
+            Ok(meta) => {
+                use std::os::windows::fs::MetadataExt;
+                use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+                if !meta.is_dir() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    anyhow::bail!("legacy stage table is not a real directory: {}", live.display());
+                }
+                let mut nonce = [0u8; 16];
+                rand::rngs::OsRng.try_fill_bytes(&mut nonce)
+                    .map_err(|error| anyhow::anyhow!("cannot retire stage table: {error}"))?;
+                let retired = root.join(format!(".retired-{name}-{}", hex_encode(&nonce)));
+                rename_identity_noreplace(&live, &retired)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let uri = durability::windows_wrapped_uri(&live)?;
+        let params = lance::dataset::WriteParams {
+            session: Some(Arc::clone(&session)),
+            ..Default::default()
         };
-        rows.push(crate::db::convert::artifact_to_batch(&artifact, &document.created_at)?);
-    }
-    let artifacts_table = match rows.split_first() {
-        Some((first, rest)) => {
-            let table = db
-                .create_table(IDENTITY_V5_ARTIFACTS_TABLE, vec![first.clone()])
-                .execute()
-                .await?;
-            for row in rest {
-                table.add(vec![row.clone()]).execute().await?;
-            }
-            table
-        }
-        None => {
-            db.create_table(
-                IDENTITY_V5_ARTIFACTS_TABLE,
-                vec![RecordBatch::new_empty(schema.clone())],
-            )
-            .execute()
-            .await?
-        }
-    };
-    drop(artifacts_table);
-
-    // The relations table: the endpoints hold canonical keys.
-    let relation_schema = super::schema::relations_schema();
-    let mut relation_rows: Vec<RecordBatch> = Vec::new();
-    let now = chrono::Utc::now().to_rfc3339();
-    for document in &source.documents {
-        for (target, relation) in &document.links {
-            let target_key = resolve_reference(source, target);
-            relation_rows.push(crate::db::convert::relation_to_batch(
-                &document.canonical_key,
-                &target_key,
-                relation,
-                &now,
-            )?);
+        let native = lancedb::table::NativeTable::create_empty(
+            &uri, name, Vec::new(), schema, Some(Arc::clone(&wrapper)), Some(params), None, None, false,
+        ).await?;
+        let table = lancedb::table::Table::new(Arc::new(native), Arc::clone(&database));
+        if !batches.is_empty() {
+            table.add(batches.clone()).execute().await?;
         }
     }
-    match relation_rows.split_first() {
-        Some((first, rest)) => {
-            let table = db
-                .create_table(IDENTITY_V5_RELATIONS_TABLE, vec![first.clone()])
-                .execute()
-                .await?;
-            for row in rest {
-                table.add(vec![row.clone()]).execute().await?;
-            }
-        }
-        None => {
-            db.create_table(
-                IDENTITY_V5_RELATIONS_TABLE,
-                vec![RecordBatch::new_empty(relation_schema.clone())],
-            )
-            .execute()
-            .await?;
-        }
     }
-
-    // The evidence table: the legacy evidence table holds no rows (evidence
-    // lives in ordinary artifacts), so the staged table is created empty
-    // rather than silently dropping rows that never existed.
-    let evidence_batch = empty_evidence_batch()?;
-    db.create_table(IDENTITY_V5_EVIDENCE_TABLE, vec![evidence_batch])
-        .execute()
-        .await?;
-
-    report.relation_count = source
-        .documents
-        .iter()
-        .map(|document| document.links.len())
-        .sum();
-    report.evidence_count = 0;
+    drop(wrapper);
+    let writes = tracker.finish_writes()?;
+    tracker.sync_written_set(&writes, root, barrier.as_ref())?;
+    for name in names {
+        durability::seal_unpublished_tree(&root.join(format!("{name}.lance")))?;
+    }
     Ok(())
 }
 
-/// The canonical key a declared reference names, or its own bytes when it
-/// names no document of this workspace.
-fn resolve_reference(source: &IdentityV5Source, target: &str) -> String {
-    if target.contains('@') {
-        return target.to_string();
-    }
-    for document in &source.documents {
-        if document.canonical_key == target || document.display_id == target {
-            return document.canonical_key.clone();
+
+#[cfg(not(windows))]
+pub(crate) async fn write_prepared_identity_v5_rows(
+    root: &Path,
+    rows: &[Vec<RecordBatch>; 3],
+) -> anyhow::Result<()> {
+    let db = lancedb::connect(root.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF-8 LanceDB path"))?)
+        .execute().await?;
+    let schemas = [super::schema::artifacts_schema(), super::schema::relations_schema(), super::schema::evidence_schema()];
+    let names = [IDENTITY_V5_ARTIFACTS_TABLE, IDENTITY_V5_RELATIONS_TABLE, IDENTITY_V5_EVIDENCE_TABLE];
+    let existing = db.table_names().execute().await?;
+    for ((name, schema), batches) in names.into_iter().zip(schemas).zip(rows.iter()) {
+        if existing.iter().any(|entry| entry == name) {
+            db.drop_table(name, &[]).await?;
+        }
+        let table = db.create_table(name, vec![RecordBatch::new_empty(schema)]).execute().await?;
+
+        if !batches.is_empty() {
+            table.add(batches.clone()).execute().await?;
         }
     }
-    target.to_string()
+    Ok(())
+}
+
+pub(crate) fn identity_input_digest(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex_encode(&Sha256::digest(input.as_bytes()))
+}
+
+pub(crate) fn identity_vector_digest(vector: &[f32]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    for value in vector {
+        digest.update(value.to_bits().to_le_bytes());
+    }
+    hex_encode(&digest.finalize())
+}
+
+pub(crate) fn identity_profile_digest(profile: &IdentityV5EmbeddingProvenance) -> String {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"forgeplan-identity-v5-embedding-profile\0");
+    for part in [&profile.model, &profile.repository, &profile.snapshot_id, &profile.snapshot_digest, &profile.implementation] {
+        digest.update((part.len() as u64).to_le_bytes());
+        digest.update(part.as_bytes());
+    }
+    digest.update((profile.chunk_size as u64).to_le_bytes());
+    digest.update((profile.dimension as u64).to_le_bytes());
+    hex_encode(&digest.finalize())
+}
+
+#[cfg(any(test, feature = "tract-engine"))]
+/// Replace only non-null legacy vectors using the pinned backend. Nothing is
+/// written to LanceDB until every input has been recomputed successfully.
+fn recompute_identity_vectors<F>(
+    rows: &mut [RecordBatch],
+    mut profile: IdentityV5EmbeddingProvenance,
+    mut embed: F,
+) -> anyhow::Result<IdentityV5EmbeddingProvenance>
+where
+    F: FnMut(&str) -> anyhow::Result<Vec<f32>>,
+{
+    if profile.dimension != super::schema::EMBEDDING_DIM as usize {
+        anyhow::bail!("embedding profile dimension is incompatible with the v5 table");
+    }
+    let profile_digest = identity_profile_digest(&profile);
+    if !profile.profile_digest.is_empty() && profile.profile_digest != profile_digest {
+        anyhow::bail!("embedding profile fingerprint is inconsistent");
+    }
+    profile.profile_digest = profile_digest;
+    for row in rows {
+        let embedding = row.column_by_name("embedding")
+            .ok_or_else(|| anyhow::anyhow!("artifact row has no embedding column"))?;
+        if embedding.is_null(0) {
+            continue;
+        }
+        let key = required_string(row, "canonical_key")?;
+        let title = required_string(row, "title")?;
+        let body = crate::db::store::record_large_string(row, "body", 0)
+            .ok_or_else(|| anyhow::anyhow!("artifact '{key}' has no body"))?;
+        let input = format!("{} {}", title, body.chars().take(profile.chunk_size).collect::<String>());
+        let input_digest = identity_input_digest(&input);
+        let vector = embed(&input)?;
+        if vector.len() != profile.dimension || vector.iter().any(|value| !value.is_finite()) || !vector.iter().any(|value| *value != 0.0) {
+            anyhow::bail!("embedding backend returned an invalid vector for '{key}'");
+        }
+        let vector_digest = identity_vector_digest(&vector);
+        if profile.input_digests.insert(key.clone(), input_digest.clone()).is_some() {
+            anyhow::bail!("duplicate embedding identity '{key}'");
+        }
+        profile.vector_digests.insert(key, vector_digest.clone());
+        let mut columns = row.columns().to_vec();
+        columns[row.schema().index_of("embedding")?] = super::convert::make_embedding_col_from_option(Some(&vector));
+        for (name, value) in [
+            ("semantic_input_digest", input_digest.as_str()),
+            ("semantic_profile_digest", profile.profile_digest.as_str()),
+            ("semantic_vector_digest", vector_digest.as_str()),
+            ("semantic_state", "ready"),
+        ] {
+            columns[row.schema().index_of(name)?] = Arc::new(StringArray::from(vec![value]));
+        }
+        *row = RecordBatch::try_new(row.schema(), columns)?;
+    }
+    Ok(profile)
+}
+
+#[cfg(feature = "tract-engine")]
+fn embedding_snapshot_digest(snapshot: &Path) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    for relative in crate::embed::tract_engine::REQUIRED_FILES {
+        hash.update((relative.len() as u64).to_le_bytes());
+        hash.update(relative.as_bytes());
+        let mut file = std::fs::File::open(snapshot.join(relative))?;
+        loop {
+            let count = file.read(&mut buffer)?;
+            if count == 0 { break; }
+            hash.update(&buffer[..count]);
+        }
+    }
+    Ok(hex_encode(&hash.finalize()))
+}
+
+pub(crate) async fn recompute_configured_vectors(
+    workspace: &Path,
+    rows: &mut Vec<RecordBatch>,
+) -> anyhow::Result<Option<IdentityV5EmbeddingProvenance>> {
+    if !rows.iter().any(|row| row.column_by_name("embedding").is_some_and(|column| !column.is_null(0))) {
+        return Ok(None);
+    }
+    #[cfg(all(feature = "semantic-search", any(test, all(feature = "test-helpers", debug_assertions))))]
+    {
+        if crate::workspace::load_config(workspace)?.embedding.as_ref()
+            .is_some_and(|config| config.model == "forgeplan-test")
+        {
+            let profile = test_identity_profile(workspace)?;
+            let backend = super::store::semantic_backend_for_test(workspace)?
+                .ok_or_else(|| anyhow::anyhow!("configured test embedding backend is not installed"))?;
+            let mut candidate = rows.clone();
+            let profile = recompute_identity_vectors(&mut candidate, profile, |input| backend(input))?;
+            validate_current_embedding_profile(workspace, &profile)?;
+            *rows = candidate;
+            return Ok(Some(profile));
+        }
+    }
+    #[cfg(not(feature = "tract-engine"))]
+    {
+        let _ = workspace;
+        anyhow::bail!("legacy embeddings require the configured embedding backend, unavailable in this build");
+    }
+    #[cfg(feature = "tract-engine")]
+    {
+        let config = crate::workspace::load_config(workspace)?.embedding
+            .ok_or_else(|| anyhow::anyhow!("legacy vectors require an explicitly configured embedding model"))?;
+        let model = config.model.clone();
+        let chunk_size = config.chunk_size;
+        let mut inputs = rows.clone();
+        let (recomputed, profile) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let repo = crate::embed::resolve_repo(&model)
+                .ok_or_else(|| anyhow::anyhow!("unsupported embedding model '{model}'"))?;
+            let snapshot = crate::embed::tract_engine::find_snapshot(&crate::embed::resolve_cache_dir(), repo)
+                .ok_or_else(|| anyhow::anyhow!("configured embedding model '{model}' has no cached snapshot"))?;
+            let snapshot_id = snapshot.file_name().and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("embedding snapshot has no valid revision"))?.to_string();
+            let snapshot_digest = embedding_snapshot_digest(&snapshot)?;
+            let mut embedder = crate::embed::Embedder::from_snapshot(&snapshot, &model)?;
+            let dimension = embedder.dim();
+            let profile = IdentityV5EmbeddingProvenance {
+                model, repository: repo.to_string(), snapshot_id, snapshot_digest: snapshot_digest.clone(),
+                implementation: "forgeplan-tract-bge-m3-cls-l2-512-v1".into(), profile_digest: String::new(),
+                chunk_size, dimension, input_digests: BTreeMap::new(), vector_digests: BTreeMap::new(),
+            };
+            let profile = recompute_identity_vectors(&mut inputs, profile, |text| embedder.embed(text))?;
+            if embedding_snapshot_digest(&snapshot)? != snapshot_digest {
+                anyhow::bail!("embedding snapshot changed during recomputation");
+            }
+            Ok((inputs, profile))
+        }).await??;
+        let current = crate::workspace::load_config(workspace)?.embedding
+            .ok_or_else(|| anyhow::anyhow!("embedding configuration disappeared during recomputation"))?;
+        if current.model != profile.model || current.chunk_size != profile.chunk_size {
+            anyhow::bail!("embedding profile changed during recomputation");
+        }
+        *rows = recomputed;
+        Ok(Some(profile))
+    }
+}
+
+pub(crate) fn validate_current_embedding_profile(
+    workspace: &Path,
+    profile: &IdentityV5EmbeddingProvenance,
+) -> anyhow::Result<()> {
+    if profile.implementation == "forgeplan-test-only" {
+        #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+        {
+            let config = crate::workspace::load_config(workspace)?.embedding
+                .ok_or_else(|| anyhow::anyhow!("embedding model configuration is missing"))?;
+            if config.model == "forgeplan-test" && config.chunk_size == profile.chunk_size
+                && profile.model == "forgeplan-test" && profile.repository == "test-only"
+                && profile.snapshot_id == "in-process" && profile.snapshot_digest == identity_input_digest("forgeplan-test")
+                && profile.dimension == super::schema::EMBEDDING_DIM as usize
+                && profile.profile_digest == identity_profile_digest(profile)
+                && super::store::semantic_backend_for_test(workspace)?.is_some()
+            {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("test embedding profile has no matching live test backend");
+    }
+    #[cfg(not(feature = "tract-engine"))]
+    {
+        let _ = (workspace, profile);
+        anyhow::bail!("embedding backend is unavailable in this build");
+    }
+    #[cfg(feature = "tract-engine")]
+    {
+        if profile.implementation != "forgeplan-tract-bge-m3-cls-l2-512-v1"
+            || profile.profile_digest != identity_profile_digest(profile)
+        {
+            anyhow::bail!("embedding implementation or profile fingerprint does not match");
+        }
+        let config = crate::workspace::load_config(workspace)?.embedding
+            .ok_or_else(|| anyhow::anyhow!("embedding model configuration is missing"))?;
+        if config.model != profile.model || config.chunk_size != profile.chunk_size {
+            anyhow::bail!("embedding profile changed before publication");
+        }
+        let repo = crate::embed::resolve_repo(&profile.model)
+            .ok_or_else(|| anyhow::anyhow!("unsupported embedding model"))?;
+        if repo != profile.repository {
+            anyhow::bail!("embedding model repository changed before publication");
+        }
+        let snapshot = crate::embed::tract_engine::find_snapshot(&crate::embed::resolve_cache_dir(), repo)
+            .ok_or_else(|| anyhow::anyhow!("embedding snapshot disappeared before publication"))?;
+        if snapshot.file_name().and_then(|name| name.to_str()) != Some(profile.snapshot_id.as_str())
+            || embedding_snapshot_digest(&snapshot)? != profile.snapshot_digest
+        {
+            anyhow::bail!("embedding snapshot changed before publication");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+pub(crate) fn test_identity_profile(workspace: &Path) -> anyhow::Result<IdentityV5EmbeddingProvenance> {
+    let config = crate::workspace::load_config(workspace)?.embedding.unwrap_or_default();
+    if config.model != "forgeplan-test" || super::store::semantic_backend_for_test(workspace)?.is_none() {
+        anyhow::bail!("configured test embedding backend is not installed");
+    }
+    let mut profile = IdentityV5EmbeddingProvenance {
+        model: config.model, repository: "test-only".into(), snapshot_id: "in-process".into(),
+        snapshot_digest: identity_input_digest("forgeplan-test"), implementation: "forgeplan-test-only".into(),
+        profile_digest: String::new(), chunk_size: config.chunk_size,
+        dimension: super::schema::EMBEDDING_DIM as usize,
+        input_digests: BTreeMap::new(), vector_digests: BTreeMap::new(),
+    };
+    profile.profile_digest = identity_profile_digest(&profile);
+    Ok(profile)
+}
+
+/// Resolve the configured model into a pinned profile without downloading it.
+#[cfg(feature = "semantic-search")]
+pub(crate) fn configured_identity_profile(
+    workspace: &Path,
+    existing_profile: bool,
+) -> anyhow::Result<Option<IdentityV5EmbeddingProvenance>> {
+    let config = crate::workspace::load_config(workspace)?;
+    let Some(config) = config.embedding else {
+        if existing_profile {
+            anyhow::bail!("embedding model configuration is missing for the existing profile");
+        }
+        return Ok(None);
+    };
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+    if config.model == "forgeplan-test" {
+        return Ok(Some(test_identity_profile(workspace)?));
+    }
+    let repo = crate::embed::resolve_repo(&config.model)
+        .ok_or_else(|| anyhow::anyhow!("unsupported embedding model '{}'", config.model))?;
+    let snapshot = crate::embed::tract_engine::find_snapshot(&crate::embed::resolve_cache_dir(), repo)
+        .ok_or_else(|| anyhow::anyhow!("configured embedding model '{}' has no cached snapshot", config.model))?;
+    let revision = snapshot.file_name().and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty()).ok_or_else(|| anyhow::anyhow!("embedding snapshot has no revision"))?;
+    let dimension = crate::embed::embedding_dim(&config.model);
+    if dimension != super::schema::EMBEDDING_DIM as usize {
+        anyhow::bail!("configured embedding dimension {dimension} is incompatible with identity-v5");
+    }
+    let mut profile = IdentityV5EmbeddingProvenance {
+        model: config.model, repository: repo.to_string(), snapshot_id: revision.to_string(),
+        snapshot_digest: embedding_snapshot_digest(&snapshot)?, implementation: "forgeplan-tract-bge-m3-cls-l2-512-v1".into(),
+        profile_digest: String::new(), chunk_size: config.chunk_size, dimension,
+        input_digests: BTreeMap::new(), vector_digests: BTreeMap::new(),
+    };
+    profile.profile_digest = identity_profile_digest(&profile);
+    Ok(Some(profile))
+}
+
+/// Persist a profile before any row may reference it. Existing row bindings
+/// remain stale rather than becoming authoritative for a different model.
+#[cfg(any(test, feature = "semantic-search"))]
+pub(crate) fn publish_identity_semantic_profile(
+    workspace: &Path,
+    profile: &IdentityV5EmbeddingProvenance,
+    lock: &crate::workspace::lock::WorkspaceLock,
+) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    anyhow::bail!("legacy semantic publication is unavailable on Windows");
+    use crate::workspace::lock::WorkspaceReadPermit;
+    lock.matches_workspace(workspace)?;
+    validate_current_embedding_profile(workspace, profile)?;
+    let lance = workspace.join("lance");
+    let mut marker = read_identity_v5_marker(&lance)?
+        .ok_or_else(|| anyhow::anyhow!("identity-v5 readiness is missing"))?;
+    let semantic = marker.semantic.as_mut()
+        .ok_or_else(|| anyhow::anyhow!("identity-v5 semantic protocol is not activated"))?;
+    if semantic.active_profile_digest.as_deref() == Some(profile.profile_digest.as_str()) {
+        return Ok(());
+    }
+    semantic.active_profile_digest = Some(profile.profile_digest.clone());
+    marker.embeddings = Some(profile.clone());
+    publish_identity_v5_marker(&lance, &marker)
+}
+
+#[cfg(feature = "semantic-search")]
+pub(crate) fn embed_identity_batch(
+    workspace: &Path,
+    profile: &IdentityV5EmbeddingProvenance,
+    inputs: &[String],
+) -> anyhow::Result<Vec<Vec<f32>>> {
+    validate_current_embedding_profile(workspace, profile)?;
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+    let test = if profile.implementation == "forgeplan-test-only" {
+        super::store::semantic_backend_for_test(workspace)?
+    } else { None };
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+    let vectors = if let Some(test) = test {
+        inputs.iter().map(|input| test(input)).collect::<anyhow::Result<Vec<_>>>()?
+    } else {
+        embed_identity_batch_real(profile, inputs)?
+    };
+    #[cfg(not(any(test, all(feature = "test-helpers", debug_assertions))))]
+    let vectors = embed_identity_batch_real(profile, inputs)?;
+    for vector in &vectors {
+        if vector.len() != profile.dimension || vector.iter().any(|value| !value.is_finite())
+            || !vector.iter().any(|value| *value != 0.0)
+        {
+            anyhow::bail!("embedding backend returned an invalid vector");
+        }
+    }
+    validate_current_embedding_profile(workspace, profile)?;
+    Ok(vectors)
+}
+
+#[cfg(feature = "semantic-search")]
+fn embed_identity_batch_real(
+    profile: &IdentityV5EmbeddingProvenance,
+    inputs: &[String],
+) -> anyhow::Result<Vec<Vec<f32>>> {
+    let snapshot = crate::embed::tract_engine::find_snapshot(&crate::embed::resolve_cache_dir(), &profile.repository)
+        .ok_or_else(|| anyhow::anyhow!("embedding snapshot is unavailable"))?;
+    let mut embedder = crate::embed::Embedder::from_snapshot(&snapshot, &profile.model)?;
+    if embedder.dim() != profile.dimension {
+        anyhow::bail!("embedding backend dimension differs from the pinned profile");
+    }
+    inputs.iter().map(|input| embedder.embed(input)).collect()
+}
+
+/// Embed a query only with the exact pinned migration profile.
+#[cfg(feature = "semantic-search")]
+pub(crate) fn embed_identity_query(
+    workspace: &Path,
+    profile: &IdentityV5EmbeddingProvenance,
+    query: &str,
+) -> anyhow::Result<Vec<f32>> {
+    embed_identity_batch(workspace, profile, &[query.to_string()])?
+        .pop().ok_or_else(|| anyhow::anyhow!("embedding backend returned no query vector"))
+}
+
+/// Complete repair embeddings in memory before any staged-table plan is
+/// committed. A crash can replay the stored stage without re-running the model.
+pub(crate) async fn prepare_semantic_rows_for_repair(
+    workspace: &Path,
+    proof: &crate::artifact::identity_repair::ValidatedLegacyRepair<'_>,
+    had_legacy_vectors: bool,
+    rows: &mut [Vec<RecordBatch>; 3],
+    marker: &mut IdentityV5Marker,
+) -> anyhow::Result<()> {
+    proof.revalidate(workspace)?;
+    let config = crate::workspace::load_config(workspace)?;
+    if config.embedding.is_none() && marker.embeddings.is_none() {
+        if had_legacy_vectors {
+            anyhow::bail!("previous repair vectors require a configured model snapshot for recomputation");
+        }
+        for row in &rows[0] {
+            let embedding = row.column_by_name("embedding")
+                .ok_or_else(|| anyhow::anyhow!("repair artifact lacks embedding column"))?;
+            if !embedding.is_null(0) {
+                anyhow::bail!("repair row has an embedding but no configured model profile");
+            }
+        }
+        return Ok(());
+    }
+    #[cfg(not(feature = "semantic-search"))]
+    {
+        let _ = (rows, marker);
+        anyhow::bail!("configured semantic embedding backend is unavailable in this build");
+    }
+    #[cfg(feature = "semantic-search")]
+    {
+        let workspace_owned = workspace.to_path_buf();
+        let had_profile = marker.embeddings.is_some();
+        let profile = tokio::task::spawn_blocking(move || configured_identity_profile(&workspace_owned, had_profile))
+            .await??.ok_or_else(|| anyhow::anyhow!("repair semantic profile is not configured"))?;
+        let mut work = Vec::new();
+        let mut inputs = Vec::new();
+        for (index, row) in rows[0].iter().enumerate() {
+            if row.num_rows() != 1 || row.schema() != super::schema::artifacts_schema() {
+                anyhow::bail!("repair semantic artifact row has an invalid schema");
+            }
+            let record = super::store::extract_record(row, 0)
+                .ok_or_else(|| anyhow::anyhow!("repair semantic artifact row is invalid"))?;
+            let state = super::store::record_string(row, "semantic_state", 0);
+            if state.as_deref().is_some_and(|value| !["ready", "pending", "running", "failed"].contains(&value)) {
+                anyhow::bail!("repair artifact '{}' has an invalid semantic state", record.canonical_key);
+            }
+            let row_profile = super::store::record_string(row, "semantic_profile_digest", 0);
+            if state.as_deref() == Some("ready") && row_profile.as_deref() == Some(profile.profile_digest.as_str()) {
+                super::store::verify_row_local_semantic_provenance(row, 0, &record, &profile)?;
+                continue;
+            }
+            work.push(index);
+            inputs.push(record.embedding_text(profile.chunk_size));
+        }
+        proof.revalidate(workspace)?;
+        let workspace_owned = workspace.to_path_buf();
+        let pinned = profile.clone();
+        let vectors = if inputs.is_empty() {
+            Vec::new()
+        } else {
+            tokio::task::spawn_blocking(move || embed_identity_batch(&workspace_owned, &pinned, &inputs)).await??
+        };
+        if vectors.len() != work.len() {
+            anyhow::bail!("repair semantic backend returned an unexpected vector count");
+        }
+        proof.revalidate(workspace)?;
+        validate_current_embedding_profile(workspace, &profile)?;
+        for (index, vector) in work.into_iter().zip(vectors) {
+            let row = &mut rows[0][index];
+            let record = super::store::extract_record(row, 0)
+                .ok_or_else(|| anyhow::anyhow!("repair semantic artifact row disappeared"))?;
+            let input_digest = identity_input_digest(&record.embedding_text(profile.chunk_size));
+            let vector_digest = identity_vector_digest(&vector);
+            let mut token = [0u8; 16];
+            use rand::TryRngCore;
+            rand::rngs::OsRng.try_fill_bytes(&mut token)
+                .map_err(|error| anyhow::anyhow!("cannot create repair semantic job: {error}"))?;
+            let job = hex_encode(&token);
+            let schema = row.schema();
+            let mut columns = row.columns().to_vec();
+            columns[schema.index_of("embedding")?] = super::convert::make_embedding_col_from_option(Some(&vector));
+            for (name, value) in [
+                ("semantic_input_digest", input_digest.as_str()),
+                ("semantic_profile_digest", profile.profile_digest.as_str()),
+                ("semantic_vector_digest", vector_digest.as_str()),
+                ("semantic_job_id", job.as_str()),
+                ("semantic_state", "ready"),
+            ] {
+                columns[schema.index_of(name)?] = Arc::new(StringArray::from(vec![value]));
+            }
+            columns[schema.index_of("semantic_attempt_token")?] = Arc::new(StringArray::from(vec![None::<&str>]));
+            *row = RecordBatch::try_new(schema, columns)?;
+        }
+        marker.embeddings = Some(profile.clone());
+        marker.semantic = Some(IdentityV5SemanticProtocol {
+            protocol: 1, active_profile_digest: Some(profile.profile_digest),
+        });
+        proof.revalidate(workspace)?;
+        Ok(())
+    }
+}
+
+/// Re-check a saved repair stage without rerunning the embedding model.
+pub(crate) fn verify_semantic_rows_for_repair(
+    workspace: &Path,
+    proof: &crate::artifact::identity_repair::ValidatedLegacyRepair<'_>,
+    had_legacy_vectors: bool,
+    expected: &[Vec<RecordBatch>; 3],
+    actual: &[Vec<RecordBatch>; 3],
+    marker: &IdentityV5Marker,
+) -> anyhow::Result<()> {
+    use std::collections::BTreeMap;
+    proof.revalidate(workspace)?;
+    if marker.version != IDENTITY_V5_VERSION || !marker.completed
+        || marker.artifacts_table != IDENTITY_V5_ARTIFACTS_TABLE
+        || marker.relations_table != IDENTITY_V5_RELATIONS_TABLE
+        || marker.evidence_table != IDENTITY_V5_EVIDENCE_TABLE
+        || marker.semantic.as_ref().is_none_or(|semantic| semantic.protocol != 1
+            || semantic.active_profile_digest.as_deref() != marker.embeddings.as_ref().map(|p| p.profile_digest.as_str()))
+    {
+        anyhow::bail!("repair marker has an invalid semantic protocol");
+    }
+    for table_index in 0..3 {
+        let mut remaining = actual[table_index].clone();
+        if remaining.len() != expected[table_index].len() {
+            anyhow::bail!("repair staged table {table_index} has an unexpected row count");
+        }
+        for wanted in &expected[table_index] {
+            let wanted_schema = wanted.schema();
+            let position = remaining.iter().position(|candidate| {
+                candidate.schema() == wanted_schema
+                    && candidate.columns().iter().zip(wanted.columns()).zip(wanted_schema.fields())
+                        .all(|((left, right), field)| {
+                            (table_index == 0 && (field.name() == "embedding" || field.name().starts_with("semantic_")))
+                                || left.to_data() == right.to_data()
+                        })
+            }).ok_or_else(|| anyhow::anyhow!("repair staged table {table_index} differs in non-semantic payload"))?;
+            remaining.swap_remove(position);
+        }
+    }
+    let mut keys = BTreeMap::new();
+    for row in &actual[0] {
+        if row.num_rows() != 1 || row.schema() != super::schema::artifacts_schema() {
+            anyhow::bail!("repair staged artifact has an invalid schema");
+        }
+        let key = required_string(row, "canonical_key")?;
+        if keys.insert(key.clone(), ()).is_some() {
+            anyhow::bail!("repair staged artifacts repeat canonical key '{key}'");
+        }
+    }
+    let config = crate::workspace::load_config(workspace)?;
+    if config.embedding.is_none() && marker.embeddings.is_none() {
+        if had_legacy_vectors {
+            anyhow::bail!("previous repair vectors have no configured replacement profile");
+        }
+        for row in &actual[0] {
+            let vector = row.column_by_name("embedding")
+                .ok_or_else(|| anyhow::anyhow!("repair artifact lacks an embedding column"))?;
+            if !vector.is_null(0) || super::store::record_string(row, "semantic_state", 0).as_deref() == Some("ready") {
+                anyhow::bail!("repair row claims semantic readiness without a profile");
+            }
+        }
+    } else {
+        #[cfg(not(feature = "semantic-search"))]
+        anyhow::bail!("configured semantic embedding backend is unavailable in this build");
+        #[cfg(feature = "semantic-search")]
+        {
+            let profile = marker.embeddings.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("repair semantic profile is missing"))?;
+            validate_current_embedding_profile(workspace, profile)?;
+            let configured = configured_identity_profile(workspace, true)?
+                .ok_or_else(|| anyhow::anyhow!("repair semantic profile is not configured"))?;
+            if configured.profile_digest != profile.profile_digest {
+                anyhow::bail!("repair semantic profile no longer matches configuration");
+            }
+            for row in &actual[0] {
+                let record = super::store::extract_record(row, 0)
+                    .ok_or_else(|| anyhow::anyhow!("repair staged artifact is invalid"))?;
+                super::store::verify_row_local_semantic_provenance(row, 0, &record, profile)?;
+            }
+        }
+    }
+    proof.revalidate(workspace)?;
+    Ok(())
+}
+
+pub(crate) async fn table_rows(db: &lancedb::connection::Connection, name: &str) -> anyhow::Result<Vec<RecordBatch>> {
+    let table = db.open_table(name).execute().await?;
+    let batches = crate::db::store::collect_batches(table.query().execute().await?).await?;
+    Ok(batches.into_iter().flat_map(|batch| {
+        (0..batch.num_rows()).map(move |row| batch.slice(row, 1))
+    }).collect())
+}
+
+pub(crate) fn required_string(batch: &RecordBatch, column: &str) -> anyhow::Result<String> {
+    crate::db::store::record_string(batch, column, 0)
+        .ok_or_else(|| anyhow::anyhow!("legacy row has missing or invalid {column}"))
+}
+
+pub(crate) fn replace_string(batch: &RecordBatch, column: &str, value: &str) -> anyhow::Result<RecordBatch> {
+    let index = batch.schema().index_of(column)?;
+    let mut columns = batch.columns().to_vec();
+    columns[index] = Arc::new(StringArray::from(vec![value]));
+    Ok(RecordBatch::try_new(batch.schema(), columns)?)
+}
+
+pub(crate) fn strict_local_reference(candidates: &[crate::artifact::canonical_key::ArtifactCandidate], value: &str) -> anyhow::Result<String> {
+    if value.contains('@') {
+        return Ok(value.to_string());
+    }
+    crate::artifact::canonical_key::resolve_artifact(value, candidates)?
+        .map(|resolved| resolved.identity.canonical_key)
+        .ok_or_else(|| anyhow::anyhow!("legacy reference '{value}' has no matching document"))
+}
+
+/// Reconcile every old row before rebuilding a stage. Preserve its payload;
+/// refuse non-null vectors whose input and model provenance cannot be proven.
+async fn prepare_identity_v5_rows(
+    db: &lancedb::connection::Connection,
+    source: &IdentityV5Source,
+    allow_vectors_for_recompute: bool,
+) -> anyhow::Result<[Vec<RecordBatch>; 3]> {
+    let candidates = identity_v5_candidates(source);
+    let names = db.table_names().execute().await?;
+    let legacy = ["artifacts", "relations", "evidence"];
+    let present = legacy.iter().filter(|name| names.iter().any(|item| item.as_str() == **name)).count();
+    if present != 0 && present != legacy.len() {
+        anyhow::bail!("incomplete legacy index: all three v4 tables are required");
+    }
+    if present == 0 && !source.documents.is_empty() {
+        anyhow::bail!("legacy index is missing; non-empty Markdown cannot be reconciled with its evidence and embeddings");
+    }
+    let mut artifacts = Vec::new();
+    let mut mapped = std::collections::BTreeSet::new();
+    if present != 0 {
+        for row in table_rows(db, "artifacts").await? {
+            let id = required_string(&row, "id")?;
+            let document = source.documents.iter().filter(|doc| doc.display_id == id).collect::<Vec<_>>();
+            if document.len() != 1 || !mapped.insert(id.clone()) {
+                anyhow::bail!("legacy artifact '{id}' cannot be mapped uniquely to Markdown");
+            }
+            let document = document[0];
+            for (name, expected) in [("kind", document.kind.as_str()), ("status", document.status.as_str()), ("title", document.title.as_str()), ("depth", document.depth.as_str())] {
+                if required_string(&row, name)? != expected {
+                    anyhow::bail!("legacy artifact '{id}' differs from Markdown in {name}");
+                }
+            }
+            let old_body = crate::db::store::record_large_string(&row, "body", 0)
+                .ok_or_else(|| anyhow::anyhow!("legacy artifact '{id}' has no valid body"))?;
+            if old_body != document.body && old_body != document.full_text {
+                anyhow::bail!("legacy artifact '{id}' differs from Markdown in body");
+            }
+            for (name, expected) in [("author", document.author.as_deref()), ("valid_until", document.valid_until.as_deref())] {
+                if crate::db::store::record_string(&row, name, 0).as_deref() != expected {
+                    anyhow::bail!("legacy artifact '{id}' differs from Markdown in {name}");
+                }
+            }
+            if crate::db::convert::extract_tags(&row, 0) != document.tags {
+                anyhow::bail!("legacy artifact '{id}' differs from Markdown in tags");
+            }
+            let embedding = row.column_by_name("embedding")
+                .ok_or_else(|| anyhow::anyhow!("legacy artifact '{id}' has no embedding column"))?;
+            if !embedding.is_null(0) && !allow_vectors_for_recompute {
+                anyhow::bail!("legacy artifact '{id}' has an embedding without verifiable input, model profile, and dimension provenance; migration cannot publish until it is reconciled");
+            }
+            let target = super::schema::artifacts_schema();
+            for field in row.schema().fields() {
+                if target.field_with_name(field.name()).is_err() {
+                    anyhow::bail!("legacy artifact '{id}' has unsupported column {}", field.name());
+                }
+            }
+            if let Some(existing_key) = crate::db::store::record_string(&row, "canonical_key", 0) {
+                if existing_key != document.canonical_key {
+                    anyhow::bail!("legacy artifact '{id}' has conflicting canonical key '{existing_key}'");
+                }
+            }
+            let mut columns = Vec::with_capacity(target.fields().len());
+            for field in target.fields() {
+                if field.name() == "canonical_key" {
+                    columns.push(Arc::new(StringArray::from(vec![document.canonical_key.as_str()])) as Arc<dyn arrow_array::Array>);
+                } else if field.name().starts_with("semantic_") {
+                    columns.push(Arc::new(StringArray::from(vec![None::<&str>])) as Arc<dyn arrow_array::Array>);
+                } else {
+                    let column = row.column_by_name(field.name()).ok_or_else(|| anyhow::anyhow!("legacy artifacts missing {}", field.name()))?;
+                    if column.data_type() != field.data_type() {
+                        anyhow::bail!("legacy artifacts has incompatible {}", field.name());
+                    }
+                    columns.push(column.clone());
+                }
+            }
+            let old_parent = crate::db::store::record_string(&row, "parent_epic", 0)
+                .as_deref().map(|parent| resolve_reference(&candidates, parent)).transpose()?;
+            let source_parent = document.parent_epic.as_deref()
+                .map(|parent| resolve_reference(&candidates, parent)).transpose()?;
+            if old_parent != source_parent {
+                anyhow::bail!("legacy artifact '{id}' differs from Markdown in parent_epic");
+            }
+            let mut migrated = RecordBatch::try_new(target, columns)?;
+            if let Some(parent) = old_parent {
+                migrated = replace_string(&migrated, "parent_epic", &parent)?;
+            }
+            artifacts.push(migrated);
+        }
+    }
+    for document in &source.documents {
+        if !mapped.contains(&document.display_id) {
+            let artifact = crate::db::store::NewArtifact {
+                canonical_key: document.canonical_key.clone(), id: document.display_id.clone(),
+                kind: document.kind.clone(), status: document.status.clone(), title: document.title.clone(),
+                body: document.full_text.clone(), depth: document.depth.clone(), author: document.author.clone(),
+                parent_epic: document.parent_epic.as_deref()
+                    .map(|parent| resolve_reference(&candidates, parent)).transpose()?,
+                valid_until: document.valid_until.clone(),
+                tags: document.tags.clone(),
+            };
+            let row = crate::db::convert::artifact_to_batch(&artifact, &document.created_at)?;
+            artifacts.push(replace_string(&row, "updated_at", &document.updated_at)?);
+        }
+    }
+    let mut expected_edges = BTreeMap::<(String, String, String), usize>::new();
+    for document in &source.documents {
+        for (target, relation) in &document.links {
+            let target = resolve_reference(&candidates, target)?;
+            *expected_edges.entry((document.canonical_key.clone(), target, relation.clone())).or_default() += 1;
+        }
+    }
+    let mut relations = Vec::new();
+    if present != 0 {
+        for row in table_rows(db, "relations").await? {
+            let source_key = strict_local_reference(&candidates, &required_string(&row, "source_id")?)?;
+            let target_key = resolve_reference(&candidates, &required_string(&row, "target_id")?)?;
+            let edge = (source_key.clone(), target_key.clone(), required_string(&row, "relation_type")?);
+            match expected_edges.get_mut(&edge) {
+                Some(count) if *count > 0 => *count -= 1,
+                _ => anyhow::bail!("legacy relation {edge:?} is absent from Markdown"),
+            }
+            let row = replace_string(&row, "source_id", &source_key)?;
+            relations.push(replace_string(&row, "target_id", &target_key)?);
+        }
+    }
+    for ((source_key, target, relation), count) in expected_edges {
+        for _ in 0..count {
+            let document = source.documents.iter().find(|doc| doc.canonical_key == source_key)
+                .ok_or_else(|| anyhow::anyhow!("relation source disappeared"))?;
+            relations.push(crate::db::convert::relation_to_batch(&source_key, &target, &relation, &document.created_at)?);
+        }
+    }
+    let mut evidence = Vec::new();
+    let mut evidence_ids = std::collections::BTreeSet::new();
+    if present != 0 {
+        for row in table_rows(db, "evidence").await? {
+            let id = required_string(&row, "id")?;
+            if !evidence_ids.insert(id.clone()) {
+                anyhow::bail!("duplicate legacy evidence id '{id}'");
+            }
+            for (index, field) in row.schema().fields().iter().enumerate() {
+                if !field.is_nullable() && row.column(index).is_null(0) {
+                    anyhow::bail!("legacy evidence '{id}' has null {}", field.name());
+                }
+            }
+            let key = strict_local_reference(&candidates, &required_string(&row, "artifact_id")?)?;
+            evidence.push(replace_string(&row, "artifact_id", &key)?);
+        }
+    }
+    Ok([artifacts, relations, evidence])
+}
+
+pub(crate) fn identity_v5_candidates(source: &IdentityV5Source) -> Vec<crate::artifact::canonical_key::ArtifactCandidate> {
+    source.documents.iter().map(|document| crate::artifact::canonical_key::ArtifactCandidate {
+        canonical_key: document.canonical_key.clone(),
+        display_id: document.display_id.clone(),
+        title: document.title.clone(),
+        relative_path: document.relative_path.clone().into(),
+    }).collect()
+}
+
+/// Preserve forward and cross-source references, but refuse ambiguous local ones.
+pub(crate) fn resolve_reference(
+    candidates: &[crate::artifact::canonical_key::ArtifactCandidate],
+    target: &str,
+) -> anyhow::Result<String> {
+    if target.contains('@') {
+        return Ok(target.to_string());
+    }
+    Ok(crate::artifact::canonical_key::resolve_structural_target(target, candidates)?
+        .map(|resolved| resolved.identity.canonical_key)
+        .unwrap_or_else(|| target.to_string()))
 }
 
 /// Read the staged artifacts table back and compare it with the Markdown it
@@ -901,53 +1875,30 @@ pub async fn verify_identity_v5_round_trip(
     lance_dir: &Path,
     source: &IdentityV5Source,
 ) -> anyhow::Result<()> {
-    let db = lancedb::connect(
-        lance_dir
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("LanceDB path contains non-UTF-8 characters"))?,
-    )
-    .execute()
-    .await?;
-    let table = db
-        .open_table(IDENTITY_V5_ARTIFACTS_TABLE)
-        .execute()
-        .await?;
-    let batches = crate::db::store::collect_batches(table.query().execute().await?).await?;
+    let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF-8 LanceDB path"))?)
+        .execute().await?;
+    let expected = prepare_identity_v5_rows(&db, source, false).await?;
+    verify_prepared_identity_v5_rows(&db, &expected).await
+}
 
-    let mut rows = 0usize;
-    for batch in &batches {
-        for row in 0..batch.num_rows() {
-            rows += 1;
-            let key = crate::db::store::record_string(batch, "canonical_key", row)
-                .ok_or_else(|| anyhow::anyhow!("a staged row carries no canonical key"))?;
-            let source_document = source
-                .documents
-                .iter()
-                .find(|document| document.canonical_key == key)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("the staged index holds the unknown key '{key}'")
-                })?;
-            let id = crate::db::store::record_string(batch, "id", row).unwrap_or_default();
-            if id != source_document.display_id {
-                anyhow::bail!(
-                    "the staged row for '{key}' carries the display id '{id}' but the source declares '{}'",
-                    source_document.display_id
-                );
-            }
-            let body = crate::db::store::record_large_string(batch, "body", row)
-                .unwrap_or_default();
-            if body != source_document.body {
-                anyhow::bail!(
-                    "the staged row for '{key}' does not carry the body the Markdown holds"
-                );
-            }
+pub(crate) async fn verify_prepared_identity_v5_rows(
+    db: &lancedb::connection::Connection,
+    expected: &[Vec<RecordBatch>; 3],
+) -> anyhow::Result<()> {
+    for (name, expected_rows) in [IDENTITY_V5_ARTIFACTS_TABLE, IDENTITY_V5_RELATIONS_TABLE, IDENTITY_V5_EVIDENCE_TABLE]
+        .into_iter().zip(expected.iter())
+    {
+        let mut actual = table_rows(&db, name).await?;
+        if actual.len() != expected_rows.len() {
+            anyhow::bail!("{name} row count does not match the reconciled source");
         }
-    }
-    if rows != source.documents.len() {
-        anyhow::bail!(
-            "the staged index holds {rows} rows but the Markdown holds {} documents",
-            source.documents.len()
-        );
+        for expected_row in expected_rows {
+            let position = actual.iter().position(|row| {
+                row.schema() == expected_row.schema()
+                    && row.columns().iter().zip(expected_row.columns()).all(|(left, right)| left.to_data() == right.to_data())
+            }).ok_or_else(|| anyhow::anyhow!("{name} has a missing or changed staged row"))?;
+            actual.swap_remove(position);
+        }
     }
     Ok(())
 }
@@ -978,17 +1929,989 @@ pub async fn legacy_artifact_row_count(lance_dir: &Path) -> anyhow::Result<usize
     .await?;
     Ok(batches.iter().map(|batch| batch.num_rows()).sum())
 }
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdentityDeleteIntent {
+    version: u32,
+    transaction_id: String,
+    workspace: String,
+    canonical_key: String,
+    relative_path: String,
+    recorded_at: String,
+    source_digest: String,
+    preimage: String,
+    preimage_digest: String,
+    digest: String,
+}
+
+fn identity_delete_intent_root(workspace: &Path) -> PathBuf {
+    workspace.join("lance/identity-delete-intents")
+}
+
+fn identity_delete_intent_digest(intent: &IdentityDeleteIntent) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut copy = intent.clone();
+    copy.digest.clear();
+    Ok(hex_encode(&Sha256::digest(serde_json::to_vec(&copy)?)))
+}
+
+fn read_identity_delete_intents(workspace: &Path) -> anyhow::Result<Vec<(PathBuf, IdentityDeleteIntent)>> {
+    use sha2::{Digest, Sha256};
+    let root = identity_delete_intent_root(workspace);
+    let metadata = match std::fs::symlink_metadata(&root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        anyhow::bail!("identity delete intent root is not a real directory");
+    }
+    let canonical_workspace = std::fs::canonicalize(workspace)?;
+    let mut entries = std::fs::read_dir(root)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    let mut intents = Vec::with_capacity(entries.len());
+    let mut keys = std::collections::BTreeSet::new();
+    for entry in entries {
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            anyhow::bail!("identity delete intent is not a regular file: {}", path.display());
+        }
+        let intent: IdentityDeleteIntent = serde_json::from_slice(&std::fs::read(&path)?)?;
+        let expected_name = format!("{}.json", intent.transaction_id);
+        let document = parse_identity_v5_document(&intent.relative_path, &intent.preimage, &intent.recorded_at)?;
+        let relative = Path::new(&intent.relative_path);
+        if intent.version != 1 || !rebuild_transaction_id(&intent.transaction_id)
+            || entry.file_name() != std::ffi::OsStr::new(&expected_name) || Path::new(&intent.workspace) != canonical_workspace
+            || relative.is_absolute() || relative.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+            || !lowercase_digest(&intent.source_digest) || !lowercase_digest(&intent.preimage_digest)
+            || !lowercase_digest(&intent.digest) || identity_delete_intent_digest(&intent)? != intent.digest
+            || hex_encode(&Sha256::digest(intent.preimage.as_bytes())) != intent.preimage_digest
+            || document.canonical_key != intent.canonical_key || !keys.insert(intent.canonical_key.clone())
+        {
+            anyhow::bail!("identity delete intent is damaged or ambiguous: {}", path.display());
+        }
+        intents.push((path, intent));
+    }
+    Ok(intents)
+}
+
+pub(crate) fn has_identity_delete_intents(workspace: &Path) -> anyhow::Result<bool> {
+    Ok(!read_identity_delete_intents(workspace)?.is_empty())
+}
+
+/// Durably bind a canonical preimage to one file-first legacy deletion. Call
+/// only after selector preflight and before moving or unlinking that file.
+pub async fn begin_identity_delete_intent(
+    workspace: &Path,
+    guard: &crate::workspace::lock::WorkspaceLock,
+    canonical_key: &str,
+    canonical_path: &Path,
+) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    anyhow::bail!("legacy identity deletion is unavailable on Windows");
+    use crate::workspace::lock::WorkspaceReadPermit;
+    use rand::TryRngCore;
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    guard.matches_workspace(workspace)?;
+    let source = read_identity_v5_source(workspace).await?;
+    if verify_identity_v5_source(&source).is_blocked() {
+        anyhow::bail!("cannot record deletion from an ambiguous canonical capture");
+    }
+    let document = source.documents.iter().find(|document| document.canonical_key == canonical_key)
+        .ok_or_else(|| anyhow::anyhow!("delete key '{canonical_key}' is absent from canonical capture"))?;
+    let expected_path = workspace.join(&document.relative_path);
+    if std::fs::canonicalize(canonical_path)? != std::fs::canonicalize(&expected_path)? {
+        anyhow::bail!("delete path does not match canonical key '{canonical_key}'");
+    }
+    let bytes = std::fs::read(&expected_path)?;
+    if bytes != document.full_text.as_bytes() {
+        anyhow::bail!("delete preimage changed after canonical capture");
+    }
+    let store = crate::db::store::LanceStore::open(workspace).await?;
+    store.ensure_identity_v5_writable(guard)?;
+    let record = store.get_record(guard, canonical_key).await?
+        .ok_or_else(|| anyhow::anyhow!("delete key '{canonical_key}' has no indexed row"))?;
+    if record.canonical_key != canonical_key || record.id != document.display_id {
+        anyhow::bail!("delete preimage does not match its indexed identity");
+    }
+    let drift = crate::projection::compare_projection(guard, &store, workspace, &record).await?;
+    if !drift.unwritable.is_empty() {
+        anyhow::bail!("delete preimage has unwritable projection drift: {:?}", drift.unwritable);
+    }
+    if read_identity_v5_source(workspace).await?.source_digest != source.source_digest {
+        anyhow::bail!("delete source changed while recording its preimage");
+    }
+    let existing = read_identity_delete_intents(workspace)?;
+    if let Some((_, intent)) = existing.iter().find(|(_, intent)| intent.canonical_key == canonical_key) {
+        if intent.preimage.as_bytes() == bytes && intent.relative_path == document.relative_path {
+            return Ok(());
+        }
+        anyhow::bail!("an unresolved delete intent already exists for '{canonical_key}'");
+    }
+    let mut token = [0u8; 16];
+    rand::rngs::OsRng.try_fill_bytes(&mut token)
+        .map_err(|error| anyhow::anyhow!("cannot mint delete intent transaction: {error}"))?;
+    let transaction_id = hex_encode(&token);
+    let mut intent = IdentityDeleteIntent {
+        version: 1, transaction_id: transaction_id.clone(),
+        workspace: std::fs::canonicalize(workspace)?.to_str()
+            .ok_or_else(|| anyhow::anyhow!("non-UTF-8 workspace path"))?.to_string(),
+        canonical_key: canonical_key.to_string(), relative_path: document.relative_path.clone(),
+        recorded_at: chrono::Utc::now().to_rfc3339(),
+        source_digest: source.source_digest, preimage: document.full_text.clone(),
+        preimage_digest: hex_encode(&Sha256::digest(&bytes)), digest: String::new(),
+    };
+    intent.digest = identity_delete_intent_digest(&intent)?;
+    let root = identity_delete_intent_root(workspace);
+    std::fs::create_dir_all(&root)?;
+    let root_meta = std::fs::symlink_metadata(&root)?;
+    if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
+        anyhow::bail!("identity delete intent root is not a real directory");
+    }
+    let path = root.join(format!("{transaction_id}.json"));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(&serde_json::to_vec(&intent)?)?;
+    file.sync_all()?;
+    std::fs::File::open(&root)?.sync_all()?;
+    std::fs::File::open(workspace.join("lance"))?.sync_all()?;
+    Ok(())
+}
+
+/// Refuse deletion of an orphan unless an earlier operation durably recorded
+/// its exact canonical preimage before moving the source file.
+pub async fn require_identity_delete_intent(
+    workspace: &Path,
+    guard: &crate::workspace::lock::WorkspaceLock,
+    canonical_key: &str,
+) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    anyhow::bail!("legacy identity deletion is unavailable on Windows");
+    use crate::workspace::lock::WorkspaceReadPermit;
+    guard.matches_workspace(workspace)?;
+    let source = read_identity_v5_source(workspace).await?;
+    if verify_identity_v5_source(&source).is_blocked()
+        || source.documents.iter().any(|document| document.canonical_key == canonical_key)
+    {
+        anyhow::bail!("delete intent requires a complete capture with the key absent");
+    }
+    let intents = read_identity_delete_intents(workspace)?;
+    let intent = intents.iter().find(|(_, intent)| intent.canonical_key == canonical_key)
+        .map(|(_, intent)| intent)
+        .ok_or_else(|| anyhow::anyhow!("canonical key '{canonical_key}' has no durable delete intent"))?;
+    let before = parse_identity_v5_document(&intent.relative_path, &intent.preimage, &intent.recorded_at)?;
+    let store = crate::db::store::LanceStore::open(workspace).await?;
+    store.ensure_identity_v5_writable(guard)?;
+    let record = store.get_record(guard, canonical_key).await?
+        .ok_or_else(|| anyhow::anyhow!("delete intent has no matching indexed row"))?;
+    fn normalize(text: &str) -> &str { text.strip_suffix('\n').unwrap_or(text) }
+    if record.canonical_key != before.canonical_key || record.id != before.display_id
+        || record.kind != before.kind || record.title != before.title || record.status != before.status
+        || record.depth != before.depth || record.author != before.author
+        || record.valid_until != before.valid_until || record.tags != before.tags
+        || (normalize(&record.body) != normalize(&before.body)
+            && normalize(&record.body) != normalize(&before.full_text))
+    {
+        anyhow::bail!("delete intent preimage differs from indexed artifact '{canonical_key}'");
+    }
+    Ok(())
+}
+
+/// Build the exact replacement rows without modifying any published table.
+/// Existing evidence is retained byte-for-byte and an unresolvable attachment
+/// blocks the rebuild rather than being silently discarded.
+async fn prepare_live_identity_rebuild_rows(
+    workspace: &Path,
+    db: &lancedb::connection::Connection,
+    source: &IdentityV5Source,
+) -> anyhow::Result<[Vec<RecordBatch>; 3]> {
+    use std::collections::{BTreeMap, BTreeSet};
+    fn normalize(text: &str) -> &str { text.strip_suffix('\n').unwrap_or(text) }
+    let marker = read_identity_v5_marker(&workspace.join("lance"))?
+        .ok_or_else(|| anyhow::anyhow!("semantic rebuild requires a published identity index"))?;
+    if verify_identity_v5_source(source).is_blocked() {
+        anyhow::bail!("semantic rebuild source has conflicting identities");
+    }
+    let candidates = identity_v5_candidates(source);
+    let intents = read_identity_delete_intents(workspace)?;
+    let mut documents: BTreeMap<_, _> = source.documents.iter()
+        .map(|document| (document.canonical_key.as_str(), document)).collect();
+    if documents.len() != source.documents.len() {
+        anyhow::bail!("semantic rebuild source repeats a canonical key");
+    }
+    let mut artifacts = Vec::new();
+    let mut removed = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    for row in table_rows(db, &marker.artifacts_table).await? {
+        if row.schema() != super::schema::artifacts_schema() {
+            anyhow::bail!("semantic rebuild artifact schema differs from the published schema");
+        }
+        let key = required_string(&row, "canonical_key")?;
+        if !seen.insert(key.clone()) {
+            anyhow::bail!("semantic rebuild has duplicate artifact key '{key}'");
+        }
+        let record = super::store::extract_record(&row, 0)
+            .ok_or_else(|| anyhow::anyhow!("semantic rebuild has a malformed artifact row"))?;
+        if let Some(document) = documents.remove(key.as_str()) {
+            let expected_parent = document.parent_epic.as_deref()
+                .map(|parent| resolve_reference(&candidates, parent)).transpose()?;
+            if record.id != document.display_id || record.kind != document.kind
+                || record.title != document.title || record.status != document.status
+                || record.depth != document.depth || record.author != document.author
+                || record.valid_until != document.valid_until || record.tags != document.tags
+                || record.parent_epic != expected_parent
+                || (normalize(&record.body) != normalize(&document.body)
+                    && normalize(&record.body) != normalize(&document.full_text))
+            {
+                anyhow::bail!("semantic rebuild row '{key}' differs from canonical source");
+            }
+            artifacts.push(row);
+        } else {
+            let intent = intents.iter().find(|(_, intent)| intent.canonical_key == key)
+                .map(|(_, intent)| intent)
+                .ok_or_else(|| anyhow::anyhow!("semantic rebuild refuses orphan '{key}' without a durable delete intent"))?;
+            let before = parse_identity_v5_document(&intent.relative_path, &intent.preimage, &intent.recorded_at)?;
+            if record.id != before.display_id || record.kind != before.kind
+                || record.title != before.title || record.status != before.status
+                || record.depth != before.depth || record.author != before.author
+                || record.valid_until != before.valid_until || record.tags != before.tags
+                || (normalize(&record.body) != normalize(&before.body)
+                    && normalize(&record.body) != normalize(&before.full_text))
+            {
+                anyhow::bail!("semantic rebuild delete intent for '{key}' does not match its indexed preimage");
+            }
+            let kind: crate::artifact::types::ArtifactKind = record.kind.parse()?;
+            let dir = workspace.join(kind.dir_name());
+            let metadata = std::fs::symlink_metadata(&dir)
+                .map_err(|error| anyhow::anyhow!("cannot prove complete capture of {}: {error}", dir.display()))?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                anyhow::bail!("cannot prove complete capture of {}", dir.display());
+            }
+            removed.insert(key);
+        }
+    }
+    for document in documents.into_values() {
+        let artifact = crate::db::store::NewArtifact {
+            canonical_key: document.canonical_key.clone(), id: document.display_id.clone(),
+            kind: document.kind.clone(), status: document.status.clone(), title: document.title.clone(),
+            body: document.full_text.clone(), depth: document.depth.clone(), author: document.author.clone(),
+            parent_epic: document.parent_epic.as_deref()
+                .map(|parent| resolve_reference(&candidates, parent)).transpose()?,
+            valid_until: document.valid_until.clone(), tags: document.tags.clone(),
+        };
+        let row = super::convert::artifact_to_batch(&artifact, &document.created_at)?;
+        artifacts.push(replace_string(&row, "updated_at", &document.updated_at)?);
+    }
+    let mut expected = BTreeMap::new();
+    for document in &source.documents {
+        for (target, relation) in &document.links {
+            let edge = (document.canonical_key.clone(), resolve_reference(&candidates, target)?, relation.clone());
+            if expected.insert(edge, document.created_at.clone()).is_some() {
+                anyhow::bail!("semantic rebuild source has a duplicate relation");
+            }
+        }
+    }
+    let mut relations = Vec::new();
+    let mut relation_keys = BTreeSet::new();
+    for row in table_rows(db, &marker.relations_table).await? {
+        if row.schema() != super::schema::relations_schema() {
+            anyhow::bail!("semantic rebuild relation schema differs from the published schema");
+        }
+        let edge = (required_string(&row, "source_id")?, required_string(&row, "target_id")?,
+            required_string(&row, "relation_type")?);
+        let _ = required_string(&row, "created_at")?;
+        if !relation_keys.insert(edge.clone()) {
+            anyhow::bail!("semantic rebuild has duplicate relation {edge:?}");
+        }
+        if expected.remove(&edge).is_some() {
+            relations.push(row);
+        } else if !removed.contains(&edge.0) && !removed.contains(&edge.1) {
+            anyhow::bail!("semantic rebuild relation {edge:?} differs from canonical source");
+        }
+    }
+    for ((source, target, relation), created_at) in expected {
+        relations.push(super::convert::relation_to_batch(&source, &target, &relation, &created_at)?);
+    }
+    let mut evidence_ids = BTreeSet::new();
+    let mut evidence = Vec::new();
+    for row in table_rows(db, &marker.evidence_table).await? {
+        if row.schema() != super::schema::evidence_schema() {
+            anyhow::bail!("semantic rebuild evidence schema differs from the published schema");
+        }
+        let id = required_string(&row, "id")?;
+        let key = required_string(&row, "artifact_id")?;
+        if !evidence_ids.insert(id.clone()) {
+            anyhow::bail!("semantic rebuild has duplicate evidence id '{id}'");
+        }
+        for (index, field) in row.schema().fields().iter().enumerate() {
+            if !field.is_nullable() && row.column(index).is_null(0) {
+                anyhow::bail!("semantic rebuild evidence '{id}' has a missing {}", field.name());
+            }
+        }
+        if !source.documents.iter().any(|document| document.canonical_key == key) {
+            anyhow::bail!("semantic rebuild cannot map evidence '{id}' to a current canonical key");
+        }
+        evidence.push(row);
+    }
+    Ok([artifacts, relations, evidence])
+}
+
+/// Durable owner record for a fixed-name structural rebuild. Its digest binds
+/// the complete plan and is immutable across recovery attempts.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySemanticRebuildManifest {
+    version: u32,
+    transaction_id: String,
+    workspace: String,
+    source_digest: String,
+    old_marker_digest: String,
+    new_marker: IdentityV5Marker,
+    tables: Vec<LegacySemanticRebuildTable>,
+    intent_digests: Vec<String>,
+    digest: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySemanticRebuildTable {
+    name: String,
+    before_digest: String,
+    after_digest: String,
+}
+
+fn legacy_semantic_rebuild_root(workspace: &Path) -> PathBuf {
+    workspace.join("lance/legacy-semantic-rebuild")
+}
+
+fn lowercase_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
+fn rebuild_transaction_id(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
+fn rebuild_manifest_digest(manifest: &LegacySemanticRebuildManifest) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut copy = manifest.clone();
+    copy.digest.clear();
+    Ok(hex_encode(&Sha256::digest(serde_json::to_vec(&copy)?)))
+}
+
+/// Hash all table contents, including relative names and lengths. Symlinks and
+/// non-regular files are never followed or silently skipped.
+pub(crate) fn semantic_rebuild_tree_digest(root: &Path) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    fn visit(path: &Path, relative: &str, hash: &mut Sha256) -> anyhow::Result<()> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                anyhow::bail!("semantic rebuild table contains a reparse point");
+            }
+        }
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!("semantic rebuild table contains a symlink");
+        }
+        hash.update((relative.len() as u64).to_le_bytes());
+        hash.update(relative.as_bytes());
+        if metadata.is_dir() {
+            hash.update(b"D");
+            let mut entries = std::fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let name = entry.file_name().into_string()
+                    .map_err(|_| anyhow::anyhow!("semantic rebuild table has a non-UTF-8 name"))?;
+                let child = if relative.is_empty() { name } else { format!("{relative}/{name}") };
+                visit(&entry.path(), &child, hash)?;
+            }
+        } else if metadata.is_file() {
+            hash.update(b"F");
+            hash.update(metadata.len().to_le_bytes());
+            let mut file = std::fs::File::open(path)?;
+            let mut buf = [0u8; 65536];
+            loop {
+                let count = file.read(&mut buf)?;
+                if count == 0 { break; }
+                hash.update(&buf[..count]);
+            }
+        } else {
+            anyhow::bail!("semantic rebuild table contains a non-regular entry");
+        }
+        Ok(())
+    }
+    let mut hash = Sha256::new();
+    visit(root, "", &mut hash)?;
+    Ok(hex_encode(&hash.finalize()))
+}
+
+fn optional_rebuild_tree_digest(path: &Path) -> anyhow::Result<Option<String>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(Some(semantic_rebuild_tree_digest(path)?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Atomically rename without replacing an existing target. Platforms without a
+/// kernel no-replace primitive fail before any rename.
+pub(crate) fn rename_identity_noreplace(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let source = std::ffi::CString::new(source.as_os_str().as_bytes())?;
+        let destination = std::ffi::CString::new(destination.as_os_str().as_bytes())?;
+        #[cfg(target_os = "macos")]
+        // SAFETY: both C strings remain alive and NUL-terminated for the call.
+        let result = unsafe { libc::renameatx_np(libc::AT_FDCWD, source.as_ptr(), libc::AT_FDCWD, destination.as_ptr(), libc::RENAME_EXCL) };
+        #[cfg(target_os = "linux")]
+        // SAFETY: the syscall receives the documented file descriptors, C strings and flag.
+        let result = unsafe { libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, source.as_ptr(), libc::AT_FDCWD, destination.as_ptr(), libc::RENAME_NOREPLACE) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        crate::constellation::durability::move_noreplace_write_through(source, destination)?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        let _ = (source, destination);
+        anyhow::bail!("atomic no-replace identity rename is unavailable on this platform")
+    }
+}
+
+/// Hash-bound fixed-name swap. The caller owns the durable journal and supplies
+/// an owner-specific admission check; this helper never creates capabilities
+/// or publishes a readiness marker.
+pub(crate) struct FixedTableSwapEntry {
+    pub(crate) name: String,
+    pub(crate) before_digest: Option<String>,
+    pub(crate) after_digest: String,
+}
+
+pub(crate) fn complete_fixed_table_swap<F>(
+    workspace: &Path,
+    staged: &Path,
+    backup: &Path,
+    entries: &[FixedTableSwapEntry],
+    revalidate: F,
+) -> anyhow::Result<()>
+where
+    F: Fn() -> anyhow::Result<()>,
+{
+    #[cfg(windows)]
+    anyhow::bail!("legacy fixed-table swap on Windows requires durable replay acknowledgement");
+    revalidate()?;
+    let names = [IDENTITY_V5_ARTIFACTS_TABLE, IDENTITY_V5_RELATIONS_TABLE, IDENTITY_V5_EVIDENCE_TABLE];
+    if entries.len() != names.len() || entries.iter().zip(names).any(|(entry, name)| {
+        entry.name != name || !lowercase_digest(&entry.after_digest)
+            || entry.before_digest.as_ref().is_some_and(|digest| !lowercase_digest(digest))
+    }) {
+        anyhow::bail!("fixed-table swap plan has invalid table names or hashes");
+    }
+    let lance = workspace.join("lance");
+    #[cfg(windows)]
+    for path in [&lance, staged, backup] {
+        let (_, barrier, diagnostic) = crate::constellation::durability::windows_ntfs_primitive_barrier(path);
+        if barrier.is_none() {
+            anyhow::bail!("fixed-table swap durability unavailable: {diagnostic:?}");
+        }
+    }
+    for path in [&lance, staged, backup] {
+        let metadata = std::fs::symlink_metadata(path)?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                anyhow::bail!("fixed-table swap directory is a reparse point: {}", path.display());
+            }
+        }
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            anyhow::bail!("fixed-table swap directory is invalid: {}", path.display());
+        }
+    }
+    for entry in entries {
+        revalidate()?;
+        let filename = format!("{}.lance", entry.name);
+        let live = lance.join(&filename);
+        let stage = staged.join(&filename);
+        let saved = backup.join(&filename);
+        let current = optional_rebuild_tree_digest(&live)?;
+        let incoming = optional_rebuild_tree_digest(&stage)?;
+        let previous = optional_rebuild_tree_digest(&saved)?;
+        let before = current.as_deref() == entry.before_digest.as_deref()
+            && incoming.as_deref() == Some(entry.after_digest.as_str()) && previous.is_none();
+        let between = entry.before_digest.is_some() && current.is_none()
+            && incoming.as_deref() == Some(entry.after_digest.as_str())
+            && previous.as_deref() == entry.before_digest.as_deref();
+        let after = current.as_deref() == Some(entry.after_digest.as_str()) && incoming.is_none()
+            && previous.as_deref() == entry.before_digest.as_deref();
+        if !(before || between || after) {
+            anyhow::bail!("fixed-table swap '{}' is in an unrecognized state", entry.name);
+        }
+        if before && entry.before_digest.is_some() {
+            revalidate()?;
+            rename_identity_noreplace(&live, &saved)?;
+            #[cfg(not(windows))]
+            {
+            std::fs::File::open(&lance)?.sync_all()?;
+            std::fs::File::open(backup)?.sync_all()?;
+            }
+            revalidate()?;
+        }
+        if before || between {
+            revalidate()?;
+            rename_identity_noreplace(&stage, &live)?;
+            #[cfg(not(windows))]
+            {
+            std::fs::File::open(staged)?.sync_all()?;
+            std::fs::File::open(&lance)?.sync_all()?;
+            }
+            revalidate()?;
+        }
+    }
+    revalidate()
+}
+
+/// A pending, malformed or unreadable rebuild blocks ordinary locks. The
+/// owner path is the only way to recover an interrupted transaction.
+pub(crate) fn check_legacy_semantic_rebuild(workspace: &Path) -> anyhow::Result<()> {
+    let root = legacy_semantic_rebuild_root(workspace);
+    let metadata = match std::fs::symlink_metadata(&root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        anyhow::bail!("semantic rebuild journal root is not a real directory");
+    }
+    let mut entries = std::fs::read_dir(&root)?;
+    if let Some(entry) = entries.next() {
+        let entry = entry?;
+        anyhow::bail!("semantic rebuild requires recovery: {}", entry.path().display());
+    }
+    Ok(())
+}
+
+/// Read-only routing hint; owner acquisition validates the transaction again
+/// after taking the exclusive lock.
+pub(crate) fn pending_legacy_semantic_rebuild(workspace: &Path) -> anyhow::Result<Option<String>> {
+    let root = legacy_semantic_rebuild_root(workspace);
+    let metadata = match std::fs::symlink_metadata(&root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        anyhow::bail!("semantic rebuild journal root is not a real directory");
+    }
+    let mut entries = std::fs::read_dir(&root)?;
+    let Some(entry) = entries.next() else { return Ok(None) };
+    let transaction = entry?.file_name().into_string()
+        .map_err(|_| anyhow::anyhow!("semantic rebuild transaction name is not UTF-8"))?;
+    if entries.next().transpose()?.is_some() || !rebuild_transaction_id(&transaction) {
+        anyhow::bail!("semantic rebuild journal is ambiguous or damaged");
+    }
+    Ok(Some(transaction))
+}
+
+/// Validate the immutable plan before issuing the transaction-bound owner
+/// capability. Table contents and the source are checked again by recovery.
+pub(crate) fn validate_legacy_semantic_rebuild(workspace: &Path, transaction: &str) -> anyhow::Result<String> {
+    if !rebuild_transaction_id(transaction) {
+        anyhow::bail!("invalid semantic rebuild transaction id");
+    }
+    let root = legacy_semantic_rebuild_root(workspace);
+    let root_meta = std::fs::symlink_metadata(&root)?;
+    if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
+        anyhow::bail!("semantic rebuild journal root is not a real directory");
+    }
+    let mut entries = std::fs::read_dir(&root)?;
+    let entry = entries.next().ok_or_else(|| anyhow::anyhow!("semantic rebuild journal is missing"))??;
+    if entries.next().transpose()?.is_some() || entry.file_name() != transaction {
+        anyhow::bail!("semantic rebuild journal is ambiguous");
+    }
+    let dir = entry.path();
+    let metadata = std::fs::symlink_metadata(&dir)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        anyhow::bail!("semantic rebuild transaction is not a real directory");
+    }
+    let path = dir.join("manifest.json");
+    let metadata = std::fs::symlink_metadata(&path)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 1_048_576 {
+        anyhow::bail!("semantic rebuild manifest is not a valid regular file");
+    }
+    let manifest: LegacySemanticRebuildManifest = serde_json::from_slice(&std::fs::read(path)?)?;
+    let canonical = std::fs::canonicalize(workspace)?;
+    let expected_names = [IDENTITY_V5_ARTIFACTS_TABLE, IDENTITY_V5_RELATIONS_TABLE, IDENTITY_V5_EVIDENCE_TABLE];
+    if manifest.version != 1 || manifest.transaction_id != transaction
+        || Path::new(&manifest.workspace) != canonical
+        || !lowercase_digest(&manifest.source_digest) || !lowercase_digest(&manifest.old_marker_digest)
+        || manifest.new_marker.source_digest != manifest.source_digest
+        || manifest.new_marker.version != IDENTITY_V5_VERSION || !manifest.new_marker.completed
+        || manifest.new_marker.artifacts_table != expected_names[0]
+        || manifest.new_marker.relations_table != expected_names[1]
+        || manifest.new_marker.evidence_table != expected_names[2]
+        || manifest.tables.len() != expected_names.len()
+        || manifest.tables.iter().zip(expected_names).any(|(table, name)| {
+            table.name != name || !lowercase_digest(&table.before_digest) || !lowercase_digest(&table.after_digest)
+        })
+        || manifest.intent_digests.iter().any(|digest| !lowercase_digest(digest))
+        || !lowercase_digest(&manifest.digest)
+        || rebuild_manifest_digest(&manifest)? != manifest.digest
+    {
+        anyhow::bail!("semantic rebuild manifest is damaged or belongs to a different transaction");
+    }
+    use sha2::{Digest, Sha256};
+    let lance = workspace.join("lance");
+    let marker_path = identity_v5_marker_path(&lance);
+    let marker_metadata = std::fs::symlink_metadata(&marker_path)?;
+    if !marker_metadata.is_file() || marker_metadata.file_type().is_symlink() {
+        anyhow::bail!("semantic rebuild readiness marker is not a regular file");
+    }
+    let marker_bytes = std::fs::read(&marker_path)?;
+    let marker_digest = hex_encode(&Sha256::digest(&marker_bytes));
+    let new_marker_digest = hex_encode(&Sha256::digest(serde_json::to_vec_pretty(&manifest.new_marker)?));
+    if marker_digest != manifest.old_marker_digest && marker_digest != new_marker_digest {
+        anyhow::bail!("semantic rebuild readiness marker does not match its transaction");
+    }
+    for part in ["staged", "backup"] {
+        let metadata = std::fs::symlink_metadata(dir.join(part))?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            anyhow::bail!("semantic rebuild {part} is not a real directory");
+        }
+    }
+    let mut all_published = true;
+    for table in &manifest.tables {
+        let filename = format!("{}.lance", table.name);
+        let live = optional_rebuild_tree_digest(&lance.join(&filename))?;
+        let staged = optional_rebuild_tree_digest(&dir.join("staged").join(&filename))?;
+        let backup = optional_rebuild_tree_digest(&dir.join("backup").join(&filename))?;
+        let before = live.as_deref() == Some(table.before_digest.as_str())
+            && staged.as_deref() == Some(table.after_digest.as_str()) && backup.is_none();
+        let between = live.is_none() && staged.as_deref() == Some(table.after_digest.as_str())
+            && backup.as_deref() == Some(table.before_digest.as_str());
+        let after = live.as_deref() == Some(table.after_digest.as_str()) && staged.is_none()
+            && backup.as_deref() == Some(table.before_digest.as_str());
+        if !(before || between || after) {
+            anyhow::bail!("semantic rebuild table '{}' is in an unrecognized state", table.name);
+        }
+        all_published &= after;
+    }
+    if marker_digest == new_marker_digest && new_marker_digest != manifest.old_marker_digest && !all_published {
+        anyhow::bail!("semantic rebuild readiness marker is ahead of its tables");
+    }
+    Ok(manifest.digest)
+}
+
+pub(crate) fn sync_rebuild_tree(path: &Path) -> anyhow::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            anyhow::bail!("semantic rebuild stage contains a reparse point");
+        }
+    }
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!("semantic rebuild stage contains a symlink");
+    }
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            sync_rebuild_tree(&entry?.path())?;
+        }
+    } else if !metadata.is_file() {
+        anyhow::bail!("semantic rebuild stage contains a non-regular entry");
+    }
+    #[cfg(not(windows))]
+    std::fs::File::open(path)?.sync_all()?;
+    #[cfg(windows)]
+    if metadata.is_file() {
+        let parent = path.parent().ok_or_else(|| anyhow::anyhow!("stage file has no parent"))?;
+        let (_, barrier, diagnostic) = crate::constellation::durability::windows_ntfs_primitive_barrier(parent);
+        let barrier = barrier.ok_or_else(|| anyhow::anyhow!("stage durability unavailable: {diagnostic:?}"))?;
+        barrier.sync_file(path)?;
+    }
+    Ok(())
+}
+
+/// Build and prove a complete replacement set, then publish only an immutable
+/// pending transaction. No currently published table is changed by this step.
+pub(crate) async fn prepare_legacy_semantic_rebuild(
+    workspace: &Path,
+    guard: &crate::workspace::lock::WorkspaceLock,
+    db: &lancedb::connection::Connection,
+    source: &IdentityV5Source,
+) -> anyhow::Result<String> {
+    use crate::workspace::lock::WorkspaceReadPermit;
+    use rand::TryRngCore;
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    guard.matches_workspace(workspace)?;
+    if !cfg!(any(target_os = "macos", target_os = "linux")) {
+        anyhow::bail!("fixed-name semantic rebuild requires atomic no-replace rename");
+    }
+    check_legacy_semantic_rebuild(workspace)?;
+    let lance = workspace.join("lance");
+    let marker_path = identity_v5_marker_path(&lance);
+    let marker_bytes = std::fs::read(&marker_path)?;
+    let mut marker = read_identity_v5_marker(&lance)?
+        .ok_or_else(|| anyhow::anyhow!("semantic rebuild readiness marker is missing"))?;
+    let rows = prepare_live_identity_rebuild_rows(workspace, db, source).await?;
+    let mut token = [0u8; 16];
+    rand::rngs::OsRng.try_fill_bytes(&mut token)
+        .map_err(|error| anyhow::anyhow!("cannot create semantic rebuild transaction: {error}"))?;
+    let transaction = hex_encode(&token);
+    let temporary = lance.join(format!(".semantic-rebuild-{transaction}"));
+    std::fs::create_dir(&temporary)?;
+    struct UnpublishedStage(PathBuf);
+    impl Drop for UnpublishedStage {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+    let temporary_guard = UnpublishedStage(temporary.clone());
+    std::fs::create_dir(temporary.join("staged"))?;
+    std::fs::create_dir(temporary.join("backup"))?;
+    let stage_path = temporary.join("staged");
+    write_prepared_identity_v5_rows(&stage_path, &rows).await?;
+    let stage_db = lancedb::connect(stage_path.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF-8 stage path"))?)
+        .execute().await?;
+    verify_prepared_identity_v5_rows(&stage_db, &rows).await?;
+    drop(stage_db);
+    sync_rebuild_tree(&stage_path)?;
+    if read_identity_v5_source(workspace).await?.source_digest != source.source_digest
+        || std::fs::read(&marker_path)? != marker_bytes
+    {
+        anyhow::bail!("canonical source or marker changed during semantic staging");
+    }
+    let mut tables = Vec::with_capacity(3);
+    for name in [IDENTITY_V5_ARTIFACTS_TABLE, IDENTITY_V5_RELATIONS_TABLE, IDENTITY_V5_EVIDENCE_TABLE] {
+        let filename = format!("{name}.lance");
+        tables.push(LegacySemanticRebuildTable {
+            name: name.to_string(),
+            before_digest: semantic_rebuild_tree_digest(&lance.join(&filename))?,
+            after_digest: semantic_rebuild_tree_digest(&stage_path.join(&filename))?,
+        });
+    }
+    marker.source_digest = source.source_digest.clone();
+    marker.document_count = source.documents.len();
+    let mut manifest = LegacySemanticRebuildManifest {
+        version: 1, transaction_id: transaction.clone(),
+        workspace: std::fs::canonicalize(workspace)?.to_str()
+            .ok_or_else(|| anyhow::anyhow!("non-UTF-8 workspace path"))?.to_string(),
+        source_digest: source.source_digest.clone(), old_marker_digest: hex_encode(&Sha256::digest(&marker_bytes)),
+        new_marker: marker, tables,
+        intent_digests: read_identity_delete_intents(workspace)?.into_iter().map(|(_, intent)| intent.digest).collect(),
+        digest: String::new(),
+    };
+    manifest.digest = rebuild_manifest_digest(&manifest)?;
+    let mut manifest_file = std::fs::OpenOptions::new().write(true).create_new(true)
+        .open(temporary.join("manifest.json"))?;
+    manifest_file.write_all(&serde_json::to_vec(&manifest)?)?;
+    manifest_file.sync_all()?;
+    std::fs::File::open(&temporary)?.sync_all()?;
+    let root = legacy_semantic_rebuild_root(workspace);
+    match std::fs::create_dir(&root) {
+        Ok(()) => std::fs::File::open(&lance)?.sync_all()?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => check_legacy_semantic_rebuild(workspace)?,
+        Err(error) => return Err(error.into()),
+    }
+    rename_identity_noreplace(&temporary, &root.join(&transaction))?;
+    std::fs::File::open(&root)?.sync_all()?;
+    drop(temporary_guard);
+    Ok(transaction)
+}
+
+/// Finish an interrupted fixed-name swap under the transaction-bound owner
+/// capability. Every intermediate filesystem state is checked against the
+/// immutable pre/post hashes before making the next durable transition.
+pub(crate) async fn resume_legacy_semantic_rebuild(
+    workspace: &Path,
+    guard: &crate::workspace::lock::WorkspaceLock,
+    transaction: &str,
+) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    anyhow::bail!("legacy identity rebuild is unavailable on Windows");
+    let digest = validate_legacy_semantic_rebuild(workspace, transaction)?;
+    if !guard.is_legacy_semantic_rebuild_guard_for(workspace, transaction, &digest) {
+        anyhow::bail!("semantic rebuild requires its transaction-bound owner lock");
+    }
+    let root = legacy_semantic_rebuild_root(workspace);
+    let dir = root.join(transaction);
+    let manifest: LegacySemanticRebuildManifest =
+        serde_json::from_slice(&std::fs::read(dir.join("manifest.json"))?)?;
+    if read_identity_v5_source(workspace).await?.source_digest != manifest.source_digest {
+        anyhow::bail!("canonical source changed while semantic rebuild was pending");
+    }
+    let lance = workspace.join("lance");
+    let entries = manifest.tables.iter().map(|table| FixedTableSwapEntry {
+        name: table.name.clone(),
+        before_digest: Some(table.before_digest.clone()),
+        after_digest: table.after_digest.clone(),
+    }).collect::<Vec<_>>();
+    complete_fixed_table_swap(workspace, &dir.join("staged"), &dir.join("backup"), &entries, || {
+        if !guard.is_legacy_semantic_rebuild_guard_for(workspace, transaction, &digest)
+            || validate_legacy_semantic_rebuild(workspace, transaction)? != digest
+        {
+            anyhow::bail!("semantic rebuild owner or journal changed during recovery");
+        }
+        Ok(())
+    })?;
+    let source = read_identity_v5_source(workspace).await?;
+    if source.source_digest != manifest.source_digest {
+        anyhow::bail!("canonical source changed before semantic rebuild verification");
+    }
+    let db = lancedb::connect(lance.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF-8 Lance path"))?)
+        .execute().await?;
+    let expected = prepare_live_identity_rebuild_rows(workspace, &db, &source).await?;
+    verify_prepared_identity_v5_rows(&db, &expected).await?;
+    drop(db);
+    let intents = read_identity_delete_intents(workspace)?;
+    if intents.iter().any(|(_, intent)| !manifest.intent_digests.contains(&intent.digest)) {
+        anyhow::bail!("delete intent set changed during semantic rebuild");
+    }
+    if validate_legacy_semantic_rebuild(workspace, transaction)? != digest {
+        anyhow::bail!("semantic rebuild transaction changed before marker publication");
+    }
+    publish_identity_v5_marker(&lance, &manifest.new_marker)?;
+    if validate_legacy_semantic_rebuild(workspace, transaction)? != digest {
+        anyhow::bail!("semantic rebuild marker failed verification");
+    }
+    for (path, _) in intents {
+        std::fs::remove_file(path)?;
+        std::fs::File::open(identity_delete_intent_root(workspace))?.sync_all()?;
+    }
+    let archive = lance.join("legacy-semantic-rebuild-archive");
+    match std::fs::create_dir(&archive) {
+        Ok(()) => std::fs::File::open(&lance)?.sync_all()?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = std::fs::symlink_metadata(&archive)?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                anyhow::bail!("semantic rebuild archive is not a real directory");
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    if archive.join(transaction).try_exists()? {
+        anyhow::bail!("semantic rebuild archive transaction already exists");
+    }
+    rename_identity_noreplace(&dir, &archive.join(transaction))?;
+    std::fs::File::open(&root)?.sync_all()?;
+    std::fs::File::open(&archive)?.sync_all()?;
+    Ok(())
+}
+
+/// Construct a nonempty schema-4 workspace for integration tests. This helper
+/// is unavailable in release builds, including with the test-helpers feature.
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+pub async fn populated_identity_v4_workspace_for_test(root: &Path) -> anyhow::Result<PathBuf> {
+    populated_identity_v4_with_vector_for_test(root, false).await
+}
+
+/// Construct a nonempty schema-4 workspace whose old rows carry vectors.
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+pub async fn populated_identity_v4_workspace_with_vector_for_test(root: &Path) -> anyhow::Result<PathBuf> {
+    populated_identity_v4_with_vector_for_test(root, true).await
+}
+
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+async fn populated_identity_v4_with_vector_for_test(root: &Path, with_vector: bool) -> anyhow::Result<PathBuf> {
+    let workspace = root.join(".forgeplan");
+    tokio::fs::create_dir_all(workspace.join("prds")).await?;
+    tokio::fs::create_dir_all(workspace.join("rfcs")).await?;
+    tokio::fs::create_dir_all(workspace.join("lance")).await?;
+    tokio::fs::write(workspace.join("prds/PRD-001-auth.md"),
+        "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\nslug: prd-auth-system\nlinks:\n  - target: RFC-001\n    relation: informs\n---\n\nAuth body.\n").await?;
+    tokio::fs::write(workspace.join("rfcs/RFC-001-design.md"),
+        "---\nid: RFC-001\nkind: rfc\nstatus: draft\ntitle: Design\n---\n\nDesign body.\n").await?;
+    let source = read_identity_v5_source(&workspace).await?;
+    let path = workspace.join("lance");
+    let db = lancedb::connect(path.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF-8 test path"))?)
+        .execute().await?;
+    let modern_schema = super::schema::artifacts_schema();
+    let v4_schema = Arc::new(arrow_schema::Schema::new(modern_schema.fields().iter().take(15).cloned().collect::<Vec<_>>()));
+    let mut rows = Vec::new();
+    for doc in &source.documents {
+        let artifact = crate::db::store::NewArtifact {
+            canonical_key: doc.canonical_key.clone(), id: doc.display_id.clone(), kind: doc.kind.clone(),
+            status: doc.status.clone(), title: doc.title.clone(), body: doc.body.clone(), depth: doc.depth.clone(),
+            author: doc.author.clone(), parent_epic: doc.parent_epic.clone(), valid_until: doc.valid_until.clone(),
+            tags: doc.tags.clone(),
+        };
+        let modern = super::convert::artifact_to_batch(&artifact, &doc.created_at)?;
+        let mut columns = modern.columns()[..15].to_vec();
+        if with_vector {
+            columns[13] = super::convert::make_embedding_col_from_option(Some(&vec![0.25; super::schema::EMBEDDING_DIM as usize]));
+        }
+        rows.push(RecordBatch::try_new(v4_schema.clone(), columns)?);
+    }
+    db.create_table("artifacts", rows).execute().await?;
+    let relation = super::convert::relation_to_batch("PRD-001", "RFC-001", "informs", "2020-01-01T00:00:00Z")?;
+    db.create_table("relations", vec![relation]).execute().await?;
+    let evidence = RecordBatch::try_new(super::schema::evidence_schema(), vec![
+        Arc::new(StringArray::from(vec!["EVID-001"])),
+        Arc::new(StringArray::from(vec!["PRD-001"])),
+        Arc::new(StringArray::from(vec!["test"])),
+        Arc::new(StringArray::from(vec!["supports"])),
+        Arc::new(arrow_array::Int32Array::from(vec![3])),
+        Arc::new(StringArray::from(vec![Some("2030-01-01")])),
+        Arc::new(StringArray::from(vec!["original evidence"])),
+        Arc::new(StringArray::from(vec!["2020-01-02T00:00:00Z"])),
+    ])?;
+    db.create_table("evidence", vec![evidence]).execute().await?;
+    Ok(workspace)
+}
+
+pub(crate) fn ensure_legacy_layout(lance_dir: &Path) -> anyhow::Result<()> {
+    use crate::constellation::storage::{self, IndexProtocolState};
+    match std::fs::symlink_metadata(lance_dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => anyhow::bail!("legacy Lance path {} is not a real directory", lance_dir.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let state = storage::read_marker(lance_dir)?;
+    let current = storage::read_current(lance_dir)?;
+    if !matches!(state, IndexProtocolState::Uninitialized) || current.is_some() {
+        anyhow::bail!("constellation index does not permit a legacy identity-v5 index");
+    }
+    Ok(())
+}
+
 
 /// Build the identity-v5 index from the Markdown, verify it, and publish it.
 ///
 /// The caller holds the workspace lock. Before the marker exists a re-run
 /// rebuilds only the three staged tables; after it, the staged set is already
 /// live and this call is a no-op that reports the published state.
-pub async fn run_identity_v5_migration(workspace: &Path) -> anyhow::Result<IdentityV5Report> {
+pub(crate) async fn run_identity_v5_migration(workspace: &Path, guard: &crate::workspace::lock::WorkspaceLock) -> anyhow::Result<IdentityV5Report> {
+    use crate::workspace::lock::WorkspaceReadPermit;
+    guard.matches_workspace(workspace)?;
     let lance_dir = workspace.join("lance");
+    ensure_legacy_layout(&lance_dir)?;
     tokio::fs::create_dir_all(&lance_dir).await?;
 
     if let Some(marker) = read_identity_v5_marker(&lance_dir)? {
+        // Use the guarded opener, which checks all table manifests before
+        // LanceDB interprets them and rejects absent published tables.
+        let _verified = crate::db::store::LanceStore::open(workspace).await?;
         // Already published: only the v5 set is used from here on.
         return Ok(IdentityV5Report {
             document_count: marker.document_count,
@@ -998,6 +2921,14 @@ pub async fn run_identity_v5_migration(workspace: &Path) -> anyhow::Result<Ident
             ..Default::default()
         });
     }
+    crate::db::store::verify_manifests(
+        &lance_dir, &["artifacts", "relations", "evidence", "change_log", "fpf_spec"],
+    ).await?;
+    let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF-8 LanceDB path"))?)
+        .execute().await?;
+    super::auxiliary::check_identity_change_log(&db).await?;
+    drop(db);
+
 
     let source = read_identity_v5_source(workspace).await?;
     let mut report = verify_identity_v5_source(&source);
@@ -1026,8 +2957,88 @@ pub async fn run_identity_v5_migration(workspace: &Path) -> anyhow::Result<Ident
         );
     }
 
-    write_identity_v5_tables(&lance_dir, &source, &mut report).await?;
-    verify_identity_v5_round_trip(&lance_dir, &source).await?;
+    let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF-8 LanceDB path"))?)
+        .execute().await?;
+    let mut rows = prepare_identity_v5_rows(&db, &source, true).await?;
+    drop(db);
+    let embeddings = recompute_configured_vectors(workspace, &mut rows[0]).await?;
+    publish_prepared_identity_v5(
+        workspace, &source, &rows, embeddings, &mut report, validate_current_embedding_profile,
+    ).await?;
+    Ok(report)
+}
+
+fn verify_prepared_embeddings(
+    rows: &[RecordBatch],
+    profile: Option<&IdentityV5EmbeddingProvenance>,
+) -> anyhow::Result<()> {
+    let mut count = 0;
+    for row in rows {
+        let column = row.column_by_name("embedding")
+            .ok_or_else(|| anyhow::anyhow!("artifact row has no embedding column"))?;
+        if column.is_null(0) {
+            continue;
+        }
+        let profile = profile.ok_or_else(|| anyhow::anyhow!("staged vector has no embedding provenance"))?;
+        let key = required_string(row, "canonical_key")?;
+        let title = required_string(row, "title")?;
+        let body = crate::db::store::record_large_string(row, "body", 0)
+            .ok_or_else(|| anyhow::anyhow!("artifact '{key}' has no body"))?;
+        let input = format!("{} {}", title, body.chars().take(profile.chunk_size).collect::<String>());
+        let vector = super::convert::extract_embedding(row, 0)
+            .ok_or_else(|| anyhow::anyhow!("staged vector '{key}' is invalid"))?;
+        if vector.len() != profile.dimension
+            || vector.iter().any(|value| !value.is_finite())
+            || !vector.iter().any(|value| *value != 0.0)
+            || profile.input_digests.get(&key) != Some(&identity_input_digest(&input))
+            || profile.vector_digests.get(&key) != Some(&identity_vector_digest(&vector))
+            || crate::db::store::record_string(row, "semantic_input_digest", 0).as_deref() != Some(identity_input_digest(&input).as_str())
+            || crate::db::store::record_string(row, "semantic_profile_digest", 0).as_deref() != Some(profile.profile_digest.as_str())
+            || crate::db::store::record_string(row, "semantic_vector_digest", 0).as_deref() != Some(identity_vector_digest(&vector).as_str())
+            || crate::db::store::record_string(row, "semantic_state", 0).as_deref() != Some("ready")
+        {
+            anyhow::bail!("staged vector '{key}' does not match its profile and input");
+        }
+        count += 1;
+    }
+    if let Some(profile) = profile {
+        if profile.dimension != super::schema::EMBEDDING_DIM as usize
+            || profile.profile_digest != identity_profile_digest(profile)
+            || profile.input_digests.len() != count || profile.vector_digests.len() != count
+        {
+            anyhow::bail!("staged embedding provenance does not match the vector set");
+        }
+    }
+    Ok(())
+}
+
+async fn publish_prepared_identity_v5<F>(
+    workspace: &Path,
+    source: &IdentityV5Source,
+    rows: &[Vec<RecordBatch>; 3],
+    embeddings: Option<IdentityV5EmbeddingProvenance>,
+    report: &mut IdentityV5Report,
+    validate_profile: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce(&Path, &IdentityV5EmbeddingProvenance) -> anyhow::Result<()>,
+{
+    let lance_dir = workspace.join("lance");
+    verify_prepared_embeddings(&rows[0], embeddings.as_ref())?;
+    report.relation_count = rows[1].len();
+    report.evidence_count = rows[2].len();
+    write_prepared_identity_v5_rows(&lance_dir, rows).await?;
+    let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF-8 LanceDB path"))?)
+        .execute().await?;
+    verify_prepared_identity_v5_rows(&db, rows).await?;
+    drop(db);
+    let current_source = read_identity_v5_source(workspace).await?;
+    if current_source.source_digest != source.source_digest {
+        anyhow::bail!("Markdown changed during identity-v5 migration; stage was not published");
+    }
+    if let Some(profile) = &embeddings {
+        validate_profile(workspace, profile)?;
+    }
 
     let marker = IdentityV5Marker {
         version: IDENTITY_V5_VERSION,
@@ -1037,10 +3048,15 @@ pub async fn run_identity_v5_migration(workspace: &Path) -> anyhow::Result<Ident
         source_digest: report.source_digest.clone(),
         document_count: report.document_count,
         completed: true,
+        semantic: Some(IdentityV5SemanticProtocol {
+            protocol: 1,
+            active_profile_digest: embeddings.as_ref().map(|profile| profile.profile_digest.clone()),
+        }),
+        embeddings,
     };
-    publish_identity_v5_marker(&lance_dir, &marker)?;
+    publish_identity_v5_marker_new(&lance_dir, &marker)?;
     report.published = true;
-    Ok(report)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1057,6 +3073,75 @@ mod tests {
     use lancedb::query::ExecutableQuery;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_no_replace_move_preserves_existing_directory() {
+        let root = TempDir::new().unwrap();
+        let src = root.path().join("source");
+        let dst = root.path().join("destination");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("source"), b"source").unwrap();
+        std::fs::create_dir(&dst).unwrap();
+        std::fs::write(dst.join("original"), b"original").unwrap();
+        assert!(rename_identity_noreplace(&src, &dst).is_err());
+        assert_eq!(std::fs::read(src.join("source")).unwrap(), b"source");
+        assert_eq!(std::fs::read(dst.join("original")).unwrap(), b"original");
+        let moved = root.path().join("moved");
+        rename_identity_noreplace(&src, &moved).unwrap();
+        assert!(!src.exists());
+        assert_eq!(std::fs::read(moved.join("source")).unwrap(), b"source");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_tracked_stage_rebuilds_without_publishing_marker() {
+        let root = TempDir::new().unwrap();
+        let stage = root.path().join("space Ю % #");
+        std::fs::create_dir(&stage).unwrap();
+        let canonical = stage.canonicalize().unwrap();
+        assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+        let relation = RecordBatch::try_new(
+            super::super::schema::relations_schema(),
+            vec![
+                Arc::new(StringArray::from(vec!["prd-first"])),
+                Arc::new(StringArray::from(vec!["rfc-second"])),
+                Arc::new(StringArray::from(vec!["based_on"])),
+                Arc::new(StringArray::from(vec!["2026-01-01T00:00:00Z"])),
+                Arc::new(arrow_array::Int32Array::from(vec![Some(1)])),
+            ],
+        ).unwrap();
+        let rows: [Vec<RecordBatch>; 3] = [vec![], vec![relation], vec![]];
+        write_prepared_identity_v5_rows(&canonical, &rows).await.unwrap();
+        {
+            let db = lancedb::connect(stage.to_str().unwrap()).execute().await.unwrap();
+            verify_prepared_identity_v5_rows(&db, &rows).await.unwrap();
+        }
+        write_prepared_identity_v5_rows(&canonical, &rows).await.unwrap();
+        {
+            let db = lancedb::connect(stage.to_str().unwrap()).execute().await.unwrap();
+            verify_prepared_identity_v5_rows(&db, &rows).await.unwrap();
+        }
+        for name in [IDENTITY_V5_ARTIFACTS_TABLE, IDENTITY_V5_RELATIONS_TABLE, IDENTITY_V5_EVIDENCE_TABLE] {
+            assert!(canonical.join(format!("{name}.lance")).is_dir());
+        }
+        assert!(read_identity_v5_marker(&stage).unwrap().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_seal_refuses_an_exclusively_open_stage_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = TempDir::new().unwrap();
+        let stage = root.path().join("stage");
+        std::fs::create_dir(&stage).unwrap();
+        let file = stage.join("data");
+        std::fs::write(&file, b"stage").unwrap();
+        let locked = std::fs::OpenOptions::new().read(true).share_mode(0).open(&file).unwrap();
+        assert!(crate::constellation::durability::seal_unpublished_tree(&stage).is_err());
+        drop(locked);
+        assert_eq!(std::fs::read(file).unwrap(), b"stage");
+    }
 
     /// Schema used by v3 workspaces (no `tags` column).
     fn v3_artifacts_schema() -> Arc<Schema> {
@@ -1527,6 +3612,46 @@ mod tests {
         ws
     }
 
+    #[tokio::test]
+    async fn ambiguous_link_blocks_identity_migration_without_selecting_a_document() {
+        let tmp = TempDir::new().unwrap();
+        let ws = identity_v5_workspace(tmp.path()).await;
+        tokio::fs::write(
+            ws.join("rfcs/RFC-001-second.md"),
+            "---\nid: RFC-001\nkind: rfc\nstatus: draft\ntitle: Second\nslug: rfc-second\n---\n\nOther body.\n",
+        )
+        .await
+        .unwrap();
+        let source = read_identity_v5_source(&ws).await.unwrap();
+        let report = verify_identity_v5_source(&source);
+        assert!(report.is_blocked());
+        assert!(report.unmappable.iter().any(|item| item.contains("RFC-001")));
+        let candidates = identity_v5_candidates(&source);
+        assert!(resolve_reference(&candidates, "RFC-001").is_err());
+        assert_eq!(resolve_reference(&candidates, "rfc-second").unwrap(), "rfc-second");
+    }
+
+    #[tokio::test]
+    async fn verification_preserves_historical_forward_targets_and_rejects_malformed() {
+        let tmp = TempDir::new().unwrap();
+        let ws = identity_v5_workspace(tmp.path()).await;
+        let mut source = read_identity_v5_source(&ws).await.unwrap();
+        let doc = source.documents.iter_mut().find(|doc| doc.display_id == "PRD-001").unwrap();
+        doc.links = vec![("RFC-A01".into(), "informs".into())];
+        let report = verify_identity_v5_source(&source);
+        assert!(report.unmappable.is_empty(), "{:?}", report.unmappable);
+        assert!(report.unresolved_references.iter().any(|item| item.contains("RFC-A01")));
+        let candidates = identity_v5_candidates(&source);
+        assert_eq!(resolve_reference(&candidates, "RFC-A01").unwrap(), "RFC-A01");
+        for bad in ["---", "PRD-4294967296"] {
+            assert!(resolve_reference(&candidates, bad).is_err());
+            let doc = source.documents.iter_mut().find(|doc| doc.display_id == "PRD-001").unwrap();
+            doc.links = vec![(bad.into(), "informs".into())];
+            let report = verify_identity_v5_source(&source);
+            assert!(report.unmappable.iter().any(|item| item.contains(bad)));
+        }
+    }
+
     /// The table names of a Lance root.
     async fn db_table_names(lance_dir: &std::path::Path) -> Vec<String> {
         let db = lancedb::connect(lance_dir.to_str().unwrap())
@@ -1581,7 +3706,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let lance_dir = tmp.path().join("lance");
         std::fs::create_dir_all(&lance_dir).unwrap();
-        publish_identity_v5_marker(
+        publish_identity_v5_marker_new(
             &lance_dir,
             &IdentityV5Marker {
                 version: IDENTITY_V5_VERSION,
@@ -1591,6 +3716,8 @@ mod tests {
                 source_digest: "abc".to_string(),
                 document_count: 1,
                 completed: false,
+                embeddings: None,
+                semantic: None,
             },
         )
         .unwrap();
@@ -1615,11 +3742,13 @@ mod tests {
             artifacts_table: IDENTITY_V5_ARTIFACTS_TABLE.to_string(),
             relations_table: IDENTITY_V5_RELATIONS_TABLE.to_string(),
             evidence_table: IDENTITY_V5_EVIDENCE_TABLE.to_string(),
-            source_digest: "digest".to_string(),
+            source_digest: "a".repeat(64),
             document_count: 2,
             completed: true,
+            embeddings: None,
+            semantic: None,
         };
-        publish_identity_v5_marker(&lance_dir, &marker).unwrap();
+        publish_identity_v5_marker_new(&lance_dir, &marker).unwrap();
 
         assert_eq!(read_identity_v5_marker(&lance_dir).unwrap(), Some(marker));
         let names = resolve_legacy_table_names(&lance_dir).unwrap();
@@ -1632,11 +3761,49 @@ mod tests {
     /// slug is keyed by that slug, and the marker is published only after the
     /// set was verified.
     #[tokio::test]
+    async fn nested_markdown_is_captured_and_indexed_without_changing_v4() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        tokio::fs::create_dir_all(ws.join("prds/nested/deeper")).await.unwrap();
+        let path = ws.join("prds/nested/deeper/PRD-002-nested.md");
+        tokio::fs::write(&path, "---\nid: PRD-002\nkind: prd\nstatus: draft\ntitle: Nested\nslug: prd-nested\n---\n\nNested body.\n").await.unwrap();
+        let before = tokio::fs::read(&path).await.unwrap();
+        let candidates = crate::artifact::documents::workspace_candidates(&ws).await.unwrap();
+        assert!(candidates.iter().any(|candidate| candidate.canonical_key == "prd-nested"
+            && candidate.relative_path == std::path::Path::new("prds/nested/deeper/PRD-002-nested.md")));
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let old = table_rows(&db, "artifacts").await.unwrap();
+        let report = run_identity_v5_migration(&ws, &lock).await.unwrap();
+        assert_eq!(report.document_count, 3);
+        let staged = table_rows(&db, IDENTITY_V5_ARTIFACTS_TABLE).await.unwrap();
+        assert!(staged.iter().any(|row| required_string(row, "canonical_key").unwrap() == "prd-nested"));
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), before);
+        let after = table_rows(&db, "artifacts").await.unwrap();
+        assert_eq!(old.len(), after.len());
+        for (left, right) in old.iter().zip(&after) {
+            assert!(left.columns().iter().zip(right.columns()).all(|(a, b)| a.to_data() == b.to_data()));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_in_source_cannot_publish_a_partial_index() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        std::os::unix::fs::symlink("PRD-001-auth.md", ws.join("prds/alias.md")).unwrap();
+        assert!(run_identity_v5_migration(&ws, &lock).await.unwrap_err().to_string().contains("symlink"));
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn the_staged_index_is_built_from_the_markdown_and_published() {
         let tmp = TempDir::new().unwrap();
-        let ws = identity_v5_workspace(tmp.path()).await;
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
 
-        let report = run_identity_v5_migration(&ws).await.unwrap();
+        let report = run_identity_v5_migration(&ws, &lock).await.unwrap();
         assert!(report.published, "the verified set must be published");
         assert!(!report.already_published);
         assert_eq!(report.document_count, 2, "both documents must be indexed");
@@ -1648,9 +3815,7 @@ mod tests {
         assert_eq!(marker.document_count, 2);
         assert_eq!(marker.source_digest, report.source_digest);
 
-        // The three staged tables exist, and the pre-migration ones are not
-        // duplicated into the staged set: `fpf_spec` and `change_log` are not
-        // duplicated at all.
+        // The staged tables coexist with the untouched v4 tables.
         let names = db_table_names(&lance_dir).await;
         assert!(
             names.iter().any(|name| name.as_str() == IDENTITY_V5_ARTIFACTS_TABLE),
@@ -1669,15 +3834,15 @@ mod tests {
                 .iter()
                 .filter(|name| name.starts_with("artifacts"))
                 .count(),
-            1,
-            "only the staged artifacts table may exist after the migration"
+            2,
+            "the staged and original artifact tables must both exist"
         );
 
         // The store now reads the staged set: the row is addressed by the
         // key the Markdown declares.
         let store = crate::db::store::LanceStore::open(&ws).await.unwrap();
         let record = store
-            .get_record("prd-auth-system")
+            .get_record(&lock, "prd-auth-system")
             .await
             .unwrap()
             .expect("the slug-declaring document must be found by its key");
@@ -1689,12 +3854,13 @@ mod tests {
     #[tokio::test]
     async fn a_document_without_a_slug_is_keyed_by_its_display_id() {
         let tmp = TempDir::new().unwrap();
-        let ws = identity_v5_workspace(tmp.path()).await;
-        run_identity_v5_migration(&ws).await.unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        run_identity_v5_migration(&ws, &lock).await.unwrap();
 
         let store = crate::db::store::LanceStore::open(&ws).await.unwrap();
         let record = store
-            .get_record("RFC-001")
+            .get_record(&lock, "RFC-001")
             .await
             .unwrap()
             .expect("a document without a slug keeps its display id as the key");
@@ -1706,7 +3872,8 @@ mod tests {
     #[tokio::test]
     async fn a_canonical_duplicate_blocks_the_publication() {
         let tmp = TempDir::new().unwrap();
-        let ws = identity_v5_workspace(tmp.path()).await;
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
         tokio::fs::write(
             ws.join("prds/PRD-002-alpha.md"),
             "---\nid: PRD-002\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-auth-system\n---\n\nAlpha body.\n",
@@ -1714,7 +3881,7 @@ mod tests {
         .await
         .unwrap();
 
-        let error = run_identity_v5_migration(&ws)
+        let error = run_identity_v5_migration(&ws, &lock)
             .await
             .expect_err("a canonical duplicate must block the publication");
         assert!(
@@ -1739,13 +3906,904 @@ mod tests {
     #[tokio::test]
     async fn a_published_migration_is_not_run_twice() {
         let tmp = TempDir::new().unwrap();
-        let ws = identity_v5_workspace(tmp.path()).await;
-        let first = run_identity_v5_migration(&ws).await.unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let first = run_identity_v5_migration(&ws, &lock).await.unwrap();
         assert!(first.published);
 
-        let second = run_identity_v5_migration(&ws).await.unwrap();
+        let second = run_identity_v5_migration(&ws, &lock).await.unwrap();
         assert!(second.already_published, "the second run must be a no-op");
         assert!(second.published, "the set stays published");
         assert_eq!(second.document_count, first.document_count);
+    }
+    async fn populated_v4_workspace(root: &Path, orphan: bool) -> PathBuf {
+        populated_v4_workspace_with_vector(root, orphan, false).await
+    }
+
+    async fn populated_v4_workspace_with_vector(root: &Path, orphan: bool, with_vector: bool) -> PathBuf {
+        populated_v4_workspace_with_body(root, orphan, with_vector, false).await
+    }
+
+    async fn populated_v4_workspace_with_body(root: &Path, orphan: bool, with_vector: bool, full_body: bool) -> PathBuf {
+        let ws = identity_v5_workspace(root).await;
+        let source = read_identity_v5_source(&ws).await.unwrap();
+        let lance = ws.join("lance");
+        tokio::fs::create_dir_all(&lance).await.unwrap();
+        let db = lancedb::connect(lance.to_str().unwrap()).execute().await.unwrap();
+        let modern_schema = super::super::schema::artifacts_schema();
+        let v4_schema = Arc::new(Schema::new(modern_schema.fields().iter().take(15).cloned().collect::<Vec<_>>()));
+        let mut rows = Vec::new();
+        for (index, doc) in source.documents.iter().enumerate() {
+            let artifact = crate::db::store::NewArtifact {
+                canonical_key: doc.canonical_key.clone(),
+                id: if orphan && index == 0 { "PRD-999".into() } else { doc.display_id.clone() },
+                kind: doc.kind.clone(), status: doc.status.clone(), title: doc.title.clone(),
+                body: if full_body { doc.full_text.clone() } else { doc.body.clone() },
+                depth: doc.depth.clone(), author: doc.author.clone(),
+                parent_epic: doc.parent_epic.clone(), valid_until: doc.valid_until.clone(), tags: doc.tags.clone(),
+            };
+            let modern = crate::db::convert::artifact_to_batch(&artifact, &doc.created_at).unwrap();
+            let mut columns = modern.columns()[..15].to_vec();
+            if with_vector {
+                columns[13] = crate::db::convert::make_embedding_col_from_option(Some(&vec![0.25; EMBEDDING_DIM as usize]));
+            }
+            rows.push(RecordBatch::try_new(v4_schema.clone(), columns).unwrap());
+        }
+        db.create_table("artifacts", rows).execute().await.unwrap();
+        let relation = crate::db::convert::relation_to_batch("PRD-001", "RFC-001", "informs", "2020-01-01T00:00:00Z").unwrap();
+        db.create_table("relations", vec![relation]).execute().await.unwrap();
+        let evidence = RecordBatch::try_new(super::super::schema::evidence_schema(), vec![
+            Arc::new(StringArray::from(vec!["EVID-001"])),
+            Arc::new(StringArray::from(vec!["PRD-001"])),
+            Arc::new(StringArray::from(vec!["test"])),
+            Arc::new(StringArray::from(vec!["supports"])),
+            Arc::new(arrow_array::Int32Array::from(vec![3])),
+            Arc::new(StringArray::from(vec![Some("2030-01-01")])),
+            Arc::new(StringArray::from(vec!["original evidence"])),
+            Arc::new(StringArray::from(vec!["2020-01-02T00:00:00Z"])),
+        ]).unwrap();
+        db.create_table("evidence", vec![evidence]).execute().await.unwrap();
+        ws
+    }
+
+    #[tokio::test]
+    async fn v4_history_survives_upgrade_and_accepts_canonical_append() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let modern = super::super::schema::change_log_schema();
+        let v4 = Arc::new(Schema::new(modern.fields().iter().take(8).cloned().collect::<Vec<_>>()));
+        let old_event = RecordBatch::try_new(v4, vec![
+            Arc::new(StringArray::from(vec!["2020-01-01T00:00:00Z"])),
+            Arc::new(StringArray::from(vec!["PRD-001"])),
+            Arc::new(StringArray::from(vec!["update"])),
+            Arc::new(StringArray::from(vec![Some("status")])),
+            Arc::new(StringArray::from(vec![Some("draft")])),
+            Arc::new(StringArray::from(vec![Some("active")])),
+            Arc::new(StringArray::from(vec!["cli"])),
+            Arc::new(StringArray::from(vec![Some("abcdef0")])),
+        ]).unwrap();
+        db.create_table("change_log", vec![old_event]).execute().await.unwrap();
+        let original = table_rows(&db, "change_log").await.unwrap().remove(0);
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let legacy = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        let historical = legacy.get_change_log(&lock, None, None, 10).await.unwrap();
+        assert_eq!(historical.len(), 1);
+        assert_eq!(historical[0].artifact_id, "PRD-001");
+        assert_eq!(historical[0].canonical_key, None);
+        drop(legacy);
+
+        let store = crate::db::store::LanceStore::open_for_write(&ws, &lock).await.unwrap();
+        let upgraded = table_rows(&db, "change_log").await.unwrap().remove(0);
+        for index in 0..8 {
+            assert_eq!(original.column(index).to_data(), upgraded.column(index).to_data());
+        }
+        assert!(upgraded.column_by_name("canonical_key").unwrap().is_null(0));
+
+        let event = crate::changelog::ChangeLogEntry::new("PRD-001", "link", "test")
+            .with_canonical_key("prd-auth-system");
+        store.log_change(&lock, &event).await.unwrap();
+        let rows = table_rows(&db, "change_log").await.unwrap();
+        assert_eq!(rows.len(), 2);
+        let appended = rows.iter().find(|row| required_string(row, "action").unwrap() == "link").unwrap();
+        assert_eq!(required_string(appended, "artifact_id").unwrap(), "PRD-001");
+        assert_eq!(required_string(appended, "canonical_key").unwrap(), "prd-auth-system");
+    }
+
+    #[tokio::test]
+    async fn invalid_v4_history_schema_blocks_marker() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let expected = super::super::schema::change_log_schema();
+        let invalid = Arc::new(Schema::new(expected.fields().iter()
+            .filter(|field| field.name() != "source" && field.name() != "canonical_key")
+            .cloned().collect::<Vec<_>>()));
+        db.create_table("change_log", vec![RecordBatch::new_empty(invalid.clone())])
+            .execute().await.unwrap();
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        assert!(crate::db::store::LanceStore::open_for_write(&ws, &lock).await.is_err());
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+        let schema = db.open_table("change_log").execute().await.unwrap().schema().await.unwrap();
+        assert_eq!(schema.fields(), invalid.fields());
+    }
+
+    #[tokio::test]
+    async fn v4_nonempty_migration_preserves_source_rows_and_evidence() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let lance = ws.join("lance");
+        let db = lancedb::connect(lance.to_str().unwrap()).execute().await.unwrap();
+        let old_artifacts = table_rows(&db, "artifacts").await.unwrap();
+        let old_relations = table_rows(&db, "relations").await.unwrap();
+        let old_evidence = table_rows(&db, "evidence").await.unwrap();
+        let store = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        assert!(!store.uses_identity_v5());
+        assert_eq!(store.get_record(&lock, "prd-auth-system").await.unwrap().unwrap().id, "PRD-001");
+        assert_eq!(store.get_relations(&lock, "prd-auth-system").await.unwrap(), vec![("RFC-001".to_string(), "informs".to_string())]);
+        assert!(store.ensure_identity_v5_writable(&lock).is_err());
+        assert!(crate::db::store::LanceStore::init_new(&ws, &lock).await.is_err());
+        assert!(db.open_table("artifacts").execute().await.unwrap().schema().await.unwrap().field_with_name("canonical_key").is_err());
+        drop(store);
+
+        let report = run_identity_v5_migration(&ws, &lock).await.unwrap();
+        assert!(report.published);
+        assert_eq!(report.evidence_count, 1);
+        assert_eq!(report.relation_count, 1);
+        for (name, before) in [("artifacts", old_artifacts), ("relations", old_relations), ("evidence", old_evidence)] {
+            let after = table_rows(&db, name).await.unwrap();
+            assert_eq!(before.len(), after.len());
+            for (left, right) in before.iter().zip(after.iter()) {
+                assert_eq!(left.schema(), right.schema());
+                assert!(left.columns().iter().zip(right.columns()).all(|(a, b)| a.to_data() == b.to_data()));
+            }
+        }
+        let evidence = table_rows(&db, IDENTITY_V5_EVIDENCE_TABLE).await.unwrap();
+        assert_eq!(required_string(&evidence[0], "artifact_id").unwrap(), "prd-auth-system");
+        assert_eq!(required_string(&evidence[0], "content").unwrap(), "original evidence");
+        let relations = table_rows(&db, IDENTITY_V5_RELATIONS_TABLE).await.unwrap();
+        assert_eq!(required_string(&relations[0], "source_id").unwrap(), "prd-auth-system");
+        assert_eq!(required_string(&relations[0], "created_at").unwrap(), "2020-01-01T00:00:00Z");
+        let store = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        let record = store.get_record(&lock, "prd-auth-system").await.unwrap().unwrap();
+        assert!(record.embedding.is_none());
+    }
+
+    #[tokio::test]
+    async fn v4_full_markdown_body_is_preserved_in_stage() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace_with_body(tmp.path(), false, false, true).await;
+        let expected = tokio::fs::read_to_string(ws.join("prds/PRD-001-auth.md")).await.unwrap();
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::open_for_write(&ws, &lock).await.unwrap();
+        assert_eq!(store.get_record(&lock, "prd-auth-system").await.unwrap().unwrap().body, expected);
+    }
+
+    #[tokio::test]
+    async fn write_preflight_migrates_v4_and_returns_fresh_v5_handle() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let old = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        assert!(!old.uses_identity_v5());
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let fresh = crate::db::store::LanceStore::open_for_write(&ws, &lock).await.unwrap();
+        assert!(fresh.uses_identity_v5());
+        assert!(old.identity_generation_changed(&lock).unwrap());
+        assert!(!fresh.identity_generation_changed(&lock).unwrap());
+        fresh.ensure_identity_v5_writable(&lock).unwrap();
+        assert_eq!(fresh.get_record(&lock, "prd-auth-system").await.unwrap().unwrap().id, "PRD-001");
+        assert!(old.ensure_identity_v5_writable(&lock).is_err());
+    }
+
+    #[tokio::test]
+    async fn allocation_guard_holds_kind_lock_until_dropped() {
+        use crate::artifact::{id_alloc, types::ArtifactKind};
+        use fs2::FileExt;
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let allocation = id_alloc::acquire_allocation_guard(&ws, &lock, &[ArtifactKind::Prd]).await.unwrap();
+        let competing = std::fs::OpenOptions::new().read(true).write(true)
+            .open(ws.join(".id-alloc-prd.lock")).unwrap();
+        assert!(competing.try_lock_exclusive().is_err());
+        drop(allocation);
+        competing.try_lock_exclusive().unwrap();
+        FileExt::unlock(&competing).unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepared_key_uses_preview_and_rejects_stale_number_without_consuming_it() {
+        use crate::artifact::{id_alloc, types::ArtifactKind};
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::open_for_write(&ws, &lock).await.unwrap();
+        let kind = ArtifactKind::Prd;
+        let allocation = id_alloc::acquire_allocation_guard(&ws, &lock, &[kind.clone()]).await.unwrap();
+        let (next, _) = id_alloc::preview_display_number(&ws, &lock, &allocation, Some(&store), &kind, 3, None).await.unwrap();
+        let build = |id: &str, _: u32, key: &str| Ok(crate::db::store::NewArtifact {
+            canonical_key: key.to_string(), id: id.to_string(), kind: "prd".into(),
+            status: "draft".into(), title: "Prepared".into(), body: "Body".into(),
+            depth: "standard".into(), author: None, parent_epic: None, valid_until: None, tags: vec![],
+        });
+        let key = crate::artifact::canonical_key::mint_artifact_key(&kind, "Prepared").unwrap();
+        assert!(id_alloc::create_artifact_with_prepared_key(
+            &ws, &lock, &allocation, Some(&store), &kind, 3, key.clone(), "PRD-999", &build,
+        ).await.is_err());
+        let (still_next, _) = id_alloc::preview_display_number(&ws, &lock, &allocation, Some(&store), &kind, 3, None).await.unwrap();
+        assert_eq!(next, still_next);
+        let created = id_alloc::create_artifact_with_prepared_key(
+            &ws, &lock, &allocation, Some(&store), &kind, 3, key.clone(), &next, &build,
+        ).await.unwrap();
+        assert_eq!(created.id, next);
+        assert_eq!(created.canonical_key, key);
+        let (expected, _) = id_alloc::preview_display_number(&ws, &lock, &allocation, Some(&store), &kind, 3, None).await.unwrap();
+        assert!(id_alloc::reserve_prepared_display_number(
+            &ws, &lock, &allocation, Some(&store), &kind, 3, "PRD-999",
+        ).await.is_err());
+        let (unchanged, _) = id_alloc::preview_display_number(&ws, &lock, &allocation, Some(&store), &kind, 3, None).await.unwrap();
+        assert_eq!(expected, unchanged);
+        id_alloc::reserve_prepared_display_number(&ws, &lock, &allocation, Some(&store), &kind, 3, &expected).await.unwrap();
+        let (later, _) = id_alloc::preview_display_number(&ws, &lock, &allocation, Some(&store), &kind, 3, None).await.unwrap();
+        assert_ne!(later, expected);
+    }
+
+    #[tokio::test]
+    async fn scan_plan_survives_v4_reopen_and_executes_exact_identities() {
+        use crate::scan::import::{ScanImportOptions, execute_scan_import_plan, plan_scan_import};
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let docs = tmp.path().join("docs");
+        tokio::fs::create_dir_all(&docs).await.unwrap();
+        tokio::fs::write(docs.join("prd-extra.md"),
+            "---\nkind: prd\nslug: prd-extra\ntitle: Extra\nlinks:\n  - target: RFC-001\n    relation: informs\n---\n\nBody.\n").await.unwrap();
+        let options = ScanImportOptions::default();
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let legacy = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        let kinds = crate::scan::import::scan_import_kinds(tmp.path(), &options).unwrap();
+        let allocation = crate::artifact::id_alloc::acquire_allocation_guard(&ws, &lock, &kinds).await.unwrap();
+        let before = plan_scan_import(tmp.path(), &ws, &lock, &allocation, Some(&legacy), &options).await.unwrap();
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+        drop(legacy);
+        let store = crate::db::store::LanceStore::open_for_write(&ws, &lock).await.unwrap();
+        let after = plan_scan_import(tmp.path(), &ws, &lock, &allocation, Some(&store), &options).await.unwrap();
+        assert_eq!(before, after);
+        let result = execute_scan_import_plan(tmp.path(), &ws, &lock, &allocation, Some(&store), &options, &after).await.unwrap();
+        assert_eq!(result.imported, 1);
+        assert_eq!(store.get_record(&lock, "prd-extra").await.unwrap().unwrap().id, "PRD-002");
+    }
+
+    #[tokio::test]
+    async fn scan_plan_refuses_changed_or_unreadable_source() {
+        use crate::scan::import::{ScanImportOptions, execute_scan_import_plan, plan_scan_import};
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let docs = tmp.path().join("docs");
+        tokio::fs::create_dir_all(&docs).await.unwrap();
+        let source = docs.join("PRD-010.md");
+        tokio::fs::write(&source, "---\nid: PRD-010\nkind: prd\ntitle: New\n---\nBody").await.unwrap();
+        let options = ScanImportOptions::default();
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let legacy = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        let kinds = crate::scan::import::scan_import_kinds(tmp.path(), &options).unwrap();
+        let allocation = crate::artifact::id_alloc::acquire_allocation_guard(&ws, &lock, &kinds).await.unwrap();
+        let plan = plan_scan_import(tmp.path(), &ws, &lock, &allocation, Some(&legacy), &options).await.unwrap();
+        tokio::fs::write(&source, [0xff]).await.unwrap();
+        assert!(plan_scan_import(tmp.path(), &ws, &lock, &allocation, Some(&legacy), &options).await.is_err());
+        assert!(execute_scan_import_plan(tmp.path(), &ws, &lock, &allocation, Some(&legacy), &options, &plan).await.is_err());
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+        assert!(legacy.get_record(&lock, "PRD-010").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn driver_reads_v4_then_migrates_before_first_write() {
+        use crate::driver::ArtifactStorage;
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let driver = crate::driver::lance::LanceDriver::open(&ws).await.unwrap();
+        assert_eq!(driver.get_record(&lock, "prd-auth-system").await.unwrap().unwrap().id, "PRD-001");
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+        driver.update_r_eff_score(&lock, "prd-auth-system", 0.75).await.unwrap();
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_some());
+        assert_eq!(driver.get_record(&lock, "prd-auth-system").await.unwrap().unwrap().r_eff_score, 0.75);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_driver_selector_does_not_migrate_v4() {
+        use crate::driver::ArtifactStorage;
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        tokio::fs::write(
+            ws.join("prds/PRD-001-second.md"),
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Second\nslug: prd-second\n---\n\nOther body.\n",
+        ).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let before = table_rows(&db, "artifacts").await.unwrap();
+        let driver = crate::driver::lance::LanceDriver::open(&ws).await.unwrap();
+        assert!(driver.update_r_eff_score(&lock, "PRD-001", 0.75).await.is_err());
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+        let after = table_rows(&db, "artifacts").await.unwrap();
+        assert_eq!(before.len(), after.len());
+        for (left, right) in before.iter().zip(after.iter()) {
+            assert!(left.columns().iter().zip(right.columns()).all(|(a, b)| a.to_data() == b.to_data()));
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_v4_display_lookup_finds_orphans_and_rejects_duplicates() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), true).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        assert!(store.get_record(&lock, "PRD-999").await.unwrap().is_none());
+        assert_eq!(store.legacy_record_by_display_id(&lock, "prd-999").await.unwrap().unwrap().id, "PRD-999");
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let old = table_rows(&db, "artifacts").await.unwrap();
+        let orphan = old.into_iter().find(|row| required_string(row, "id").unwrap() == "PRD-999").unwrap();
+        db.open_table("artifacts").execute().await.unwrap().add(vec![orphan]).execute().await.unwrap();
+        let reopened = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        assert!(reopened.legacy_record_by_display_id(&lock, "PRD-999").await.is_err());
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+    }
+
+    #[cfg(feature = "semantic-search")]
+    #[tokio::test]
+    async fn legacy_semantic_backlog_recomputes_after_canonical_body_edit() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        tokio::fs::write(ws.join("config.yaml"), "embedding:\n  model: forgeplan-test\n  chunk_size: 2000\n").await.unwrap();
+        let backend = Arc::new(|text: &str| -> anyhow::Result<Vec<f32>> {
+            let mut vector = vec![0.0; EMBEDDING_DIM as usize];
+            vector[if text.to_lowercase().contains("dolphin") { 1 } else { 0 }] = 1.0;
+            Ok(vector)
+        });
+        let backend_guard = crate::db::store::install_semantic_backend_for_test(&ws, backend).unwrap();
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::open_for_write(&ws, &guard).await.unwrap();
+        drop(store);
+        drop(guard);
+        crate::db::store::LanceStore::drain_identity_semantic_backlog(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        let permit = crate::workspace::lock::acquire_workspace_read_lock(&ws).await.unwrap();
+        let old = store.get_record(&permit, "prd-auth-system").await.unwrap().unwrap().embedding.unwrap();
+        assert_eq!(old[0], 1.0);
+        drop(permit);
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let ctx = crate::projection::MutationContext::new(&ws, &guard, Some(&store));
+        crate::projection::update_body_with_projection(&ctx, "prd-auth-system", "dolphin signal").await.unwrap();
+        drop(ctx);
+        drop(guard);
+        crate::db::store::LanceStore::drain_identity_semantic_backlog(&ws).await.unwrap();
+        let fresh = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        let permit = crate::workspace::lock::acquire_workspace_read_lock(&ws).await.unwrap();
+        let record = fresh.get_record(&permit, "prd-auth-system").await.unwrap().unwrap();
+        assert!(record.body.contains("dolphin signal"));
+        assert_eq!(record.embedding.as_ref().unwrap()[1], 1.0);
+        assert_ne!(record.embedding.as_ref().unwrap(), &old);
+        let hits = fresh.vector_search(&permit, "dolphin", 1).await.unwrap();
+        assert_eq!(hits[0].record.canonical_key, "prd-auth-system");
+        assert!(hits[0].record.body.contains("dolphin signal"));
+        drop(backend_guard);
+        assert!(fresh.vector_search(&permit, "dolphin", 1).await.is_err());
+    }
+
+    #[cfg(feature = "semantic-search")]
+    #[tokio::test]
+    async fn v4_real_migration_recomputes_vectors_with_scoped_backend() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace_with_vector(tmp.path(), false, true).await;
+        tokio::fs::write(ws.join("config.yaml"), "embedding:\n  model: forgeplan-test\n  chunk_size: 2000\n").await.unwrap();
+        let backend = Arc::new(|text: &str| -> anyhow::Result<Vec<f32>> {
+            let mut vector = vec![0.0; EMBEDDING_DIM as usize];
+            vector[if text.contains("Auth") { 0 } else { 1 }] = 1.0;
+            Ok(vector)
+        });
+        let backend_guard = crate::db::store::install_semantic_backend_for_test(&ws, backend).unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let before = table_rows(&db, "artifacts").await.unwrap();
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::open_for_write(&ws, &lock).await.unwrap();
+        let marker = read_identity_v5_marker(&ws.join("lance")).unwrap().unwrap();
+        let profile = marker.embeddings.as_ref().unwrap();
+        assert_eq!(profile.implementation, "forgeplan-test-only");
+        assert_eq!(profile.input_digests.len(), 2);
+        let record = store.get_record(&lock, "prd-auth-system").await.unwrap().unwrap();
+        assert_eq!(record.embedding.as_ref().unwrap()[0], 1.0);
+        let after = table_rows(&db, "artifacts").await.unwrap();
+        assert_eq!(before.len(), after.len());
+        assert!(before.iter().zip(&after).all(|(left, right)|
+            left.columns().iter().zip(right.columns()).all(|(a, b)| a.to_data() == b.to_data())));
+        drop(backend_guard);
+        assert!(validate_current_embedding_profile(&ws, profile).is_err());
+    }
+
+    #[tokio::test]
+    async fn v4_vectors_are_recomputed_and_proven_before_publication() {
+        use sha2::{Digest, Sha256};
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace_with_vector(tmp.path(), false, true).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let source = read_identity_v5_source(&ws).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let old = table_rows(&db, "artifacts").await.unwrap();
+        let mut rows = prepare_identity_v5_rows(&db, &source, true).await.unwrap();
+        let profile = IdentityV5EmbeddingProvenance {
+            model: "deterministic-test".into(), repository: "test/repo".into(),
+            snapshot_id: "revision".into(), snapshot_digest: "a".repeat(64),
+            implementation: "deterministic-test-v1".into(), profile_digest: String::new(),
+            chunk_size: 2000, dimension: EMBEDDING_DIM as usize, input_digests: BTreeMap::new(), vector_digests: BTreeMap::new(),
+        };
+        let mut observed = Vec::new();
+        let profile = recompute_identity_vectors(&mut rows[0], profile, |input| {
+            observed.push(input.to_string());
+            Ok(vec![input.len() as f32; EMBEDDING_DIM as usize])
+        }).unwrap();
+        assert_eq!(profile.input_digests.len(), 2);
+        assert_eq!(observed.len(), 2);
+        for row in &rows[0] {
+            let key = required_string(row, "canonical_key").unwrap();
+            let title = required_string(row, "title").unwrap();
+            let body = crate::db::store::record_large_string(row, "body", 0).unwrap();
+            let text = format!("{} {}", title, body.chars().take(2000).collect::<String>());
+            assert_eq!(profile.input_digests[&key], hex_encode(&Sha256::digest(text.as_bytes())));
+            let vector = crate::db::convert::extract_embedding(row, 0).unwrap();
+            assert_eq!(vector, vec![text.len() as f32; EMBEDDING_DIM as usize]);
+            assert_eq!(profile.vector_digests[&key], identity_vector_digest(&vector));
+        }
+        let mut report = verify_identity_v5_source(&source);
+        drop(db);
+        publish_prepared_identity_v5(&ws, &source, &rows, Some(profile.clone()), &mut report,
+            |_, checked| { assert_eq!(checked, &profile); Ok(()) }).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        assert_eq!(read_identity_v5_marker(&ws.join("lance")).unwrap().unwrap().embeddings, Some(profile.clone()));
+        let after = table_rows(&db, "artifacts").await.unwrap();
+        assert_eq!(old.len(), after.len());
+        for (before, after) in old.iter().zip(after.iter()) {
+            assert!(before.columns().iter().zip(after.columns()).all(|(a, b)| a.to_data() == b.to_data()));
+        }
+        let store = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        #[cfg(feature = "semantic-search")]
+        {
+            let rows = table_rows(&db, IDENTITY_V5_ARTIFACTS_TABLE).await.unwrap();
+            let row = rows.iter().find(|row| required_string(row, "canonical_key").unwrap() == "prd-auth-system").unwrap();
+            let mut record = store.get_record(&lock, "prd-auth-system").await.unwrap().unwrap();
+            crate::db::store::verify_row_local_semantic_provenance(row, 0, &record, &profile).unwrap();
+            record.title.push_str(" changed without recomputing");
+            assert!(crate::db::store::verify_row_local_semantic_provenance(row, 0, &record, &profile).is_err());
+        }
+        store.update_artifact(&lock, "prd-auth-system", None, Some("New title")).await.unwrap();
+        assert!(store.get_record(&lock, "prd-auth-system").await.unwrap().unwrap().embedding.is_none());
+        let changed = table_rows(&db, IDENTITY_V5_ARTIFACTS_TABLE).await.unwrap();
+        let changed = changed.iter().find(|row| required_string(row, "canonical_key").unwrap() == "prd-auth-system").unwrap();
+        assert_eq!(crate::db::store::record_string(changed, "semantic_state", 0).as_deref(), Some("pending"));
+        store.update_body(&lock, "RFC-001", "Changed body").await.unwrap();
+        assert!(store.get_record(&lock, "RFC-001").await.unwrap().unwrap().embedding.is_none());
+    }
+
+    #[tokio::test]
+    async fn mismatched_vector_fingerprint_blocks_staging_and_marker() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace_with_vector(tmp.path(), false, true).await;
+        let source = read_identity_v5_source(&ws).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let mut rows = prepare_identity_v5_rows(&db, &source, true).await.unwrap();
+        let profile = IdentityV5EmbeddingProvenance {
+            model: "test".into(), repository: "test/repo".into(), snapshot_id: "revision".into(),
+            snapshot_digest: "a".repeat(64), chunk_size: 2000, dimension: EMBEDDING_DIM as usize,
+            implementation: "deterministic-test-v1".into(), profile_digest: String::new(),
+            input_digests: BTreeMap::new(), vector_digests: BTreeMap::new(),
+        };
+        let mut profile = recompute_identity_vectors(&mut rows[0], profile, |_| {
+            Ok(vec![0.5; EMBEDDING_DIM as usize])
+        }).unwrap();
+        *profile.vector_digests.values_mut().next().unwrap() = "b".repeat(64);
+        let mut report = verify_identity_v5_source(&source);
+        drop(db);
+        assert!(publish_prepared_identity_v5(&ws, &source, &rows, Some(profile), &mut report,
+            |_, _| Ok(())).await.is_err());
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+        assert!(!db.table_names().execute().await.unwrap().contains(&IDENTITY_V5_ARTIFACTS_TABLE.to_string()));
+    }
+
+    #[tokio::test]
+    async fn changed_model_after_staging_keeps_v4_and_retry_can_publish() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace_with_vector(tmp.path(), false, true).await;
+        let source = read_identity_v5_source(&ws).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let old = table_rows(&db, "artifacts").await.unwrap();
+        let mut rows = prepare_identity_v5_rows(&db, &source, true).await.unwrap();
+        let profile = IdentityV5EmbeddingProvenance {
+            model: "test".into(), repository: "test/repo".into(), snapshot_id: "revision".into(),
+            snapshot_digest: "a".repeat(64), chunk_size: 2000, dimension: EMBEDDING_DIM as usize,
+            implementation: "deterministic-test-v1".into(), profile_digest: String::new(),
+            input_digests: BTreeMap::new(), vector_digests: BTreeMap::new(),
+        };
+        let profile = recompute_identity_vectors(&mut rows[0], profile, |_| {
+            Ok(vec![0.5; EMBEDDING_DIM as usize])
+        }).unwrap();
+        let mut report = verify_identity_v5_source(&source);
+        drop(db);
+        let error = publish_prepared_identity_v5(
+            &ws, &source, &rows, Some(profile.clone()), &mut report,
+            |_, _| anyhow::bail!("embedding snapshot changed"),
+        ).await.unwrap_err();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        assert!(error.to_string().contains("embedding snapshot changed"));
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+        let after = table_rows(&db, "artifacts").await.unwrap();
+        assert_eq!(old.len(), after.len());
+        for (before, after) in old.iter().zip(&after) {
+            assert!(before.columns().iter().zip(after.columns()).all(|(a, b)| a.to_data() == b.to_data()));
+        }
+        drop(db);
+        publish_prepared_identity_v5(
+            &ws, &source, &rows, Some(profile), &mut report, |_, _| Ok(()),
+        ).await.unwrap();
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().unwrap().completed);
+    }
+
+    #[tokio::test]
+    async fn invalid_recomputed_vector_never_publishes_or_changes_v4() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace_with_vector(tmp.path(), false, true).await;
+        let source = read_identity_v5_source(&ws).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let old = table_rows(&db, "artifacts").await.unwrap();
+        let mut rows = prepare_identity_v5_rows(&db, &source, true).await.unwrap();
+        let profile = IdentityV5EmbeddingProvenance {
+            model: "test".into(), repository: "test/repo".into(), snapshot_id: "revision".into(),
+            snapshot_digest: "a".repeat(64), chunk_size: 2000, dimension: EMBEDDING_DIM as usize,
+            implementation: "deterministic-test-v1".into(), profile_digest: String::new(),
+            input_digests: BTreeMap::new(), vector_digests: BTreeMap::new(),
+        };
+        let mut count = 0;
+        assert!(recompute_identity_vectors(&mut rows[0], profile, |_| {
+            count += 1;
+            Ok(vec![if count == 1 { 0.5 } else { f32::NAN }; EMBEDDING_DIM as usize])
+        }).is_err());
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+        let after = table_rows(&db, "artifacts").await.unwrap();
+        assert!(old.iter().zip(after.iter()).all(|(a, b)| a.column_by_name("embedding").unwrap().to_data() == b.column_by_name("embedding").unwrap().to_data()));
+    }
+
+    #[tokio::test]
+    async fn v4_vector_unavailable_backend_blocks_publication_and_is_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace_with_vector(tmp.path(), false, true).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        tokio::fs::write(ws.join("config.yaml"), "embedding:\n  model: unsupported-test-model\n").await.unwrap();
+        let error = run_identity_v5_migration(&ws, &lock).await.unwrap_err();
+        #[cfg(feature = "tract-engine")]
+        assert!(error.to_string().contains("unsupported embedding model"));
+        #[cfg(not(feature = "tract-engine"))]
+        assert!(error.to_string().contains("embedding backend"));
+        let refusal = crate::db::store::LanceStore::open_for_write(&ws, &lock).await.err().unwrap();
+        assert_eq!(error.to_string(), refusal.to_string());
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+        let store = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        assert_eq!(store.get_record(&lock, "prd-auth-system").await.unwrap().unwrap().embedding.unwrap(),
+            vec![0.25; EMBEDDING_DIM as usize]);
+    }
+
+    #[tokio::test]
+    async fn v4_unmapped_row_blocks_even_when_document_counts_match() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), true).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let error = run_identity_v5_migration(&ws, &lock).await.unwrap_err();
+        assert!(error.to_string().contains("cannot be mapped uniquely"));
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        assert_eq!(table_rows(&db, "artifacts").await.unwrap().len(), 2);
+        assert_eq!(table_rows(&db, "evidence").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn v4_unmapped_evidence_reference_blocks_publication() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let table = db.open_table("evidence").execute().await.unwrap();
+        table.update().only_if("id = 'EVID-001'").column("artifact_id", "'PRD-999'")
+            .execute().await.unwrap();
+        let error = run_identity_v5_migration(&ws, &lock).await.unwrap_err();
+        assert!(error.to_string().contains("no matching document"));
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+        let old = table_rows(&db, "evidence").await.unwrap();
+        assert_eq!(required_string(&old[0], "artifact_id").unwrap(), "PRD-999");
+        assert_eq!(required_string(&old[0], "content").unwrap(), "original evidence");
+    }
+
+    #[tokio::test]
+    async fn published_marker_with_missing_table_is_an_error_even_during_init() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        run_identity_v5_migration(&ws, &lock).await.unwrap();
+        let opened = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        db.drop_table(IDENTITY_V5_EVIDENCE_TABLE, &[]).await.unwrap();
+        assert!(opened.ensure_identity_v5_writable(&lock).is_err());
+        assert!(run_identity_v5_migration(&ws, &lock).await.is_err());
+        assert!(crate::db::store::LanceStore::open(&ws).await.is_err());
+        assert!(crate::db::store::LanceStore::init(&ws, &lock).await.is_err());
+    }
+    #[tokio::test]
+    async fn stage_verifier_rejects_missing_evidence_row() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let source = read_identity_v5_source(&ws).await.unwrap();
+        let mut report = verify_identity_v5_source(&source);
+        write_identity_v5_tables(&ws.join("lance"), &lock, &source, &mut report).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        db.open_table(IDENTITY_V5_EVIDENCE_TABLE).execute().await.unwrap()
+            .delete("artifact_id = 'prd-auth-system'").await.unwrap();
+        assert!(verify_identity_v5_round_trip(&ws.join("lance"), &source).await.is_err());
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_source_encoding_never_publishes() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        tokio::fs::write(ws.join("prds/bad.md"), [0xff]).await.unwrap();
+        assert!(run_identity_v5_migration(&ws, &lock).await.unwrap_err().to_string().contains("UTF-8"));
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_intent_recovers_file_first_gap_without_deleting_evidence() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::open_for_write(&ws, &lock).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let old_v4 = table_rows(&db, "artifacts").await.unwrap();
+        let old_evidence = table_rows(&db, IDENTITY_V5_EVIDENCE_TABLE).await.unwrap();
+        let path = ws.join("rfcs/RFC-001-wire.md");
+        begin_identity_delete_intent(&ws, &lock, "RFC-001", &path).await.unwrap();
+        begin_identity_delete_intent(&ws, &lock, "RFC-001", &path).await.unwrap();
+        assert!(has_identity_delete_intents(&ws).unwrap());
+        assert!(require_identity_delete_intent(&ws, &lock, "RFC-001").await.is_err());
+        tokio::fs::remove_file(&path).await.unwrap();
+        require_identity_delete_intent(&ws, &lock, "RFC-001").await.unwrap();
+        assert!(require_identity_delete_intent(&ws, &lock, "prd-auth-system").await.is_err());
+        drop(store);
+        drop(lock);
+        crate::db::store::LanceStore::drain_identity_semantic_backlog(&ws).await.unwrap();
+        let lock = crate::workspace::lock::acquire_workspace_read_lock(&ws).await.unwrap();
+        let recovered = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        assert!(recovered.get_record(&lock, "RFC-001").await.unwrap().is_none());
+        assert_eq!(recovered.get_record(&lock, "prd-auth-system").await.unwrap().unwrap().id, "PRD-001");
+        assert!(!has_identity_delete_intents(&ws).unwrap());
+        let new_evidence = table_rows(&db, IDENTITY_V5_EVIDENCE_TABLE).await.unwrap();
+        assert_eq!(old_evidence.len(), new_evidence.len());
+        assert!(old_evidence[0].columns().iter().zip(new_evidence[0].columns()).all(|(a, b)| a.to_data() == b.to_data()));
+        let new_v4 = table_rows(&db, "artifacts").await.unwrap();
+        assert_eq!(old_v4.len(), new_v4.len());
+        assert!(old_v4.iter().zip(&new_v4).all(|(left, right)|
+            left.columns().iter().zip(right.columns()).all(|(a, b)| a.to_data() == b.to_data())));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unrecorded_orphan_does_not_get_deleted_by_reconciliation() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::open_for_write(&ws, &lock).await.unwrap();
+        tokio::fs::remove_file(ws.join("rfcs/RFC-001-wire.md")).await.unwrap();
+        assert!(require_identity_delete_intent(&ws, &lock, "RFC-001").await.is_err());
+        drop(store);
+        drop(lock);
+        assert!(crate::db::store::LanceStore::drain_identity_semantic_backlog(&ws).await.is_err());
+        let lock = crate::workspace::lock::acquire_workspace_read_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        assert!(store.get_record(&lock, "RFC-001").await.unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn every_fixed_name_swap_window_recovers_a_file_first_create() {
+        for cut in 0..=6 {
+            let tmp = TempDir::new().unwrap();
+            let ws = populated_v4_workspace(tmp.path(), false).await;
+            let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+            let old = crate::db::store::LanceStore::open_for_write(&ws, &lock).await.unwrap();
+            let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+            let before = table_rows(&db, IDENTITY_V5_EVIDENCE_TABLE).await.unwrap();
+            tokio::fs::write(ws.join("prds/PRD-002-new.md"),
+                "---\nid: PRD-002\nkind: prd\nstatus: draft\ntitle: New\nslug: prd-new\n---\n\nNew content.\n").await.unwrap();
+            let source = read_identity_v5_source(&ws).await.unwrap();
+            let transaction = prepare_legacy_semantic_rebuild(&ws, &lock, &db, &source).await.unwrap();
+            drop(lock);
+            assert!(crate::workspace::lock::acquire_workspace_lock(&ws).await.is_err());
+            let owner = crate::workspace::lock::acquire_legacy_semantic_rebuild_lock(&ws, &transaction).await.unwrap();
+            let dir = legacy_semantic_rebuild_root(&ws).join(&transaction);
+            let names = [IDENTITY_V5_ARTIFACTS_TABLE, IDENTITY_V5_RELATIONS_TABLE, IDENTITY_V5_EVIDENCE_TABLE];
+            for (step, name) in names.iter().enumerate() {
+                let filename = format!("{name}.lance");
+                if step * 2 < cut {
+                    std::fs::rename(ws.join("lance").join(&filename), dir.join("backup").join(&filename)).unwrap();
+                }
+                if step * 2 + 1 < cut {
+                    std::fs::rename(dir.join("staged").join(&filename), ws.join("lance").join(&filename)).unwrap();
+                }
+            }
+            drop(owner);
+            crate::db::store::LanceStore::drain_identity_semantic_backlog(&ws).await.unwrap();
+            let read = crate::workspace::lock::acquire_workspace_read_lock(&ws).await.unwrap();
+            assert!(old.identity_generation_changed(&read).unwrap());
+            let fresh = crate::db::store::LanceStore::open(&ws).await.unwrap();
+            assert_eq!(fresh.get_record(&read, "prd-new").await.unwrap().unwrap().id, "PRD-002");
+            let after = table_rows(&db, IDENTITY_V5_EVIDENCE_TABLE).await.unwrap();
+            assert_eq!(before.len(), after.len());
+            assert!(before[0].columns().iter().zip(after[0].columns()).all(|(a, b)| a.to_data() == b.to_data()));
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn fixed_table_swap_revalidates_after_each_transition() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let tmp = TempDir::new().unwrap();
+        let lance = tmp.path().join("lance");
+        let staged = tmp.path().join("staged");
+        let backup = tmp.path().join("backup");
+        for dir in [&lance, &staged, &backup] { std::fs::create_dir(dir).unwrap(); }
+        assert!(rename_identity_noreplace(&lance, &staged).is_err());
+        assert!(lance.is_dir() && staged.is_dir());
+        let names = [IDENTITY_V5_ARTIFACTS_TABLE, IDENTITY_V5_RELATIONS_TABLE, IDENTITY_V5_EVIDENCE_TABLE];
+        let mut entries = Vec::new();
+        for name in names {
+            let filename = format!("{name}.lance");
+            let old = lance.join(&filename);
+            let new = staged.join(&filename);
+            std::fs::create_dir(&old).unwrap();
+            std::fs::create_dir(&new).unwrap();
+            std::fs::write(old.join("content"), format!("old {name}")).unwrap();
+            std::fs::write(new.join("content"), format!("new {name}")).unwrap();
+            entries.push(FixedTableSwapEntry {
+                name: name.into(),
+                before_digest: Some(semantic_rebuild_tree_digest(&old).unwrap()),
+                after_digest: semantic_rebuild_tree_digest(&new).unwrap(),
+            });
+        }
+        let calls = AtomicUsize::new(0);
+        let error = complete_fixed_table_swap(tmp.path(), &staged, &backup, &entries, || {
+            if calls.fetch_add(1, Ordering::SeqCst) == 3 { anyhow::bail!("owner proof changed") }
+            Ok(())
+        }).unwrap_err();
+        assert!(error.to_string().contains("owner proof changed"));
+        assert!(!lance.join(format!("{}.lance", names[0])).exists());
+        assert!(backup.join(format!("{}.lance", names[0])).exists());
+        complete_fixed_table_swap(tmp.path(), &staged, &backup, &entries, || Ok(())).unwrap();
+        for name in names {
+            assert_eq!(std::fs::read_to_string(lance.join(format!("{name}.lance/content"))).unwrap(), format!("new {name}"));
+            assert_eq!(std::fs::read_to_string(backup.join(format!("{name}.lance/content"))).unwrap(), format!("old {name}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn exported_test_fixture_is_populated_schema_four() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_identity_v4_workspace_for_test(tmp.path()).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let table = db.open_table("artifacts").execute().await.unwrap();
+        assert_eq!(table.schema().await.unwrap().fields().len(), 15);
+        assert_eq!(table_rows(&db, "artifacts").await.unwrap().len(), 2);
+        assert_eq!(table_rows(&db, "relations").await.unwrap().len(), 1);
+        assert_eq!(table_rows(&db, "evidence").await.unwrap().len(), 1);
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn exported_vector_fixture_preserves_real_schema_four_vectors() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_identity_v4_workspace_with_vector_for_test(tmp.path()).await.unwrap();
+        let db = lancedb::connect(ws.join("lance").to_str().unwrap()).execute().await.unwrap();
+        let rows = table_rows(&db, "artifacts").await.unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row.schema().fields().len(), 15);
+            assert_eq!(crate::db::convert::extract_embedding(row, 0).unwrap(), vec![0.25; EMBEDDING_DIM as usize]);
+        }
+        assert!(read_identity_v5_marker(&ws.join("lance")).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn frozen_capture_timestamp_is_reused_without_changing_source_digest() {
+        let tmp = TempDir::new().unwrap();
+        let ws = populated_v4_workspace(tmp.path(), false).await;
+        let frozen = "2024-01-02T03:04:05+00:00";
+        let first = read_identity_v5_source_at(&ws, frozen).await.unwrap();
+        let replay = read_identity_v5_source_at(&ws, frozen).await.unwrap();
+        assert_eq!(first.documents, replay.documents);
+        assert_eq!(first.source_digest, replay.source_digest);
+        assert!(first.documents.iter().all(|document| document.created_at == frozen && document.updated_at == frozen));
+        assert!(read_identity_v5_source_at(&ws, "not-a-time").await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn init_rejects_symlinked_lance_without_touching_target() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join("workspace");
+        let external = tmp.path().join("external");
+        std::fs::create_dir(&ws).unwrap();
+        std::fs::create_dir(&external).unwrap();
+        std::os::unix::fs::symlink(&external, ws.join("lance")).unwrap();
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        assert!(crate::db::store::LanceStore::init_new(&ws, &lock).await.is_err());
+        assert!(std::fs::read_dir(external).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn marker_symlink_is_neither_followed_nor_overwritten() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("must-not-change");
+        std::fs::write(&target, "untouched").unwrap();
+        std::os::unix::fs::symlink(&target, identity_v5_marker_path(tmp.path())).unwrap();
+        let marker = IdentityV5Marker {
+            version: IDENTITY_V5_VERSION, artifacts_table: IDENTITY_V5_ARTIFACTS_TABLE.into(),
+            relations_table: IDENTITY_V5_RELATIONS_TABLE.into(), evidence_table: IDENTITY_V5_EVIDENCE_TABLE.into(),
+            source_digest: "a".repeat(64), document_count: 0, completed: true, embeddings: None,
+            semantic: Some(IdentityV5SemanticProtocol { protocol: 1, active_profile_digest: None }),
+        };
+        assert!(read_identity_v5_marker(tmp.path()).is_err());
+        assert!(publish_identity_v5_marker_new(tmp.path(), &marker).is_err());
+        assert!(publish_identity_v5_marker(tmp.path(), &marker).is_err());
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "untouched");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn first_marker_publication_never_replaces_existing_file() {
+        let tmp = TempDir::new().unwrap();
+        let marker = IdentityV5Marker {
+            version: IDENTITY_V5_VERSION, artifacts_table: IDENTITY_V5_ARTIFACTS_TABLE.into(),
+            relations_table: IDENTITY_V5_RELATIONS_TABLE.into(), evidence_table: IDENTITY_V5_EVIDENCE_TABLE.into(),
+            source_digest: "a".repeat(64), document_count: 0, completed: true, embeddings: None,
+            semantic: Some(IdentityV5SemanticProtocol { protocol: 1, active_profile_digest: None }),
+        };
+        publish_identity_v5_marker_new(tmp.path(), &marker).unwrap();
+        let original = std::fs::read(identity_v5_marker_path(tmp.path())).unwrap();
+        let mut competing = marker;
+        competing.source_digest = "b".repeat(64);
+        assert!(publish_identity_v5_marker_new(tmp.path(), &competing).is_err());
+        assert_eq!(std::fs::read(identity_v5_marker_path(tmp.path())).unwrap(), original);
+    }
+
+    #[test]
+    fn marker_with_wrong_table_name_or_digest_is_damaged() {
+        let tmp = TempDir::new().unwrap();
+        let marker = IdentityV5Marker {
+            version: IDENTITY_V5_VERSION,
+            artifacts_table: "artifacts".into(),
+            relations_table: IDENTITY_V5_RELATIONS_TABLE.into(),
+            evidence_table: IDENTITY_V5_EVIDENCE_TABLE.into(),
+            source_digest: "a".repeat(64),
+            document_count: 0,
+            completed: true,
+            embeddings: None,
+            semantic: None,
+        };
+        publish_identity_v5_marker_new(tmp.path(), &marker).unwrap();
+        assert!(read_identity_v5_marker(tmp.path()).is_err());
+        let mut marker = marker;
+        marker.artifacts_table = IDENTITY_V5_ARTIFACTS_TABLE.into();
+        marker.source_digest = "bad".into();
+        publish_identity_v5_marker(tmp.path(), &marker).unwrap();
+        assert!(read_identity_v5_marker(tmp.path()).is_err());
     }
 }

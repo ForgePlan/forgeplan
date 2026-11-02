@@ -1948,6 +1948,7 @@ impl MaintenanceSupervisor {
             return Ok((0, 0, Vec::new()));
         };
         let manifest = super::storage::read_manifest(&index_root, &descriptor)?;
+        manifest.require_addressable()?;
         if manifest.pending_jobs.is_empty() {
             return Ok((0, 0, Vec::new()));
         }
@@ -4024,6 +4025,7 @@ mod tests {
             tokenizer: Some(std::sync::Arc::clone(&tokenizer)),
             body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
+            conflict_artifacts: Vec::new(),
             sections: vec![section.clone()],
             entries: vec![entry],
             unusable: Vec::<UnusableSource>::new(),

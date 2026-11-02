@@ -76,7 +76,7 @@ impl Fixture {
                 )
                 .await
                 .unwrap();
-                assert_eq!(store.get_record(ID).await.unwrap().unwrap().body, content);
+                assert_eq!(store.get_record(&lock, ID).await.unwrap().unwrap().body, content);
             });
         // The runtime, store and lock have all dropped before a CLI child opens them.
         let artifact = fixture.json(&["get", ID, "--json"]);

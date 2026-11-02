@@ -912,16 +912,53 @@ async fn dropping_the_runner_unregisters_its_background_maintenance() {
 async fn migration_cannot_retire_legacy_tables_while_a_canonical_writer_holds_the_lock() {
     let tmp = workspace();
     let root = tmp.path();
+    let init_lock = forgeplan_core::workspace::acquire_workspace_lock(root)
+        .await
+        .expect("initialization lock");
+    // A real pre-v5 legacy index: initialization of a new workspace now
+    // publishes v5 directly and would not exercise retirement of v4 tables.
+    let lance = root.join("lance");
+    std::fs::create_dir_all(&lance).unwrap();
+    let db = lancedb::connect(lance.to_str().unwrap()).execute().await.unwrap();
+    let artifacts = forgeplan_core::db::schema::artifacts_schema();
+    let v4_artifacts = std::sync::Arc::new(arrow_schema::Schema::new(
+        artifacts.fields().iter().take(15).cloned().collect::<Vec<_>>(),
+    ));
+    let seed = forgeplan_core::db::store::NewArtifact {
+        canonical_key: "PRD-001".into(),
+        id: "PRD-001".into(),
+        kind: "prd".into(),
+        status: "draft".into(),
+        title: "Auth".into(),
+        body: "Body.\n".into(),
+        depth: "standard".into(),
+        author: None,
+        parent_epic: None,
+        valid_until: None,
+        tags: Vec::new(),
+    };
+    let full = forgeplan_core::db::convert::artifact_to_batch(&seed, "2026-01-01T00:00:00Z")
+        .unwrap();
+    let v4_row = arrow_array::RecordBatch::try_new(
+        v4_artifacts, full.columns()[..15].to_vec(),
+    ).unwrap();
+    for (name, batch) in [
+        ("artifacts", v4_row),
+        ("relations", arrow_array::RecordBatch::new_empty(forgeplan_core::db::schema::relations_schema())),
+        ("evidence", arrow_array::RecordBatch::new_empty(forgeplan_core::db::schema::evidence_schema())),
+    ] {
+        db.create_table(name, vec![batch]).execute().await.unwrap();
+    }
+    drop(db);
+    let marker = lance.join(forgeplan_core::db::migrate::IDENTITY_V5_MARKER_FILE);
+    assert!(!marker.exists(), "fixture must be a schema-4 index without a v5 marker");
+    drop(init_lock);
     write(
         root,
         "prds",
         "PRD-001-auth.md",
         &prd("PRD-001", "Auth", "draft", "Body.\n"),
     );
-    let store = forgeplan_core::db::store::LanceStore::init(root)
-        .await
-        .expect("initialize the real legacy projection");
-    drop(store);
     let legacy = root.join("lance/artifacts.lance");
     assert!(legacy.exists());
     let guard = forgeplan_core::workspace::acquire_workspace_lock(root)

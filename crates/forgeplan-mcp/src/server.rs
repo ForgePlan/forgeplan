@@ -178,38 +178,40 @@ impl ReadSource {
     /// Records matching a kind/status filter.
     pub async fn list_records(
         &self,
+        permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<ArtifactRecord>> {
         match self {
             Self::Workspace(read) => Ok(read.list_records(filter)),
-            Self::Legacy(store) => store.list_records(filter).await,
+            Self::Legacy(store) => store.list_records(permit, filter).await,
         }
     }
 
     /// Summaries for the list/status surfaces.
     pub async fn list_artifacts(
         &self,
+        permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<forgeplan_core::artifact::store::ArtifactSummary>> {
         match self {
             Self::Workspace(read) => Ok(read.list_artifacts(filter)),
-            Self::Legacy(store) => store.list_artifacts(filter).await,
+            Self::Legacy(store) => store.list_artifacts(permit, filter).await,
         }
     }
 
     /// One full record by exact `id`, or `None`.
-    pub async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
+    pub async fn get_record(&self, permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
         match self {
             Self::Workspace(read) => Ok(read.get_record(id).cloned()),
-            Self::Legacy(store) => store.get_record(id).await,
+            Self::Legacy(store) => store.get_record(permit, id).await,
         }
     }
 
     /// Canonical id for a display id, a normalized `KIND-N`, or an ADR-012 slug.
-    pub async fn resolve_id(&self, input: &str) -> anyhow::Result<Option<String>> {
+    pub async fn resolve_id(&self, permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit, input: &str) -> anyhow::Result<Option<String>> {
         match self {
             Self::Workspace(read) => Ok(read.resolve_id(input)),
-            Self::Legacy(store) => store.resolve_id(input).await,
+            Self::Legacy(store) => store.resolve_id(permit, input).await,
         }
     }
 
@@ -226,13 +228,14 @@ impl ReadSource {
     /// open.
     pub async fn resolve(
         &self,
+        permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
         workspace: &std::path::Path,
         input: &str,
     ) -> anyhow::Result<crate::convert::Resolution> {
         match self {
             Self::Workspace(read) => Ok(crate::convert::resolve_in_capture(read, input)),
             Self::Legacy(store) => {
-                crate::convert::resolve_in_legacy_index(store, workspace, input).await
+                crate::convert::resolve_in_legacy_index(store, permit, workspace, input).await
             }
         }
     }
@@ -252,11 +255,12 @@ impl ReadSource {
     /// as "not found" is how a write lands on the wrong document.
     pub async fn resolve_artifact(
         &self,
+        permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
         workspace: &std::path::Path,
         input: &str,
     ) -> Result<Option<String>, CallToolResult> {
         let resolution = self
-            .resolve(workspace, input)
+            .resolve(permit, workspace, input)
             .await
             .map_err(|e| safe_err_result("resolve reference: ", e))?;
         match resolution {
@@ -269,57 +273,59 @@ impl ReadSource {
     }
 
     /// Outgoing `(target, relation)` pairs.
-    pub async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
+    pub async fn get_relations(&self, permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         match self {
             Self::Workspace(read) => Ok(read.get_relations(id)),
-            Self::Legacy(store) => store.get_relations(id).await,
+            Self::Legacy(store) => store.get_relations(permit, id).await,
         }
     }
 
     /// Incoming `(source, relation)` pairs.
-    pub async fn get_incoming_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
+    pub async fn get_incoming_relations(&self, permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         match self {
             Self::Workspace(read) => Ok(read.get_incoming_relations(id)),
-            Self::Legacy(store) => store.get_incoming_relations(id).await,
+            Self::Legacy(store) => store.get_incoming_relations(permit, id).await,
         }
     }
 
     /// Every `(source, target, relation)` edge.
-    pub async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+    pub async fn get_all_relations(&self, permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit) -> anyhow::Result<Vec<(String, String, String)>> {
         match self {
             Self::Workspace(read) => Ok(read.get_all_relations()),
-            Self::Legacy(store) => store.get_all_relations().await,
+            Self::Legacy(store) => store.get_all_relations(permit).await,
         }
     }
 
     /// Case-insensitive substring match over title and body.
     pub async fn search_body(
         &self,
+        permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
         query: &str,
         kind_filter: Option<&str>,
     ) -> anyhow::Result<Vec<ArtifactRecord>> {
         match self {
             Self::Workspace(read) => Ok(read.search_body(query, kind_filter)),
-            Self::Legacy(store) => store.search_body(query, kind_filter).await,
+            Self::Legacy(store) => store.search_body(permit, query, kind_filter).await,
         }
     }
 
     /// Artifacts whose `valid_until` has passed.
-    pub async fn find_stale(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
+    pub async fn find_stale(&self, permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit) -> anyhow::Result<Vec<ArtifactRecord>> {
         match self {
             Self::Workspace(read) => Ok(read.find_stale()),
-            Self::Legacy(store) => store.find_stale().await,
+            Self::Legacy(store) => store.find_stale(permit).await,
         }
     }
 
     /// The dependency graph over exactly the records this read saw.
     pub async fn knowledge_graph(
         &self,
+        permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
     ) -> anyhow::Result<forgeplan_core::graph::knowledge::KnowledgeGraph> {
         match self {
             Self::Workspace(read) => Ok(read.knowledge_graph()),
             Self::Legacy(store) => {
-                forgeplan_core::graph::knowledge::KnowledgeGraph::from_store(store).await
+                forgeplan_core::graph::knowledge::KnowledgeGraph::from_store(store, permit).await
             }
         }
     }
@@ -331,13 +337,13 @@ impl ReadSource {
     /// existing `forgeplan_constellation_search` handler uses — no download, no
     /// legacy store. `(None, false)` stays the answer whenever real scores do
     /// not exist; it is never replaced with an empty map or zeros.
-    pub async fn semantic_scores(&self, query: &str) -> (Option<HashMap<String, f64>>, bool) {
+    pub async fn semantic_scores(&self, permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit, query: &str, candidate_limit: usize) -> anyhow::Result<(Option<HashMap<String, f64>>, bool)> {
         match self {
             Self::Legacy(store) => {
-                forgeplan_core::search::semantic::semantic_scores(store, query).await
+                forgeplan_core::search::semantic::semantic_scores_with_limit(store, permit, query, candidate_limit).await
             }
             Self::Workspace(read) => {
-                forgeplan_core::search::semantic::workspace_semantic_scores(read, query).await
+                forgeplan_core::search::semantic::workspace_semantic_scores(read, permit, query).await
             }
         }
     }
@@ -507,6 +513,12 @@ impl ReconcileReport {
     }
 }
 
+#[cfg(test)]
+async fn init_test_store(workspace: &Path) -> anyhow::Result<LanceStore> {
+    let guard = forgeplan_core::workspace::acquire_workspace_lock(workspace).await?;
+    LanceStore::init_new(workspace, &guard).await
+}
+
 /// Edges touching `record`, in the shape a soft-delete receipt stores.
 ///
 /// Read from whichever `ReadSource` produced the record, so a migrated
@@ -517,28 +529,48 @@ impl ReconcileReport {
 pub(crate) async fn capture_relations_for_receipt(
     record: &forgeplan_core::db::store::ArtifactRecord,
     read: &ReadSource,
+    _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
 ) -> anyhow::Result<Vec<forgeplan_core::undo::CapturedRelation>> {
     use forgeplan_core::undo::{CapturedRelation, RelationDirection};
 
     let mut relations = Vec::new();
-    for (to, relation) in read.get_relations(&record.id).await? {
+    for (to, relation) in read.get_relations(_permit, &record.canonical_key).await? {
         relations.push(CapturedRelation {
-            from: record.id.clone(),
+            from: record.canonical_key.clone(),
             to,
             relation,
             direction: RelationDirection::Outgoing,
         });
     }
-    for (from, relation) in read.get_incoming_relations(&record.id).await? {
+    for (from, relation) in read.get_incoming_relations(_permit, &record.canonical_key).await? {
         relations.push(CapturedRelation {
             from,
-            to: record.id.clone(),
+            to: record.canonical_key.clone(),
             relation,
             direction: RelationDirection::Incoming,
         });
     }
     Ok(relations)
 }
+
+fn get_links_response(
+    outbound: anyhow::Result<Vec<(String, String)>>,
+    inbound: anyhow::Result<Vec<(String, String)>>,
+) -> Result<crate::types::ArtifactLinksDto, CallToolResult> {
+    let outbound = outbound.map_err(|e| safe_err_result("get outgoing relations: ", e))?;
+    let inbound = inbound.map_err(|e| safe_err_result("get incoming relations: ", e))?;
+    Ok(crate::types::ArtifactLinksDto {
+        outbound: outbound
+            .into_iter()
+            .map(|(target, relation)| crate::types::OutboundLinkDto { target, relation })
+            .collect(),
+        inbound: inbound
+            .into_iter()
+            .map(|(source, relation)| crate::types::InboundLinkDto { source, relation })
+            .collect(),
+    })
+}
+
 
 /// Signal the derived index after a canonical write, and say honestly whether
 /// it is still pending.
@@ -818,15 +850,17 @@ impl ForgeplanServer {
     pub(crate) async fn resolve_read_source(
         &self,
         param_workspace: Option<&str>,
-    ) -> Result<(PathBuf, ResolutionSource, ReadSource), McpError> {
+    ) -> Result<(PathBuf, ResolutionSource, ReadSource, forgeplan_core::workspace::lock::WorkspaceReadLock), McpError> {
         let (workspace_dir, resolved_via) = self
             .resolve_workspace_dir(param_workspace, DetectionPolicy::SoftFallback)
             .await?;
+        let guard = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace_dir)
+            .await.map_err(safe_mcp_error)?;
         let legacy_store =
             if forgeplan_core::constellation::facade::workspace_is_migrated(&workspace_dir) {
                 None
             } else {
-                Some(self.get_or_open_store(&workspace_dir).await.map_err(|e| {
+                Some(self.get_or_open_store_with_permit(&workspace_dir, &guard).await.map_err(|e| {
                     safe_invalid_params(
                         format!(
                             "workspace found at `{}` but store could not be opened: {e}",
@@ -836,8 +870,8 @@ impl ForgeplanServer {
                     )
                 })?)
             };
-        let read = self.read_source_for(&workspace_dir, legacy_store).await?;
-        Ok((workspace_dir, resolved_via, read))
+        let read = self.read_source_for(&workspace_dir, &guard, legacy_store).await?;
+        Ok((workspace_dir, resolved_via, read, guard))
     }
 
     /// The read source for a workspace that resolution has already decided
@@ -851,26 +885,31 @@ impl ForgeplanServer {
     pub(crate) async fn read_source_for(
         &self,
         workspace_dir: &Path,
+        permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
         legacy_store: Option<Arc<LanceStore>>,
     ) -> Result<ReadSource, McpError> {
         if let Some(store) = legacy_store {
             return Ok(ReadSource::Legacy(store));
         }
         let read =
-            forgeplan_core::constellation::facade::open_workspace_read(
-                workspace_dir,
-                None,
-                forgeplan_core::constellation::capture::CaptureLimits::default(),
-            )
+            forgeplan_core::constellation::facade::open_workspace_read_with_permit(workspace_dir, permit)
             .await
-            .map_err(|e| {
-                safe_invalid_params(
+            .map_err(|e| match e {
+                forgeplan_core::constellation::ConstellationError::Resolve(error) => {
+                    let refusal = resolve_error_result(error);
+                    let data = refusal.content.first().and_then(|content| match &content.raw {
+                        rmcp::model::RawContent::Text(text) => serde_json::from_str(&text.text).ok(),
+                        _ => None,
+                    });
+                    McpError::invalid_params("artifact resolution failed", data)
+                }
+                error => safe_invalid_params(
                     format!(
-                        "workspace found at `{}` but its Constellation read view could not be built: {e}",
+                        "workspace found at `{}` but its Constellation read view could not be built: {error}",
                         workspace_dir.display()
                     ),
                     None,
-                )
+                ),
             })?;
         Ok(ReadSource::Workspace(read))
     }
@@ -886,14 +925,17 @@ impl ForgeplanServer {
     pub(crate) async fn resolve_read_source_strict(
         &self,
         param_workspace: Option<&str>,
-    ) -> Result<(ResolvedWorkspace, ReadSource), McpError> {
-        let resolved = self
-            .resolve_workspace_core(param_workspace, DetectionPolicy::Strict)
-            .await?;
-        let read = self
-            .read_source_for(&resolved.workspace_dir, resolved.legacy_store.clone())
-            .await?;
-        Ok((resolved, read))
+    ) -> Result<(ResolvedWorkspace, ReadSource, forgeplan_core::workspace::lock::WorkspaceReadLock), McpError> {
+        let (workspace_dir, resolved_via) = self.resolve_workspace_dir(param_workspace, DetectionPolicy::Strict).await?;
+        let guard = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace_dir)
+            .await.map_err(safe_mcp_error)?;
+        let legacy_store = if forgeplan_core::constellation::facade::workspace_is_migrated(&workspace_dir) {
+            None
+        } else {
+            Some(self.get_or_open_store_with_permit(&workspace_dir, &guard).await.map_err(safe_mcp_error)?)
+        };
+        let read = self.read_source_for(&workspace_dir, &guard, legacy_store.clone()).await?;
+        Ok((ResolvedWorkspace { workspace_dir, resolved_via, legacy_store }, read, guard))
     }
 
     /// Select the physical artifact owner only after serializing with migration.
@@ -912,7 +954,7 @@ impl ForgeplanServer {
                 None
             } else {
                 Some(
-                    self.get_or_open_store(&workspace_dir)
+                    self.get_or_open_store_with_permit(&workspace_dir, &guard)
                         .await
                         .map_err(safe_mcp_error)?,
                 )
@@ -941,7 +983,7 @@ impl ForgeplanServer {
     > {
         let (resolved, guard) = self.resolve_write_workspace(param_workspace).await?;
         let read = self
-            .read_source_for(&resolved.workspace_dir, resolved.legacy_store.clone())
+            .read_source_for(&resolved.workspace_dir, &guard, resolved.legacy_store.clone())
             .await?;
         Ok((resolved, read, guard))
     }
@@ -1283,6 +1325,51 @@ impl ForgeplanServer {
         Ok(new_store)
     }
 
+    /// Refresh under the operation's existing permit; replace handles pinned to
+    /// an older identity generation before any rows escape to the caller.
+    async fn get_or_open_store_with_permit(
+        &self,
+        workspace_dir: &Path,
+        permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
+    ) -> anyhow::Result<Arc<LanceStore>> {
+        let cached = self.get_or_open_store(workspace_dir).await?;
+        if !cached.identity_generation_changed(permit)? {
+            cached.refresh(permit).await?;
+            return Ok(cached);
+        }
+        let reopened = Arc::new(LanceStore::open(workspace_dir).await?);
+        reopened.refresh(permit).await?;
+        self.workspace_store_cache.write().await.insert(
+            Self::canonical_ws_dir(workspace_dir.to_path_buf()), Arc::clone(&reopened),
+        );
+        Ok(reopened)
+    }
+
+    /// Prepare the legacy writer only after selector preflight and diagnostic
+    /// admission; publish the reopened generation to the workspace cache.
+    async fn prepare_legacy_sink(
+        &self,
+        workspace: &Path,
+        guard: &forgeplan_core::workspace::lock::WorkspaceLock,
+        legacy: Option<Arc<LanceStore>>,
+    ) -> anyhow::Result<Option<Arc<LanceStore>>> {
+        if legacy.is_none() {
+            return Ok(None);
+        }
+        let key = Self::canonical_ws_dir(workspace.to_path_buf());
+        match LanceStore::open_for_write(workspace, guard).await {
+            Ok(store) => {
+                let store = Arc::new(store);
+                self.workspace_store_cache.write().await.insert(key, Arc::clone(&store));
+                Ok(Some(store))
+            }
+            Err(error) => {
+                self.workspace_store_cache.write().await.remove(&key);
+                Err(error.context("index preparation failed; legacy migration may be partial"))
+            }
+        }
+    }
+
     // ADR-016 audit (config-axis leak fix): the former `load_workspace_config`
     // helper read the server's `default_workspace` config and was the source of
     // the XW-1/XW-3/score/fpf_rules config leaks — a worktree-routed handler got
@@ -1315,20 +1402,19 @@ async fn build_route_fpf_context(
 
 async fn build_reason_artifact_context(
     read: &ReadSource,
+    _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
     record: &ArtifactRecord,
 ) -> anyhow::Result<forgeplan_core::llm::reason::ArtifactContext> {
-    let relations = read
-        .get_relations(&record.id)
-        .await?
+    let relations = read.get_relations(_permit, &record.canonical_key).await?
         .into_iter()
         .map(|(id, relation)| (id, relation, String::new()))
         .collect();
     let bounded_context = match read {
         ReadSource::Workspace(view) => {
-            forgeplan_core::fpf::contexts::detect_for_artifact_captured(view, &record.id).await?
+            forgeplan_core::fpf::contexts::detect_for_artifact_captured(view, &record.canonical_key).await?
         }
         ReadSource::Legacy(store) => {
-            forgeplan_core::fpf::contexts::detect_for_artifact(store, &record.id).await?
+            forgeplan_core::fpf::contexts::detect_for_artifact(store, _permit, &record.canonical_key).await?
         }
     };
     Ok(forgeplan_core::llm::reason::ArtifactContext {
@@ -1448,6 +1534,16 @@ fn safe_mcp_error<E: std::fmt::Display>(e: E) -> McpError {
     append_stale_hint_if_needed(&mut sanitised);
 
     McpError::internal_error(sanitised, None)
+}
+
+fn safe_partial_mutation_error<E: std::fmt::Display>(migrated: bool, error: E) -> McpError {
+    if migrated {
+        safe_mcp_error(error)
+    } else {
+        safe_mcp_error(format!(
+            "canonical files may be partially committed, semantic backlog may be pending: {error}"
+        ))
+    }
 }
 
 /// SEC-1 (audit Layer 7): build an `invalid_params` (-32602) error whose human
@@ -1819,6 +1915,50 @@ fn resolution_error(input: &str, resolution: &crate::convert::Resolution) -> Cal
     )])
 }
 
+fn resolve_error_result(error: forgeplan_core::artifact::canonical_key::ResolveError) -> CallToolResult {
+    use forgeplan_core::artifact::canonical_key::ResolveError;
+    let input = match &error {
+        ResolveError::Ambiguous { input, .. } | ResolveError::InvalidSelector { input } => input.clone(),
+        ResolveError::ConflictingCanonicalKey { key, .. } => key.clone(),
+        ResolveError::IncompleteCapture { .. } => String::new(),
+    };
+    resolution_error(&input, &crate::convert::Resolution::from(Err(error)))
+}
+
+fn import_preflight_error(error: anyhow::Error) -> CallToolResult {
+    let resolve = error.downcast_ref::<forgeplan_core::artifact::canonical_key::ResolveError>().or_else(|| {
+        match error.downcast_ref::<forgeplan_core::import_plan::ImportPlanError>() {
+            Some(forgeplan_core::import_plan::ImportPlanError::Resolve(resolve)) => Some(resolve),
+            _ => None,
+        }
+    });
+    if let Some(resolve) = resolve {
+        return resolve_error_result(resolve.clone());
+    }
+    safe_err_result("import preflight: ", error)
+}
+
+fn read_source_error_result(error: McpError) -> CallToolResult {
+    if let Some(data) = &error.data
+        && data.get("code").and_then(|value| value.as_str()).is_some_and(|code| {
+            matches!(code, "ambiguous" | "conflicting_canonical_key" | "invalid_selector" | "incomplete_capture")
+        })
+    {
+        return CallToolResult::error(vec![Content::text(data.to_string())]);
+    }
+    safe_err_result("", error)
+}
+
+fn ordinary_mutation_refusal(workspace: &Path) -> Option<CallToolResult> {
+    use forgeplan_core::constellation::ConstellationError;
+
+    match forgeplan_core::constellation::facade::ensure_ordinary_mutation_allowed(workspace) {
+        Ok(()) => None,
+        Err(ConstellationError::Resolve(error)) => Some(resolve_error_result(error)),
+        Err(error) => Some(safe_err_result("ordinary mutation refused", error)),
+    }
+}
+
 fn llm_config_for_workspace(
     config: &forgeplan_core::config::types::Config,
     workspace_dir: &std::path::Path,
@@ -2138,7 +2278,7 @@ impl GradeKind {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct InitParams {
-    /// Force reinitialize even if workspace exists
+    /// Existing workspaces cannot be reinitialized, even with force.
     #[serde(default)]
     force: Option<bool>,
 }
@@ -3092,16 +3232,15 @@ impl ForgeplanServer {
                 return hinted_result(
                     &InitResponse {
                         workspace: existing.display().to_string(),
-                        message: "Already initialized. Use force=true to reinitialize.".into(),
+                        message: "Already initialized; reinitialization is not available.".into(),
                     },
                     "Workspace exists. Use `forgeplan_status` to see what's there, or \
-                     `forgeplan_route \"<task>\"` to start new work. Reinit with force=true \
-                     DESTROYS all artifacts.",
+                     `forgeplan_route \"<task>\"` to start new work.",
                 );
             }
-            tokio::fs::remove_dir_all(&existing)
-                .await
-                .map_err(|e| safe_mcp_error(anyhow::anyhow!("Failed to remove workspace: {e}")))?;
+            return Ok(err_result(
+                "Reinitializing an existing workspace is refused: a verified export and a stable external reinitialization lock are required before any workspace deletion.",
+            ));
         }
 
         let project_name = self
@@ -3112,10 +3251,13 @@ impl ForgeplanServer {
 
         let ws = workspace::init_workspace(&self.workspace_root, &project_name)
             .map_err(|e| safe_mcp_error(anyhow::anyhow!("Init failed: {e}")))?;
+        let init_guard = forgeplan_core::workspace::acquire_workspace_lock(&ws)
+            .await.map_err(safe_mcp_error)?;
 
-        let new_store = LanceStore::init(&ws)
+        let new_store = LanceStore::init_new(&ws, &init_guard)
             .await
             .map_err(|e| safe_mcp_error(anyhow::anyhow!("LanceDB init failed: {e}")))?;
+        drop(init_guard);
 
         // ADR-016 Phase 2: instead of setting two independent handles
         // (`self.store` + `self.workspace_path`), record ONE default workspace
@@ -3151,8 +3293,8 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<NewParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read, _lock_guard) =
-            self.resolve_write_source(p.workspace.as_deref()).await?;
+        let (resolved, read, _lock_guard) = match self.resolve_write_source(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_lock_guard;
         // PRD-078 Phase 3: capture trace before moving fields out of `resolved`.
         let trace = WorkspaceTrace::from_resolved(&resolved);
         let migrated = resolved.is_migrated();
@@ -3207,9 +3349,7 @@ impl ForgeplanServer {
             kind: Some(template_key.to_string()),
             status: None,
         };
-        let existing = read
-            .list_artifacts(Some(&dup_filter))
-            .await
+        let existing = read.list_artifacts(_permit, Some(&dup_filter)).await
             .map_err(|e| safe_mcp_error(anyhow::anyhow!("Duplicate scan failed: {e}")))?;
         let warnings = find_duplicate_warnings(&existing, &p.title);
 
@@ -3278,6 +3418,30 @@ impl ForgeplanServer {
         // workspace writes the LanceDB projection through `legacy_sink`, a
         // migrated one leaves the Markdown as the whole mutation and lets the
         // reconcile pass below publish it.
+        let parent_key = if let Some(parent) = p.parent_id.as_deref() {
+            match read.resolve_artifact(_permit, &ws, parent).await {
+                Ok(key) => key,
+                Err(refusal) => return Ok(refusal),
+            }
+        } else {
+            None
+        };
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
+        let read = match self.read_source_for(&ws, _permit, legacy_sink.clone()).await {
+            Ok(read) => read,
+            Err(error) => return Ok(read_source_error_result(error)),
+        };
+        if let Some(parent) = p.parent_id.as_deref() {
+            match read.resolve_artifact(_permit, &ws, parent).await {
+                Ok(key) if key == parent_key => {}
+                Ok(_) => return Ok(err_result("parent selector changed during write preparation")),
+                Err(refusal) => return Ok(refusal),
+            }
+        }
         let allocated = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
             &ws,
             &_lock_guard,
@@ -3288,7 +3452,7 @@ impl ForgeplanServer {
             &build,
         )
         .await
-        .map_err(|e| safe_mcp_error(anyhow::anyhow!("Create failed (canonical-key): {e}")))?;
+        .map_err(|e| safe_partial_mutation_error(migrated, format!("Create failed (canonical-key): {e}")))?;
         let canonical_key = allocated.canonical_key;
         let slug = canonical_key.clone();
         let id = allocated.id;
@@ -3330,8 +3494,8 @@ impl ForgeplanServer {
             let safe_err = |e: anyhow::Error| -> String {
                 forgeplan_core::projection::sanitize_error_chain(&e)
             };
-            match read.resolve_id(raw_parent).await {
-                Ok(Some(canonical_parent)) => {
+            match parent_key.clone() {
+                Some(canonical_parent) => {
                     // Parent exists — write the link via the projection
                     // helper so the markdown frontmatter `links:` array
                     // stays in sync (file-first per ADR-003).
@@ -3359,16 +3523,10 @@ impl ForgeplanServer {
                         }
                     }
                 }
-                Ok(None) => {
+                None => {
                     auto_link_warnings.push(format!(
                         "parent_id `{safe}` does not exist in workspace — \
                          auto-link skipped. Artifact {id} created in draft."
-                    ));
-                }
-                Err(e) => {
-                    auto_link_warnings.push(format!(
-                        "Auto-link skipped (resolve_id failed): {}",
-                        safe_err(e)
                     ));
                 }
             }
@@ -3446,7 +3604,7 @@ impl ForgeplanServer {
             auto_linked: auto_link_target,
             auto_link_warnings,
         })
-        .map_err(|e| safe_mcp_error(anyhow::anyhow!("Response serialization failed: {e}")))?;
+        .map_err(|e| safe_partial_mutation_error(migrated, format!("Response serialization failed: {e}")))?;
 
         // The write has committed. Release the workspace lock BEFORE signalling
         // the index: `maintain_index` takes that same lock for its storage
@@ -3456,6 +3614,9 @@ impl ForgeplanServer {
         let reconcile = if migrated {
             reconcile_after_canonical_write(&ws).await
         } else {
+            if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+            }
             ReconcileReport::legacy_projection_owns_index()
         };
 
@@ -3483,10 +3644,8 @@ impl ForgeplanServer {
         // C12/C03: the data source is chosen before anything is opened — a
         // migrated workspace is answered from one read view and opens no legacy
         // store.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
         let filter = if p.kind.is_some() || p.status.is_some() {
             Some(ArtifactFilter {
@@ -3503,9 +3662,7 @@ impl ForgeplanServer {
         // would force us to issue N+1 lookups to populate the new fields.
         // Body bytes stay local — `ArtifactSummaryDto` does not serialize
         // the body, only the metadata + identity fields (CD-2 binding shape).
-        let records = read
-            .list_records(filter.as_ref())
-            .await
+        let records = read.list_records(_permit, filter.as_ref()).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let total = records.len();
@@ -3571,17 +3728,13 @@ impl ForgeplanServer {
         // no `-32602` gate, no lock). Paramless tool → `None`.
         //
         // C12/C03: one source choice, before any open.
-        let (ws, _via, read) = match self.resolve_read_source(None).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (ws, _via, read, _read_guard) = match self.resolve_read_source(None).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
         let config = workspace::load_config(&ws)
             .map_err(|e| safe_mcp_error(anyhow::anyhow!("Config error: {e}")))?;
 
-        let artifacts = read
-            .list_artifacts(None)
-            .await
+        let artifacts = read.list_artifacts(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
@@ -3635,32 +3788,67 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ValidateParams>,
     ) -> Result<CallToolResult, McpError> {
-        // ADR-016 Phase 3: SoftFallback read resolution (worktree-aware, no gate,
-        // no lock).
-        //
-        // C12/C03: one source choice, before any open.
-        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
+        let (ws, _via) = match self.resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::SoftFallback).await {
+            Ok(resolved) => resolved,
+            Err(error) => return Ok(read_source_error_result(error)),
         };
-
-        let all_records = read
-            .list_records(None)
-            .await
-            .map_err(|e| safe_mcp_error_anyhow(&e))?;
-
-        let to_validate: Vec<&ArtifactRecord> = if let Some(ref target_id) = p.id {
-            let upper = target_id.to_uppercase();
-            let filtered: Vec<_> = all_records
-                .iter()
-                .filter(|r| r.id.to_uppercase() == upper)
-                .collect();
-            if filtered.is_empty() {
-                return Ok(artifact_not_found(target_id));
+        let _read_guard = match forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await {
+            Ok(guard) => guard,
+            Err(error) => return Ok(read_source_error_result(safe_mcp_error(error))),
+        };
+        let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
+        let migrated = forgeplan_core::constellation::facade::workspace_is_migrated(&ws);
+        let selected = if let Some(target_id) = p.id.as_deref().filter(|_| migrated) {
+            match forgeplan_core::constellation::facade::open_workspace_selector_with_permit(&ws, _permit, target_id).await {
+                Ok(Some(selected)) => Some(selected),
+                Ok(None) => return Ok(artifact_not_found(target_id)),
+                Err(forgeplan_core::constellation::ConstellationError::Resolve(error)) => return Ok(resolve_error_result(error)),
+                Err(error) => return Ok(safe_err_result("", error)),
             }
-            filtered
         } else {
-            all_records.iter().collect()
+            None
+        };
+        let read = if selected.is_none() {
+            let legacy = if migrated {
+                None
+            } else {
+                match self.get_or_open_store_with_permit(&ws, _permit).await {
+                    Ok(store) => Some(store),
+                    Err(error) => return Ok(read_source_error_result(safe_invalid_params(
+                        format!("workspace found at `{}` but store could not be opened: {error}", ws.display()),
+                        None,
+                    ))),
+                }
+            };
+            match self.read_source_for(&ws, _permit, legacy).await {
+                Ok(read) => Some(read),
+                Err(error) => return Ok(read_source_error_result(error)),
+            }
+        } else {
+            None
+        };
+        let to_validate: Vec<ArtifactRecord> = if let Some(selected) = &selected {
+            vec![selected.record().clone()]
+        } else {
+            let read = read.as_ref().expect("unselected read source");
+            let records = read.list_records(_permit, None).await
+                .map_err(|e| safe_mcp_error_anyhow(&e))?;
+            if let Some(target_id) = &p.id {
+                let canonical = match read.resolve_artifact(_permit, &ws, target_id).await {
+                    Ok(Some(key)) => key,
+                    Ok(None) => return Ok(artifact_not_found(target_id)),
+                    Err(error) => return Ok(error),
+                };
+                let filtered: Vec<_> = records.into_iter()
+                    .filter(|record| record.canonical_key == canonical)
+                    .collect();
+                if filtered.is_empty() {
+                    return Ok(artifact_not_found(target_id));
+                }
+                filtered
+            } else {
+                records
+            }
         };
 
         let mut results = Vec::new();
@@ -3669,9 +3857,13 @@ impl ForgeplanServer {
         let mut total_passed = 0;
 
         for record in &to_validate {
-            let fm = match &read {
-                ReadSource::Workspace(view) => view.frontmatter_map_with_links(record),
-                ReadSource::Legacy(store) => store.frontmatter_map_with_links(record).await,
+            let fm = if let Some(selected) = &selected {
+                selected.frontmatter_map_with_links()
+            } else {
+                match read.as_ref().expect("unselected read source") {
+                    ReadSource::Workspace(view) => view.frontmatter_map_with_links(record),
+                    ReadSource::Legacy(store) => store.frontmatter_map_with_links(_permit, record).await.map_err(|e| safe_mcp_error_anyhow(&e))?,
+                }
             };
             let kind = record
                 .kind
@@ -3684,16 +3876,21 @@ impl ForgeplanServer {
             total_warnings += result.warning_count();
             if result.passed() {
                 total_passed += 1;
-                // PRD-056: auto-advance phase on PASS (shape → validate).
-                maybe_advance_phase(
-                    &ws,
-                    &record.canonical_key,
-                    forgeplan_core::phase::Phase::Validate,
-                    "forgeplan_validate PASS",
-                )
-                .await;
+                if selected.as_ref().map_or(true, |capture| capture.is_complete_capture()) {
+                    // PRD-056: auto-advance phase on PASS (shape → validate).
+                    maybe_advance_phase(
+                        &ws,
+                        &record.canonical_key,
+                        forgeplan_core::phase::Phase::Validate,
+                        "forgeplan_validate PASS",
+                    )
+                    .await;
+                }
             }
-            results.push(ValidationResultDto::from(result));
+            let mut dto = serde_json::json!(ValidationResultDto::from(result));
+            dto["canonical_key"] = serde_json::json!(record.canonical_key);
+            dto["id"] = serde_json::json!(record.id);
+            results.push(dto);
         }
 
         let hint = if total_errors > 0 {
@@ -3719,14 +3916,17 @@ impl ForgeplanServer {
             None
         };
 
-        Ok(json_result(&ValidateResponse {
-            total_artifacts: to_validate.len(),
-            total_passed,
-            total_errors,
-            total_warnings,
-            results,
-            _next_action: hint,
-        }))
+        let mut response = serde_json::json!({
+            "total_artifacts": to_validate.len(),
+            "total_passed": total_passed,
+            "total_errors": total_errors,
+            "total_warnings": total_warnings,
+            "results": results,
+        });
+        if let Some(hint) = hint {
+            response["_next_action"] = serde_json::json!(hint);
+        }
+        Ok(json_result(&response))
     }
 
     #[tool(
@@ -3756,17 +3956,31 @@ impl ForgeplanServer {
         //
         // The legacy branch persists its cached score, so source selection
         // serializes with migration even when this capture needs no row write.
-        let (resolved, read, _lock_guard) =
-            self.resolve_write_source(p.workspace.as_deref()).await?;
+        let (resolved, read, _lock_guard) = match self.resolve_write_source(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_lock_guard;
         let ws = resolved.workspace_dir;
 
         // Resolve the scored artifact through the ONE shared resolver, so a
         // name two documents answer to is a refusal that names every
         // candidate — not a silently scored one of them.
-        let score_id = match read.resolve_artifact(&ws, &p.id).await {
+        let score_id = match read.resolve_artifact(_permit, &ws, &p.id).await {
             Ok(Some(id)) => id,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(tool_error) => return Ok(tool_error),
+        };
+        let read = match read {
+            ReadSource::Legacy(store) => {
+                if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+                let sink = match self.prepare_legacy_sink(&ws, &_lock_guard, Some(store)).await {
+                    Ok(sink) => sink,
+                    Err(error) => return Ok(safe_err_result("score preparation: ", error)),
+                };
+                match self.read_source_for(&ws, _permit, sink).await {
+                    Ok(read) => read,
+                    Err(error) => return Ok(read_source_error_result(error)),
+                }
+            }
+            read => read,
         };
 
         let (target, evidence_dtos, report, link_count) = match &read {
@@ -3776,16 +3990,16 @@ impl ForgeplanServer {
                 // Pre-Round 9 the inline `r_eff_recursive` was called but
                 // `update_r_eff_score` was never invoked; the helper closes that gap.
 
-                let target = match store.get_record(&score_id).await {
+                let target = match store.get_record(&_lock_guard, &score_id).await {
                     Ok(Some(r)) => r,
                     Ok(None) => return Ok(artifact_not_found(&p.id)),
                     Err(e) => return Ok(safe_err_result("", e)),
                 };
 
-                let outgoing = store.get_relations(&score_id).await.unwrap_or_else(|e| {
-                    tracing::warn!("Failed to get relations for {}: {e}", score_id);
-                    Vec::new()
-                });
+                let outgoing = match store.get_relations(&_lock_guard, &score_id).await {
+                    Ok(relations) => relations,
+                    Err(e) => return Ok(safe_err_result("score relations: ", e)),
+                };
                 let evidence_targets: Vec<String> = outgoing
                     .iter()
                     .filter(|(_, rel)| rel == "informs" || rel == "based_on" || rel == "refines")
@@ -3796,25 +4010,24 @@ impl ForgeplanServer {
                     kind: Some("evidence".into()),
                     status: None,
                 };
-                let evidence_records =
-                    store.list_records(Some(&filter)).await.unwrap_or_else(|e| {
-                        tracing::warn!("Failed to list evidence records: {e}");
-                        Vec::new()
-                    });
+                let evidence_records = match store.list_records(&_lock_guard, Some(&filter)).await {
+                    Ok(records) => records,
+                    Err(e) => return Ok(safe_err_result("score evidence: ", e)),
+                };
 
                 let mut evidence_dtos: Vec<EvidenceDto> = Vec::new();
 
                 for ev in &evidence_records {
                     let is_linked = evidence_targets
                         .iter()
-                        .any(|eid| eid.eq_ignore_ascii_case(&ev.id));
+                        .any(|eid| eid.eq_ignore_ascii_case(&ev.canonical_key));
 
                     if !is_linked {
-                        let ev_rels = store.get_relations(&ev.id).await.unwrap_or_else(|e| {
-                            tracing::warn!("Failed to get relations for {}: {e}", ev.id);
-                            Vec::new()
-                        });
-                        if !ev_rels.iter().any(|(t, _)| t.eq_ignore_ascii_case(&p.id)) {
+                        let ev_rels = match store.get_relations(&_lock_guard, &ev.canonical_key).await {
+                            Ok(relations) => relations,
+                            Err(e) => return Ok(safe_err_result("score evidence relations: ", e)),
+                        };
+                        if !ev_rels.iter().any(|(t, _)| t.eq_ignore_ascii_case(&score_id)) {
                             continue;
                         }
                     }
@@ -3828,7 +4041,7 @@ impl ForgeplanServer {
                 // display but never wrote it back, leaving the cache stale forever
                 // through the MCP transport. On failure fall back to a fresh walk
                 // so the response still carries a breakdown.
-                let report = match forgeplan_core::scoring::sync_score_target(store, &p.id).await {
+                let report = match forgeplan_core::scoring::sync_score_target(store, &_lock_guard, &score_id).await {
                     Ok(r) => r,
                     Err(e) => {
                         tracing::warn!(
@@ -3838,26 +4051,20 @@ impl ForgeplanServer {
                             "MCP forgeplan_score persist failed; recomputing for display only"
                         );
                         let mut visited = HashSet::new();
-                        reff::r_eff_recursive(&p.id, store, &mut visited)
-                            .await
-                            .unwrap_or_else(|e2| {
-                                tracing::warn!("Failed recursive R_eff for {}: {e2}", p.id);
-                                reff::AssuranceReport {
-                                    artifact_id: p.id.clone(),
-                                    r_eff: 0.0,
-                                    self_score: 0.0,
-                                    weakest_link: None,
-                                    decay_penalty: 0.0,
-                                    factors: vec![format!("Error: {e2}")],
-                                }
-                            })
+                        match reff::r_eff_recursive(&score_id, store, _permit, &mut visited).await {
+                            Ok(report) => report,
+                            Err(error) => return Ok(safe_err_result("score assurance graph: ", error)),
+                        }
                     }
                 };
 
-                let all_relations = store.get_all_relations().await.unwrap_or_default();
+                let all_relations = match store.get_all_relations(_permit).await {
+                    Ok(relations) => relations,
+                    Err(e) => return Ok(safe_err_result("score relations: ", e)),
+                };
                 let link_count = all_relations
                     .iter()
-                    .filter(|(src, tgt, _)| src == &target.id || tgt == &target.id)
+                    .filter(|(src, tgt, _)| src == &score_id || tgt == &score_id)
                     .count();
 
                 (target, evidence_dtos, report, link_count)
@@ -3865,19 +4072,19 @@ impl ForgeplanServer {
             ReadSource::Workspace(view) => {
                 // No store or cache column: the report is a pure function of
                 // the captured view selected under the workspace guard.
-                let Some(target) = view.get_record(&p.id).cloned() else {
+                let Some(target) = view.get_record_by_key(&score_id).cloned() else {
                     return Ok(artifact_not_found(&p.id));
                 };
                 let graph = reff::AssuranceSource::Read(view);
-                let evidence_dtos = match reff::linked_evidence_items(&graph, &p.id).await {
+                let evidence_dtos = match reff::linked_evidence_items(&graph, &score_id).await {
                     Ok(items) => items.iter().map(evidence_dto).collect(),
                     Err(e) => return Ok(safe_err_result("", e)),
                 };
-                let report = match reff::assurance_report_captured(&p.id, view).await {
+                let report = match reff::assurance_report_captured(&score_id, view).await {
                     Ok(report) => report,
                     Err(e) => return Ok(safe_err_result("captured assurance graph", e)),
                 };
-                let link_count = match reff::relation_link_count(&graph, &p.id).await {
+                let link_count = match reff::relation_link_count(&graph, &score_id).await {
                     Ok(count) => count,
                     Err(e) => return Ok(safe_err_result("", e)),
                 };
@@ -3960,6 +4167,7 @@ impl ForgeplanServer {
             format!("R_eff = {r_eff:.2} (strong). Ready: `forgeplan_activate {safe_id}`.")
         };
 
+        let canonical_key = target.canonical_key.clone();
         let score_resp = ScoreResponse {
             id: target.id,
             title: target.title,
@@ -3975,7 +4183,9 @@ impl ForgeplanServer {
             decay_penalty: report.decay_penalty,
         };
 
-        hinted_result(&score_resp, next_action)
+        let mut response = serde_json::json!(score_resp);
+        response["canonical_key"] = serde_json::json!(canonical_key);
+        hinted_result(&response, next_action)
     }
 
     #[tool(
@@ -3992,8 +4202,8 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<LinkParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read, _lock_guard) =
-            self.resolve_write_source(p.workspace.as_deref()).await?;
+        let (resolved, read, _lock_guard) = match self.resolve_write_source(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_lock_guard;
         // PRD-078 Phase 3: capture trace before moving fields out of `resolved`.
         let trace = WorkspaceTrace::from_resolved(&resolved);
         let migrated = resolved.is_migrated();
@@ -4021,7 +4231,7 @@ impl ForgeplanServer {
         // The TARGET may name no document yet — a forward reference is a
         // legal edge. It may NOT be ambiguous: two documents answering one
         // name is an error, not a choice.
-        let source_resolution = match read.resolve(&ws, &p.source).await {
+        let source_resolution = match read.resolve(_permit, &ws, &p.source).await {
             Ok(resolution) => resolution,
             Err(error) => return Ok(safe_err_result("resolve source: ", error)),
         };
@@ -4039,7 +4249,7 @@ impl ForgeplanServer {
         let target_key = if target_is_qualified {
             p.target.clone()
         } else {
-            let candidates = match read.resolve(&ws, &p.target).await {
+            let candidates = match read.resolve(_permit, &ws, &p.target).await {
                 Ok(candidates) => candidates,
                 Err(error) => return Ok(safe_err_result("resolve target: ", error)),
             };
@@ -4065,6 +4275,11 @@ impl ForgeplanServer {
         // `replace: true` selects the idempotent upsert helper and its existing
         // many-edge policy. Otherwise use the ordinary additive helper and
         // preserve its duplicate-rejection behavior.
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
         let ctx = projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref());
         let upsert_outcome = if p.replace {
             match projection::replace_link_with_projection(&ctx, source_id, target_id, &relation)
@@ -4072,6 +4287,12 @@ impl ForgeplanServer {
             {
                 Ok(o) => Some(o),
                 Err(e) => {
+                    if !migrated {
+                        return Ok(safe_err_result(
+                            "canonical files may be partially committed, semantic backlog may be pending",
+                            e,
+                        ));
+                    }
                     let safe_src = sanitize_for_hint(source_id);
                     let safe_tgt = sanitize_for_hint(target_id);
                     return Ok(err_hinted(
@@ -4087,6 +4308,12 @@ impl ForgeplanServer {
             if let Err(e) =
                 projection::add_link_with_projection(&ctx, source_id, target_id, &relation).await
             {
+                if !migrated {
+                    return Ok(safe_err_result(
+                        "canonical files may be partially committed, semantic backlog may be pending",
+                        e,
+                    ));
+                }
                 let safe_src = sanitize_for_hint(source_id);
                 let safe_tgt = sanitize_for_hint(target_id);
                 return Ok(err_hinted(
@@ -4109,7 +4336,7 @@ impl ForgeplanServer {
         // workspace has nothing to recompute here — the link itself already
         // committed to the canonical Markdown.
         if let Some(store) = legacy_sink.as_deref()
-            && let Err(e) = forgeplan_core::scoring::sync_score_target(store, source_id).await
+            && let Err(e) = forgeplan_core::scoring::sync_score_target(store, &_lock_guard, source_id).await
         {
             tracing::warn!(
                 target = "scoring",
@@ -4182,13 +4409,17 @@ impl ForgeplanServer {
         // Fresh read: the pre-link snapshot predates this very mutation, and on a
         // migrated workspace the auto-activate decision below is about the
         // committed Markdown, not about what the capture saw before it.
-        let post_link_view = self
-            .read_source_for(&ws, legacy_sink.clone())
-            .await
-            .map_err(safe_mcp_error)?;
-        let post_link_source = post_link_view
-            .get_record(source_id)
-            .await
+        let post_link_view = match self.read_source_for(&ws, _permit, legacy_sink.clone()).await {
+            Ok(read) => read,
+            Err(error) => {
+                let mut result = read_source_error_result(error);
+                if !migrated {
+                    result.content.push(Content::text("canonical committed, semantic backlog pending"));
+                }
+                return Ok(result);
+            }
+        };
+        let post_link_source = post_link_view.get_record(_permit, source_id).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
         if let Some(src_record) = post_link_source
             && src_record.kind.eq_ignore_ascii_case("evidence")
@@ -4223,14 +4454,14 @@ impl ForgeplanServer {
                 if p.auto_activate_source_if_complete {
                     let activate_outcome = match &post_link_view {
                         ReadSource::Legacy(store) => {
-                            match forgeplan_core::lifecycle::activate(store, source_id, false).await
+                            match forgeplan_core::lifecycle::activate(&_lock_guard, store, source_id, false).await
                             {
                                 Ok(_) => {
                                     // Re-render after activation so the file's
                                     // status: reflects active (same discipline as
                                     // forgeplan_activate tool above).
                                     if let Err(e) =
-                                        projection::render_after_mutation(&ws, store, source_id)
+                                        projection::render_after_mutation(&_lock_guard, &ws, store, source_id)
                                             .await
                                     {
                                         tracing::warn!(
@@ -4305,6 +4536,9 @@ impl ForgeplanServer {
         let reconcile = if migrated {
             reconcile_after_canonical_write(&ws).await
         } else {
+            if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+            }
             ReconcileReport::legacy_projection_owns_index()
         };
         let traced = with_workspace_trace(base, &trace);
@@ -4325,8 +4559,8 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<UnlinkParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read, _lock_guard) =
-            self.resolve_write_source(p.workspace.as_deref()).await?;
+        let (resolved, read, _lock_guard) = match self.resolve_write_source(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_lock_guard;
         let trace = WorkspaceTrace::from_resolved(&resolved);
         let migrated = resolved.is_migrated();
         let legacy_sink = resolved.legacy_store.clone();
@@ -4350,12 +4584,12 @@ impl ForgeplanServer {
         // The SOURCE must name exactly one document. The TARGET may name no
         // document yet (a forward reference), but it must NOT be ambiguous:
         // two documents answering one name is an error, not a choice.
-        let source_resolution = match read.resolve(&ws, &p.source).await {
+        let source_resolution = match read.resolve(_permit, &ws, &p.source).await {
             Ok(resolution) => resolution,
             Err(error) => return Ok(safe_err_result("resolve source: ", error)),
         };
         let source_id = match &source_resolution {
-            crate::convert::Resolution::Found(resolved) => resolved.identity.display_id.clone(),
+            crate::convert::Resolution::Found(resolved) => resolved.identity.canonical_key.clone(),
             other => return Ok(resolution_error(&p.source, other)),
         };
 
@@ -4366,7 +4600,7 @@ impl ForgeplanServer {
         let (target_key, target_id) = if target_is_qualified {
             (p.target.clone(), p.target.clone())
         } else {
-            let resolution = match read.resolve(&ws, &p.target).await {
+            let resolution = match read.resolve(_permit, &ws, &p.target).await {
                 Ok(resolution) => resolution,
                 Err(error) => return Ok(safe_err_result("resolve target: ", error)),
             };
@@ -4391,7 +4625,7 @@ impl ForgeplanServer {
         // The edges are keyed by CANONICAL KEY, so that is what the
         // comparison uses: comparing a display id against a key would miss
         // every edge of a minted document.
-        let existing = match read.get_relations(&source_id).await {
+        let existing = match read.get_relations(_permit, &source_id).await {
             Ok(rs) => rs,
             Err(e) => return Ok(safe_err_result("read relations", e)),
         };
@@ -4413,15 +4647,25 @@ impl ForgeplanServer {
                 ),
             ));
         }
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
         if let Err(e) = projection::delete_link_with_projection(
             &projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref()),
             &source_id,
-            &target_id,
+            &target_key,
             &relation,
         )
         .await
         {
-            return Ok(safe_err_result("unlink", e));
+            let prefix = if migrated {
+                "unlink"
+            } else {
+                "canonical files may be partially committed, semantic backlog may be pending"
+            };
+            return Ok(safe_err_result(prefix, e));
         }
 
         // Mirror the link path: trigger source-side score recompute (the
@@ -4429,7 +4673,7 @@ impl ForgeplanServer {
         // therefore changed R_eff). Legacy projection only — see
         // `forgeplan_link`.
         if let Some(store) = legacy_sink.as_deref()
-            && let Err(e) = forgeplan_core::scoring::sync_score_target(store, &source_id).await
+            && let Err(e) = forgeplan_core::scoring::sync_score_target(store, &_lock_guard, &source_id).await
         {
             tracing::warn!(
                 target = "scoring",
@@ -4459,6 +4703,9 @@ impl ForgeplanServer {
         let reconcile = if migrated {
             reconcile_after_canonical_write(&ws).await
         } else {
+            if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+            }
             ReconcileReport::legacy_projection_owns_index()
         };
         let traced = with_workspace_trace(base, &trace);
@@ -4487,30 +4734,52 @@ impl ForgeplanServer {
         // migrated workspace is answered from one captured/pinned read view; the
         // legacy `LanceStore` is opened only when the workspace still owns no
         // Constellation index.
-        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
+        let (ws, _via) = match self.resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::SoftFallback).await {
+            Ok(resolved) => resolved,
+            Err(error) => return Ok(read_source_error_result(error)),
         };
-
-        // PROB-060 / SPEC-005 / ADR-012 — Phase 2.4 (CD-2 binding).
-        //
-        // Mirror the CLI `forgeplan get` resolver wiring (Phase 1.5b precedent
-        // commit `4c37ddd` — 6 commands wired). Without this, slug input like
-        // A direct alias lookup would miss a canonical-key selector, while
-        // resolving returns the selected document's key. Keeping that key
-        // through the read avoids a second, ambiguous alias lookup.
-        //
-        // A name two documents answer to is a REFUSAL, not a miss: the
-        // error names every candidate instead of reporting "not found" and
-        // leaving the caller to guess. The previous `resolve_id` collapsed
-        // that case into `None`, which is how an ambiguous reference
-        // became indistinguishable from a typo.
-        let canonical = match read.resolve_artifact(&ws, &p.id).await {
-            Ok(Some(id)) => id,
-            Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(tool_error) => return Ok(tool_error),
+        let _read_guard = match forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await {
+            Ok(guard) => guard,
+            Err(error) => return Ok(read_source_error_result(safe_mcp_error(error))),
         };
-        match read.get_record(&canonical).await {
+        let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
+        let (canonical, record, links) = if forgeplan_core::constellation::facade::workspace_is_migrated(&ws) {
+            let selected = match forgeplan_core::constellation::facade::open_workspace_selector_with_permit(&ws, _permit, &p.id).await {
+                Ok(Some(selected)) => selected,
+                Ok(None) => return Ok(artifact_not_found(&p.id)),
+                Err(forgeplan_core::constellation::ConstellationError::Resolve(error)) => return Ok(resolve_error_result(error)),
+                Err(error) => return Ok(safe_err_result("", error)),
+            };
+            let links = match get_links_response(
+                Ok(selected.relations()),
+                Ok(selected.incoming_relations()),
+            ) {
+                Ok(links) => links,
+                Err(error) => return Ok(error),
+            };
+            (selected.canonical_key().to_string(), Ok(Some(selected.record().clone())), links)
+        } else {
+            let store = match self.get_or_open_store_with_permit(&ws, _permit).await {
+                Ok(store) => store,
+                Err(error) => return Ok(safe_err_result("", error)),
+            };
+            let read = ReadSource::Legacy(store);
+            let canonical = match read.resolve_artifact(_permit, &ws, &p.id).await {
+                Ok(Some(id)) => id,
+                Ok(None) => return Ok(artifact_not_found(&p.id)),
+                Err(error) => return Ok(error),
+            };
+            let record = read.get_record(_permit, &canonical).await;
+            let links = match get_links_response(
+                read.get_relations(_permit, &canonical).await,
+                read.get_incoming_relations(_permit, &canonical).await,
+            ) {
+                Ok(links) => links,
+                Err(error) => return Ok(error),
+            };
+            (canonical, record, links)
+        };
+        match record {
             Ok(Some(r)) => {
                 // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — emit slug
                 // pre-merge (`assigned_number: null`) and display id
@@ -4544,9 +4813,9 @@ impl ForgeplanServer {
 
                 // PRD-056 FR-007: surface current phase in _next_action when
                 // tracking is active. Advisory — silent if missing.
-                if let Ok(Some(phase_state)) =
-                    forgeplan_core::phase::store::read_phase(&ws, &r.id).await
-                {
+                let phase = forgeplan_core::phase::store::read_phase_for(&ws, &canonical, &r.id)
+                    .await.map_err(|e| safe_mcp_error_anyhow(&e))?;
+                if let Some(phase_state) = phase {
                     let phase_label = phase_state.current_phase.as_str();
                     let phase_hint = match phase_state.current_phase.suggested_next() {
                         Some(next) => {
@@ -4561,7 +4830,10 @@ impl ForgeplanServer {
                 // routing `forgeplan_get` for decision-making need to know
                 // if an agent already owns this work.
                 let claim_store = forgeplan_core::claim::ClaimStore::new(&ws);
-                if let Ok(Some(claim)) = claim_store.get(&r.id).await {
+                let claim = claim_store.get_for(&canonical, &r.id).await
+                    .map_err(|e| safe_err_result("claim lookup: ", e));
+                let claim = match claim { Ok(claim) => claim, Err(error) => return Ok(error) };
+                if let Some(claim) = claim {
                     let safe_holder = sanitize_for_hint(&claim.agent_id);
                     // PRD-071: single primary action — route new work
                     // elsewhere via dispatch.
@@ -4573,29 +4845,8 @@ impl ForgeplanServer {
                     next_action.push_str(&claim_hint);
                 }
 
-                // #447 — fill the edges the pure `From` conversion cannot
-                // reach. Failure to read the relations table degrades to empty
-                // rather than failing the whole read: an artifact body is
-                // still worth returning when the edge lookup misbehaves.
-                let outbound = read.get_relations(&canonical).await.unwrap_or_default();
-                let inbound = read
-                    .get_incoming_relations(&canonical)
-                    .await
-                    .unwrap_or_default();
                 let mut dto = ArtifactRecordDto::from(r);
-                dto.links = crate::types::ArtifactLinksDto {
-                    outbound: outbound
-                        .into_iter()
-                        .map(|(target, relation)| crate::types::OutboundLinkDto {
-                            target,
-                            relation,
-                        })
-                        .collect(),
-                    inbound: inbound
-                        .into_iter()
-                        .map(|(source, relation)| crate::types::InboundLinkDto { source, relation })
-                        .collect(),
-                };
+                dto.links = links;
                 hinted_result(&dto, next_action)
             }
             Ok(None) => Ok(artifact_not_found(&p.id)),
@@ -4617,8 +4868,8 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<UpdateParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read, _lock_guard) =
-            self.resolve_write_source(p.workspace.as_deref()).await?;
+        let (resolved, read, _lock_guard) = match self.resolve_write_source(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_lock_guard;
         // PRD-078 Phase 3: capture trace before moving fields out of `resolved`.
         let trace = WorkspaceTrace::from_resolved(&resolved);
         let migrated = resolved.is_migrated();
@@ -4634,7 +4885,7 @@ impl ForgeplanServer {
         // The shared resolver also separates the outcomes: a name two
         // documents answer to is a refusal that names every candidate, not a
         // miss.
-        let canonical = match read.resolve_artifact(&ws, &p.id).await {
+        let canonical = match read.resolve_artifact(_permit, &ws, &p.id).await {
             Ok(Some(id)) => id,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(tool_error) => return Ok(tool_error),
@@ -4642,19 +4893,11 @@ impl ForgeplanServer {
 
         // Verify exists. The helpers do their own sync_before_mutation; we
         // only need the existence check here (and presence info downstream).
-        let pre_record = read
-            .get_record(&canonical)
-            .await
+        let pre_record = read.get_record(_permit, &canonical).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
-        // Retained (not `_`-discarded): a title change needs the ORIGINAL title
-        // to locate the old projection file for cleanup — see the rename block
-        // after the mutation helpers.
-        let original = match pre_record {
-            Some(r) => r,
-            // Surface the user's original input in the not-found message (mirrors
-            // `forgeplan_get`) — most helpful when the id genuinely doesn't exist.
-            None => return Ok(artifact_not_found(&p.id)),
-        };
+        if pre_record.is_none() {
+            return Ok(artifact_not_found(&p.id));
+        }
 
         if p.status.is_none() && p.title.is_none() && p.body.is_none() {
             return Ok(err_result(
@@ -4723,6 +4966,11 @@ impl ForgeplanServer {
                 None,
             ));
         }
+        if let Some(body) = &expanded_body {
+            if let Err(error) = forgeplan_core::artifact::frontmatter::refuse_canonical_key_change(&canonical, body) {
+                return Ok(safe_err_result("", error));
+            }
+        }
 
         // Wave 9 SEC-C2: same defensive validator the CLI runs. Catches
         // bidi-override / ANSI / control-char titles before they reach
@@ -4736,6 +4984,11 @@ impl ForgeplanServer {
         // PRD-073 audit: route metadata + body mutations through file-first
         // helpers. Each helper handles its own sync→mutate→render triplet.
         // PROB-049 H-6: shared `MutationContext` flows into both helpers.
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
         let ctx = projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref());
         if p.status.is_some() || p.title.is_some() {
             let status_str = p.status.as_ref().map(|s| s.as_str());
@@ -4746,46 +4999,41 @@ impl ForgeplanServer {
                 p.title.as_deref(),
             )
             .await
-            .map_err(safe_mcp_error)?;
+            .map_err(|e| safe_partial_mutation_error(migrated, e))?;
         }
 
         if let Some(ref body) = expanded_body {
             projection::update_body_with_projection(&ctx, &canonical, body)
                 .await
-                .map_err(safe_mcp_error)?;
+                .map_err(|e| safe_partial_mutation_error(migrated, e))?;
         }
 
-        // A title change renames the projection file, so the OLD path must be
-        // removed or both survive carrying the same id — a duplicate-id
-        // collision produced by one sanctioned call. `update.rs` has cleaned
-        // this up since the PRD-073 audit; the MCP handler never got the same
-        // fix, so renames through MCP silently forked the artifact in two.
-        // Exact-path removal (not a prefix glob) so a sibling whose id is a
-        // prefix of this one is never clobbered, and AFTER the new file is in
-        // place so there is no orphan window — same ordering as the CLI.
-        if let Some(ref new_title) = p.title {
-            let _ = projection::remove_stale_projection_after_rename(
-                &ws,
-                &canonical,
-                &original.kind,
-                &original.title,
-                new_title,
-            )
-            .await;
-        }
 
         // Re-fetch for the response payload. Deliberately a FRESH read source, not
         // the pre-mutation snapshot: on a migrated workspace the snapshot was
         // captured before the helpers wrote, so re-reading it would report the
         // old status/title as if the update had not happened.
-        let updated = self
-            .read_source_for(&ws, legacy_sink.clone())
-            .await
-            .map_err(safe_mcp_error)?
-            .get_record(&canonical)
-            .await
-            .map_err(|e| safe_mcp_error_anyhow(&e))?
-            .ok_or_else(|| McpError::internal_error("Artifact disappeared after update", None))?;
+        let refreshed = match self.read_source_for(&ws, _permit, legacy_sink.clone()).await {
+            Ok(read) => read,
+            Err(error) => {
+                let mut result = read_source_error_result(error);
+                if !migrated {
+                    result.content.push(Content::text("canonical committed, semantic backlog pending"));
+                }
+                return Ok(result);
+            }
+        };
+        let updated = refreshed.get_record(_permit, &canonical).await
+            .map_err(|e| {
+                if migrated {
+                    safe_mcp_error_anyhow(&e)
+                } else {
+                    safe_partial_mutation_error(false, e)
+                }
+            })?
+            .ok_or_else(|| {
+                safe_partial_mutation_error(migrated, "Artifact disappeared after update")
+            })?;
 
         // PRD-057 FR-009 + AC-5: stamp last_modified_by/at on the freshly
         // rendered file. Best-effort — a stamping failure must not fail
@@ -4805,10 +5053,10 @@ impl ForgeplanServer {
             other => format!("Updated ({other}). Inspect lifecycle: `forgeplan_review {safe_id}`."),
         };
         // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
-        // Issue #383: echo the resolved canonical id (== updated.id) rather than
-        // the raw input, so the agent sees the authoritative artifact id.
+        // Preserve the display id and expose the stable identity separately.
         let base = serde_json::json!({
-            "id": canonical,
+            "id": updated.id,
+            "canonical_key": updated.canonical_key,
             "message": "Updated successfully",
             "status": updated.status,
             "title": updated.title,
@@ -4820,6 +5068,9 @@ impl ForgeplanServer {
         let reconcile = if migrated {
             reconcile_after_canonical_write(&ws).await
         } else {
+            if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+            }
             ReconcileReport::legacy_projection_owns_index()
         };
         let traced = with_workspace_trace(base, &trace);
@@ -4840,14 +5091,19 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<DeleteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read, _lock_guard) =
-            self.resolve_write_source(p.workspace.as_deref()).await?;
+        let (resolved, read, _lock_guard) = match self.resolve_write_source(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_lock_guard;
         let trace = WorkspaceTrace::from_resolved(&resolved);
         let migrated = resolved.is_migrated();
         let legacy_sink = resolved.legacy_store.clone();
         let ws = resolved.workspace_dir;
+        let canonical_id = match read.resolve_artifact(_permit, &ws, &p.id).await {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(refusal) => return Ok(refusal),
+        };
 
-        let record = match read.get_record(&p.id).await {
+        let record = match read.get_record(_permit, &canonical_id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(safe_err_result("", e)),
@@ -4861,22 +5117,42 @@ impl ForgeplanServer {
         // handler already used — the pinned canonical view on a migrated
         // workspace, the legacy projection otherwise — so no store is opened
         // merely to enumerate relations that are already in hand.
-        let captured_relations = match capture_relations_for_receipt(&record, &read).await {
+        let _ = match capture_relations_for_receipt(&record, &read, _permit).await {
             Ok(relations) => relations,
             Err(error) => return Ok(safe_err_result("capture recovery relations", error)),
         };
-        let receipt_id = match forgeplan_core::undo::soft_delete_capture_with_relations(
-            &ws,
-            &record,
-            captured_relations,
-            forgeplan_core::undo::DestructiveOp::Delete,
-            None,
-            None,
-        )
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
+        let read = match self.read_source_for(&ws, _permit, legacy_sink.clone()).await {
+            Ok(read) => read,
+            Err(error) => return Ok(read_source_error_result(error)),
+        };
+        let record = match read.get_record(_permit, &canonical_id).await {
+            Ok(Some(record)) => record,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(error) => return Ok(safe_err_result("read after write preparation: ", error)),
+        };
+        let captured_relations = match capture_relations_for_receipt(&record, &read, _permit).await {
+            Ok(relations) => relations,
+            Err(error) => return Ok(safe_err_result("capture recovery relations", error)),
+        };
+        let receipt_id = match forgeplan_core::undo::soft_delete_capture_with_relations(&ws, &_lock_guard, legacy_sink.as_deref(), &record, captured_relations,
+        forgeplan_core::undo::DestructiveOp::Delete,
+        None,
+        None,)
         .await
         {
             Ok(id) => id,
             Err(e) => {
+                if !migrated {
+                    return Ok(safe_err_result(
+                        "canonical files may be partially committed, semantic backlog may be pending",
+                        e,
+                    ));
+                }
                 return Ok(err_hinted(
                     &format!("Failed to capture soft-delete receipt: {e}"),
                     "Delete aborted to prevent data loss. Check .forgeplan/trash/ is \
@@ -4897,7 +5173,7 @@ impl ForgeplanServer {
                 &p.id,
             )
             .await
-            .map_err(safe_mcp_error)?;
+            .map_err(|e| safe_partial_mutation_error(false, e))?;
         }
 
         // Projection was already moved into trash by soft_delete_capture.
@@ -4928,6 +5204,9 @@ impl ForgeplanServer {
         let reconcile = if migrated {
             reconcile_after_canonical_write(&ws).await
         } else {
+            if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+            }
             ReconcileReport::legacy_projection_owns_index()
         };
         let traced = with_workspace_trace(base, &trace);
@@ -5027,19 +5306,24 @@ impl ForgeplanServer {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
+        let read_guard = match forgeplan_core::workspace::lock::acquire_workspace_read_lock(&resolved.workspace_dir).await {
+            Ok(guard) => guard,
+            Err(error) => return Ok(safe_err_result("", error)),
+        };
+        let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &read_guard;
         // `review` needs the artifact's relation graph for the build-on-draft
         // warnings and the evidence gate. A migrated workspace has that graph
         // in the canonical Markdown, so this resolves a ReadSource instead of
         // requiring the legacy projection — one branch, same answer.
         let read = match self
-            .read_source_for(&resolved.workspace_dir, resolved.legacy_store.clone())
+            .read_source_for(&resolved.workspace_dir, _permit, resolved.legacy_store.clone())
             .await
         {
             Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
+            Err(e) => return Ok(read_source_error_result(e)),
         };
         let review = match &read {
-            ReadSource::Legacy(store) => forgeplan_core::lifecycle::review(store, &p.id).await,
+            ReadSource::Legacy(store) => forgeplan_core::lifecycle::review(&read_guard, store, &p.id).await,
             ReadSource::Workspace(view) => {
                 let canonical = view.resolve_id(&p.id).unwrap_or_else(|| p.id.clone());
                 forgeplan_core::lifecycle::canonical::review_captured(view, &canonical)
@@ -5051,7 +5335,7 @@ impl ForgeplanServer {
                 // pre-merge / display id post-merge for the activate /
                 // validate hint so commit `Refs:` stays canonical. Fall back
                 // to the canonical id if the record is missing (race).
-                let ref_form: String = match read.get_record(&result.artifact_id).await {
+                let ref_form: String = match read.get_record(_permit, &result.artifact_id).await {
                     Ok(Some(rec)) => forgeplan_core::artifact::frontmatter::refs_form_from_body(
                         &rec.body, &rec.id,
                     ),
@@ -5097,13 +5381,13 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ActivateParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read, _lock_guard) =
-            self.resolve_write_source(p.workspace.as_deref()).await?;
+        let (resolved, read, _lock_guard) = match self.resolve_write_source(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_lock_guard;
         let trace = WorkspaceTrace::from_resolved(&resolved);
         let legacy_sink = resolved.legacy_store.clone();
         let migrated = legacy_sink.is_none();
         let ws = resolved.workspace_dir;
-        let canonical_id = match read.resolve_artifact(&ws, &p.id).await {
+        let canonical_id = match read.resolve_artifact(_permit, &ws, &p.id).await {
             Ok(Some(id)) => id,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(tool_error) => return Ok(tool_error),
@@ -5112,9 +5396,18 @@ impl ForgeplanServer {
         // ADR-003 / PROB-048 file-first: pre-mutation file→store sync. Only a
         // legacy sink has a store row to sync into; the canonical markdown is
         // already the source of truth on a migrated workspace.
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
+        let read = match self.read_source_for(&ws, _permit, legacy_sink.clone()).await {
+            Ok(read) => read,
+            Err(error) => return Ok(read_source_error_result(error)),
+        };
         if let Some(store) = legacy_sink.as_deref()
             && let Err(e) =
-                forgeplan_core::projection::sync_before_mutation(&ws, store, &canonical_id).await
+                forgeplan_core::projection::sync_before_mutation(&_lock_guard, &ws, store, &canonical_id).await
         {
             return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
@@ -5127,7 +5420,7 @@ impl ForgeplanServer {
         // server-side.
         let mut provenance_warning: Option<String> = None;
         if !p.force
-            && let Ok(Some(record)) = read.get_record(&canonical_id).await
+            && let Ok(Some(record)) = read.get_record(_permit, &canonical_id).await
         {
             use forgeplan_core::scoring::provenance::{self, GateDecision, GateMode};
             let mode = forgeplan_core::workspace::load_config(&ws)
@@ -5158,7 +5451,7 @@ impl ForgeplanServer {
             );
             match &read {
                 ReadSource::Legacy(store) => {
-                    forgeplan_core::lifecycle::activate(store, &canonical_id, p.force).await
+                    forgeplan_core::lifecycle::activate(&_lock_guard, store, &canonical_id, p.force).await
                 }
                 ReadSource::Workspace(view) => {
                     forgeplan_core::lifecycle::canonical::activate_captured(
@@ -5182,7 +5475,7 @@ impl ForgeplanServer {
                 // published graph, so there is nothing to sync here.
                 if let Some(store) = legacy_sink.as_deref()
                     && let Err(e) =
-                        forgeplan_core::scoring::sync_score_target(store, &canonical_id).await
+                        forgeplan_core::scoring::sync_score_target(store, &_lock_guard, &canonical_id).await
                 {
                     tracing::warn!(
                         target = "scoring",
@@ -5198,13 +5491,13 @@ impl ForgeplanServer {
                 // there is no store row to render from.
                 if let Some(store) = legacy_sink.as_deref()
                     && let Err(e) =
-                        forgeplan_core::projection::render_after_mutation(&ws, store, &canonical_id)
+                        forgeplan_core::projection::render_after_mutation(&_lock_guard, &ws, store, &canonical_id)
                             .await
                 {
-                    tracing::warn!(
-                        "post-mutation render for {} failed: {e} — file projection stale",
-                        p.id
-                    );
+                    return Ok(safe_err_result(
+                        "canonical files may be partially committed, semantic backlog may be pending",
+                        e,
+                    ));
                 }
 
                 // PRD-056: activation is terminal — advance phase to Done.
@@ -5218,7 +5511,7 @@ impl ForgeplanServer {
                 // Round 2 audit FINDING-1: emit slug pre-merge / display id
                 // post-merge в `msg` so агент uses canonical reference в follow-up.
                 // Best-effort fetch — if record не resolvable, fall back to p.id.
-                let ref_form = match read.get_record(&canonical_id).await {
+                let ref_form = match read.get_record(_permit, &canonical_id).await {
                     Ok(Some(r)) => {
                         forgeplan_core::artifact::frontmatter::refs_form_from_body(&r.body, &r.id)
                     }
@@ -5264,6 +5557,9 @@ impl ForgeplanServer {
                 let reconcile = if migrated {
                     reconcile_after_canonical_write(&ws).await
                 } else {
+                    if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                        return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+                    }
                     ReconcileReport::legacy_projection_owns_index()
                 };
                 // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
@@ -5278,6 +5574,10 @@ impl ForgeplanServer {
                     &reconcile.merge_into(with_workspace_trace(base, &trace)),
                 ))
             }
+            Err(e) if !migrated => Ok(safe_err_result(
+                "canonical files may be partially committed, semantic backlog may be pending",
+                e,
+            )),
             Err(e) => Ok(err_result(&e.to_string())),
         }
     }
@@ -5296,13 +5596,13 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<SupersedeParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read, _lock_guard) =
-            self.resolve_write_source(p.workspace.as_deref()).await?;
+        let (resolved, read, _lock_guard) = match self.resolve_write_source(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_lock_guard;
         let trace = WorkspaceTrace::from_resolved(&resolved);
         let legacy_sink = resolved.legacy_store.clone();
         let migrated = legacy_sink.is_none();
         let ws = resolved.workspace_dir;
-        let canonical_id = match read.resolve_artifact(&ws, &p.id).await {
+        let canonical_id = match read.resolve_artifact(_permit, &ws, &p.id).await {
             Ok(Some(id)) => id,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(tool_error) => return Ok(tool_error),
@@ -5319,7 +5619,7 @@ impl ForgeplanServer {
             // workspace: it is not a local selector.
             p.by.clone()
         } else {
-            match read.resolve_artifact(&ws, &p.by).await {
+            match read.resolve_artifact(_permit, &ws, &p.by).await {
                 Ok(Some(id)) => id,
                 Ok(None) => p.by.clone(),
                 Err(tool_error) => return Ok(tool_error),
@@ -5329,7 +5629,7 @@ impl ForgeplanServer {
         // PRD-055: capture the original state BEFORE lifecycle transition
         // so undo can restore status=active (or prior) and drop the
         // supersede link. Projection stays on disk — only status changes.
-        let record = match read.get_record(&canonical_id).await {
+        let record = match read.get_record(_permit, &canonical_id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(safe_err_result("", e)),
@@ -5337,18 +5637,32 @@ impl ForgeplanServer {
         // The receipt's relation snapshot comes from whichever source produced
         // the record, so a migrated workspace gets byte-identical receipts
         // rather than none — `undo_last` / `restore` stay usable there.
-        let captured_relations = match capture_relations_for_receipt(&record, &read).await {
+        let _ = match capture_relations_for_receipt(&record, &read, _permit).await {
             Ok(relations) => relations,
             Err(error) => return Ok(safe_err_result("capture recovery relations", error)),
         };
-        let receipt_id = match forgeplan_core::undo::soft_delete_capture_with_relations(
-            &ws,
-            &record,
-            captured_relations,
-            forgeplan_core::undo::DestructiveOp::Supersede,
-            None,
-            Some(&replacement_id),
-        )
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
+        let read = match self.read_source_for(&ws, _permit, legacy_sink.clone()).await {
+            Ok(read) => read,
+            Err(error) => return Ok(read_source_error_result(error)),
+        };
+        let record = match read.get_record(_permit, &canonical_id).await {
+            Ok(Some(record)) => record,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(error) => return Ok(safe_err_result("read after write preparation: ", error)),
+        };
+        let captured_relations = match capture_relations_for_receipt(&record, &read, _permit).await {
+            Ok(relations) => relations,
+            Err(error) => return Ok(safe_err_result("capture recovery relations", error)),
+        };
+        let receipt_id = match forgeplan_core::undo::soft_delete_capture_with_relations(&ws, &_lock_guard, legacy_sink.as_deref(), &record, captured_relations,
+        forgeplan_core::undo::DestructiveOp::Supersede,
+        None,
+        Some(&replacement_id),)
         .await
         {
             Ok(id) => id,
@@ -5365,7 +5679,7 @@ impl ForgeplanServer {
         // legacy sink has a store row that can lag its file.
         if let Some(store) = legacy_sink.as_deref()
             && let Err(e) =
-                forgeplan_core::projection::sync_before_mutation(&ws, store, &canonical_id).await
+                forgeplan_core::projection::sync_before_mutation(&_lock_guard, &ws, store, &canonical_id).await
         {
             return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
@@ -5380,7 +5694,7 @@ impl ForgeplanServer {
             );
             match &read {
                 ReadSource::Legacy(store) => {
-                    forgeplan_core::lifecycle::supersede(store, &canonical_id, &replacement_id)
+                    forgeplan_core::lifecycle::supersede(&_lock_guard, store, &canonical_id, &replacement_id)
                         .await
                 }
                 ReadSource::Workspace(view) => {
@@ -5403,13 +5717,13 @@ impl ForgeplanServer {
                 // A migrated source has already performed its canonical write.
                 if let Some(store) = legacy_sink.as_deref()
                     && let Err(e) =
-                        forgeplan_core::projection::render_after_mutation(&ws, store, &canonical_id)
+                        forgeplan_core::projection::render_after_mutation(&_lock_guard, &ws, store, &canonical_id)
                             .await
                 {
-                    tracing::warn!(
-                        "post-mutation render for superseded {} failed: {e}",
-                        canonical_id
-                    );
+                    return Ok(safe_err_result(
+                        "canonical files may be partially committed, semantic backlog may be pending",
+                        e,
+                    ));
                 }
                 // PRD-056: supersede is terminal — advance phase to Done.
                 maybe_advance_phase(
@@ -5426,7 +5740,7 @@ impl ForgeplanServer {
                 // published graph, so there is no cache to refresh here.
                 if let Some(store) = legacy_sink.as_deref() {
                     let rescored =
-                        forgeplan_core::scoring::rescore_evidence_dependents(store, &canonical_id)
+                        forgeplan_core::scoring::rescore_evidence_dependents(store, &_lock_guard, &canonical_id)
                             .await;
                     if !rescored.is_empty() {
                         tracing::info!(
@@ -5462,6 +5776,9 @@ impl ForgeplanServer {
                 let reconcile = if migrated {
                     reconcile_after_canonical_write(&ws).await
                 } else {
+                    if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                        return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+                    }
                     ReconcileReport::legacy_projection_owns_index()
                 };
                 // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
@@ -5478,6 +5795,12 @@ impl ForgeplanServer {
                 ))
             }
             Err(e) => {
+                if !migrated {
+                    return Ok(safe_err_result(
+                        "canonical files may be partially committed, semantic backlog may be pending",
+                        e,
+                    ));
+                }
                 let safe_from = sanitize_for_hint(&p.id);
                 let safe_by = sanitize_for_hint(&p.by);
                 // PRD-071: single primary — verify the replacement first.
@@ -5506,36 +5829,50 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<DeprecateParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read, _lock_guard) =
-            self.resolve_write_source(p.workspace.as_deref()).await?;
+        let (resolved, read, _lock_guard) = match self.resolve_write_source(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_lock_guard;
         let trace = WorkspaceTrace::from_resolved(&resolved);
         let legacy_sink = resolved.legacy_store.clone();
         let migrated = legacy_sink.is_none();
         let ws = resolved.workspace_dir;
-        let canonical_id = match read.resolve_artifact(&ws, &p.id).await {
+        let canonical_id = match read.resolve_artifact(_permit, &ws, &p.id).await {
             Ok(Some(id)) => id,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(tool_error) => return Ok(tool_error),
         };
 
         // PRD-055: capture original state before lifecycle transition.
-        let record = match read.get_record(&canonical_id).await {
+        let record = match read.get_record(_permit, &canonical_id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(safe_err_result("", e)),
         };
-        let captured_relations = match capture_relations_for_receipt(&record, &read).await {
+        let _ = match capture_relations_for_receipt(&record, &read, _permit).await {
             Ok(relations) => relations,
             Err(error) => return Ok(safe_err_result("capture recovery relations", error)),
         };
-        let receipt_id = match forgeplan_core::undo::soft_delete_capture_with_relations(
-            &ws,
-            &record,
-            captured_relations,
-            forgeplan_core::undo::DestructiveOp::Deprecate,
-            Some(&p.reason),
-            None,
-        )
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
+        let read = match self.read_source_for(&ws, _permit, legacy_sink.clone()).await {
+            Ok(read) => read,
+            Err(error) => return Ok(read_source_error_result(error)),
+        };
+        let record = match read.get_record(_permit, &canonical_id).await {
+            Ok(Some(record)) => record,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(error) => return Ok(safe_err_result("read after write preparation: ", error)),
+        };
+        let captured_relations = match capture_relations_for_receipt(&record, &read, _permit).await {
+            Ok(relations) => relations,
+            Err(error) => return Ok(safe_err_result("capture recovery relations", error)),
+        };
+        let receipt_id = match forgeplan_core::undo::soft_delete_capture_with_relations(&ws, &_lock_guard, legacy_sink.as_deref(), &record, captured_relations,
+        forgeplan_core::undo::DestructiveOp::Deprecate,
+        Some(&p.reason),
+        None,)
         .await
         {
             Ok(id) => id,
@@ -5553,7 +5890,7 @@ impl ForgeplanServer {
         // row that can lag its file.
         if let Some(store) = legacy_sink.as_deref()
             && let Err(e) =
-                forgeplan_core::projection::sync_before_mutation(&ws, store, &canonical_id).await
+                forgeplan_core::projection::sync_before_mutation(&_lock_guard, &ws, store, &canonical_id).await
         {
             return Ok(safe_err_result("pre-mutation file→store sync failed", e));
         }
@@ -5568,7 +5905,7 @@ impl ForgeplanServer {
             );
             match &read {
                 ReadSource::Legacy(store) => {
-                    forgeplan_core::lifecycle::deprecate(store, &canonical_id, &p.reason).await
+                    forgeplan_core::lifecycle::deprecate(&_lock_guard, store, &canonical_id, &p.reason).await
                 }
                 ReadSource::Workspace(view) => {
                     forgeplan_core::lifecycle::canonical::deprecate_captured(
@@ -5597,17 +5934,17 @@ impl ForgeplanServer {
                 // no render at all — the body write already edited the file.
                 if let Some(store) = legacy_sink.as_deref()
                     && let Err(e) = forgeplan_core::projection::render_after_mutation_with_body(
+                        &_lock_guard,
                         &ws,
                         store,
                         &canonical_id,
                     )
                     .await
                 {
-                    tracing::warn!(
-                        "post-mutation render for {} failed: {e} — \
-                         LanceDB has the deprecation, file projection is stale",
-                        canonical_id
-                    );
+                    return Ok(safe_err_result(
+                        "canonical files may be partially committed, semantic backlog may be pending",
+                        e,
+                    ));
                 }
 
                 // PRD-056: deprecation is terminal — advance phase to Done.
@@ -5623,7 +5960,7 @@ impl ForgeplanServer {
                 // exists on a migrated workspace — reconcile recomputes.
                 if let Some(store) = legacy_sink.as_deref() {
                     let rescored =
-                        forgeplan_core::scoring::rescore_evidence_dependents(store, &canonical_id)
+                        forgeplan_core::scoring::rescore_evidence_dependents(store, &_lock_guard, &canonical_id)
                             .await;
                     if !rescored.is_empty() {
                         tracing::info!(
@@ -5653,6 +5990,9 @@ impl ForgeplanServer {
                 let reconcile = if migrated {
                     reconcile_after_canonical_write(&ws).await
                 } else {
+                    if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                        return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+                    }
                     ReconcileReport::legacy_projection_owns_index()
                 };
                 // PRD-078 Phase 3 (W3 FR-007 / NFR-004): inject workspace trace.
@@ -5667,6 +6007,10 @@ impl ForgeplanServer {
                     &reconcile.merge_into(with_workspace_trace(base, &trace)),
                 ))
             }
+            Err(e) if !migrated => Ok(safe_err_result(
+                "canonical files may be partially committed, semantic backlog may be pending",
+                e,
+            )),
             Err(e) => Ok(err_hinted(
                 &e.to_string(),
                 "Deprecate failed. A soft-delete receipt was pre-written and is orphaned \
@@ -5699,10 +6043,8 @@ impl ForgeplanServer {
         // of the canonical Markdown (so an edit made by any writer since the
         // last call is visible here), and only a workspace that still has no
         // Constellation index opens the legacy projection.
-        let (ws, _via, read) = match self.resolve_read_source(None).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (ws, _via, read, _read_guard) = match self.resolve_read_source(None).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
         // PROB-051 L-H3 + P-H1 + P-H2 closure: route through
         // `health_report_with_phase` so (a) `list_records` runs once
@@ -5721,7 +6063,7 @@ impl ForgeplanServer {
                     .map_err(|e| safe_mcp_error_anyhow(&e))?
             }
             ReadSource::Legacy(store) => {
-                forgeplan_core::health::health_report_with_phase(store, &ws)
+                forgeplan_core::health::health_report_with_phase(store, _permit, &ws)
                     .await
                     .map_err(|e| safe_mcp_error_anyhow(&e))?
             }
@@ -5898,14 +6240,14 @@ impl ForgeplanServer {
         let legacy_store = if forgeplan_core::constellation::facade::workspace_is_migrated(&ws) {
             None
         } else {
-            match self.get_or_open_store(&ws).await {
+            match self.get_or_open_store_with_permit(&ws, &_lock_guard).await {
                 Ok(store) => Some(store),
                 Err(e) => return Ok(safe_err_result("", e)),
             }
         };
-        let read = match self.read_source_for(&ws, legacy_store).await {
+        let read = match self.read_source_for(&ws, &_lock_guard, legacy_store).await {
             Ok(read) => read,
-            Err(e) => return Ok(safe_err_result("", e)),
+            Err(e) => return Ok(read_source_error_result(e)),
         };
 
         // Parse + validate filter inputs. Bad shapes fail loud so callers
@@ -5975,7 +6317,7 @@ impl ForgeplanServer {
                 }
             }
             ReadSource::Legacy(store) => {
-                match forgeplan_core::anomalies::detect_anomalies_with_journal(store, &ws, &filter)
+                match forgeplan_core::anomalies::detect_anomalies_with_journal(store, &_lock_guard, &ws, &filter)
                     .await
                 {
                     Ok(r) => r,
@@ -6025,13 +6367,9 @@ impl ForgeplanServer {
         // is only meaningful for the legacy store — a migrated workspace is
         // answered from an immutable capture that no writer can move under it,
         // so the migrated branch takes no lock at all.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
-        let all_records = read
-            .list_records(None)
-            .await
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
+        let all_records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let report = forgeplan_core::brownfield::hypothesis_status_report(
@@ -6072,16 +6410,14 @@ impl ForgeplanServer {
         //
         // C12/C03: one source choice, before any open — a migrated workspace is
         // answered from an immutable capture, so it takes no snapshot lock.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
         // Audit-r4 SEC-H1: sanitize_for_hint on every user-controlled string
         // before splicing it into the response body / next_action. Prior
         // revision left `p.domain_model_id` and `other.kind` raw — that's a
         // prompt-injection vector via the hint protocol channel (CWE-117).
         let safe_id = sanitize_for_hint(&p.domain_model_id);
-        let dm_record = match read.get_record(&p.domain_model_id).await {
+        let dm_record = match read.get_record(_permit, &p.domain_model_id).await {
             Ok(Some(r)) if r.kind.eq_ignore_ascii_case("domain_model") => r,
             Ok(Some(other)) => {
                 let safe_kind = sanitize_for_hint(&other.kind);
@@ -6096,13 +6432,9 @@ impl ForgeplanServer {
             Ok(None) => return Ok(artifact_not_found(&p.domain_model_id)),
             Err(e) => return Ok(safe_err_result("get_record", e)),
         };
-        let all_records = read
-            .list_records(None)
-            .await
+        let all_records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
-        let relations = read
-            .get_all_relations()
-            .await
+        let relations = read.get_all_relations(_permit).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
         let report = forgeplan_core::brownfield::coverage_business_report(
             &dm_record,
@@ -6135,13 +6467,9 @@ impl ForgeplanServer {
         //
         // C12/C03: one source choice, before any open — a migrated workspace is
         // answered from an immutable capture, so it takes no snapshot lock.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
-        let all_records = read
-            .list_records(None)
-            .await
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
+        let all_records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
         let report = forgeplan_core::brownfield::contradictions_v1_heuristic(&all_records);
 
@@ -6175,17 +6503,11 @@ impl ForgeplanServer {
         //
         // C12/C03: one source choice, before any open — a migrated workspace is
         // answered from an immutable capture, so it takes no snapshot lock.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
-        let all_records = read
-            .list_records(None)
-            .await
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
+        let all_records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
-        let relations = read
-            .get_all_relations()
-            .await
+        let relations = read.get_all_relations(_permit).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
         let report = forgeplan_core::brownfield::orphans_report(&all_records, &relations);
 
@@ -6224,10 +6546,8 @@ impl ForgeplanServer {
         // One source choice, before anything is opened: a Constellation-owned
         // workspace is read from a fresh capture of the canonical Markdown, so a
         // decision written since the previous call appears here.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
         let entries = match &read {
             ReadSource::Workspace(view) => {
@@ -6245,6 +6565,7 @@ impl ForgeplanServer {
             ReadSource::Legacy(store) => {
                 match forgeplan_core::journal::build_journal(
                     store,
+                    _permit,
                     p.kind.as_ref().map(|k| k.as_str()),
                     p.risk.unwrap_or(false),
                 )
@@ -6318,16 +6639,14 @@ impl ForgeplanServer {
         // One source choice, before anything is opened: a Constellation-owned
         // workspace is read from a fresh capture of the canonical Markdown, so a
         // decision or evidence pack written since the previous call is visible.
-        let (_ws, _via, read) = match self.resolve_read_source(None).await {
-            Ok(r) => r,
-            Err(error) => return Ok(safe_err_result("", error)),
-        };
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(None).await { Ok(r) => r,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
         let report = match &read {
             ReadSource::Workspace(view) => forgeplan_core::health::health_report_captured(view)
                 .await
                 .map_err(|e| safe_mcp_error_anyhow(&e))?,
-            ReadSource::Legacy(store) => forgeplan_core::health::health_report(store)
+            ReadSource::Legacy(store) => forgeplan_core::health::health_report(store, _permit)
                 .await
                 .map_err(|e| safe_mcp_error_anyhow(&e))?,
         };
@@ -6428,6 +6747,11 @@ impl ForgeplanServer {
                 tags: Vec::new(),
             })
         };
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
         let allocated = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
             &ws,
             &_lock_guard,
@@ -6438,7 +6762,7 @@ impl ForgeplanServer {
             &build,
         )
         .await
-        .map_err(|e| safe_mcp_error_anyhow(&e))?;
+        .map_err(|e| if migrated { safe_mcp_error_anyhow(&e) } else { safe_partial_mutation_error(false, e) })?;
         let id = allocated.id;
         let filepath = allocated.filepath;
 
@@ -6469,6 +6793,9 @@ impl ForgeplanServer {
         let reconcile = if migrated {
             reconcile_after_canonical_write(&ws).await
         } else {
+            if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+            }
             ReconcileReport::legacy_projection_owns_index()
         };
         let traced = with_workspace_trace(payload, &_trace);
@@ -6493,14 +6820,10 @@ impl ForgeplanServer {
         // no `-32602` gate, no lock). Honours the `workspace` param.
         //
         // C12/C03: one source choice, before any open.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
-        let relations = read
-            .get_all_relations()
-            .await
+        let relations = read.get_all_relations(_permit).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let mut edges: Vec<graph::Edge> = relations
@@ -6508,9 +6831,7 @@ impl ForgeplanServer {
             .map(|(from, to, relation)| graph::Edge { from, to, relation })
             .collect();
 
-        let records = read
-            .list_records(None)
-            .await
+        let records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         for record in &records {
@@ -6619,18 +6940,12 @@ impl ForgeplanServer {
         // no `-32602` gate, no lock). Honours the `workspace` param.
         //
         // C12/C03: one source choice, before any open.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
-        let relations = read
-            .get_all_relations()
-            .await
+        let relations = read.get_all_relations(_permit).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
-        let records = read
-            .list_records(None)
-            .await
+        let records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let resolved_ids: HashSet<String> = records
@@ -6638,16 +6953,29 @@ impl ForgeplanServer {
             .filter(|r| {
                 r.status == "active" || r.status == "deprecated" || r.status == "superseded"
             })
-            .map(|r| r.id.clone())
+            .map(|r| r.canonical_key.clone())
             .collect();
 
         use forgeplan_core::graph::topological;
+        let display_id = |key: &str| {
+            records.iter().find(|r| r.canonical_key == key)
+                .map(|r| r.id.as_str()).unwrap_or(key).to_owned()
+        };
+        let blocked_entry = |key: &str, deps: &[String]| serde_json::json!({
+            "id": display_id(key),
+            "canonical_key": key,
+            "blocked_by": deps.iter().map(|dep| display_id(dep)).collect::<Vec<_>>(),
+            "blocked_by_canonical_keys": deps,
+        });
 
         if let Some(artifact_id) = &p.id {
-            // Normalize case to match core get_blocked_by lookup convention.
-            let normalized_id = artifact_id.to_uppercase();
-            let safe_id = sanitize_for_hint(&normalized_id);
-            let blocked_by = topological::get_blocked_by(&normalized_id, &relations, &resolved_ids);
+            let canonical = match read.resolve_artifact(_permit, &ws, artifact_id).await {
+                Ok(Some(key)) => key,
+                Ok(None) => return Ok(artifact_not_found(artifact_id)),
+                Err(error) => return Ok(error),
+            };
+            let safe_id = sanitize_for_hint(&canonical);
+            let blocked_by = topological::get_blocked_by(&canonical, &relations, &resolved_ids);
             let is_blocked = !blocked_by.is_empty();
             // PRD-071: real IDs (use the first blocker), single primary.
             let next_action = if is_blocked {
@@ -6665,7 +6993,7 @@ impl ForgeplanServer {
             };
             Ok(json_result(&serde_json::json!({
                 "blocked": if is_blocked {
-                    vec![serde_json::json!({"id": normalized_id, "blocked_by": blocked_by})]
+                    vec![blocked_entry(&canonical, &blocked_by)]
                 } else { vec![] },
                 "ready_count": if is_blocked { 0 } else { 1 },
                 "blocked_count": if is_blocked { 1 } else { 0 },
@@ -6677,7 +7005,7 @@ impl ForgeplanServer {
             let blocked: Vec<_> = result
                 .blocked
                 .into_iter()
-                .map(|(id, deps)| serde_json::json!({"id": id, "blocked_by": deps}))
+                .map(|(id, deps)| blocked_entry(&id, &deps))
                 .collect();
             // Audit H3: blocked_count must reflect blocked.len(), NOT cycles.len().
             // Previous code said `result.cycles.len()` which reported wrong numbers.
@@ -6701,7 +7029,8 @@ impl ForgeplanServer {
                 "blocked": blocked,
                 "ready_count": result.ready.len(),
                 "blocked_count": blocked_count,
-                "cycles": result.cycles,
+                "cycles": result.cycles.iter().map(|cycle| cycle.iter().map(|id| display_id(id)).collect::<Vec<_>>()).collect::<Vec<_>>(),
+                "cycles_canonical_keys": result.cycles,
                 "_next_action": next_action,
             })))
         }
@@ -6721,18 +7050,12 @@ impl ForgeplanServer {
         // ADR-016: paramless tool — reads the default workspace; worktree routing
         // needs a params struct (out of scope). The source branch below is the
         // same one every other read uses.
-        let (_ws, _via, read) = match self.resolve_read_source(None).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(None).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
-        let relations = read
-            .get_all_relations()
-            .await
+        let relations = read.get_all_relations(_permit).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
-        let records = read
-            .list_records(None)
-            .await
+        let records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let resolved_ids: HashSet<String> = records
@@ -6740,7 +7063,7 @@ impl ForgeplanServer {
             .filter(|r| {
                 r.status == "active" || r.status == "deprecated" || r.status == "superseded"
             })
-            .map(|r| r.id.clone())
+            .map(|r| r.canonical_key.clone())
             .collect();
 
         use forgeplan_core::graph::topological;
@@ -6762,19 +7085,24 @@ impl ForgeplanServer {
             "Nothing pending. Run `forgeplan_health` to confirm.".to_string()
         };
 
-        let resp = OrderResponse {
-            order: result.order,
-            ready: result.ready,
-            blocked: result
-                .blocked
-                .into_iter()
-                .map(|(id, deps)| BlockedEntry {
-                    id,
-                    blocked_by: deps,
-                })
-                .collect(),
-            cycles: result.cycles,
+        let display_id = |key: &str| {
+            records.iter().find(|r| r.canonical_key == key)
+                .map(|r| r.id.as_str()).unwrap_or(key).to_owned()
         };
+        let resp = serde_json::json!({
+            "order": result.order.iter().map(|id| display_id(id)).collect::<Vec<_>>(),
+            "order_canonical_keys": result.order,
+            "ready": result.ready.iter().map(|id| display_id(id)).collect::<Vec<_>>(),
+            "ready_canonical_keys": result.ready,
+            "blocked": result.blocked.iter().map(|(id, deps)| serde_json::json!({
+                "id": display_id(id),
+                "canonical_key": id,
+                "blocked_by": deps.iter().map(|dep| display_id(dep)).collect::<Vec<_>>(),
+                "blocked_by_canonical_keys": deps,
+            })).collect::<Vec<_>>(),
+            "cycles": result.cycles.iter().map(|cycle| cycle.iter().map(|id| display_id(id)).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "cycles_canonical_keys": result.cycles,
+        });
 
         hinted_result(&resp, next_action)
     }
@@ -6799,16 +7127,11 @@ impl ForgeplanServer {
         if p.query.trim().is_empty() {
             return Ok(err_result("Search query cannot be empty."));
         }
+        let mode = p.mode.as_deref().unwrap_or("smart").to_ascii_lowercase();
+        if !matches!(mode.as_str(), "smart" | "keyword" | "semantic") {
+            return Err(McpError::invalid_params("mode must be smart, keyword, or semantic", None));
+        }
 
-        // ADR-016 Phase 3c: read tools resolve via SoftFallback (worktree-aware,
-        // no `-32602` gate, no lock). Honours the newly-added `workspace` param.
-        //
-        // C12/C03: one source choice, before any open — a migrated workspace is
-        // ranked from one captured/pinned read view and opens no legacy store.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
 
         // Build composable filter from params.
         let mut filters: Vec<SearchFilter> = Vec::new();
@@ -6846,15 +7169,28 @@ impl ForgeplanServer {
             1 => Some(filters.into_iter().next().unwrap()),
             _ => Some(SearchFilter::And(filters)),
         };
+        if mode != "keyword" {
+            let (workspace, _) = self.resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::SoftFallback).await?;
+            if !forgeplan_core::constellation::facade::workspace_is_migrated(&workspace) {
+                if let Err(error) = LanceStore::drain_identity_semantic_backlog(&workspace).await {
+                    return Ok(safe_err_result("semantic backlog drain failed: ", error));
+                }
+            }
+        }
+        // ADR-016 Phase 3c: read tools resolve via SoftFallback (worktree-aware,
+        // no `-32602` gate, no lock). Honours the newly-added `workspace` param.
+        //
+        // C12/C03: one source choice, before any open — a migrated workspace is
+        // ranked from one captured/pinned read view and opens no legacy store.
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
         let limit = if p.limit == 0 { 20 } else { p.limit };
-        let mode = p.mode.as_deref().unwrap_or("smart").to_lowercase();
+        // Mode was validated before opening a read source.
 
         // Keyword-only: legacy substring match (backward compat).
         if mode == "keyword" {
-            let hits = read
-                .search_body(&p.query, p.kind.as_deref())
-                .await
+            let hits = read.search_body(_permit, &p.query, p.kind.as_deref()).await
                 .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
             let query_lower = p.query.to_lowercase();
@@ -6944,23 +7280,17 @@ impl ForgeplanServer {
         }
 
         // Smart / semantic: use smart_search over all records.
-        let records = read
-            .list_records(None)
-            .await
+        let records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
-        // PROB-060 Phase 2.4: index records by id so we can re-attach the
-        // identity triple to each smart-search hit. `SmartSearchResult` is
-        // a search-layer projection that intentionally drops the body to
-        // keep scoring data flat — but the body is exactly what we need to
-        // parse frontmatter for the slug + predicted + assigned trio.
-        let by_id: std::collections::HashMap<String, &ArtifactRecord> =
-            records.iter().map(|r| (r.id.clone(), r)).collect();
+        // Canonical keys, unlike display ids, remain unique across collisions.
+        let by_key: std::collections::HashMap<&str, &ArtifactRecord> =
+            records.iter().map(|r| (r.canonical_key.as_str(), r)).collect();
 
         let graph_opt = if p.no_expand {
             None
         } else {
-            read.knowledge_graph().await.ok()
+            read.knowledge_graph(_permit).await.ok()
         };
 
         // Real semantic scores, from the same facade the CLI uses —
@@ -6973,34 +7303,57 @@ impl ForgeplanServer {
         // path, or no eligible rows — is passed through as honest absence. It is
         // NOT substituted with zeros: a zero vector reads as "scored, and
         // matched nothing", which is indistinguishable from a real weak hit.
-        let (semantic_scores, has_embeddings) = read.semantic_scores(&p.query).await;
+        let candidate_limit = if mode == "semantic" { records.len() } else { 50 };
+        let (semantic_scores, has_embeddings) = read.semantic_scores(_permit, &p.query, candidate_limit).await
+            .map_err(|error| safe_mcp_error_anyhow(&error))?;
 
-        let results = smart::smart_search(
-            &records,
-            &p.query,
-            graph_opt.as_ref(),
-            semantic_scores.as_ref(),
-            filter.as_ref(),
-            limit,
-        );
+        let results = if mode == "semantic" {
+            let scores = match semantic_scores.as_ref() {
+                Some(scores) if has_embeddings => scores,
+                _ => return Ok(err_result("Semantic search is unavailable: no usable semantic backend or embeddings. Use smart mode for lexical fallback.")),
+            };
+            let mut results: Vec<_> = records.iter()
+                .filter(|record| filter.as_ref().map(|f| f.matches(record)).unwrap_or(true))
+                .filter_map(|record| scores.get(&record.canonical_key).copied()
+                    .filter(|score| score.is_finite())
+                    .map(|score| smart::SmartSearchResult {
+                        id: record.id.clone(),
+                        canonical_key: record.canonical_key.clone(),
+                        title: record.title.clone(),
+                        kind: record.kind.clone(),
+                        status: record.status.clone(),
+                        score,
+                        keyword_score: 0.0,
+                        bm25_score: 0.0,
+                        semantic_score: score,
+                        r_eff: record.r_eff_score,
+                        graph_centrality: 0.0,
+                        expanded_from: None,
+                    }))
+                .collect();
+            results.sort_by(|a, b| b.score.total_cmp(&a.score)
+                .then_with(|| a.canonical_key.cmp(&b.canonical_key)));
+            results.truncate(limit);
+            results
+        } else {
+            smart::smart_search(
+                &records, &p.query, graph_opt.as_ref(), semantic_scores.as_ref(),
+                filter.as_ref(), limit,
+            )
+        };
 
         let dtos: Vec<SearchResultDto> = results
             .into_iter()
             .map(|r| {
-                let (identity, canonical_key) = match by_id.get(&r.id) {
+                let (identity, canonical_key) = match by_key.get(r.canonical_key.as_str()) {
                     Some(rec) => (
                         crate::convert::identity_from_record(&rec.id, &rec.kind, &rec.body),
                         rec.canonical_key.clone(),
                     ),
-                    // Defensive: if the smart layer emits an id we no longer
-                    // have a record for (shouldn't happen — same source list)
-                    // fall back to a no-frontmatter view rather than dropping
-                    // the hit entirely. Without a record there is no key to
-                    // report, so the canonical form of the id is the best
-                    // answer available and is never a fabricated one.
+                    // A graph expansion can refer to a record outside this set.
                     None => (
                         crate::convert::identity_from_record(&r.id, &r.kind, ""),
-                        r.id.to_ascii_lowercase(),
+                        r.canonical_key.clone(),
                     ),
                 };
                 SearchResultDto {
@@ -7045,8 +7398,8 @@ impl ForgeplanServer {
         // answer that merely happened to have no semantic hits.
         let coverage = crate::types::SearchCoverage {
             semantic: has_embeddings,
-            lexical: true,
-            graph: !p.no_expand,
+            lexical: mode != "semantic",
+            graph: mode != "semantic" && !p.no_expand,
         };
 
         hinted_result(
@@ -7073,14 +7426,10 @@ impl ForgeplanServer {
         // ADR-016: paramless tool — reads the default workspace; worktree routing
         // needs a params struct (out of scope). Same source branch as every
         // other read.
-        let (_ws, _via, read) = match self.resolve_read_source(None).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(None).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
-        let stale_records = read
-            .find_stale()
-            .await
+        let stale_records = read.find_stale(_permit).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let today = Utc::now().date_naive();
@@ -7139,14 +7488,10 @@ impl ForgeplanServer {
     ) -> Result<CallToolResult, McpError> {
         // C12/C03: one source choice, before any open — a migrated workspace is
         // answered from one pinned read view and opens no legacy store.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
-        let records = read
-            .list_records(None)
-            .await
+        let records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let to_report: Vec<&ArtifactRecord> = if let Some(ref target_id) = p.id {
@@ -7248,10 +7593,8 @@ impl ForgeplanServer {
         // One source choice, before anything is opened: a Constellation-owned
         // workspace is read from a fresh capture of the canonical Markdown, so
         // evidence that expired or landed since the previous call is counted.
-        let (_ws, _via, read) = match self.resolve_read_source(None).await {
-            Ok(r) => r,
-            Err(error) => return Ok(safe_err_result("", error)),
-        };
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(None).await { Ok(r) => r,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
         let entries = match &read {
             ReadSource::Workspace(view) => {
@@ -7259,7 +7602,7 @@ impl ForgeplanServer {
                     .await
                     .map_err(|e| safe_mcp_error_anyhow(&e))?
             }
-            ReadSource::Legacy(store) => forgeplan_core::scoring::decay::decay_report(store)
+            ReadSource::Legacy(store) => forgeplan_core::scoring::decay::decay_report(store, _permit)
                 .await
                 .map_err(|e| safe_mcp_error_anyhow(&e))?,
         };
@@ -7330,26 +7673,22 @@ impl ForgeplanServer {
         Parameters(p): Parameters<CalibrateParams>,
     ) -> Result<CallToolResult, McpError> {
         // C12/C03: one source choice, before any open.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
-        let records = read
-            .list_records(None)
-            .await
+        let records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let to_check: Vec<&ArtifactRecord> = if let Some(ref target_id) = p.id {
-            let upper = target_id.to_uppercase();
-            let filtered: Vec<_> = records
-                .iter()
-                .filter(|r| r.id.to_uppercase() == upper)
-                .collect();
-            if filtered.is_empty() {
+            let canonical = match read.resolve_artifact(_permit, &ws, target_id).await {
+                Ok(Some(key)) => key,
+                Ok(None) => return Ok(artifact_not_found(target_id)),
+                Err(error) => return Ok(error),
+            };
+            let Some(record) = records.iter().find(|r| r.canonical_key == canonical) else {
                 return Ok(artifact_not_found(target_id));
-            }
-            filtered
+            };
+            vec![record]
         } else {
             records.iter().collect()
         };
@@ -7358,13 +7697,8 @@ impl ForgeplanServer {
         let mut total_escalations = 0;
 
         for record in &to_check {
-            let link_count = read
-                .get_relations(&record.id)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!("Failed to get relations for {}: {e}", record.id);
-                    Vec::new()
-                })
+            let link_count = read.get_relations(_permit, &record.canonical_key).await
+                .map_err(|e| safe_mcp_error_anyhow(&e))?
                 .len();
             let cal = forgeplan_core::depth::suggest_depth(record, link_count);
 
@@ -7429,13 +7763,12 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ReasonParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read) = self
-            .resolve_read_source_strict(p.workspace.as_deref())
-            .await?;
+        let (resolved, read, _read_guard) = match self.resolve_read_source_strict(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
         let trace = WorkspaceTrace::from_resolved(&resolved);
         let ws = &resolved.workspace_dir;
 
-        let record = match read.get_record(&p.id).await {
+        let record = match read.get_record(_permit, &p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(safe_err_result("", e)),
@@ -7449,7 +7782,7 @@ impl ForgeplanServer {
             .with_env_overrides()
             .with_workspace_dir(ws.clone());
 
-        let artifact_context = build_reason_artifact_context(&read, &record)
+        let artifact_context = build_reason_artifact_context(&read, _permit, &record)
             .await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
@@ -7508,13 +7841,12 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<DecomposeParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read) = self
-            .resolve_read_source_strict(p.workspace.as_deref())
-            .await?;
+        let (resolved, read, _read_guard) = match self.resolve_read_source_strict(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
         let trace = WorkspaceTrace::from_resolved(&resolved);
         let ws = &resolved.workspace_dir;
 
-        let record = match read.get_record(&p.id).await {
+        let record = match read.get_record(_permit, &p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(safe_err_result("", e)),
@@ -7643,6 +7975,11 @@ impl ForgeplanServer {
                 tags: Vec::new(),
             })
         };
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
         let allocated = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
             &ws,
             &_lock_guard,
@@ -7653,7 +7990,7 @@ impl ForgeplanServer {
             &build,
         )
         .await
-        .map_err(|e| safe_mcp_error_anyhow(&e))?;
+        .map_err(|e| if migrated { safe_mcp_error_anyhow(&e) } else { safe_partial_mutation_error(false, e) })?;
         let id = allocated.id;
         let filepath = allocated.filepath;
 
@@ -7673,7 +8010,7 @@ impl ForgeplanServer {
             provider: llm_config.provider,
             model: llm_config.model,
         })
-        .map_err(|e| safe_mcp_error(anyhow::anyhow!("Response serialization failed: {e}")))?;
+        .map_err(|e| safe_partial_mutation_error(migrated, format!("Response serialization failed: {e}")))?;
         if let Some(obj) = base.as_object_mut() {
             obj.insert(
                 "_next_action".to_string(),
@@ -7686,6 +8023,9 @@ impl ForgeplanServer {
         let reconcile = if migrated {
             reconcile_after_canonical_write(&ws).await
         } else {
+            if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+            }
             ReconcileReport::legacy_projection_owns_index()
         };
         let traced = with_workspace_trace(base, &trace);
@@ -7708,14 +8048,10 @@ impl ForgeplanServer {
     ) -> Result<CallToolResult, McpError> {
         // C12/C03: one source choice, before any open — a migrated workspace
         // exports from one pinned read view.
-        let (_ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (_ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
-        let records = read
-            .list_records(None)
-            .await
+        let records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let artifacts: Vec<serde_json::Value> = records
@@ -7740,9 +8076,7 @@ impl ForgeplanServer {
             })
             .collect();
 
-        let all_relations = read
-            .get_all_relations()
-            .await
+        let all_relations = read.get_all_relations(_permit).await
             .map_err(|e| safe_mcp_error_anyhow(&e))?;
 
         let relations: Vec<serde_json::Value> = all_relations
@@ -7817,162 +8151,100 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<ImportParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read, _lock_guard) =
-            self.resolve_write_source(p.workspace.as_deref()).await?;
-        let _trace = WorkspaceTrace::from_resolved(&resolved);
-        let migrated = resolved.is_migrated();
-        let legacy_sink = resolved.legacy_store.clone();
-        let ws = resolved.workspace_dir;
-
         let data: serde_json::Value = match serde_json::from_str(&p.data) {
-            Ok(v) => v,
-            Err(e) => {
-                // S5 audit closure: sanitise the underlying error chain
-                // before interpolating it into the hint-bearing payload.
-                // The hint string (Hint: …) is static and contains no
-                // sensitive surface — it appends safely after the
-                // sanitised error.
-                let sanitised =
-                    forgeplan_core::projection::sanitize_error_chain(&anyhow::anyhow!("{e}"));
-                return Ok(err_result(&format!(
-                    "Invalid JSON in import data: {sanitised}\n\nHint: supply a JSON string produced by \
-                 `forgeplan export` — structure: {{\"artifacts\": [...], \"relations\": [...]}}."
-                )));
-            }
+            Ok(value) => value,
+            Err(error) => return Ok(safe_err_result("Invalid JSON in import data: ", error)),
         };
-
-        let Some(artifacts) = data["artifacts"].as_array() else {
-            return Ok(err_result(
-                "Missing 'artifacts' array in import bundle.\n\nHint: `forgeplan export` produces \
-                 a bundle with top-level keys `artifacts` (list of artifact objects) and \
-                 `relations` (list of {source, target, relation} objects). Pass the exported \
-                 JSON verbatim as the `data` parameter.",
-            ));
+        let (resolved, guard) = match self.resolve_write_workspace(p.workspace.as_deref()).await {
+            Ok(value) => value,
+            Err(error) => return Ok(read_source_error_result(error)),
         };
-
+        let trace = WorkspaceTrace::from_resolved(&resolved);
+        let ws = &resolved.workspace_dir;
+        let migrated = resolved.is_migrated();
         let force = p.force.unwrap_or(false);
+        let plan = match forgeplan_core::import_plan::plan_import(
+            ws, &guard, resolved.legacy_sink(), &data, force,
+        ).await {
+            Ok(plan) => plan,
+            Err(error) => return Ok(import_preflight_error(error)),
+        };
+        let links: Vec<_> = plan.relations().iter().chain(plan.embedded_relations())
+            .cloned().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        let has_writes = plan.actions().iter().any(|item|
+            !matches!(&item.action, forgeplan_core::import_plan::ImportAction::Skip { .. })
+        ) || !links.is_empty();
+        if has_writes {
+            if let Some(refusal) = ordinary_mutation_refusal(ws) { return Ok(refusal); }
+        }
+        let legacy_sink = if migrated {
+            None
+        } else if has_writes {
+            match LanceStore::open_for_write(ws, &guard).await {
+                Ok(store) => {
+                    let store = Arc::new(store);
+                    self.workspace_store_cache.write().await.insert(
+                        Self::canonical_ws_dir(ws.to_path_buf()), Arc::clone(&store),
+                    );
+                    Some(store)
+                }
+                Err(error) => {
+                    self.workspace_store_cache.write().await.remove(&Self::canonical_ws_dir(ws.to_path_buf()));
+                    return Ok(safe_err_result("import index preparation failed; legacy migration may be partial: ", error));
+                }
+            }
+        } else {
+            resolved.legacy_store.clone()
+        };
+        if let Err(error) = plan.verify(ws, legacy_sink.as_deref()).await {
+            return Ok(import_preflight_error(error));
+        }
         let mut imported = 0usize;
         let mut skipped = 0usize;
-
-        for art in artifacts {
-            let id = art["id"].as_str().unwrap_or_default();
-            if id.is_empty() {
-                continue;
+        let mut attempted = false;
+        let batch: anyhow::Result<usize> = async {
+            let ctx = projection::MutationContext::new(ws, &guard, legacy_sink.as_deref());
+            for item in plan.actions() {
+                match &item.action {
+                    forgeplan_core::import_plan::ImportAction::Skip { .. } => { skipped += 1; continue; }
+                    forgeplan_core::import_plan::ImportAction::Replace { .. } => {
+                        attempted = true;
+                        projection::delete_artifact_with_projection(&ctx, &item.artifact.canonical_key).await?;
+                    }
+                    forgeplan_core::import_plan::ImportAction::Create => {}
+                }
+                attempted = true;
+                projection::import_artifact_with_projection(&ctx, &item.artifact).await?;
+                imported += 1;
             }
-            let canonical_key = art["canonical_key"].as_str().unwrap_or(id);
-
-            // Imported identity, not display alias, determines whether this
-            // document already exists. A legacy bundle without a key falls
-            // back to its id, and an ambiguous legacy alias is refused by the
-            // same shared resolver as other selectors.
-            let existing_key = match read.resolve_artifact(&ws, canonical_key).await {
-                Ok(Some(key)) => Some(key),
-                Ok(None) => None,
-                Err(result) => return Ok(result),
-            };
-            if existing_key.is_some() && !force {
-                skipped += 1;
-                continue;
-            }
-
-            if let Some(existing_key) = existing_key {
-                // Remove only the document with this canonical identity.
-                projection::delete_artifact_with_projection(
-                    &projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref()),
-                    &existing_key,
-                )
-                .await
-                .map_err(|e| safe_mcp_error_anyhow(&anyhow::Error::new(e)))?;
-            }
-
-            let new_art = NewArtifact {
-                canonical_key: canonical_key.to_string(),
-                id: id.to_string(),
-                kind: art["kind"].as_str().unwrap_or("note").to_string(),
-                status: art["status"].as_str().unwrap_or("draft").to_string(),
-                title: art["title"].as_str().unwrap_or("").to_string(),
-                body: art["body"].as_str().unwrap_or("").to_string(),
-                depth: art["depth"].as_str().unwrap_or("standard").to_string(),
-                author: art["author"].as_str().map(String::from),
-                parent_epic: art["parent_epic"].as_str().map(String::from),
-                valid_until: art["valid_until"].as_str().map(String::from),
-                tags: art["tags"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            };
-
-            // PRD-073 audit H3: file-first helper writes the markdown
-            // projection alongside the LanceDB row; previous direct
-            // `store.create_artifact` left every imported artifact in
-            // DB-only state (live-confirmed in audit testing).
-            if let Err(e) = projection::import_artifact_with_projection(
-                &projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref()),
-                &new_art,
-            )
-            .await
-            {
-                return Ok(safe_err_result(&format!("Failed to import {id}"), e));
-            }
-            imported += 1;
-        }
-
-        // Preserve complete imported files and count already-declared bundle
-        // edges as restored without rendering a legacy cache over their bytes.
-        let link_triples: Vec<(String, String, String)> = data["relations"]
-            .as_array()
-            .map(|relations| {
-                relations
-                    .iter()
-                    .filter_map(|rel| {
-                        let source = rel["source"].as_str()?;
-                        let target = rel["target"].as_str()?;
-                        let relation = rel["relation"].as_str().unwrap_or("informs");
-                        if source.is_empty() || target.is_empty() {
-                            return None;
-                        }
-                        Some((source.to_string(), target.to_string(), relation.to_string()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let relations_imported = match projection::import_links_with_projection(
-            &projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref()),
-            &link_triples,
-        )
-        .await
-        {
-            Ok(count) => count,
-            Err(error) => return Ok(safe_err_result("import relations", error)),
-        };
-
-        // PRD-071: single primary action per state.
-        let next_action = if imported == 0 && skipped == 0 {
-            "Empty bundle — no artifacts. Check bundle structure: needs top-level `artifacts` \
-             array of objects with `id`/`kind`/`title`/`body`."
-                .to_string()
-        } else if skipped > 0 && !force {
-            format!(
-                "Imported {imported}, skipped {skipped} (already existed). Re-run with \
-                 `force=true` to overwrite. {relations_imported} relation(s) imported."
-            )
-        } else {
-            format!(
-                "Imported {imported} artifact(s), {relations_imported} relation(s). Verify: \
-                 `forgeplan_health`."
-            )
-        };
-        // Release the write guard before the index signal — see
-        // `reconcile_after_canonical_write`.
-        drop(_lock_guard);
-        let reconcile = if migrated {
-            reconcile_after_canonical_write(&ws).await
+            if links.is_empty() { return Ok(0); }
+            attempted = true;
+            Ok(projection::import_links_with_projection(&ctx, &links).await?)
+        }.await;
+        drop(plan);
+        drop(legacy_sink);
+        drop(guard);
+        let drain = if attempted && !migrated {
+            LanceStore::drain_identity_semantic_backlog(ws).await
+        } else { Ok(()) };
+        let reconcile = if attempted && migrated {
+            reconcile_after_canonical_write(ws).await
         } else {
             ReconcileReport::legacy_projection_owns_index()
+        };
+        let relations_imported = match (batch, drain) {
+            (Ok(count), Ok(())) => count,
+            (Err(error), Ok(())) if attempted => return Ok(safe_err_result("import failed; canonical files may be partially committed: ", error)),
+            (Err(error), Ok(())) => return Ok(safe_err_result("import failed: ", error)),
+            (Ok(_), Err(error)) => return Ok(safe_err_result("canonical committed, semantic backlog pending: ", error)),
+            (Err(error), Err(drain_error)) => return Ok(safe_err_result(
+                &format!("canonical files may be partially committed, semantic backlog pending ({drain_error:#}): "), error,
+            )),
+        };
+        let next_action = if imported == 0 && skipped == 0 {
+            "Empty bundle — no artifacts. Check bundle structure.".to_string()
+        } else {
+            format!("Imported {imported}, skipped {skipped}; {relations_imported} relation(s) imported. Verify: `forgeplan_health`.")
         };
         let payload = serde_json::json!({
             "imported": imported,
@@ -7980,8 +8252,7 @@ impl ForgeplanServer {
             "relations_imported": relations_imported,
             "_next_action": next_action,
         });
-        let traced = with_workspace_trace(payload, &_trace);
-        Ok(json_result(&reconcile.merge_into(traced)))
+        Ok(json_result(&reconcile.merge_into(with_workspace_trace(payload, &trace))))
     }
 
     // ── FPF Knowledge Base tools ────────────────────────────────
@@ -8495,15 +8766,18 @@ impl ForgeplanServer {
         // comes from a fresh capture of the canonical Markdown on a
         // Constellation-owned workspace, so a decision written since the
         // previous call is checked as it is NOW.
-        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
         // FIX 4: param length bound.
         if p.id.len() > 128 {
             return Ok(err_result("artifact id too long (max 128)"));
         }
+        let canonical = match read.resolve_artifact(_permit, &ws, &p.id).await {
+            Ok(Some(key)) => key,
+            Ok(None) => return Ok(artifact_not_found(&p.id)),
+            Err(error) => return Ok(error),
+        };
 
         // ADR-016 audit XW-1 (config-axis leak fix): FPF rules must come from
         // the RESOLVED worktree, not the server default_workspace.
@@ -8515,7 +8789,7 @@ impl ForgeplanServer {
         // match" verdict.
         let result = match &read {
             ReadSource::Workspace(view) => {
-                match fpf::check_artifact_against_rules_captured(view, &p.id, fpf_cfg).await {
+                match fpf::check_artifact_against_rules_captured(view, &canonical, fpf_cfg).await {
                     Ok(Some(r)) => r,
                     Ok(None) => return Ok(artifact_not_found(&p.id)),
                     Err(_) => {
@@ -8529,7 +8803,7 @@ impl ForgeplanServer {
                 }
             }
             ReadSource::Legacy(store) => {
-                match fpf::check_artifact_against_rules(store, &p.id, fpf_cfg).await {
+                match fpf::check_artifact_against_rules(store, _permit, &canonical, fpf_cfg).await {
                     Ok(Some(r)) => r,
                     Ok(None) => return Ok(artifact_not_found(&p.id)),
                     Err(_) => {
@@ -8622,10 +8896,8 @@ impl ForgeplanServer {
         // One source choice, before anything is opened: a Constellation-owned
         // workspace is read from a fresh capture of the canonical Markdown, so
         // `affected_files` added since the previous call are checked here.
-        let (ws, _via, read) = match self.resolve_read_source(None).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (ws, _via, read, _read_guard) = match self.resolve_read_source(None).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
         let workspace_root = ws.parent().unwrap_or(&ws).to_path_buf();
 
         // The same git comparison over the same record source. A capture that
@@ -8638,7 +8910,7 @@ impl ForgeplanServer {
                 }
             }
             ReadSource::Legacy(store) => {
-                match forgeplan_core::drift::check_drift(store, &workspace_root).await {
+                match forgeplan_core::drift::check_drift(store, _permit, &workspace_root).await {
                     Ok(reports) => reports,
                     Err(e) => return Ok(safe_err_result("check_drift", e)),
                 }
@@ -8695,10 +8967,8 @@ impl ForgeplanServer {
         // workspace contributes its decisions from a fresh capture of the
         // canonical Markdown, so a decision that names a module since the
         // previous call is counted here.
-        let (ws, _via, read) = match self.resolve_read_source(None).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (ws, _via, read, _read_guard) = match self.resolve_read_source(None).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
         let project_root = ws.parent().unwrap_or(&ws).to_path_buf();
 
         // A failed module scan is not an empty codebase. Defaulting it produced
@@ -8713,7 +8983,7 @@ impl ForgeplanServer {
         // has no architectural decisions at all", which is a different fact.
         let records = match &read {
             ReadSource::Workspace(view) => view.list_records(None),
-            ReadSource::Legacy(store) => match store.list_records(None).await {
+            ReadSource::Legacy(store) => match store.list_records(_permit, None).await {
                 Ok(records) => records,
                 Err(e) => return Ok(safe_err_result("coverage", e)),
             },
@@ -8753,13 +9023,11 @@ impl ForgeplanServer {
         Parameters(p): Parameters<EstimateParams>,
     ) -> Result<CallToolResult, McpError> {
         // C12/C03: one source choice, before any open.
-        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
         let ws = ws.clone();
 
-        let record = match read.get_record(&p.id).await {
+        let record = match read.get_record(_permit, &p.id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(e) => return Ok(safe_err_result("Failed to retrieve artifact", e)),
@@ -8826,7 +9094,7 @@ impl ForgeplanServer {
             }
         }
 
-        // Confidence — log relation errors instead of swallowing
+        // Confidence depends on the selected artifact's actual relations.
         let fr_count = work_items
             .iter()
             .filter(|w| w.source == ItemSource::Fr)
@@ -8836,20 +9104,10 @@ impl ForgeplanServer {
             .filter(|w| w.source == ItemSource::Phase)
             .count();
 
-        let rels = match read.get_relations(&record.id).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Failed to get relations for {}: {e}", record.id);
-                vec![]
-            }
-        };
-        let incoming = match read.get_incoming_relations(&record.id).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Failed to get incoming relations for {}: {e}", record.id);
-                vec![]
-            }
-        };
+        let rels = read.get_relations(_permit, &record.canonical_key).await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
+        let incoming = read.get_incoming_relations(_permit, &record.canonical_key).await
+            .map_err(|e| safe_mcp_error_anyhow(&e))?;
         let has_spec = rels
             .iter()
             .chain(incoming.iter())
@@ -9045,6 +9303,11 @@ impl ForgeplanServer {
             .await?;
         let _trace = WorkspaceTrace::new(&ws, &resolved_via);
 
+        let _lock_guard = forgeplan_core::workspace::acquire_workspace_lock(&ws)
+            .await
+            .map_err(safe_mcp_error)?;
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+
         let session = forgeplan_core::discover::DiscoverSession::new(&p.project_name);
         let protocol = forgeplan_core::discover::Protocol::default();
 
@@ -9168,6 +9431,11 @@ impl ForgeplanServer {
                 tags: tags.clone(),
             })
         };
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
         let allocated = match forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
             &ws,
             &_lock_guard,
@@ -9180,6 +9448,10 @@ impl ForgeplanServer {
         .await
         {
             Ok(allocated) => allocated,
+            Err(error) if !migrated => return Ok(safe_err_result(
+                "canonical files may be partially committed, semantic backlog may be pending",
+                error,
+            )),
             Err(error) => return Ok(safe_err_result("Failed to create artifact", error)),
         };
         let id = allocated.id;
@@ -9199,7 +9471,12 @@ impl ForgeplanServer {
         session.current_phase = phase;
 
         if let Err(e) = forgeplan_core::discover::save_session(&ws, &session) {
-            return Ok(safe_err_result("Failed to update session", e));
+            let prefix = if migrated {
+                "Failed to update session"
+            } else {
+                "canonical committed, semantic backlog pending; failed to update session"
+            };
+            return Ok(safe_err_result(prefix, e));
         }
 
         // Release the write guard before the index signal — see
@@ -9208,6 +9485,9 @@ impl ForgeplanServer {
         let reconcile = if migrated {
             reconcile_after_canonical_write(&ws).await
         } else {
+            if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+            }
             ReconcileReport::legacy_projection_owns_index()
         };
 
@@ -9273,10 +9553,15 @@ impl ForgeplanServer {
             .await?;
         let _trace = WorkspaceTrace::new(&ws, &resolved_via);
 
+        let _lock_guard = forgeplan_core::workspace::acquire_workspace_lock(&ws)
+            .await
+            .map_err(safe_mcp_error)?;
         let mut session = match forgeplan_core::discover::load_session(&ws, &p.session_id) {
             Ok(s) => s,
             Err(e) => return Ok(safe_err_result("Session not found", e)),
         };
+
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
 
         session.complete();
 
@@ -9496,17 +9781,43 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<PhaseReadParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
+        let (ws, _via) = match self.resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::SoftFallback).await {
+            Ok(resolved) => resolved,
+            Err(error) => return Ok(read_source_error_result(error)),
         };
-        let canonical_key = match read.resolve_artifact(&ws, &p.id).await {
-            Ok(Some(key)) => key,
-            Ok(None) => return Ok(artifact_not_found(&p.id)),
-            Err(error) => return Ok(error),
+        let _read_guard = match forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await {
+            Ok(guard) => guard,
+            Err(error) => return Ok(read_source_error_result(safe_mcp_error(error))),
+        };
+        let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
+        let (canonical_key, display_id) = if forgeplan_core::constellation::facade::workspace_is_migrated(&ws) {
+            let selected = match forgeplan_core::constellation::facade::open_workspace_selector_with_permit(&ws, _permit, &p.id).await {
+                Ok(Some(selected)) => selected,
+                Ok(None) => return Ok(artifact_not_found(&p.id)),
+                Err(forgeplan_core::constellation::ConstellationError::Resolve(error)) => return Ok(resolve_error_result(error)),
+                Err(error) => return Ok(safe_err_result("", error)),
+            };
+            (selected.canonical_key().to_string(), selected.record().id.clone())
+        } else {
+            let store = match self.get_or_open_store_with_permit(&ws, _permit).await {
+                Ok(store) => store,
+                Err(error) => return Ok(safe_err_result("", error)),
+            };
+            let read = ReadSource::Legacy(store);
+            let canonical = match read.resolve_artifact(_permit, &ws, &p.id).await {
+                Ok(Some(key)) => key,
+                Ok(None) => return Ok(artifact_not_found(&p.id)),
+                Err(error) => return Ok(error),
+            };
+            let record = match read.get_record(_permit, &canonical).await {
+                Ok(Some(record)) => record,
+                Ok(None) => return Ok(artifact_not_found(&p.id)),
+                Err(error) => return Ok(safe_err_result("", error)),
+            };
+            (canonical, record.id)
         };
         let safe_id = sanitize_for_hint(&p.id);
-        match forgeplan_core::phase::store::read_phase(&ws, &canonical_key).await {
+        match forgeplan_core::phase::store::read_phase_for(&ws, &canonical_key, &display_id).await {
             Ok(Some(mut state)) => {
                 // Audit Round 1 H-sec #2: `reason` is user-controlled and
                 // was stored verbatim at write time. Sanitize before the
@@ -9547,10 +9858,15 @@ impl ForgeplanServer {
                      `forgeplan_new`).",
                 ),
             ),
-            Err(e) => Ok(err_hinted(
-                &format!("Failed to read phase state: {e}"),
-                "Check `.forgeplan/state/` directory is readable and not a symlink.",
-            )),
+            Err(e) => {
+                if let Some(error) = e.chain().find_map(|source| source.downcast_ref::<forgeplan_core::artifact::canonical_key::ResolveError>()) {
+                    return Ok(resolve_error_result(error.clone()));
+                }
+                Ok(err_hinted(
+                    &format!("Failed to read phase state: {e}"),
+                    "Check `.forgeplan/state/` directory is readable and not a symlink.",
+                ))
+            }
         }
     }
 
@@ -9578,11 +9894,11 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<PhaseAdvanceParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (ws, resolved_via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
-        let canonical_key = match read.resolve_artifact(&ws, &p.id).await {
+        let (resolved, read, _lock_guard) = match self.resolve_write_source(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_lock_guard;
+        let resolved_via = resolved.resolved_via;
+        let ws = resolved.workspace_dir;
+        let canonical_key = match read.resolve_artifact(_permit, &ws, &p.id).await {
             Ok(Some(key)) => key,
             Ok(None) => return Ok(artifact_not_found(&p.id)),
             Err(error) => return Ok(error),
@@ -9614,6 +9930,7 @@ impl ForgeplanServer {
         // command line: someone deciding to correct a marker. The CLI was moved
         // to the unchecked entry point and this handler must match it, or the
         // two surfaces disagree about what the same operation means.
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
         match forgeplan_core::phase::store::advance_phase_unchecked(
             &ws,
             &canonical_key,
@@ -9646,11 +9963,16 @@ impl ForgeplanServer {
                     hint,
                 )
             }
-            Err(e) => Ok(err_hinted(
-                &format!("Failed to advance phase: {e}"),
-                "Check `.forgeplan/state/` is writable; verify phase tracking is enabled in \
-                 config.yaml (`phase.enabled: true`).",
-            )),
+            Err(e) => {
+                if let Some(error) = e.chain().find_map(|source| source.downcast_ref::<forgeplan_core::artifact::canonical_key::ResolveError>()) {
+                    return Ok(resolve_error_result(error.clone()));
+                }
+                Ok(err_hinted(
+                    &format!("Failed to advance phase: {e}"),
+                    "Check `.forgeplan/state/` is writable; verify phase tracking is enabled in \
+                     config.yaml (`phase.enabled: true`).",
+                ))
+            }
         }
     }
 
@@ -9726,6 +10048,7 @@ impl ForgeplanServer {
             None => forgeplan_core::claim::DEFAULT_TTL,
         };
 
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
         let store = forgeplan_core::claim::ClaimStore::new(&ws);
         match store.claim(&p.id, &agent, ttl, p.note).await {
             Ok(claim) => {
@@ -9810,6 +10133,7 @@ impl ForgeplanServer {
             },
         };
 
+        if let Some(refusal) = ordinary_mutation_refusal(ws) { return Ok(refusal); }
         let store = forgeplan_core::claim::ClaimStore::new(ws);
         match store.release(&p.id, &agent, p.force).await {
             Ok(()) => {
@@ -9862,10 +10186,8 @@ impl ForgeplanServer {
         // One source choice, before anything is opened: the artifacts a git
         // range touched are looked up in a fresh capture of the canonical
         // Markdown on a Constellation-owned workspace.
-        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
         // The resolved `ws` is the `.forgeplan/` dir; git operations
         // need the repository root (its parent).
@@ -9892,6 +10214,7 @@ impl ForgeplanServer {
             ReadSource::Legacy(store) => {
                 match forgeplan_core::release_notes::generate(
                     store,
+                    _permit,
                     &repo_root,
                     p.since.as_deref(),
                     p.until.as_deref(),
@@ -10008,10 +10331,8 @@ impl ForgeplanServer {
     ) -> Result<CallToolResult, McpError> {
         // C12/C03: one source choice, before any open — the plan is built from
         // one pinned read view on a migrated workspace.
-        let (ws, _via, read) = match self.resolve_read_source(p.workspace.as_deref()).await {
-            Ok(r) => r,
-            Err(e) => return Ok(safe_err_result("", e)),
-        };
+        let (ws, _via, read, _read_guard) = match self.resolve_read_source(p.workspace.as_deref()).await { Ok(r) => r,
+        Err(e) => return Ok(read_source_error_result(e)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_read_guard;
 
         // R3 audit HIGH (security) + MED: clamp unbounded user input
         // BEFORE allocating — agents & per-agent skill lists otherwise
@@ -10062,9 +10383,7 @@ impl ForgeplanServer {
                 Some(status_filter.to_string())
             },
         };
-        let summaries = read
-            .list_artifacts(Some(&filter))
-            .await
+        let summaries = read.list_artifacts(_permit, Some(&filter)).await
             .map_err(|e| safe_mcp_error(anyhow::anyhow!("list_artifacts: {e}")))?;
 
         // R3 audit task-completion MED: FR-003 requires the dispatcher to
@@ -10072,13 +10391,9 @@ impl ForgeplanServer {
         // not land in a parallel bucket. Compute the blocked set by the
         // same rules `forgeplan_blocked` uses: structural edges + records
         // with status ∈ {active, deprecated, superseded} = resolved.
-        let relations = read
-            .get_all_relations()
-            .await
+        let relations = read.get_all_relations(_permit).await
             .map_err(|e| safe_mcp_error(anyhow::anyhow!("get_all_relations: {e}")))?;
-        let records = read
-            .list_records(None)
-            .await
+        let records = read.list_records(_permit, None).await
             .map_err(|e| safe_mcp_error(anyhow::anyhow!("list_records: {e}")))?;
         let resolved_ids: std::collections::HashSet<String> = records
             .iter()
@@ -10252,7 +10567,7 @@ impl ForgeplanServer {
         let store = if forgeplan_core::constellation::facade::workspace_is_migrated(&ws) {
             None
         } else {
-            Some(self.get_or_open_store(&ws).await.map_err(|e| {
+            Some(self.get_or_open_store_with_permit(&ws, &guard).await.map_err(|e| {
                 safe_invalid_params(
                     format!(
                         "workspace found at `{}` but store could not be opened: {e}",
@@ -10263,18 +10578,6 @@ impl ForgeplanServer {
             })?)
         };
 
-        // Lazy TTL purge (ADR #5) so aging receipts don't pile up.
-        let ws_clone = ws.clone();
-        tokio::spawn(async move {
-            if let Err(e) = forgeplan_core::undo::purge_expired(
-                &ws_clone,
-                forgeplan_core::undo::DEFAULT_TTL_DAYS,
-            )
-            .await
-            {
-                tracing::warn!("TTL purge on restore entry failed: {}", e);
-            }
-        });
 
         // PROB-060 Phase 2.5: accept display id OR slug. Soft-deleted
         // artifacts are gone from the main store, so resolve via receipt
@@ -10312,10 +10615,38 @@ impl ForgeplanServer {
                 ));
             }
         };
+        if let Err(error) = forgeplan_core::undo::restore::preflight_restore_with_target(
+            &ws, &guard, &receipt, p.target_status.as_deref(),
+        ).await {
+            return Ok(safe_err_result("restore preflight: ", error));
+        }
 
         // Issue #291: forward optional target_status override.
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let store = match self.prepare_legacy_sink(&ws, &guard, store).await {
+            Ok(store) => store,
+            Err(error) => return Ok(safe_err_result("restore preparation: ", error)),
+        };
+        if let Err(error) = forgeplan_core::undo::restore::preflight_restore_with_target(
+            &ws, &guard, &receipt, p.target_status.as_deref(),
+        ).await {
+            return Ok(safe_err_result("restore preflight: ", error));
+        }
+        // Lazy TTL purge (ADR #5) so aging receipts don't pile up.
+        let ws_clone = ws.clone();
+        tokio::spawn(async move {
+            if let Err(e) = forgeplan_core::undo::purge_expired(
+                &ws_clone,
+                forgeplan_core::undo::DEFAULT_TTL_DAYS,
+            )
+            .await
+            {
+                tracing::warn!("TTL purge on restore entry failed: {}", e);
+            }
+        });
         match forgeplan_core::undo::restore::apply_restore_with_target(
             &ws,
+            &guard,
             store.as_deref(),
             &receipt,
             p.target_status.as_deref(),
@@ -10327,6 +10658,9 @@ impl ForgeplanServer {
                 let reconcile = if store.is_none() {
                     reconcile_after_canonical_write(&ws).await
                 } else {
+                    if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                        return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+                    }
                     ReconcileReport::legacy_projection_owns_index()
                 };
                 let safe_id = sanitize_for_hint(&report.artifact_id);
@@ -10385,6 +10719,10 @@ impl ForgeplanServer {
                 };
                 hinted_result(
                     &reconcile.merge_into(serde_json::json!({
+                        "id": receipt.snapshot.id,
+                        "canonical_key": receipt.snapshot.canonical_key.clone()
+                            .or_else(|| receipt.snapshot.slug.as_ref().filter(|slug| forgeplan_core::artifact::types::is_canonical_key(slug)).cloned())
+                            .unwrap_or_else(|| forgeplan_core::artifact::canonical_key::canonical_key_from_document(&receipt.snapshot.id, &receipt.snapshot.body)),
                         "restored": report.artifact_id,
                         "op_reversed": op_str,
                         "relations_restored": report.relations_restored,
@@ -10398,6 +10736,12 @@ impl ForgeplanServer {
                 )
             }
             Err(e) => {
+                if store.is_some() {
+                    return Ok(safe_err_result(
+                        "canonical files may be partially committed, semantic backlog may be pending",
+                        e,
+                    ));
+                }
                 let safe_id = sanitize_for_hint(&p.id);
                 Ok(err_hinted(
                     &e.to_string(),
@@ -10443,7 +10787,7 @@ impl ForgeplanServer {
         let legacy_store = if forgeplan_core::constellation::facade::workspace_is_migrated(ws) {
             None
         } else {
-            Some(self.get_or_open_store(ws).await.map_err(|e| {
+            Some(self.get_or_open_store_with_permit(ws, &guard).await.map_err(|e| {
                 safe_invalid_params(
                     format!(
                         "workspace found at `{}` but store could not be opened: {e}",
@@ -10453,7 +10797,6 @@ impl ForgeplanServer {
                 )
             })?)
         };
-        let store = legacy_store.as_deref();
 
         let within = p.within_hours.unwrap_or(24).clamp(1, 720);
 
@@ -10492,8 +10835,24 @@ impl ForgeplanServer {
                 ));
             }
         };
+        if let Err(error) = forgeplan_core::undo::restore::preflight_restore_with_target(
+            ws, &guard, &receipt, None,
+        ).await {
+            return Ok(safe_err_result("undo preflight: ", error));
+        }
 
-        match forgeplan_core::undo::restore::apply_restore_with_target(ws, store, &receipt, None)
+        if let Some(refusal) = ordinary_mutation_refusal(ws) { return Ok(refusal); }
+        let legacy_store = match self.prepare_legacy_sink(ws, &guard, legacy_store).await {
+            Ok(store) => store,
+            Err(error) => return Ok(safe_err_result("undo preparation: ", error)),
+        };
+        if let Err(error) = forgeplan_core::undo::restore::preflight_restore_with_target(
+            ws, &guard, &receipt, None,
+        ).await {
+            return Ok(safe_err_result("undo preflight: ", error));
+        }
+        let store = legacy_store.as_deref();
+        match forgeplan_core::undo::restore::apply_restore_with_target(ws, &guard, store, &receipt, None)
             .await
         {
             Ok(report) => {
@@ -10501,6 +10860,9 @@ impl ForgeplanServer {
                 let reconcile = if store.is_none() {
                     reconcile_after_canonical_write(ws).await
                 } else {
+                    if let Err(e) = LanceStore::drain_identity_semantic_backlog(ws).await {
+                        return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+                    }
                     ReconcileReport::legacy_projection_owns_index()
                 };
                 let safe_id = sanitize_for_hint(&report.artifact_id);
@@ -10547,6 +10909,10 @@ impl ForgeplanServer {
                     &trace,
                 )))
             }
+            Err(e) if store.is_some() => Ok(safe_err_result(
+                "canonical files may be partially committed, semantic backlog may be pending",
+                e,
+            )),
             Err(e) => Ok(err_hinted(
                 &format!("Undo-last failed: {e}"),
                 "Inspect the receipt manually in `.forgeplan/trash/`. If a collision, the \
@@ -10874,8 +11240,10 @@ impl ForgeplanServer {
 
         // PRD-078 Phase 3: resolve workspace after early validation guards.
         // Both dry-run and real-run success responses carry workspace trace fields.
-        let ws_resolved = self.resolve_workspace(p.workspace.as_deref()).await?;
-        let trace = WorkspaceTrace::from_resolved(&ws_resolved);
+        let (workspace_dir, resolved_via) = self
+            .resolve_workspace_dir(p.workspace.as_deref(), DetectionPolicy::Strict)
+            .await?;
+        let trace = WorkspaceTrace::new(&workspace_dir, &resolved_via);
 
         if p.dry_run {
             let from = p.step.unwrap_or(1);
@@ -10917,7 +11285,12 @@ impl ForgeplanServer {
         // (the convention in this MCP server). RoutingDispatcher and
         // Journal both expect the project root (parent of `.forgeplan/`),
         // so we step up one level.
-        let ws = &ws_resolved.workspace_dir;
+        let ws = &workspace_dir;
+        let guard = forgeplan_core::workspace::acquire_workspace_lock(ws)
+            .await
+            .map_err(safe_mcp_error)?;
+        if let Some(refusal) = ordinary_mutation_refusal(ws) { return Ok(refusal); }
+        drop(guard);
         let project_root = ws
             .parent()
             .map(std::path::Path::to_path_buf)
@@ -11328,8 +11701,8 @@ impl ForgeplanServer {
         &self,
         Parameters(p): Parameters<HypothesisPromoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (resolved, read, _lock_guard) =
-            self.resolve_write_source(p.workspace.as_deref()).await?;
+        let (resolved, read, _lock_guard) = match self.resolve_write_source(p.workspace.as_deref()).await { Ok(value) => value,
+        Err(error) => return Ok(read_source_error_result(error)), }; let _permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit = &_lock_guard;
         let _trace = WorkspaceTrace::from_resolved(&resolved);
         let migrated = resolved.is_migrated();
         let legacy_sink = resolved.legacy_store.clone();
@@ -11351,12 +11724,12 @@ impl ForgeplanServer {
         // 2. Resolve id → canonical and load the record. We accept both slug
         //    and display-id input shapes (resolver handles uppercase
         //    normalisation, slug lookup, etc.).
-        let canonical_id = match read.resolve_id(&p.hypothesis_id).await {
+        let canonical_id = match read.resolve_id(_permit, &p.hypothesis_id).await {
             Ok(Some(id)) => id,
             Ok(None) => return Ok(artifact_not_found(&p.hypothesis_id)),
             Err(e) => return Ok(safe_err_result("resolve_id", e)),
         };
-        let record = match read.get_record(&canonical_id).await {
+        let record = match read.get_record(_permit, &canonical_id).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(artifact_not_found(&canonical_id)),
             Err(e) => return Ok(safe_err_result("get_record", e)),
@@ -11486,9 +11859,9 @@ impl ForgeplanServer {
                 ));
             }
             for r in &p.evidence_refs {
-                match read.resolve_id(r).await {
+                match read.resolve_id(_permit, r).await {
                     Ok(Some(canonical_ref)) => {
-                        match read.get_record(&canonical_ref).await {
+                        match read.get_record(_permit, &canonical_ref).await {
                             Ok(Some(_)) => {} // OK — exists
                             Ok(None) | Err(_) => {
                                 let safe_ref = sanitize_for_hint(r);
@@ -11528,34 +11901,36 @@ impl ForgeplanServer {
             Err(e) => return Ok(safe_err_result("apply_transition_to_body", e)),
         };
 
-        // 7. File-first mutation via the canonical projection helper. Red-line
-        //    #8 — never poke a store's `update_*` directly from server.rs.
-        let ctx = projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref());
-        if let Err(e) =
-            projection::update_body_with_projection(&ctx, &canonical_id, &new_body).await
-        {
-            return Ok(safe_err_result("update_body_with_projection", e));
-        }
-
-        // 8. Cascade enumeration — artifacts whose OUTGOING relations point at
-        //    this hypothesis via `informs` or `based_on`. We surface the list
-        //    so the agent can decide whether to re-score downstream artifacts;
-        //    we do NOT auto-bump them (informational only — explicit per brief).
-        let cascade: Vec<String> = match read.get_incoming_relations(&canonical_id).await {
+        // Read the cascade before the canonical write so a failed relation
+        // lookup cannot produce a successful response with a false empty list,
+        // nor turn a committed mutation into an apparent pre-write failure.
+        let cascade: Vec<String> = match read.get_incoming_relations(_permit, &canonical_id).await {
             Ok(rels) => rels
                 .into_iter()
                 .filter(|(_src, rel)| rel == "informs" || rel == "based_on")
                 .map(|(src, _rel)| src)
                 .collect(),
-            Err(e) => {
-                tracing::warn!(
-                    artifact = %canonical_id,
-                    error = %e,
-                    "cascade enumeration failed (non-fatal); returning empty list"
-                );
-                Vec::new()
-            }
+            Err(error) => return Ok(safe_err_result("cascade relations: ", error)),
         };
+
+        // 7. File-first mutation via the canonical projection helper. Red-line
+        //    #8 — never poke a store's `update_*` directly from server.rs.
+        if let Some(refusal) = ordinary_mutation_refusal(&ws) { return Ok(refusal); }
+        let legacy_sink = match self.prepare_legacy_sink(&ws, &_lock_guard, legacy_sink).await {
+            Ok(sink) => sink,
+            Err(error) => return Ok(safe_err_result("write preparation: ", error)),
+        };
+        let ctx = projection::MutationContext::new(&ws, &_lock_guard, legacy_sink.as_deref());
+        if let Err(e) =
+            projection::update_body_with_projection(&ctx, &canonical_id, &new_body).await
+        {
+            let prefix = if migrated {
+                "update_body_with_projection"
+            } else {
+                "canonical files may be partially committed, semantic backlog may be pending"
+            };
+            return Ok(safe_err_result(prefix, e));
+        }
 
         // 9. Response. Sanitize the hypothesis id splice into `_next_action`
         //    via `sanitize_for_hint` (same C-2 defence used by `forgeplan_update`).
@@ -11569,6 +11944,9 @@ impl ForgeplanServer {
         let reconcile = if migrated {
             reconcile_after_canonical_write(&ws).await
         } else {
+            if let Err(e) = LanceStore::drain_identity_semantic_backlog(&ws).await {
+                return Ok(safe_err_result("canonical committed, semantic backlog pending", e));
+            }
             ReconcileReport::legacy_projection_owns_index()
         };
         let payload = serde_json::json!({
@@ -13503,7 +13881,7 @@ mod claim_mcp_tests {
         // Using init_workspace so all required subdirs + config are created, matching
         // what a real `forgeplan init` would produce.
         let ws = forgeplan_core::workspace::init_workspace(&root, "claim-test").unwrap();
-        let store = forgeplan_core::db::store::LanceStore::init(&ws)
+        let store = init_test_store(&ws)
             .await
             .unwrap();
         let server = ForgeplanServer::new(root).await;
@@ -13724,7 +14102,7 @@ mod claim_mcp_tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().to_path_buf();
         let ws = forgeplan_core::workspace::init_workspace(&root, "dogfood").unwrap();
-        let store = forgeplan_core::db::store::LanceStore::init(&ws)
+        let store = init_test_store(&ws)
             .await
             .unwrap();
         let server = ForgeplanServer::new(root).await;
@@ -13764,7 +14142,9 @@ mod claim_mcp_tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact_for_test(&artifact).await.unwrap();
+        let guard = forgeplan_core::workspace::acquire_workspace_lock(ws).await.unwrap();
+        store.create_artifact_for_test(&guard, &artifact).await.unwrap();
+        drop(guard);
         projection::render_projection(
             ws,
             id,
@@ -13956,7 +14336,9 @@ mod claim_mcp_tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact_for_test(&artifact).await.unwrap();
+        let guard = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        store.create_artifact_for_test(&guard, &artifact).await.unwrap();
+        drop(guard);
         projection::render_projection(
             &ws,
             "PRD-950",
@@ -14003,10 +14385,12 @@ mod claim_mcp_tests {
         // Use the server's own store handle so the relation and subsequent
         // list_records/get_all_relations calls observe the same state.
         let store = server.require_store().await.expect("store initialized");
+        let guard = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
         store
-            .add_relation_for_test("PRD-961", "PRD-960", "based_on")
+            .add_relation_for_test(&guard, "PRD-961", "PRD-960", "based_on")
             .await
             .unwrap();
+        drop(guard);
 
         let r = server.forgeplan_dispatch(Parameters(dp(2))).await.unwrap();
         let body = response_json(&r);
@@ -14192,7 +14576,9 @@ mod claim_mcp_tests {
                 valid_until: None,
                 tags: Vec::new(),
             };
-            store.create_artifact_for_test(&artifact).await.unwrap();
+            let guard = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+            store.create_artifact_for_test(&guard, &artifact).await.unwrap();
+            drop(guard);
         }
 
         let mut params = dp(2);
@@ -14374,7 +14760,7 @@ mod claim_mcp_tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().to_path_buf();
         let ws = forgeplan_core::workspace::init_workspace(&root, "ac4").unwrap();
-        let _ = forgeplan_core::db::store::LanceStore::init(&ws)
+        let _ = init_test_store(&ws)
             .await
             .unwrap();
 
@@ -14502,7 +14888,7 @@ mod prob060_response_shape_tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().to_path_buf();
         let ws = forgeplan_core::workspace::init_workspace(&root, "prob060-shape").unwrap();
-        let store = forgeplan_core::db::store::LanceStore::init(&ws)
+        let store = init_test_store(&ws)
             .await
             .unwrap();
         let server = ForgeplanServer::new(root).await;
@@ -14515,12 +14901,205 @@ mod prob060_response_shape_tests {
         (server, tmp)
     }
 
+    #[tokio::test]
+    async fn force_init_refuses_existing_workspace_without_deleting_it() {
+        let (server, tmp) = fresh_server().await;
+        let ws = tmp.path().join(".forgeplan");
+        let document = ws.join("notes/preserved.md");
+        std::fs::write(&document, "existing canonical content").unwrap();
+        let config = std::fs::read(ws.join("config.yaml")).unwrap();
+        // A destructive implementation must not delete or replace the lock
+        // while another operation still holds it.
+        let guard = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        let entries_before: std::collections::BTreeSet<_> = std::fs::read_dir(&ws)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let cached_before = server.workspace_store_cache.read().await.clone();
+        let default_before = server.default_workspace.read().await.clone();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            server.forgeplan_init(Parameters(InitParams { force: Some(true) })),
+        )
+        .await
+        .expect("force refusal must not wait for the workspace lock")
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(std::fs::read_to_string(&document).unwrap(), "existing canonical content");
+        assert_eq!(std::fs::read(ws.join("config.yaml")).unwrap(), config);
+        let entries_after: std::collections::BTreeSet<_> = std::fs::read_dir(&ws)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries_before, entries_after);
+        assert_eq!(*server.default_workspace.read().await, default_before);
+        let cached_after = server.workspace_store_cache.read().await;
+        assert_eq!(cached_before.len(), cached_after.len());
+        for (path, old_store) in &cached_before {
+            assert!(std::sync::Arc::ptr_eq(old_store, cached_after.get(path).unwrap()));
+        }
+        drop(cached_after);
+        drop(guard);
+        let text = result.content.iter().filter_map(|content| match &content.raw {
+            rmcp::model::RawContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        }).collect::<String>();
+        assert!(text.contains("verified export"), "{text}");
+        assert!(text.contains("stable external reinitialization lock"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn force_init_still_initializes_an_empty_root() {
+        let tmp = TempDir::new().unwrap();
+        let server = ForgeplanServer::new(tmp.path().to_path_buf()).await;
+        let result = server.forgeplan_init(Parameters(InitParams { force: Some(true) }))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let ws = tmp.path().join(".forgeplan");
+        assert!(ws.join("config.yaml").is_file());
+        assert!(ws.join("lance").is_dir());
+        assert!(server.default_workspace.read().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn init_without_force_reports_existing_workspace_without_deleting_it() {
+        let (server, tmp) = fresh_server().await;
+        let document = tmp.path().join(".forgeplan/notes/preserved.md");
+        std::fs::write(&document, "existing canonical content").unwrap();
+        let result = server.forgeplan_init(Parameters(InitParams { force: None }))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        assert_eq!(std::fs::read_to_string(&document).unwrap(), "existing canonical content");
+        let response = body_value(&result);
+        assert_eq!(response["workspace"], tmp.path().join(".forgeplan").display().to_string());
+        assert!(response["message"].as_str().unwrap().contains("Already initialized"));
+    }
+
     fn body_value(r: &CallToolResult) -> serde_json::Value {
         assert_ne!(r.is_error, Some(true), "tool returned is_error=true");
         match &r.content[0].raw {
             rmcp::model::RawContent::Text(t) => serde_json::from_str(&t.text).expect("valid JSON"),
             _ => panic!("expected text content"),
         }
+    }
+
+    #[cfg(debug_assertions)]
+    fn install_failing_semantic_backend(
+        ws: &std::path::Path,
+    ) -> forgeplan_core::db::store::SemanticTestBackendGuard {
+        let mut config = forgeplan_core::workspace::load_config(ws).unwrap();
+        config.embedding = Some(forgeplan_core::config::types::EmbeddingConfig {
+            model: "forgeplan-test".to_string(),
+            chunk_size: 2000,
+        });
+        std::fs::write(ws.join("config.yaml"), serde_yaml::to_string(&config).unwrap()).unwrap();
+        forgeplan_core::db::store::install_semantic_backend_for_test(
+            ws,
+            std::sync::Arc::new(|_| Err(anyhow::anyhow!("backend unavailable"))),
+        )
+        .unwrap()
+    }
+
+    #[cfg(debug_assertions)]
+    fn assert_semantic_pending(result: &CallToolResult) {
+        assert_eq!(result.is_error, Some(true));
+        let rmcp::model::RawContent::Text(text) = &result.content[0].raw else {
+            panic!("expected text error");
+        };
+        assert!(text.text.contains("canonical committed, semantic backlog pending"));
+        assert!(!text.text.contains("Updated successfully"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
+    async fn new_reports_pending_after_canonical_commit_when_backend_fails() {
+        let (server, _tmp) = fresh_server().await;
+        let ws = server.default_workspace.read().await.clone().unwrap();
+        let _backend = install_failing_semantic_backend(&ws);
+        let result = server
+            .forgeplan_new(Parameters(NewParams {
+                kind: ArtifactKindArg::Prd,
+                title: "Semantic failure on create".into(),
+                parent_id: None,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        assert_semantic_pending(&result);
+        let documents = forgeplan_core::artifact::documents::workspace_candidates(&ws)
+            .await
+            .unwrap();
+        assert!(documents.iter().any(|d| d.title == "Semantic failure on create"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
+    async fn update_reports_pending_after_canonical_commit_when_backend_fails() {
+        let (server, _tmp) = fresh_server().await;
+        let created = server
+            .forgeplan_new(Parameters(NewParams {
+                kind: ArtifactKindArg::Prd,
+                title: "Before semantic failure".into(),
+                parent_id: None,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        let key = body_value(&created)["canonical_key"].as_str().unwrap().to_owned();
+        let ws = server.default_workspace.read().await.clone().unwrap();
+        let _backend = install_failing_semantic_backend(&ws);
+        let result = server
+            .forgeplan_update(Parameters(UpdateParams {
+                id: key.clone(),
+                status: None,
+                title: Some("After semantic failure".into()),
+                body: None,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        assert_semantic_pending(&result);
+        let documents = forgeplan_core::artifact::documents::workspace_candidates(&ws)
+            .await
+            .unwrap();
+        assert!(documents.iter().any(|d| d.canonical_key == key && d.title == "After semantic failure"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    #[serial_test::serial(env_forgeplan_workspace)]
+    async fn import_reports_pending_after_canonical_commit_when_backend_fails() {
+        let (server, _tmp) = fresh_server().await;
+        let ws = server.default_workspace.read().await.clone().unwrap();
+        let _backend = install_failing_semantic_backend(&ws);
+        let bundle = serde_json::json!({
+            "artifacts": [{
+                "id": "PRD-501",
+                "kind": "prd",
+                "title": "Semantic import failure",
+                "body": "Imported canonical content."
+            }],
+            "relations": []
+        });
+        let result = server
+            .forgeplan_import(Parameters(ImportParams {
+                data: bundle.to_string(),
+                force: None,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        assert_semantic_pending(&result);
+        let documents = forgeplan_core::artifact::documents::workspace_candidates(&ws)
+            .await
+            .unwrap();
+        assert!(documents.iter().any(|d| d.title == "Semantic import failure"));
     }
 
     #[tokio::test]
@@ -14768,8 +15347,8 @@ mod prob060_response_shape_tests {
                 .is_none()
         );
 
-        let (_ws, _via, read) = server.resolve_read_source(None).await.unwrap();
-        let relations = read.get_relations(key_source).await.unwrap();
+        let (_ws, _via, read, guard) = server.resolve_read_source(None).await.unwrap();
+        let relations = read.get_relations(&guard, key_source).await.unwrap();
         assert_eq!(relations, vec![(key_b.to_string(), "informs".to_string())]);
     }
 
@@ -14792,6 +15371,7 @@ mod prob060_response_shape_tests {
             .await
             .unwrap();
         let new_body = body_value(&new_resp);
+        let id_display = new_body["id"].as_str().unwrap().to_string();
         let canonical_key = new_body["canonical_key"].as_str().unwrap().to_string();
         let slug = new_body["slug"].as_str().unwrap().to_string();
         assert_eq!(slug, canonical_key);
@@ -14998,7 +15578,9 @@ mod prob060_response_shape_tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact_for_test(&artifact).await.unwrap();
+        let guard = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        store.create_artifact_for_test(&guard, &artifact).await.unwrap();
+        drop(guard);
         // Render the projection so health/file consumers don't see an orphan.
         forgeplan_core::projection::render_projection(
             &ws,
@@ -15086,7 +15668,8 @@ mod prob060_response_shape_tests {
         // see the pre-merge body. `sync_before_mutation` reads the file when
         // it's newer than the cached body — which is exactly the case after
         // a direct write above.
-        forgeplan_core::projection::sync_before_mutation(ws, store_arc.as_ref(), artifact_id)
+        let guard = forgeplan_core::workspace::acquire_workspace_lock(ws).await.unwrap();
+        forgeplan_core::projection::sync_before_mutation(&guard, ws, store_arc.as_ref(), artifact_id)
             .await
             .unwrap();
     }
@@ -15285,7 +15868,7 @@ mod phase5_tests {
             .await
             .unwrap();
         tokio::fs::create_dir_all(ws.join("journal")).await.unwrap();
-        let store = forgeplan_core::db::store::LanceStore::init(&ws)
+        let store = init_test_store(&ws)
             .await
             .unwrap();
         let server = ForgeplanServer::new(root.clone()).await;
@@ -16472,9 +17055,12 @@ mod resolve_workspace_tests {
         // looks like the branch under test is broken. `make_server` would build
         // the store too, but doing it here names the precondition instead of
         // relying on it.
-        forgeplan_core::db::store::LanceStore::init(&default_ws.path().join(".forgeplan"))
+        let default_path = default_ws.path().join(".forgeplan");
+        let guard = forgeplan_core::workspace::acquire_workspace_lock(&default_path).await.unwrap();
+        forgeplan_core::db::store::LanceStore::init_new(&default_path, &guard)
             .await
             .expect("give the default workspace a real legacy index");
+        drop(guard);
 
         let server = make_server(default_ws.path()).await;
         // SAFETY: serialised with `#[serial(env_forgeplan_workspace)]`; no
@@ -16482,7 +17068,7 @@ mod resolve_workspace_tests {
         unsafe { std::env::remove_var("FORGEPLAN_WORKSPACE") };
 
         let param = param_ws.path().to_str().unwrap().to_string();
-        let (resolved_dir, via, source) = server
+        let (resolved_dir, via, source, _guard) = server
             .resolve_read_source(Some(&param))
             .await
             .expect("the param workspace resolves");
@@ -16518,7 +17104,7 @@ mod resolve_workspace_tests {
         // The server's own default is still not migrated, so it must take the
         // other branch — which proves the branch is per-workspace state and not
         // a one-time decision made from whichever workspace was seen first.
-        let (_, _, default_source) = server
+        let (_, _, default_source, _default_guard) = server
             .resolve_read_source(Some(default_ws.path().to_str().unwrap()))
             .await
             .expect("the default workspace resolves");
@@ -16555,7 +17141,7 @@ mod resolve_workspace_tests {
             .resolve_read_source(Some(ws.path().to_str().unwrap()))
             .await
         {
-            Ok((_, _, source)) => assert!(
+            Ok((_, _, source, _guard)) => assert!(
                 matches!(source, ReadSource::Legacy(_)),
                 "an unindexed workspace must take the legacy branch"
             ),
@@ -16709,7 +17295,7 @@ mod resolve_workspace_tests {
         let root = TempDir::new().expect("tempdir");
         let ws = forgeplan_core::workspace::init_workspace(root.path(), "legacy-resolve")
             .expect("init workspace");
-        forgeplan_core::db::store::LanceStore::init(&ws)
+        init_test_store(&ws)
             .await
             .expect("init the legacy tables");
 
@@ -16757,7 +17343,7 @@ mod resolve_workspace_tests {
         let y = y.canonicalize().expect("Y canonicalizes");
         let z = z.canonicalize().expect("Z canonicalizes");
         for ws in [&y, &z] {
-            forgeplan_core::db::store::LanceStore::init(ws)
+            init_test_store(ws)
                 .await
                 .expect("init the legacy tables");
         }
@@ -16808,14 +17394,15 @@ mod public_compat_context_tests {
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
-    async fn context_workspace(migrated: bool) -> (TempDir, PathBuf, ReadSource) {
+    async fn context_workspace(migrated: bool) -> (TempDir, PathBuf, ReadSource, forgeplan_core::workspace::lock::WorkspaceReadLock) {
         let tmp = TempDir::new().expect("temporary workspace");
         let ws = workspace::init_workspace(tmp.path(), "mcp-context").expect("init workspace");
+        let guard = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.expect("workspace lock");
         let legacy = if migrated {
             None
         } else {
             Some(Arc::new(
-                LanceStore::init(&ws).await.expect("legacy tables"),
+                LanceStore::init_new(&ws, &guard).await.expect("legacy tables"),
             ))
         };
         for (id, target) in [
@@ -16835,7 +17422,7 @@ mod public_compat_context_tests {
                 .expect("write canonical note");
             if let Some(store) = &legacy {
                 store
-                    .create_artifact_for_test(&NewArtifact {
+                    .create_artifact_for_test(&guard, &NewArtifact {
                         canonical_key: id.into(),
                         id: id.into(),
                         kind: "note".into(),
@@ -16852,12 +17439,13 @@ mod public_compat_context_tests {
                     .expect("seed legacy note");
                 if let Some(target) = target {
                     store
-                        .add_relation_for_test(id, target, "based_on")
+                        .add_relation_for_test(&guard, id, target, "based_on")
                         .await
                         .expect("seed canonical edge");
                 }
             }
         }
+        drop(guard);
         if migrated {
             let capability = MaintainCapability::for_strict_maintenance(
                 ws.canonicalize().expect("canonical workspace"),
@@ -16871,23 +17459,21 @@ mod public_compat_context_tests {
             .expect("publish managed workspace");
         }
         let server = ForgeplanServer::new(tmp.path().to_path_buf()).await;
-        let (_, _, read) = server
+        let (_, _, read, guard) = server
             .resolve_read_source(Some(ws.to_str().expect("workspace path")))
             .await
             .expect("resolve real source");
-        (tmp, ws, read)
+        (tmp, ws, read, guard)
     }
 
     #[tokio::test]
     async fn reasoning_context_uses_the_real_cluster_on_both_layouts() {
         for migrated in [false, true] {
-            let (_tmp, ws, read) = context_workspace(migrated).await;
-            let record = read
-                .get_record("NOTE-001")
-                .await
+            let (_tmp, ws, read, guard) = context_workspace(migrated).await;
+            let record = read.get_record(&guard, "NOTE-001").await
                 .expect("record read")
                 .expect("record exists");
-            let context = build_reason_artifact_context(&read, &record)
+            let context = build_reason_artifact_context(&read, &guard, &record)
                 .await
                 .expect("reasoning metadata");
             assert_eq!(
@@ -16911,9 +17497,157 @@ mod public_compat_context_tests {
     }
 
     #[tokio::test]
+    async fn shared_alias_reason_receipt_and_calibration_keep_canonical_graphs() {
+        for migrated in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let ws = workspace::init_workspace(tmp.path(), "mcp-shared-alias").unwrap();
+            let guard = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+            let legacy = if migrated { None } else {
+                Some(LanceStore::init_new(&ws, &guard).await.unwrap())
+            };
+            let mut documents = Vec::new();
+            let mut links = String::new();
+            for n in 1..=5 {
+                let id = format!("NOTE-{n:03}");
+                links.push_str(&format!("  - target: {id}\n    relation: based_on\n"));
+                documents.push((id.clone(), id.clone(), "note".to_string(), id, String::new()));
+            }
+            links.push_str("  - target: SPEC-001\n    relation: based_on\n");
+            documents.push(("SPEC-001".into(), "SPEC-001".into(), "spec".into(), "Specification".into(), String::new()));
+            documents.push(("prd-alpha".into(), "PRD-001".into(), "prd".into(), "Alpha".into(), links));
+            documents.push(("prd-beta".into(), "PRD-001".into(), "prd".into(), "Beta".into(),
+                "  - target: prd-alpha\n    relation: refines\n".into()));
+            documents.push(("evidence-alpha".into(), "EVID-001".into(), "evidence".into(), "Alpha evidence".into(),
+                "  - target: prd-alpha\n    relation: informs\n".into()));
+            documents.push(("evidence-beta".into(), "EVID-001".into(), "evidence".into(), "Beta evidence".into(),
+                "  - target: prd-beta\n    relation: informs\n".into()));
+            for (key, id, kind, title, links) in &documents {
+                let links = if links.is_empty() { String::new() } else { format!("links:\n{links}") };
+                let verdict = if key == "evidence-alpha" { "supports" } else { "refutes" };
+                let body = format!("---\nid: {id}\nslug: {key}\nkind: {kind}\nstatus: draft\n\
+                    title: {title}\ndepth: tactical\n{links}---\n\n## Summary\n\n{title} body.\n\
+                    verdict: {verdict}\ncongruence_level: 3\n\
+                    \n## Functional Requirements\n\n- [ ] FR-001: Implement the selected document.\n");
+                let dir = match kind.as_str() { "prd" => "prds", "spec" => "specs", "evidence" => "evidence", _ => "notes" };
+                std::fs::write(ws.join(dir).join(format!("{key}.md")), &body).unwrap();
+                if let Some(store) = &legacy {
+                    store.create_artifact_for_test(&guard, &NewArtifact {
+                        canonical_key: key.clone(), id: id.clone(), kind: kind.clone(),
+                        status: "draft".into(), title: title.clone(), body,
+                        depth: "tactical".into(), author: None, parent_epic: None,
+                        valid_until: None, tags: Vec::new(),
+                    }).await.unwrap();
+                }
+            }
+            if let Some(store) = &legacy {
+                for n in 1..=5 {
+                    store.add_relation_for_test(&guard, "prd-alpha", &format!("NOTE-{n:03}"), "based_on").await.unwrap();
+                }
+                store.add_relation_for_test(&guard, "prd-alpha", "SPEC-001", "based_on").await.unwrap();
+                store.add_relation_for_test(&guard, "prd-beta", "prd-alpha", "refines").await.unwrap();
+                store.add_relation_for_test(&guard, "evidence-alpha", "prd-alpha", "informs").await.unwrap();
+                store.add_relation_for_test(&guard, "evidence-beta", "prd-beta", "informs").await.unwrap();
+            }
+            drop(guard);
+            if migrated {
+                let capability = MaintainCapability::for_strict_maintenance(ws.canonicalize().unwrap());
+                maintain_index(&capability, CaptureLimits::default(), Instant::now() + Duration::from_secs(120))
+                    .await.unwrap();
+            }
+            let server = ForgeplanServer::new(tmp.path().to_path_buf()).await;
+            let (_, _, read, guard) = server.resolve_read_source(Some(ws.to_str().unwrap())).await.unwrap();
+            for (key, outgoing) in [("prd-alpha", 6), ("prd-beta", 1)] {
+                let record = read.get_record(&guard, key).await.unwrap().unwrap();
+                let context = build_reason_artifact_context(&read, &guard, &record).await.unwrap();
+                assert_eq!(context.relations.len(), outgoing);
+                let receipt = capture_relations_for_receipt(&record, &read, &guard).await.unwrap();
+                let own_outgoing = receipt.iter().filter(|edge| edge.from == key).count();
+                assert_eq!(own_outgoing, outgoing);
+                assert!(receipt.iter().all(|edge| edge.from != "PRD-001" && edge.to != "PRD-001"));
+            }
+            drop(guard);
+            for (key, expected_outgoing, expected_sources) in [
+                ("prd-alpha", 6, vec!["prd-beta", "evidence-alpha"]),
+                ("prd-beta", 1, vec!["evidence-beta"]),
+            ] {
+                let result = server.forgeplan_get(Parameters(GetParams {
+                    id: key.into(), workspace: Some(ws.to_str().unwrap().into()),
+                })).await.unwrap();
+                assert_ne!(result.is_error, Some(true));
+                let rmcp::model::RawContent::Text(text) = &result.content[0].raw else {
+                    panic!("expected JSON");
+                };
+                let payload: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+                assert_eq!(payload["canonical_key"], key);
+                assert_eq!(payload["links"]["outbound"].as_array().unwrap().len(), expected_outgoing);
+                let inbound = payload["links"]["inbound"].as_array().unwrap();
+                assert_eq!(inbound.len(), expected_sources.len());
+                for source in expected_sources {
+                    assert!(inbound.iter().any(|edge| edge["source"] == source), "{payload}");
+                }
+            }
+            let ambiguous_get = server.forgeplan_get(Parameters(GetParams {
+                id: "PRD-001".into(), workspace: Some(ws.to_str().unwrap().into()),
+            })).await.unwrap();
+            assert_eq!(ambiguous_get.is_error, Some(true));
+            for (key, title, has_six) in [("prd-alpha", "Alpha", true), ("prd-beta", "Beta", false)] {
+                let result = server.forgeplan_calibrate(Parameters(CalibrateParams {
+                    id: Some(key.into()), workspace: Some(ws.to_str().unwrap().into()),
+                })).await.unwrap();
+                assert_ne!(result.is_error, Some(true));
+                let rmcp::model::RawContent::Text(text) = &result.content[0].raw else { panic!("expected JSON") };
+                let payload: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+                assert_eq!(payload["results"].as_array().unwrap().len(), 1);
+                assert_eq!(payload["results"][0]["artifact_title"], title);
+                assert_eq!(text.text.contains("6 links"), has_six);
+            }
+            for (key, has_spec) in [("prd-alpha", true), ("prd-beta", false)] {
+                let result = server.forgeplan_estimate(Parameters(EstimateParams {
+                    id: key.into(), grade: None, my_grade: None, llm_score: None,
+                    complexity: None, workspace: Some(ws.to_str().unwrap().into()),
+                })).await.unwrap();
+                assert_ne!(result.is_error, Some(true));
+                let rmcp::model::RawContent::Text(text) = &result.content[0].raw else { panic!("expected JSON") };
+                assert_eq!(text.text.contains("has Spec (+15%)"), has_spec, "{}", text.text);
+            }
+            for (key, verdict) in [("prd-alpha", "Supports"), ("prd-beta", "Refutes")] {
+                let result = server.forgeplan_score(Parameters(ScoreParams {
+                    id: key.into(), workspace: Some(ws.to_str().unwrap().into()),
+                })).await.unwrap();
+                assert_ne!(result.is_error, Some(true));
+                let rmcp::model::RawContent::Text(text) = &result.content[0].raw else { panic!("expected JSON") };
+                let payload: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+                let evidence = payload["evidence"].as_array().unwrap();
+                assert_eq!(evidence.len(), 1, "{payload}");
+                assert_eq!(evidence[0]["verdict"], verdict);
+            }
+            let refused = server.forgeplan_calibrate(Parameters(CalibrateParams {
+                id: Some("PRD-001".into()), workspace: Some(ws.to_str().unwrap().into()),
+            })).await.unwrap();
+            assert_eq!(refused.is_error, Some(true));
+            let rmcp::model::RawContent::Text(text) = &refused.content[0].raw else { panic!("expected error") };
+            assert!(text.text.contains("ambiguous") && text.text.contains("prd-alpha") && text.text.contains("prd-beta"));
+            let refused_unlink = server.forgeplan_unlink(Parameters(UnlinkParams {
+                source: "PRD-001".into(), target: "prd-alpha".into(),
+                relation: RelationKind::Refines, workspace: Some(ws.to_str().unwrap().into()),
+            })).await.unwrap();
+            assert_eq!(refused_unlink.is_error, Some(true));
+            let unlinked = server.forgeplan_unlink(Parameters(UnlinkParams {
+                source: "prd-beta".into(), target: "prd-alpha".into(),
+                relation: RelationKind::Refines, workspace: Some(ws.to_str().unwrap().into()),
+            })).await.unwrap();
+            assert_ne!(unlinked.is_error, Some(true));
+            let (_, _, read, guard) = server.resolve_read_source(Some(ws.to_str().unwrap())).await.unwrap();
+            assert!(!read.get_relations(&guard, "prd-beta").await.unwrap()
+                .iter().any(|(target, relation)| target == "prd-alpha" && relation == "refines"));
+            assert_eq!(read.get_relations(&guard, "prd-alpha").await.unwrap().len(), 6);
+        }
+    }
+
+    #[tokio::test]
     async fn routing_context_reads_real_auxiliary_patterns_on_both_layouts() {
         for migrated in [false, true] {
-            let (_tmp, ws, _read) = context_workspace(migrated).await;
+            let (_tmp, ws, _read, _guard) = context_workspace(migrated).await;
             let auxiliary = AuxiliaryStore::open_or_create(&ws)
                 .await
                 .expect("open the auxiliary knowledge base");

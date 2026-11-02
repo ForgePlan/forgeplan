@@ -61,13 +61,14 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW,
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_FLAG_WRITE_THROUGH, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FileIdInfo, FlushFileBuffers, GetDriveTypeW, GetFileAttributesW, GetFileInformationByHandle,
-    GetFileInformationByHandleEx, GetVolumeInformationW, INVALID_FILE_ATTRIBUTES,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_ID_INFO, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo, FlushFileBuffers, GetDriveTypeW,
+    GetFileAttributesW, GetFileInformationByHandle, GetFileInformationByHandleEx,
+    GetFinalPathNameByHandleW, GetVolumeInformationByHandleW, INVALID_FILE_ATTRIBUTES, VOLUME_NAME_GUID,
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING, WriteFile,
 };
-use windows_sys::Win32::System::WindowsProgramming::{DRIVE_FIXED, DRIVE_REMOTE};
+use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 use super::PlatformDurability;
 use crate::constellation::ConstellationError;
@@ -218,7 +219,10 @@ impl PlatformDurability for WindowsNtfsDurability {
         let mut current = PathBuf::new();
         for component in dir.components() {
             current.push(component);
-            match existing_kind(&current) {
+            if matches!(component, std::path::Component::Prefix(_)) {
+                continue;
+            }
+            match existing_kind(&current).map_err(|error| super::io_error("inspect directory", &current, error))? {
                 Some(EntryKind::Directory) => continue,
                 Some(EntryKind::ReparsePoint) => {
                     return Err(ConstellationError::DurabilityUnavailable {
@@ -399,6 +403,115 @@ impl WindowsNtfsDurability {
     }
 }
 
+/// Open a directory itself, rather than following a final reparse point.
+/// Full sharing permits the caller's later same-volume namespace rename.
+pub(crate) fn open_directory_no_reparse(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+
+    root_is_own(path).map_err(std::io::Error::other)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(std::io::Error::other("not a non-reparse directory"));
+    }
+    verify_local_ntfs_handle(file.as_raw_handle()).map_err(std::io::Error::other)?;
+    Ok(file)
+}
+
+/// Read at most 16 KiB plus one byte, so the caller can reject oversize state.
+/// The final reparse point is never followed; the caller excludes noncooperating
+/// namespace changes.
+pub(crate) fn read_mutable_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+    let parent = path.parent().ok_or_else(|| std::io::Error::other("file has no parent"))?;
+    verify_local_ntfs(parent).map_err(std::io::Error::other)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(std::io::Error::other("mutable file is not a non-reparse regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(16 * 1024 + 1).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Replace a mutable file using a flushed same-directory temporary and a
+/// write-through move. The caller excludes noncooperating namespace mutations.
+pub(crate) fn replace_mutable_file(path: &Path, bytes: &[u8]) -> Result<(), ConstellationError> {
+    use std::os::windows::fs::MetadataExt;
+
+    let parent = path.parent().ok_or_else(|| ConstellationError::DurabilityUnavailable {
+        detail: format!("{} has no parent", path.display()),
+    })?;
+    verify_local_ntfs(parent).map_err(|detail| ConstellationError::DurabilityUnavailable { detail })?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 => {}
+        Ok(_) => return Err(ConstellationError::DurabilityUnavailable {
+            detail: format!("{} is not a non-reparse regular file", path.display()),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(super::io_error("inspect mutable file", path, error)),
+    }
+    let temporary = temp_sibling(parent, "mutable", "replace");
+    WindowsNtfsDurability.write_file_create_new(&temporary, bytes)?;
+    WindowsNtfsDurability.move_write_through(&temporary, path, true)
+}
+
+/// Seal only an exclusive, unpublished staging tree with a durable parent.
+/// The caller must hold its workspace lock and close all tasks and handles.
+/// On any error, abandon the stage and retain any temporary siblings.
+pub(crate) fn seal_unpublished_tree(root: &Path) -> Result<(), ConstellationError> {
+    root_is_own(root).and_then(|()| verify_local_ntfs(root)).map_err(|detail| {
+        ConstellationError::DurabilityUnavailable { detail }
+    })?;
+    seal_private_entry(root)
+}
+
+fn seal_private_entry(path: &Path) -> Result<(), ConstellationError> {
+    use std::os::windows::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| super::io_error("inspect private stage", path, error))?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(ConstellationError::DurabilityUnavailable {
+            detail: format!("private stage entry {} is a reparse point", path.display()),
+        });
+    }
+    if metadata.is_dir() {
+        let entries = std::fs::read_dir(path)
+            .map_err(|error| super::io_error("enumerate private stage", path, error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| super::io_error("enumerate private stage", path, error))?;
+        for entry in entries {
+            seal_private_entry(&entry.path())?;
+        }
+    } else if metadata.is_file() {
+        WindowsNtfsDurability.sync_file(path)?;
+    } else {
+        return Err(ConstellationError::DurabilityUnavailable {
+            detail: format!("private stage entry {} is not a regular file or directory", path.display()),
+        });
+    }
+    let parent = path.parent().ok_or_else(|| ConstellationError::DurabilityUnavailable {
+        detail: format!("private stage entry {} has no parent", path.display()),
+    })?;
+    let temporary = temp_sibling(parent, "stage", "seal");
+    WindowsNtfsDurability.move_write_through(path, &temporary, false)?;
+    WindowsNtfsDurability.move_write_through(&temporary, path, false)
+}
+
+
 /// What exists at a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryKind {
@@ -412,19 +525,24 @@ enum EntryKind {
 /// `GetFileAttributesW` reports the attributes of the entry itself, which is
 /// what the reparse check needs; a symlink reports `REPARSE_POINT` rather
 /// than its target's attributes.
-fn existing_kind(path: &Path) -> Option<EntryKind> {
+fn existing_kind(path: &Path) -> Result<Option<EntryKind>, std::io::Error> {
     let name = wide(path);
     let attributes = unsafe { GetFileAttributesW(name.as_ptr()) };
     if attributes == INVALID_FILE_ATTRIBUTES {
-        return None;
+        let error = std::io::Error::last_os_error();
+        return if error.kind() == std::io::ErrorKind::NotFound {
+            Ok(None)
+        } else {
+            Err(error)
+        };
     }
     if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Some(EntryKind::ReparsePoint);
+        return Ok(Some(EntryKind::ReparsePoint));
     }
     if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
-        return Some(EntryKind::Directory);
+        return Ok(Some(EntryKind::Directory));
     }
-    Some(EntryKind::File)
+    Ok(Some(EntryKind::File))
 }
 
 /// Create one directory through a unique temporary sibling, then install it.
@@ -474,6 +592,16 @@ pub(crate) fn identity_from_handle(
     handle: HANDLE,
     what: &str,
 ) -> Result<super::PhysicalIdentity, String> {
+    let mut attributes: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut attributes) } == 0 {
+        return Err(format!(
+            "GetFileInformationByHandle failed for {what}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!("{what} is a reparse point"));
+    }
     let mut info: FILE_ID_INFO = unsafe { std::mem::zeroed() };
     let ok = unsafe {
         GetFileInformationByHandleEx(
@@ -501,8 +629,8 @@ pub(crate) fn identity_from_handle(
 /// `FILE_FLAG_OPEN_REPARSE_POINT`. Full sharing is required because this is a
 /// *re-check*, not a guard: it has to succeed while a writer holds the file, or
 /// the re-check would report "cannot verify" for a perfectly good pin. The
-/// reparse flag keeps the handle on the link itself, so a substituted path
-/// reports the link's own id and never its target's.
+/// reparse flag keeps the handle on the link itself, which is then rejected.
+/// Backup semantics also permit opening directories.
 pub(crate) fn identity_of_path(path: &Path) -> Result<super::PhysicalIdentity, String> {
     let name = wide(path);
     let handle = unsafe {
@@ -512,11 +640,12 @@ pub(crate) fn identity_of_path(path: &Path) -> Result<super::PhysicalIdentity, S
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             std::ptr::null(),
             OPEN_EXISTING,
-            FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
             std::ptr::null_mut(),
         )
     };
-    let handle = OwnedHandle::open(handle, path, "CreateFileW(OPEN_EXISTING, read-only)")?;
+    let handle = OwnedHandle::open(handle, path, "CreateFileW(OPEN_EXISTING, read-only)")
+        .map_err(|error| error.to_string())?;
     identity_from_handle(handle.0, &path.display().to_string())
 }
 
@@ -607,81 +736,73 @@ fn temp_sibling(dir: &Path, name: &str, tag: &str) -> PathBuf {
 ///
 /// A message describing the rejected volume.
 pub(crate) fn verify_local_ntfs(index_root: &Path) -> Result<(), String> {
-    let Some(volume) = volume_root(index_root) else {
-        return Err(format!(
-            "{} has no drive prefix, so its volume cannot be identified",
-            index_root.display()
-        ));
+    let mut existing = index_root;
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => break,
+            Ok(_) => return Err(format!("{} is not a plain directory", existing.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                existing = existing.parent().ok_or_else(|| format!("{} has no existing directory ancestor", index_root.display()))?;
+            }
+            Err(error) => return Err(format!("cannot inspect {}: {error}", existing.display())),
+        }
+    }
+    root_is_own(existing)?;
+    let name = wide(existing);
+    let raw = unsafe {
+        CreateFileW(name.as_ptr(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(), OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, std::ptr::null_mut())
     };
-    let volume_wide = wide(&volume);
-
-    let drive_type = unsafe { GetDriveTypeW(volume_wide.as_ptr()) };
-    if drive_type == DRIVE_REMOTE {
-        return Err(format!(
-            "{} is on a network drive; a local-NTFS barrier cannot be claimed there",
-            volume.display()
-        ));
+    let handle = OwnedHandle::open(raw, existing, "open volume verification directory")
+        .map_err(|error| error.to_string())?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle.0, &mut info) } == 0 {
+        return Err(format!("cannot inspect directory handle {}: {}", existing.display(), std::io::Error::last_os_error()));
     }
-    if drive_type != DRIVE_FIXED {
-        return Err(format!(
-            "{} is on drive type {drive_type}, not a local fixed volume",
-            volume.display()
-        ));
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+    {
+        return Err(format!("{} is not a non-reparse directory", existing.display()));
     }
+    verify_local_ntfs_handle(handle.0)
+}
 
-    // `GetVolumeInformationW` fills the name buffer only up to the size we
-    // pass; a filesystem name longer than the buffer would come back
-    // truncated, and a truncated "NTFS" comparison could pass by accident.
-    // 64 UTF-16 units covers every real filesystem name; anything longer is
-    // refused rather than guessed at.
-    let mut name_buffer = [0u16; 64];
-    let mut serial: u32 = 0;
-    let mut max_component: u32 = 0;
-    let mut flags: u32 = 0;
+pub(crate) fn verify_local_ntfs_handle(handle: HANDLE) -> Result<(), String> {
+    let mut filesystem = [0u16; 64];
     let ok = unsafe {
-        GetVolumeInformationW(
-            volume_wide.as_ptr(),
-            name_buffer.as_mut_ptr(),
-            name_buffer.len() as u32,
-            &mut serial,
-            &mut max_component,
-            &mut flags,
-            std::ptr::null_mut(),
-            0,
-        )
+        GetVolumeInformationByHandleW(handle, std::ptr::null_mut(), 0,
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            filesystem.as_mut_ptr(), filesystem.len() as u32)
     };
     if ok == 0 {
-        return Err(format!(
-            "GetVolumeInformationW failed for {}",
-            volume.display()
-        ));
+        return Err(format!("cannot determine filesystem from directory handle: {}", std::io::Error::last_os_error()));
     }
-
-    let length = name_buffer
-        .iter()
-        .position(|unit| *unit == 0)
-        .unwrap_or(name_buffer.len());
-    let filesystem = String::from_utf16_lossy(&name_buffer[..length]);
+    let end = filesystem.iter().position(|unit| *unit == 0)
+        .ok_or_else(|| "filesystem name is unterminated".to_string())?;
+    let filesystem = String::from_utf16(&filesystem[..end]).map_err(|error| error.to_string())?;
     if !filesystem.eq_ignore_ascii_case(REQUIRED_FILESYSTEM) {
-        return Err(format!(
-            "{} is on `{filesystem}`, and this adapter only claims a barrier on `{REQUIRED_FILESYSTEM}`",
-            volume.display()
-        ));
+        return Err(format!("filesystem `{filesystem}` is not `{REQUIRED_FILESYSTEM}`"));
+    }
+    let mut final_path = vec![0u16; 32768];
+    let len = unsafe { GetFinalPathNameByHandleW(handle, final_path.as_mut_ptr(), final_path.len() as u32, VOLUME_NAME_GUID) };
+    if len == 0 || len as usize >= final_path.len() {
+        return Err(format!("cannot obtain handle-bound volume GUID path: {}", std::io::Error::last_os_error()));
+    }
+    let path = String::from_utf16(&final_path[..len as usize]).map_err(|error| error.to_string())?;
+    let end = path.find("}\\").ok_or_else(|| "handle does not resolve to a local volume GUID".to_string())?;
+    let root = &path[..end + 2];
+    if !root.starts_with(r"\\?\Volume{") {
+        return Err("handle does not resolve to a local volume GUID".to_string());
+    }
+    let volume_wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+    let drive_type = unsafe { GetDriveTypeW(volume_wide.as_ptr()) };
+    if drive_type != DRIVE_FIXED {
+        return Err(format!("handle volume is not local fixed storage (drive type {drive_type})"));
     }
     Ok(())
 }
 
-/// `C:\`-style root of the volume containing `path`, if it has one.
-fn volume_root(path: &Path) -> Option<PathBuf> {
-    let text = path.to_string_lossy();
-    let mut chars = text.chars();
-    let first = chars.next()?;
-    let second = chars.next()?;
-    if first.is_ascii_alphabetic() && second == ':' {
-        return Some(PathBuf::from(format!("{}\\", first)));
-    }
-    None
-}
 
 /// NUL-terminated UTF-16 form of a path, as every `*W` Win32 call takes.
 fn wide(path: &Path) -> Vec<u16> {
@@ -737,8 +858,12 @@ pub(crate) fn root_is_own(root: &Path) -> Result<(), String> {
     let mut current = PathBuf::new();
     for component in root.components() {
         current.push(component);
+        if matches!(component, std::path::Component::Prefix(_)) {
+            continue;
+        }
         // A missing tail is bootstrap's job, not an alias problem.
-        let Some(kind) = existing_kind(&current) else {
+        let Some(kind) = existing_kind(&current)
+            .map_err(|error| format!("cannot inspect {}: {error}", current.display()))? else {
             return Ok(());
         };
         match kind {
@@ -806,6 +931,25 @@ mod windows_only_tests {
         assert!(nested.is_dir());
         // Second call finds every component present and must not fail.
         WindowsNtfsDurability.ensure_dir(&nested).unwrap();
+    }
+
+    #[test]
+    fn seal_private_tree_preserves_nested_files() {
+        let (_tmp, root) = temp_index_root();
+        let nested = root.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("data"), b"payload").unwrap();
+        seal_unpublished_tree(&root).unwrap();
+        assert_eq!(std::fs::read(nested.join("data")).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn seal_private_tree_rejects_reparse_points() {
+        let (_tmp, root) = temp_index_root();
+        let file = root.join("data");
+        std::fs::write(&file, b"payload").unwrap();
+        std::os::windows::fs::symlink_file(&file, root.join("link")).unwrap();
+        assert!(seal_unpublished_tree(&root).is_err());
     }
 
     #[test]
@@ -908,9 +1052,40 @@ mod windows_only_tests {
     }
 
     #[test]
-    fn platform_barrier_on_windows_selects_the_ntfs_adapter() {
+    fn volume_classification_uses_filesystem_name_not_volume_label() {
         let (_tmp, root) = temp_index_root();
-        let (support, barrier, diagnostic) = super::super::platform_barrier(&root);
+        let name = wide(&root);
+        let handle = OwnedHandle::open(
+            unsafe {
+                CreateFileW(name.as_ptr(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    std::ptr::null(), OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, std::ptr::null_mut())
+            },
+            &root,
+            "open test directory",
+        ).unwrap();
+        let mut label = [0u16; 256];
+        let mut filesystem = [0u16; 64];
+        assert_ne!(unsafe {
+            GetVolumeInformationByHandleW(handle.0, label.as_mut_ptr(), label.len() as u32,
+                std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+                filesystem.as_mut_ptr(), filesystem.len() as u32)
+        }, 0);
+        let end = filesystem.iter().position(|unit| *unit == 0).unwrap();
+        let filesystem = String::from_utf16(&filesystem[..end]).unwrap();
+        if filesystem.eq_ignore_ascii_case("NTFS") {
+            assert!(verify_local_ntfs_handle(handle.0).is_ok(),
+                "a non-NTFS volume label must not make an NTFS filesystem fail");
+        } else {
+            assert!(verify_local_ntfs_handle(handle.0).is_err(),
+                "an NTFS volume label must not make a different filesystem pass");
+        }
+    }
+
+    #[test]
+    fn primitive_barrier_on_windows_selects_the_ntfs_adapter() {
+        let (_tmp, root) = temp_index_root();
+        let (support, barrier, diagnostic) = super::super::windows_ntfs_primitive_barrier(&root);
         assert_eq!(support, FilesystemSupport::Supported);
         assert!(diagnostic.is_none());
         let barrier = barrier.expect("a supported local NTFS root gets a barrier");
@@ -948,13 +1123,13 @@ mod windows_only_tests {
 
         let id = identity_of_path(&file).unwrap();
         assert_ne!(
-            id.volume_serial(),
+            id.volume,
             0,
             "a zero volume serial means the class or the buffer size was wrong"
         );
         assert_ne!(
-            id.file_id(),
-            &[0u8; 16],
+            id.id,
+            [0u8; 16],
             "an all-zero file id is the kernel saying 'no id', not id zero"
         );
     }
@@ -974,10 +1149,10 @@ mod windows_only_tests {
         std::fs::rename(&staging, &file).unwrap();
 
         let after = identity_of_path(&file).unwrap();
-        assert_eq!(before.volume_serial(), after.volume_serial(), "same volume");
+        assert_eq!(before.volume, after.volume, "same volume");
         assert_ne!(
-            before.file_id(),
-            after.file_id(),
+            before.id,
+            after.id,
             "a replaced file must not keep its NTFS file id — this is the \
              substitution the size+mtime check could not see"
         );
@@ -1001,6 +1176,85 @@ mod windows_only_tests {
         )
         .unwrap();
         assert_eq!(from_handle, identity_of_path(&file).unwrap());
+    }
+
+    #[test]
+    fn directory_identity_matches_an_open_directory_handle() {
+        let (_tmp, root) = temp_index_root();
+        let directory = open_directory_no_reparse(&root).unwrap();
+        assert_eq!(
+            super::super::physical_identity_of(&directory).unwrap(),
+            identity_of_path(&root).unwrap()
+        );
+        assert_ne!(identity_of_path(&root).unwrap(), identity_of_path(root.parent().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn open_directory_handle_retains_identity_across_rename() {
+        let (_tmp, root) = temp_index_root();
+        let before = root.join("before");
+        let after = root.join("after");
+        std::fs::create_dir(&before).unwrap();
+        let held = open_directory_no_reparse(&before).unwrap();
+        let identity = super::super::physical_identity_of(&held).unwrap();
+        WindowsNtfsDurability.move_write_through(&before, &after, false).unwrap();
+        assert!(!before.exists());
+        assert_eq!(super::super::physical_identity_of(&held).unwrap(), identity);
+        assert_eq!(identity_of_path(&after).unwrap(), identity);
+    }
+
+    #[test]
+    fn directory_opener_refuses_a_regular_file() {
+        let (_tmp, root) = temp_index_root();
+        let file = root.join("file");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(open_directory_no_reparse(&file).is_err());
+    }
+
+    #[test]
+    fn directory_opener_refuses_reparse_point() {
+        let (_tmp, root) = temp_index_root();
+        let directory = root.join("directory");
+        let link = root.join("link");
+        std::fs::create_dir(&directory).unwrap();
+        match std::os::windows::fs::symlink_dir(&directory, &link) {
+            Ok(()) => {}
+            Err(error) if error.raw_os_error() == Some(1314) => {
+                eprintln!("skipping symlink test: Windows symlink privilege is unavailable");
+                return;
+            }
+            Err(error) => panic!("cannot create directory symlink: {error}"),
+        }
+        assert!(open_directory_no_reparse(&link).is_err());
+    }
+
+    #[test]
+    fn identity_rejects_file_and_directory_reparse_points() {
+        let (_tmp, root) = temp_index_root();
+        let file = root.join("file");
+        let file_link = root.join("file-link");
+        let dir_link = root.join("dir-link");
+        std::fs::write(&file, b"x").unwrap();
+        std::os::windows::fs::symlink_file(&file, &file_link).unwrap();
+        std::os::windows::fs::symlink_dir(&root, &dir_link).unwrap();
+        assert!(identity_of_path(&file_link).unwrap_err().contains("reparse"));
+        assert!(identity_of_path(&dir_link).unwrap_err().contains("reparse"));
+    }
+
+    #[test]
+    fn no_replace_move_preserves_both_files_on_collision() {
+        let (_tmp, root) = temp_index_root();
+        let src = root.join("src");
+        let dest = root.join("dest");
+        std::fs::write(&src, b"source").unwrap();
+        std::fs::write(&dest, b"destination").unwrap();
+        assert!(super::super::move_noreplace_write_through(&src, &dest).is_err());
+        assert_eq!(std::fs::read(&src).unwrap(), b"source");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"destination");
+        let vacant = root.join("vacant");
+        super::super::move_noreplace_write_through(&src, &vacant).unwrap();
+        assert!(!src.exists());
+        assert_eq!(std::fs::read(vacant).unwrap(), b"source");
     }
 
     /// A missing file has no identity, and the error says so rather than

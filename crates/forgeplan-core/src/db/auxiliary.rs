@@ -7,9 +7,8 @@
 //! can remove (`backup_legacy_tables` refuses a destination that already
 //! exists) while every reader keeps misdetecting the owner.
 //!
-//! This type opens the LanceDB connection and touches **only** the tables its
-//! caller owns. FPF and change-log handles are opened independently, without
-//! resurrecting artifact tables or initializing another auxiliary feature.
+//! Read handles open only existing tables. Writer handles connect and touch
+//! only their own tables, without resurrecting artifact tables.
 //!
 //! The query bodies live here as free functions over a `&Table`, so
 //! `LanceStore` and `AuxiliaryStore` share one implementation of each
@@ -36,8 +35,7 @@ use crate::db::store::{
 /// or relation method at all, so a caller cannot reach a retired table through
 /// it even by accident.
 pub struct AuxiliaryStore {
-    /// `None` only for the detached "this workspace has no auxiliary tables"
-    /// case, where nothing was opened and nothing needs to be.
+    /// Present only for writer handles.
     _db: Option<lancedb::Connection>,
     fpf_spec: Option<Table>,
     change_log: Option<Table>,
@@ -79,13 +77,12 @@ impl AuxiliaryStore {
         if !path_present(&lance_dir).await? {
             return Ok(detached());
         }
-        let db = connect(&lance_dir).await?;
-        let fpf_spec = open_optional_table(&db, &lance_dir, "fpf_spec").await?;
+        let fpf_spec = open_optional_existing_table(&lance_dir, "fpf_spec").await?;
         if let Some(table) = fpf_spec.as_ref() {
             validate_fpf_schema(table).await?;
         }
         Ok(Self {
-            _db: Some(db),
+            _db: None,
             fpf_spec,
             change_log: None,
         })
@@ -95,24 +92,17 @@ impl AuxiliaryStore {
     ///
     /// A confirmed missing directory or table yields an empty history handle.
     /// Existing but unreadable or incompatible history is an error.
-    ///
-    /// The one migration this may run is the additive `canonical_key`
-    /// column: a workspace whose history predates it cannot be read
-    /// otherwise, and the column carries no data of its own — every
-    /// existing row keeps its description and gets a NULL key.
     pub async fn open_history_existing(workspace_path: &Path) -> anyhow::Result<Self> {
         let lance_dir = workspace_path.join("lance");
         if !path_present(&lance_dir).await? {
             return Ok(detached());
         }
-        let db = connect(&lance_dir).await?;
-        let change_log = open_optional_table(&db, &lance_dir, "change_log").await?;
+        let change_log = open_optional_existing_table(&lance_dir, "change_log").await?;
         if let Some(table) = change_log.as_ref() {
-            crate::db::migrate::migrate_change_log(table).await?;
-            validate_change_log_schema(table).await?;
+            validate_legacy_change_log_schema(table).await?;
         }
         Ok(Self {
-            _db: Some(db),
+            _db: None,
             fpf_spec: None,
             change_log,
         })
@@ -173,7 +163,7 @@ impl AuxiliaryStore {
         limit: usize,
     ) -> anyhow::Result<Vec<ChangeLogEntry>> {
         match self.change_log.as_ref() {
-            Some(table) => change_log_query(table, artifact_id, source, limit).await,
+            Some(table) => change_log_query(table, artifact_id.map(HistoryFilter::Display), source, limit).await,
             None => Ok(Vec::new()),
         }
     }
@@ -459,6 +449,21 @@ async fn verify_manifest_file(path: &Path, table: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Open an optional existing dataset without a create-capable connection.
+pub(crate) async fn open_optional_existing_table(
+    lance_dir: &Path,
+    name: &str,
+) -> anyhow::Result<Option<Table>> {
+    let table_dir = lance_dir.join(format!("{name}.lance"));
+    if !path_present(&table_dir).await? {
+        return Ok(None);
+    }
+    verify_table_manifests(&table_dir, name).await?;
+    Ok(Some(crate::constellation::lance_tables::open_existing_native_table(
+        &table_dir, name,
+    ).await?))
+}
+
 async fn open_optional_table(
     db: &lancedb::Connection,
     lance_dir: &Path,
@@ -509,6 +514,58 @@ async fn validate_change_log_schema(table: &Table) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn validate_legacy_change_log_schema(table: &Table) -> anyhow::Result<()> {
+    let actual = table.schema().await?;
+    for field in schema::change_log_schema().fields() {
+        if actual.field_with_name(field.name()).is_err()
+            && (field.name() == "canonical_key" || field.name() == "commit_hash")
+        {
+            continue;
+        }
+        validate_read_column(&actual, field, "change_log")?;
+    }
+    Ok(())
+}
+
+/// Check legacy history before publishing the identity marker, without writes.
+pub(crate) async fn check_identity_change_log(
+    db: &lancedb::connection::Connection,
+) -> anyhow::Result<()> {
+    if !db.table_names().execute().await?.iter().any(|name| name == "change_log") {
+        return Ok(());
+    }
+    let table = db.open_table("change_log").execute().await?;
+    let actual = table.schema().await?;
+    let expected = schema::change_log_schema();
+    for field in actual.fields() {
+        if expected.field_with_name(field.name()).is_err() {
+            anyhow::bail!("change_log has unsupported column {}", field.name());
+        }
+    }
+    for field in expected.fields() {
+        if actual.field_with_name(field.name()).is_err()
+            && (field.name() == "canonical_key" || field.name() == "commit_hash")
+        {
+            continue;
+        }
+        validate_read_column(&actual, field, "change_log")?;
+    }
+    Ok(())
+}
+
+/// Upgrade shared history only after the caller verified the v5 marker and
+/// while it holds the workspace lock. Existing events are never rewritten;
+/// newly added identity fields are null on historical events.
+pub(crate) async fn prepare_identity_change_log(
+    db: &lancedb::connection::Connection,
+) -> anyhow::Result<()> {
+    check_identity_change_log(db).await?;
+    crate::db::migrate::ensure_change_log(db).await?;
+    let table = db.open_table("change_log").execute().await?;
+    crate::db::migrate::migrate_change_log(&table).await?;
+    validate_change_log_schema(&table).await
+}
+
 async fn validate_fpf_schema(table: &Table) -> anyhow::Result<Arc<arrow_schema::Schema>> {
     let actual = table.schema().await?;
     for field in schema::fpf_spec_schema().fields() {
@@ -532,6 +589,7 @@ fn detached() -> AuxiliaryStore {
 }
 
 pub(crate) async fn change_log_append(table: &Table, entry: &ChangeLogEntry) -> anyhow::Result<()> {
+    validate_change_log_schema(table).await?;
     let batch = RecordBatch::try_new(
         schema::change_log_schema(),
         vec![
@@ -551,22 +609,31 @@ pub(crate) async fn change_log_append(table: &Table, entry: &ChangeLogEntry) -> 
     Ok(())
 }
 
-/// Query history rows.
-///
-/// The row keeps the event's original description in `artifact_id`: the
-/// display id a person reads. The caller resolves the selector it was given
-/// to that display id; a selector that names no document falls back to its
-/// own bytes so entries written for a document that is gone stay reachable.
+/// Select either a literal display id or a canonical identity.
+pub(crate) enum HistoryFilter<'a> {
+    Display(&'a str),
+    Identity(&'a str),
+}
+
 pub(crate) async fn change_log_query(
     table: &Table,
-    artifact_id: Option<&str>,
+    filter: Option<HistoryFilter<'_>>,
     source: Option<&str>,
     limit: usize,
 ) -> anyhow::Result<Vec<ChangeLogEntry>> {
-    validate_change_log_schema(table).await?;
+    validate_legacy_change_log_schema(table).await?;
+    let has_key = table.schema().await?.field_with_name("canonical_key").is_ok();
     let mut conditions: Vec<String> = Vec::new();
-    if let Some(aid) = artifact_id {
-        conditions.push(format!("artifact_id = '{}'", aid.replace('\'', "''")));
+    if let Some(filter) = filter {
+        let condition = match filter {
+            HistoryFilter::Display(id) => format!("artifact_id = '{}'", id.replace('\'', "''")),
+            HistoryFilter::Identity(key) => if has_key {
+                format!("canonical_key = '{}'", key.replace('\'', "''"))
+            } else {
+                "false".to_string()
+            },
+        };
+        conditions.push(condition);
     }
     if let Some(src) = source {
         conditions.push(format!("source = '{}'", src.replace('\'', "''")));
@@ -819,6 +886,20 @@ pub(crate) async fn fpf_clear(table: &Table) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::db::store::LanceStore;
+
+    #[tokio::test]
+    async fn existing_readers_do_not_recreate_deleted_lance_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let lance = tmp.path().join("lance");
+        std::fs::create_dir(&lance).unwrap();
+        std::fs::remove_dir(&lance).unwrap();
+        let fpf = AuxiliaryStore::open_existing(tmp.path()).await.unwrap();
+        let history = AuxiliaryStore::open_history_existing(tmp.path()).await.unwrap();
+        assert!(!fpf.has_fpf());
+        drop(history);
+        assert!(!lance.exists());
+    }
+
 
     #[test]
     fn history_row_decoder_rejects_required_nulls_but_preserves_optional_nulls() {
@@ -1434,7 +1515,9 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let legacy = LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let legacy = LanceStore::init_new(&ws, &lock).await.unwrap();
+        drop(lock);
         legacy
             .create_artifact(&crate::db::store::NewArtifact {
                 canonical_key: "PRD-001".into(),
@@ -1474,7 +1557,9 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let legacy = LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let legacy = LanceStore::init_new(&ws, &lock).await.unwrap();
+        drop(lock);
         legacy
             .insert_fpf_chunks(
                 &[FpfChunk {
@@ -1845,7 +1930,9 @@ mod tests {
     async fn the_legacy_store_refuses_a_damaged_manifest_instead_of_aborting_the_process() {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let legacy = LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let legacy = LanceStore::init_new(&ws, &lock).await.unwrap();
+        drop(lock);
         legacy
             .insert_fpf_chunks(
                 &[FpfChunk {

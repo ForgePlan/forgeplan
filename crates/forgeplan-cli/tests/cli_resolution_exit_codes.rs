@@ -60,6 +60,7 @@ fn select(args: &[&str], selector: &str) -> Vec<String> {
 
 const SELECTOR_COMMANDS: &[&[&str]] = &[
     &["reason", "PRD-001"],
+    &["calibrate", "PRD-001"],
     &["context", "PRD-001"],
     &["delete", "PRD-001"],
     &["phase", "PRD-001"],

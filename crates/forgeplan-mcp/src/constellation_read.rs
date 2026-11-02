@@ -201,6 +201,28 @@ fn mode_of(strict: Option<bool>) -> QueryMode {
 /// so a caller can tell "a required source is down" apart from ordinary
 /// I/O trouble — the distinction the strict/partial contract exists for.
 fn fail_read(e: ConstellationError) -> Result<CallToolResult, McpError> {
+    fail_read_with_input(e, None)
+}
+
+fn fail_read_with_input(e: ConstellationError, requested_input: Option<&str>) -> Result<CallToolResult, McpError> {
+    if let ConstellationError::Resolve(error) = &e {
+        use forgeplan_core::artifact::canonical_key::ResolveError;
+        let (input, candidates) = match error {
+            ResolveError::Ambiguous { input, candidates } => (Some(input.as_str()), Some(candidates)),
+            ResolveError::ConflictingCanonicalKey { key, candidates } => (Some(key.as_str()), Some(candidates)),
+            ResolveError::InvalidSelector { input } => (Some(input.as_str()), None),
+            ResolveError::IncompleteCapture { .. } => (None, None),
+        };
+        let candidates: Vec<_> = candidates.into_iter().flatten().map(|candidate| json!({
+            "canonical_key": candidate.canonical_key,
+            "display_id": candidate.display_id,
+            "title": candidate.title,
+            "relative_path": candidate.relative_path,
+        })).collect();
+        return Ok(CallToolResult::error(vec![Content::text(
+            json!({"error": e.code().as_str(), "input": requested_input.or(input), "candidates": candidates, "detail": error.to_string()}).to_string(),
+        )]));
+    }
     // Every error already carries its SPEC-008 code; collapsing the typed
     // ones into "io" hides the only fact a caller can act on.
     fail(e.code().as_str(), &e)
@@ -567,7 +589,7 @@ impl ConstellationReadServer {
                         "id": bare,
                         "failures": failures,
                     })),
-                    Err(e) => fail_read(e),
+                    Err(e) => fail_read_with_input(e, Some(&p.id)),
                 }
             }
             Some(Handle::Snapshot(_)) => {
@@ -836,5 +858,35 @@ impl rmcp::ServerHandler for ConstellationReadServer {
     ) -> Result<CallToolResult, McpError> {
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, params, context);
         self.tool_router.call(tcc).await
+    }
+}
+
+#[cfg(test)]
+mod identity_error_tests {
+    use super::*;
+    use forgeplan_core::artifact::canonical_key::{ArtifactCandidate, ResolveError};
+    use rmcp::model::RawContent;
+
+    #[test]
+    fn conflict_is_a_tool_error_with_every_relative_candidate() {
+        let candidates = ["first", "second"].map(|name| ArtifactCandidate {
+            canonical_key: "prd-shared".to_string(),
+            display_id: format!("PRD-{}", if name == "first" { "001" } else { "002" }),
+            title: name.to_string(),
+            relative_path: format!("prds/{name}.md").into(),
+        });
+        let result = fail_read_with_input(ConstellationError::Resolve(ResolveError::ConflictingCanonicalKey {
+            key: "prd-shared".to_string(),
+            candidates: candidates.into(),
+        }), Some("PRD-001")).unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let RawContent::Text(text) = &result.content[0].raw else {
+            panic!("expected JSON error");
+        };
+        let value: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+        assert_eq!(value["error"], "conflicting_canonical_key");
+        assert_eq!(value["input"], "PRD-001");
+        assert_eq!(value["candidates"][0]["relative_path"], "prds/first.md");
+        assert_eq!(value["candidates"][1]["title"], "second");
     }
 }

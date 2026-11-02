@@ -65,18 +65,18 @@ impl Corpus {
         let tempdir = TempDir::new().expect("temporary workspace");
         let root = tempdir.path().to_path_buf();
         let ws = workspace::init_workspace(&root, "mcp-public-compat").expect("init workspace");
+        let guard = workspace::acquire_workspace_lock(&ws)
+            .await
+            .expect("fixture lock");
         let legacy = if migrated {
             None
         } else {
             Some(
-                LanceStore::init(&ws)
+                LanceStore::init_new(&ws, &guard)
                     .await
                     .expect("init the legacy projection"),
             )
         };
-        let guard = workspace::acquire_workspace_lock(&ws)
-            .await
-            .expect("fixture lock");
         let ctx = MutationContext::new(&ws, &guard, legacy.as_ref());
         let mut paths = BTreeMap::new();
         for artifact in [

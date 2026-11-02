@@ -291,3 +291,127 @@ fn the_graph_keeps_two_documents_that_share_a_display_id_apart() {
     assert_eq!(edges[0]["from"], "prd-alpha");
     assert_eq!(edges[0]["to"], "prd-beta");
 }
+
+#[test]
+fn migrated_link_by_key_keeps_both_identity_and_display_output() {
+    let tmp = migrated_workspace_with_two_prds();
+    let alpha = tmp.path().join(".forgeplan/prds/PRD-001-alpha.md");
+    let beta = tmp.path().join(".forgeplan/prds/PRD-001-beta.md");
+    let beta_before = std::fs::read(&beta).unwrap();
+    let before = std::fs::read(&alpha).unwrap();
+    let denied = forgeplan().args(["link", "PRD-001", "prd-beta", "--relation", "based_on"])
+        .current_dir(tmp.path()).output().unwrap();
+    assert!(!denied.status.success());
+    assert_eq!(std::fs::read(&alpha).unwrap(), before);
+    assert_eq!(std::fs::read(&beta).unwrap(), beta_before);
+    let output = forgeplan().args(["link", "prd-alpha", "prd-beta", "--relation", "based_on"])
+        .current_dir(tmp.path()).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("PRD-001 --based_on--> PRD-001"));
+    assert!(std::fs::read_to_string(&alpha).unwrap().contains("prd-beta"));
+    assert_eq!(std::fs::read(&beta).unwrap(), beta_before);
+}
+
+#[test]
+fn migrated_tag_and_claim_reject_ambiguous_alias_without_mutation() {
+    let tmp = migrated_workspace_with_two_prds();
+    let alpha = tmp.path().join(".forgeplan/prds/PRD-001-alpha.md");
+    let beta = tmp.path().join(".forgeplan/prds/PRD-001-beta.md");
+    let before_alpha = std::fs::read(&alpha).unwrap();
+    let before_beta = std::fs::read(&beta).unwrap();
+    for args in [
+        vec!["tag", "PRD-001", "marker"],
+        vec!["claim", "PRD-001", "--agent", "identity-test"],
+        vec!["release", "PRD-001", "--agent", "identity-test"],
+    ] {
+        let output = forgeplan().args(&args).current_dir(tmp.path()).output().unwrap();
+        assert!(!output.status.success(), "{args:?}");
+        assert_eq!(std::fs::read(&alpha).unwrap(), before_alpha);
+        assert_eq!(std::fs::read(&beta).unwrap(), before_beta);
+    }
+    let output = forgeplan().args(["tag", "prd-alpha", "marker"])
+        .current_dir(tmp.path()).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("PRD-001"));
+    assert!(std::fs::read_to_string(&alpha).unwrap().contains("marker"));
+    assert_eq!(std::fs::read(&beta).unwrap(), before_beta);
+}
+
+#[test]
+fn migrated_progress_scopes_shared_alias_by_key() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    workspace_with_two_prds(tmp.path());
+    std::fs::write(
+        tmp.path().join(".forgeplan/prds/PRD-001-alpha.md"),
+        "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-alpha\n---\n\n- [x] Done\n",
+    ).unwrap();
+    std::fs::write(
+        tmp.path().join(".forgeplan/prds/PRD-001-beta.md"),
+        "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-beta\n---\n\n- [ ] Pending\n",
+    ).unwrap();
+    forgeplan().arg("index").current_dir(tmp.path()).assert().success();
+    let output = forgeplan().args(["progress", "prd-beta", "--json"])
+        .current_dir(tmp.path()).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let entries = payload["progress"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["id"], "PRD-001");
+    assert_eq!(entries[0]["title"], "Beta");
+    assert_eq!(entries[0]["completed"], 0);
+    let denied = forgeplan().args(["progress", "PRD-001", "--json"])
+        .current_dir(tmp.path()).output().unwrap();
+    assert!(!denied.status.success());
+}
+
+#[test]
+fn legacy_claims_resolve_shared_alias_before_touching_claim_files() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    workspace_with_two_prds(tmp.path());
+    let claim_dir = tmp.path().join(".forgeplan/claims");
+    let denied = forgeplan().args(["claim", "PRD-001", "--agent", "identity-test"])
+        .current_dir(tmp.path()).output().unwrap();
+    assert!(!denied.status.success());
+    assert!(!claim_dir.exists() || std::fs::read_dir(&claim_dir).unwrap().next().is_none());
+    let claimed = forgeplan().args(["claim", "prd-alpha", "--agent", "identity-test"])
+        .current_dir(tmp.path()).output().unwrap();
+    assert!(claimed.status.success(), "{}", String::from_utf8_lossy(&claimed.stderr));
+    let denied = forgeplan().args(["release", "PRD-001", "--agent", "identity-test"])
+        .current_dir(tmp.path()).output().unwrap();
+    assert!(!denied.status.success());
+    let released = forgeplan().args(["release", "prd-alpha", "--agent", "identity-test"])
+        .current_dir(tmp.path()).output().unwrap();
+    assert!(released.status.success(), "{}", String::from_utf8_lossy(&released.stderr));
+    assert!(String::from_utf8_lossy(&released.stdout).contains("PRD-001"));
+}
+
+#[test]
+fn legacy_create_reports_committed_when_semantic_model_is_unavailable() {
+    let tmp = TempDir::new().unwrap();
+    forgeplan().args(["init", "-y"]).current_dir(tmp.path()).assert().success();
+    let ws = tmp.path().join(".forgeplan");
+    let mut config = forgeplan_core::workspace::load_config(&ws).unwrap();
+    config.embedding = Some(forgeplan_core::config::types::EmbeddingConfig {
+        model: "not-a-real-model".into(),
+        chunk_size: 2000,
+    });
+    std::fs::write(ws.join("config.yaml"), serde_yaml::to_string(&config).unwrap()).unwrap();
+    let result = forgeplan()
+        .args(["new", "prd", "Unavailable semantic model"])
+        .env_remove("FORGEPLAN_EMBEDDING_MODEL")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr)
+        .contains("canonical committed, semantic backlog pending"));
+    assert!(!String::from_utf8_lossy(&result.stdout).contains("Created:"));
+    assert!(std::fs::read_dir(ws.join("prds")).unwrap().any(|entry| {
+        let path = entry.unwrap().path();
+        std::fs::read_to_string(path)
+            .map(|body| body.contains("Unavailable semantic model"))
+            .unwrap_or(false)
+    }));
+}

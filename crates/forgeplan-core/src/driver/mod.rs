@@ -26,6 +26,7 @@ use crate::artifact::store::ArtifactSummary;
 use crate::db::store::{
     ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, NewArtifact, VectorSearchHit,
 };
+use crate::workspace::lock::{WorkspaceLock, WorkspaceReadPermit};
 
 // ── Core traits (REQUIRED for any backend) ──────────────────────────────────
 
@@ -33,53 +34,57 @@ use crate::db::store::{
 #[async_trait::async_trait]
 pub trait ArtifactStorage: Send + Sync {
     /// Insert a new artifact, returning its ID.
-    async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String>;
+    async fn create_artifact(&self, guard: &WorkspaceLock, artifact: &NewArtifact) -> anyhow::Result<String>;
 
     /// Get a single artifact by ID as a summary. Returns `None` if not found.
-    async fn get_artifact(&self, id: &str) -> anyhow::Result<Option<ArtifactSummary>>;
+    async fn get_artifact(&self, permit: &dyn WorkspaceReadPermit, id: &str) -> anyhow::Result<Option<ArtifactSummary>>;
 
     /// List artifacts with optional kind/status filter.
     async fn list_artifacts(
         &self,
+        permit: &dyn WorkspaceReadPermit,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<ArtifactSummary>>;
 
     /// Update artifact metadata (status, title). Always bumps `updated_at`.
     async fn update_artifact(
         &self,
+        guard: &WorkspaceLock,
         id: &str,
         status: Option<&str>,
         title: Option<&str>,
     ) -> anyhow::Result<()>;
 
     /// Update `r_eff_score` for an artifact.
-    async fn update_r_eff_score(&self, id: &str, score: f64) -> anyhow::Result<()>;
+    async fn update_r_eff_score(&self, guard: &WorkspaceLock, id: &str, score: f64) -> anyhow::Result<()>;
 
     /// Delete an artifact by ID.
-    async fn delete_artifact(&self, id: &str) -> anyhow::Result<()>;
+    async fn delete_artifact(&self, guard: &WorkspaceLock, id: &str) -> anyhow::Result<()>;
 
     /// Get a single artifact by ID as a full record. Returns `None` if not found.
-    async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>>;
+    async fn get_record(&self, permit: &dyn WorkspaceReadPermit, id: &str) -> anyhow::Result<Option<ArtifactRecord>>;
 
     /// List artifacts as full records with optional kind/status filter.
     async fn list_records(
         &self,
+        permit: &dyn WorkspaceReadPermit,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<ArtifactRecord>>;
 
     /// Update the body column of an artifact.
-    async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()>;
+    async fn update_body(&self, guard: &WorkspaceLock, id: &str, body: &str) -> anyhow::Result<()>;
 }
 
 /// Typed relations between artifacts — dependency graph.
 #[async_trait::async_trait]
 pub trait RelationStorage: Send + Sync {
     /// Add a typed relation between two artifacts. Rejects duplicates.
-    async fn add_relation(&self, source: &str, target: &str, relation: &str) -> anyhow::Result<()>;
+    async fn add_relation(&self, guard: &WorkspaceLock, source: &str, target: &str, relation: &str) -> anyhow::Result<()>;
 
     /// Remove a specific relation between two artifacts.
     async fn delete_relation(
         &self,
+        guard: &WorkspaceLock,
         source: &str,
         target: &str,
         relation: &str,
@@ -87,18 +92,18 @@ pub trait RelationStorage: Send + Sync {
 
     /// Get outgoing relations for an artifact (source -> targets).
     /// Returns `Vec<(target_id, relation_type)>`.
-    async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>>;
+    async fn get_relations(&self, permit: &dyn WorkspaceReadPermit, id: &str) -> anyhow::Result<Vec<(String, String)>>;
 
     /// Get incoming relations where this artifact is the target.
     /// Returns `Vec<(source_id, relation_type)>`.
-    async fn get_incoming_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>>;
+    async fn get_incoming_relations(&self, permit: &dyn WorkspaceReadPermit, id: &str) -> anyhow::Result<Vec<(String, String)>>;
 
     /// Get all relations across all artifacts.
     /// Returns `Vec<(source_id, target_id, relation_type)>`.
-    async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>>;
+    async fn get_all_relations(&self, permit: &dyn WorkspaceReadPermit) -> anyhow::Result<Vec<(String, String, String)>>;
 
     /// Remove ALL relations where artifact is source or target (cascade on delete).
-    async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()>;
+    async fn delete_relations_for_artifact(&self, guard: &WorkspaceLock, id: &str) -> anyhow::Result<()>;
 }
 
 /// Keyword search, stale detection, and sequential ID generation.
@@ -107,22 +112,23 @@ pub trait SearchStorage: Send + Sync {
     /// Search artifacts by body/title content (case-insensitive substring).
     async fn search_body(
         &self,
+        permit: &dyn WorkspaceReadPermit,
         query: &str,
         kind_filter: Option<&str>,
     ) -> anyhow::Result<Vec<ArtifactRecord>>;
 
     /// Find artifacts whose `valid_until` has expired.
-    async fn find_stale(&self) -> anyhow::Result<Vec<ArtifactRecord>>;
+    async fn find_stale(&self, permit: &dyn WorkspaceReadPermit) -> anyhow::Result<Vec<ArtifactRecord>>;
 
     /// Compute the next sequential ID for a given kind prefix (e.g. "PRD" -> "PRD-003").
-    async fn next_id(&self, kind_prefix: &str) -> anyhow::Result<String>;
+    async fn next_id(&self, permit: &dyn WorkspaceReadPermit, kind_prefix: &str) -> anyhow::Result<String>;
 }
 
 // ── Optional traits (have default implementations) ──────────────────────────
 
 /// Vector embedding storage and similarity search.
 ///
-/// Backends that don't support vectors get no-op defaults automatically.
+/// Unsupported backends report an error rather than an empty semantic result.
 #[async_trait::async_trait]
 pub trait VectorStorage: Send + Sync {
     /// Whether this backend supports vector similarity search.
@@ -130,13 +136,14 @@ pub trait VectorStorage: Send + Sync {
         false
     }
 
-    /// Vector similarity search using a pre-computed embedding.
+    /// Search using text embedded by the backend's pinned model profile.
     async fn vector_search(
         &self,
-        _query_embedding: &[f32],
+        _permit: &dyn WorkspaceReadPermit,
+        _query: &str,
         _limit: usize,
     ) -> anyhow::Result<Vec<VectorSearchHit>> {
-        Ok(Vec::new())
+        anyhow::bail!("this backend does not support profile-bound vector search")
     }
 
     // `update_embedding` was removed from this trait. It was an unguarded

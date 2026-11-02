@@ -45,9 +45,9 @@ impl GapSeverity {
 type RelationIndex = BTreeMap<String, Vec<(String, String)>>;
 
 /// Find all pipeline compliance gaps in the workspace.
-pub async fn find_gaps(store: &LanceStore) -> anyhow::Result<Vec<Gap>> {
-    let all = store.list_records(None).await?;
-    let all_relations = store.get_all_relations().await?;
+pub async fn find_gaps(store: &LanceStore, permit: &dyn crate::workspace::lock::WorkspaceReadPermit) -> anyhow::Result<Vec<Gap>> {
+    let all = store.list_records(permit, None).await?;
+    let all_relations = store.get_all_relations(permit).await?;
     Ok(find_gaps_in_records(&all, &all_relations))
 }
 
@@ -385,6 +385,22 @@ fn is_evidence_linked(artifact_id: &str, evidence_id: &str, outgoing: &RelationI
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn gap_report_reuses_the_bound_workspace_permit() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join(".forgeplan");
+        let guard = crate::workspace::lock::acquire_workspace_lock(&workspace).await.unwrap();
+        let store = LanceStore::init_new(&workspace, &guard).await.unwrap();
+        assert!(find_gaps(&store, &guard).await.unwrap().is_empty());
+        drop(guard);
+
+        let other = tempfile::tempdir().unwrap();
+        let wrong = crate::workspace::lock::acquire_workspace_lock(&other.path().join(".forgeplan")).await.unwrap();
+        assert!(find_gaps(&store, &wrong).await.is_err());
+        let read = crate::workspace::lock::acquire_workspace_read_lock(&workspace).await.unwrap();
+        assert!(find_gaps(&store, &read).await.unwrap().is_empty());
+    }
 
     fn make_record(id: &str, kind: &str, status: &str, depth: &str) -> ArtifactRecord {
         ArtifactRecord {

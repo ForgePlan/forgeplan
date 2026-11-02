@@ -304,8 +304,34 @@ pub async fn run(args: CiAssignIdArgs) -> Result<i32> {
     // 3. Apply (or simulate if --dry-run). Round 2 [CR-7]: auto_suffix
     //    no longer plumbed through to apply_plan — collision suffix is
     //    decided in compute_assignment_plan above.
-    let (assignments, collisions) =
-        apply_plan(&workspace, &plan, args.dry_run).context("applying assignment plan")?;
+    let forgeplan_dir = workspace.join(".forgeplan");
+    let guard = if !args.dry_run && forgeplan_dir.is_dir() {
+        let guard = forgeplan_core::workspace::lock::acquire_workspace_lock(&forgeplan_dir).await?;
+        crate::commands::common::ensure_ordinary_mutation_allowed(&forgeplan_dir)?;
+        Some(guard)
+    } else {
+        None
+    };
+    let (assignments, collisions) = apply_plan(&workspace, &plan, args.dry_run).map_err(|error| {
+        if args.dry_run {
+            error.context("applying assignment plan")
+        } else {
+            error.context(
+                "applying assignment plan failed; canonical files may be partially committed, semantic backlog may be pending",
+            )
+        }
+    })?;
+
+    drop(guard);
+    if !args.dry_run
+        && assignments.iter().any(|assignment| {
+            matches!(assignment.action.as_str(), "assigned" | "renamed_and_assigned" | "renamed")
+        })
+        && forgeplan_dir.join("config.yaml").exists()
+        && !crate::commands::common::index_migrated(&forgeplan_dir)
+    {
+        crate::commands::common::drain_legacy_semantic_after_mutation(&forgeplan_dir).await?;
+    }
 
     // 4. Build output.
     //

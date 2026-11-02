@@ -12,7 +12,7 @@ use crate::commands::common;
 /// Promote a memory artifact to a full artifact of the specified kind.
 /// Reads memory content, creates a new artifact, then deletes the memory.
 pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
-    let (workspace, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (workspace, lock, store) = common::open_store_locked_checked(&[(memory_id, true)]).await?;
 
     // Validate kind. PRD-071 contract: error path emits a `Fix:` marker line.
     let artifact_kind: ArtifactKind = kind.parse().map_err(|e| {
@@ -38,7 +38,7 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
     // is the source of truth, so the record comes from a fresh capture —
     // never from re-opening the retired legacy store to look it up.
     let record = match &store {
-        Some(store) => store.get_record(memory_id).await?.ok_or_else(|| {
+        Some(store) => store.get_record(&lock, memory_id).await?.ok_or_else(|| {
             anyhow::anyhow!(
                 "Memory '{}' not found\n\
                  Fix: forgeplan list --type memory",
@@ -46,7 +46,7 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
             )
         })?,
         None => {
-            let read = common::workspace_read(&workspace).await?;
+            let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&workspace, &lock).await?;
             let canonical = read.resolve_id(memory_id).ok_or_else(|| {
                 anyhow::anyhow!(
                     "Memory '{}' not found\n\
@@ -113,6 +113,7 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
     // The shared creator mints the key before reserving a display number.
     // The optional legacy sink only controls the derived-row write.
 
+    common::ensure_ordinary_mutation_allowed(&workspace)?;
     let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
         &workspace,
         &lock,
@@ -122,7 +123,14 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
         title,
         &build,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        if store.is_some() {
+            e.context("promote failed; canonical files may be partially committed, semantic backlog may be pending")
+        } else {
+            e
+        }
+    })?;
     let new_id = created.id;
     let new_key = created.canonical_key;
     let ctx = projection::MutationContext::new(&workspace, &lock, store.as_ref());
@@ -130,12 +138,24 @@ pub async fn run(memory_id: &str, kind: &str) -> Result<()> {
     // PRD-073 file-first: helper removes the memory's markdown file first,
     // then cascades relations and the LanceDB row. With a `None` sink it
     // removes the canonical file and stops.
-    projection::delete_artifact_with_projection(&ctx, memory_id).await?;
+    projection::delete_artifact_with_projection(&ctx, memory_id).await
+        .map_err(|e| {
+            let error = anyhow::Error::new(e);
+            if store.is_some() {
+                error.context("promote failed; canonical committed, semantic backlog pending")
+            } else {
+                error
+            }
+        })?;
 
     if store.is_none() {
         common::note_constellation_owns_index();
         drop(lock);
         common::reconcile_after_file_mutation(&workspace).await;
+    } else {
+        drop(store);
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&workspace).await?;
     }
 
     println!(

@@ -223,14 +223,14 @@ fn seed_legacy() -> TempDir {
         }
         // Populate the legacy cached score with the actual rule engine, not
         // a fabricated result. The displaced refutation must not poison it.
-        let report = forgeplan_core::scoring::sync_score_target(&store, "PRD-001")
+        let report = forgeplan_core::scoring::sync_score_target(&store, &lock, "PRD-001")
             .await
             .unwrap();
         assert!((report.r_eff - 1.0).abs() < 1e-12);
-        assert_eq!(store.list_records(None).await.unwrap().len(), records.len());
-        assert_eq!(store.get_all_relations().await.unwrap().len(), 5);
+        assert_eq!(store.list_records(&lock, None).await.unwrap().len(), records.len());
+        assert_eq!(store.get_all_relations(&lock).await.unwrap().len(), 5);
         assert_eq!(
-            store.get_record("PRD-001").await.unwrap().unwrap().body,
+            store.get_record(&lock, "PRD-001").await.unwrap().unwrap().body,
             records[0].body
         );
     });

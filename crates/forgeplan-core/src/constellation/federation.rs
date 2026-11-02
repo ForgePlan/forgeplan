@@ -392,6 +392,11 @@ async fn read_markdown(
 ) -> Result<(SourceRef, Vec<FederatedHit>), ConstellationError> {
     let captured =
         capture_source(&CaptureRequest::new(canonical), CaptureLimits::default()).await?;
+    if !captured.is_complete() {
+        return Err(ConstellationError::SourceUnavailable {
+            detail: format!("canonical source capture is incomplete: {:?}", captured.diagnostics),
+        });
+    }
     let source = SourceRef {
         source_id: source_id_for(canonical),
         path: canonical.display().to_string(),
@@ -451,6 +456,10 @@ pub async fn live_source_version(spec: &SourceSpec) -> Result<String, SourceFail
                     reason: error.to_string(),
                 }
             })?;
+        manifest.require_addressable().map_err(|error| SourceFailure {
+            path: canonical.display().to_string(),
+            reason: error.to_string(),
+        })?;
         return Ok(manifest.source_set_digest);
     }
     let captured = capture_source(&CaptureRequest::new(&canonical), CaptureLimits::default())
@@ -459,6 +468,12 @@ pub async fn live_source_version(spec: &SourceSpec) -> Result<String, SourceFail
             path: canonical.display().to_string(),
             reason: error.to_string(),
         })?;
+    if !captured.is_complete() {
+        return Err(SourceFailure {
+            path: canonical.display().to_string(),
+            reason: format!("incomplete canonical source: {:?}", captured.diagnostics),
+        });
+    }
     Ok(captured.source_set_digest)
 }
 
@@ -604,6 +619,9 @@ pub async fn federated_get(
                     ));
                 }
                 Ok(None) => {}
+                Err(ConstellationError::Resolve(error)) if specs.len() == 1 => {
+                    return Err(ConstellationError::Resolve(error));
+                }
                 Err(e) => {
                     let failure = SourceFailure {
                         path: spec.path.display().to_string(),
@@ -618,31 +636,34 @@ pub async fn federated_get(
         } else {
             match capture_source(&CaptureRequest::new(&canonical), CaptureLimits::default()).await {
                 Ok(captured) => {
-                    if !captured.is_complete() {
-                        return Err(ConstellationError::Io {
-                            detail: format!(
-                                "source {} was only partially captured; selector resolution is unsafe",
-                                canonical.display()
-                            ),
-                        });
-                    }
-                    let candidates: Vec<_> = captured
-                        .artifacts
-                        .iter()
-                        .map(|artifact| crate::artifact::canonical_key::ArtifactCandidate {
-                            canonical_key: artifact.canonical_key.clone(),
-                            display_id: artifact.display_id.clone(),
-                            title: artifact.title.clone(),
-                            relative_path: artifact.relative_path.clone().into(),
-                        })
-                        .collect();
-                    let selected = crate::artifact::canonical_key::resolve_artifact(
-                        key_or_id,
-                        &candidates,
-                    )
-                    .map_err(|error| ConstellationError::Io {
-                        detail: error.to_string(),
-                    })?;
+                    let selected = if captured.is_complete() {
+                        let candidates: Vec<_> = captured.artifacts.iter().map(|artifact|
+                            crate::artifact::canonical_key::ArtifactCandidate {
+                                canonical_key: artifact.canonical_key.clone(),
+                                display_id: artifact.display_id.clone(),
+                                title: artifact.title.clone(),
+                                relative_path: artifact.relative_path.clone().into(),
+                            }
+                        ).collect();
+                        crate::artifact::canonical_key::resolve_artifact(key_or_id, &candidates)
+                    } else {
+                        super::facade::resolve_diagnostic_artifact(&captured, key_or_id)
+                    };
+                    let selected = match selected {
+                        Ok(selected) => selected,
+                        Err(error) if specs.len() == 1 => return Err(ConstellationError::Resolve(error)),
+                        Err(error) => {
+                            let failure = SourceFailure {
+                                path: spec.path.display().to_string(),
+                                reason: error.to_string(),
+                            };
+                            if failure_is_fatal(spec, mode) {
+                                return Err(source_unavailable(&failure));
+                            }
+                            failures.push(failure);
+                            continue;
+                        }
+                    };
                     if let Some(resolved) = selected {
                         if let Some(artifact) = captured
                             .artifacts
@@ -976,6 +997,36 @@ mod tests {
             }
             other => panic!("two claimers must be ambiguous, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn single_source_get_preserves_conflict_candidates_and_multi_source_isolation() {
+        let conflicted = workspace_with(&[
+            ("prds", "PRD-001-a.md", &artifact("PRD-001", "prd", "Alpha", "a")),
+            ("prds", "PRD-001-b.md", &artifact("PRD-001", "prd", "Beta", "b")),
+        ]);
+        let healthy = workspace_with(&[
+            ("prds", "PRD-001-c.md", &artifact("PRD-001", "prd", "Healthy", "c")),
+        ]);
+        let error = federated_get(&[SourceSpec::new(conflicted.path())], "PRD-001", QueryMode::Strict)
+            .await.unwrap_err();
+        match error {
+            ConstellationError::Resolve(crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey { key, candidates }) => {
+                assert_eq!(key, "PRD-001");
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates.iter().any(|candidate| candidate.title == "Alpha"));
+                assert!(candidates.iter().any(|candidate| candidate.title == "Beta"));
+            }
+            other => panic!("expected typed source conflict, got {other:?}"),
+        }
+        assert!(matches!(
+            federated_get(&[SourceSpec::new(conflicted.path()), SourceSpec::new(healthy.path())], "PRD-001", QueryMode::Strict).await,
+            Err(ConstellationError::SourceUnavailable { .. })
+        ));
+        assert!(matches!(
+            federated_get(&[SourceSpec::new_optional(conflicted.path()), SourceSpec::new(healthy.path())], "PRD-001", QueryMode::Strict).await.unwrap(),
+            FederatedGet::Found(_)
+        ));
     }
 
     #[tokio::test]

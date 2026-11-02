@@ -28,9 +28,10 @@ pub struct DriftedFile {
 /// Check drift for all active ADR/RFC artifacts.
 pub async fn check_drift(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     workspace_root: &Path,
 ) -> anyhow::Result<Vec<DriftReport>> {
-    let records = store.list_records(None).await?;
+    let records = store.list_records(permit, None).await?;
 
     Ok(check_drift_from_records(&records, workspace_root))
 }
@@ -248,31 +249,29 @@ mod tests {
     }
 
     async fn legacy_store_for(read: &WorkspaceRead) -> LanceStore {
-        let store = LanceStore::init(read.workspace()).await.unwrap();
+        let (store, guard) = { let ws = read.workspace().parent().unwrap().join("legacy-projection-fixture"); let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); let store = LanceStore::init_new(&ws, &guard).await.unwrap(); for name in crate::workspace::ARTIFACT_DIRS.iter().copied().chain(["state", "config.yaml"]) { let src = read.workspace().join(name); if !src.exists() { continue; } for entry in walkdir::WalkDir::new(&src).follow_links(false) { let entry = entry.unwrap(); let dest = ws.join(entry.path().strip_prefix(read.workspace()).unwrap()); if entry.file_type().is_dir() { std::fs::create_dir_all(&dest).unwrap(); } else { std::fs::create_dir_all(dest.parent().unwrap()).unwrap(); std::fs::copy(entry.path(), dest).unwrap(); } } } (store, guard) };
         // From `read.records()` (scores recomputed by `from_parts`), not
         // from `record_from_parsed` whose output is 0.0 for every record.
         for record in read.records() {
-            store
-                .create_artifact(&crate::db::store::NewArtifact {
-                    canonical_key: record.id.clone(),
-                    id: record.id.clone(),
-                    kind: record.kind.clone(),
-                    status: record.status.clone(),
-                    title: record.title.clone(),
-                    body: record.body.clone(),
-                    depth: record.depth.clone(),
-                    author: record.author.clone(),
-                    parent_epic: record.parent_epic.clone(),
-                    valid_until: record.valid_until.clone(),
-                    tags: record.tags.clone(),
-                })
+            store.create_artifact(&guard, &crate::db::store::NewArtifact {
+                canonical_key: record.id.clone(),
+                id: record.id.clone(),
+                kind: record.kind.clone(),
+                status: record.status.clone(),
+                title: record.title.clone(),
+                body: record.body.clone(),
+                depth: record.depth.clone(),
+                author: record.author.clone(),
+                parent_epic: record.parent_epic.clone(),
+                valid_until: record.valid_until.clone(),
+                tags: record.tags.clone(),
+            })
                 .await
                 .unwrap();
-            store.replace_record(record).await.unwrap();
+            store.replace_record(&guard, record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
-            store
-                .add_relation(&source, &target, &relation)
+            store.add_relation(&guard, &source, &target, &relation)
                 .await
                 .unwrap();
         }
@@ -349,9 +348,9 @@ mod tests {
     async fn captured_drift_agrees_with_the_legacy_projection() {
         let (_tmp, repo, ws) = drift_repo();
         let read = open_read(&ws).await;
-        let store = legacy_store_for(&read).await;
+        let (store, guard) = { let store = legacy_store_for(&read).await; let guard = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path()).await.unwrap(); (store, guard) };
 
-        let legacy = check_drift(&store, &repo).await.unwrap();
+        let legacy = check_drift(&store, &guard, &repo).await.unwrap();
         let captured = check_drift_captured(&read, &repo).await.unwrap();
 
         assert_eq!(legacy.len(), captured.len());

@@ -152,10 +152,11 @@ impl std::fmt::Display for FpfDashboard {
 /// Pass `fpf_config` to use custom weights/thresholds, or `None` for defaults.
 pub async fn dashboard(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     fpf_config: Option<&FpfConfig>,
 ) -> anyhow::Result<FpfDashboard> {
-    let records = store.list_records(None).await?;
-    let all_relations = store.get_all_relations().await?;
+    let records = store.list_records(permit, None).await?;
+    let all_relations = store.get_all_relations(permit).await?;
     Ok(dashboard_from_records(&records, &all_relations, fpf_config))
 }
 
@@ -377,16 +378,17 @@ pub struct MatchedRule {
 /// consider batching multiple check calls via `build_rule_actions`.
 pub async fn check_artifact_against_rules(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     artifact_id: &str,
     fpf_config: Option<&FpfConfig>,
 ) -> anyhow::Result<Option<RuleCheckResult>> {
-    let record = match store.get_record(artifact_id).await? {
+    let record = match store.get_record(permit, artifact_id).await? {
         Some(r) => r,
         None => return Ok(None),
     };
 
-    let all_relations = store.get_all_relations().await?;
-    let records = store.list_records(None).await?;
+    let all_relations = store.get_all_relations(permit).await?;
+    let records = store.list_records(permit, None).await?;
 
     Ok(check_against_rules_from_records(
         artifact_id,
@@ -650,7 +652,7 @@ mod prd041_tests {
 
     async fn make_store(tmp: &TempDir) -> LanceStore {
         let ws = tmp.path().join(".forgeplan");
-        LanceStore::init(&ws).await.unwrap()
+        { let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap(); LanceStore::init_new(&ws, &guard).await.unwrap() }
     }
 
     fn custom_rule(name: &str, priority: u8) -> Rule {
@@ -698,14 +700,14 @@ mod prd041_tests {
     #[tokio::test]
     async fn check_returns_none_for_missing_id() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        let res = check_artifact_against_rules(&store, "DOES-NOT-EXIST", None)
+        let (store, guard) = { let store = make_store(&tmp).await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (store, guard) };
+        let res = check_artifact_against_rules(&store, &guard, "DOES-NOT-EXIST", None)
             .await
             .unwrap();
         assert!(res.is_none(), "missing artifact must return Ok(None)");
     }
 
-    async fn seed_draft_prd(store: &LanceStore, id: &str) {
+    async fn seed_draft_prd(store: &LanceStore, guard: &crate::workspace::lock::WorkspaceLock, id: &str) {
         let a = NewArtifact {
             canonical_key: id.to_string(),
             id: id.to_string(),
@@ -719,17 +721,17 @@ mod prd041_tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&a).await.unwrap();
+        store.create_artifact(guard, &a).await.unwrap();
     }
 
     #[tokio::test]
     async fn check_returns_all_matched_plus_unmatched_equals_total() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        seed_draft_prd(&store, "PRD-001").await;
+        let (store, guard) = { let store = make_store(&tmp).await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (store, guard) };
+        seed_draft_prd(&store, &guard, "PRD-001").await;
 
         let (default_rules, _) = active_rules(None);
-        let result = check_artifact_against_rules(&store, "PRD-001", None)
+        let result = check_artifact_against_rules(&store, &guard, "PRD-001", None)
             .await
             .unwrap()
             .expect("PRD-001 exists");
@@ -747,10 +749,10 @@ mod prd041_tests {
     #[tokio::test]
     async fn check_winning_is_first_of_matched() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        seed_draft_prd(&store, "PRD-001").await;
+        let (store, guard) = { let store = make_store(&tmp).await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (store, guard) };
+        seed_draft_prd(&store, &guard, "PRD-001").await;
 
-        let result = check_artifact_against_rules(&store, "PRD-001", None)
+        let result = check_artifact_against_rules(&store, &guard, "PRD-001", None)
             .await
             .unwrap()
             .expect("PRD-001 exists");
@@ -781,15 +783,15 @@ mod prd041_tests {
     #[tokio::test]
     async fn check_uses_custom_config_rules() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        seed_draft_prd(&store, "PRD-001").await;
+        let (store, guard) = { let store = make_store(&tmp).await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (store, guard) };
+        seed_draft_prd(&store, &guard, "PRD-001").await;
 
         let cfg = FpfConfig {
             rules: vec![custom_rule("only-rule", 1)],
             ..Default::default()
         };
 
-        let result = check_artifact_against_rules(&store, "PRD-001", Some(&cfg))
+        let result = check_artifact_against_rules(&store, &guard, "PRD-001", Some(&cfg))
             .await
             .unwrap()
             .expect("PRD-001 exists");
@@ -803,8 +805,8 @@ mod prd041_tests {
     #[tokio::test]
     async fn check_returns_empty_when_all_unmatched() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        seed_draft_prd(&store, "PRD-001").await;
+        let (store, guard) = { let store = make_store(&tmp).await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (store, guard) };
+        seed_draft_prd(&store, &guard, "PRD-001").await;
 
         // Custom rule that requires status="active" — won't match a draft.
         let cfg = FpfConfig {
@@ -821,7 +823,7 @@ mod prd041_tests {
             ..Default::default()
         };
 
-        let result = check_artifact_against_rules(&store, "PRD-001", Some(&cfg))
+        let result = check_artifact_against_rules(&store, &guard, "PRD-001", Some(&cfg))
             .await
             .unwrap()
             .expect("PRD-001 exists");
@@ -889,10 +891,10 @@ mod prd041_tests {
     async fn check_finds_winning_rule_in_priority_order() {
         // Draft PRD with r_eff = 0.0 should match `blind-spot` (priority 1).
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        seed_draft_prd(&store, "PRD-001").await;
+        let (store, guard) = { let store = make_store(&tmp).await; let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path()).await.unwrap(); (store, guard) };
+        seed_draft_prd(&store, &guard, "PRD-001").await;
 
-        let result = check_artifact_against_rules(&store, "PRD-001", None)
+        let result = check_artifact_against_rules(&store, &guard, "PRD-001", None)
             .await
             .unwrap()
             .expect("PRD-001 exists");
@@ -952,12 +954,24 @@ mod prd041_tests {
     }
 
     async fn legacy_store_for(read: &WorkspaceRead) -> LanceStore {
-        let store = LanceStore::init(read.workspace()).await.unwrap();
+        let ws = read.workspace().parent().unwrap().join("legacy-projection-fixture");
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+        for name in crate::workspace::ARTIFACT_DIRS {
+            let src = read.workspace().join(name);
+            if !src.exists() { continue; }
+            for entry in walkdir::WalkDir::new(&src).follow_links(false) {
+                let entry = entry.unwrap();
+                let dest = ws.join(entry.path().strip_prefix(read.workspace()).unwrap());
+                if entry.file_type().is_dir() { std::fs::create_dir_all(&dest).unwrap(); }
+                else { std::fs::create_dir_all(dest.parent().unwrap()).unwrap(); std::fs::copy(entry.path(), dest).unwrap(); }
+            }
+        }
         // From `read.records()` (scores recomputed by `from_parts`), not
         // from `record_from_parsed` whose output is 0.0 for every record.
         for record in read.records() {
             store
-                .create_artifact(&NewArtifact {
+                .create_artifact(&guard, &NewArtifact {
                     canonical_key: record.id.clone(),
                     id: record.id.clone(),
                     kind: record.kind.clone(),
@@ -972,11 +986,11 @@ mod prd041_tests {
                 })
                 .await
                 .unwrap();
-            store.replace_record(record).await.unwrap();
+            store.replace_record(&guard, record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
             store
-                .add_relation(&source, &target, &relation)
+                .add_relation(&guard, &source, &target, &relation)
                 .await
                 .unwrap();
         }
@@ -1018,7 +1032,8 @@ mod prd041_tests {
         );
 
         let store = legacy_store_for(&read).await;
-        let legacy = dashboard(&store, Some(&cfg)).await.unwrap();
+        let guard = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path()).await.unwrap();
+        let legacy = dashboard(&store, &guard, Some(&cfg)).await.unwrap();
         assert_eq!(captured.to_string(), legacy.to_string());
         for (captured, legacy) in captured.fgr_scores.iter().zip(&legacy.fgr_scores) {
             assert_eq!(captured.artifact_id, legacy.artifact_id);
@@ -1121,9 +1136,10 @@ mod prd041_tests {
         let (_tmp, ws) = canonical_workspace();
         let read = open_read(&ws).await;
         let store = legacy_store_for(&read).await;
+        let guard = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path()).await.unwrap();
 
         for id in ["PRD-001", "PRD-002"] {
-            let legacy = check_artifact_against_rules(&store, id, None)
+            let legacy = check_artifact_against_rules(&store, &guard, id, None)
                 .await
                 .unwrap()
                 .expect("the legacy projection holds the artifact");

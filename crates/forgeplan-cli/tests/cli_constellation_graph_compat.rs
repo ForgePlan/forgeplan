@@ -128,7 +128,7 @@ fn hydrate_legacy_source_bodies(root: &Path) {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let guard = workspace::acquire_workspace_lock(&ws).await.unwrap();
         let store = LanceStore::open(&ws).await.unwrap();
-        let records = store.list_records(None).await.unwrap();
+        let records = store.list_records(&guard, None).await.unwrap();
         assert!(!records.is_empty(), "legacy fixture must contain real rows");
         for record in records {
             let kind = record.kind.parse::<ArtifactKind>().unwrap();
@@ -148,7 +148,7 @@ fn hydrate_legacy_source_bodies(root: &Path) {
             .await
             .unwrap();
             assert_eq!(
-                store.get_record(&record.id).await.unwrap().unwrap().body,
+                store.get_record(&guard, &record.id).await.unwrap().unwrap().body,
                 content,
                 "legacy fixture must preserve source metadata for {}",
                 record.id

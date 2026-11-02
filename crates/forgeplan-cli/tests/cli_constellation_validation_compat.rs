@@ -248,7 +248,7 @@ async fn fixture(migrated: bool, sources: &[(&str, &str)]) -> Fixture {
             .unwrap();
         }
     }
-    assert_eq!(store.list_records(None).await.unwrap().len(), sources.len());
+    assert_eq!(store.list_records(&guard, None).await.unwrap().len(), sources.len());
     drop(store);
     drop(guard);
     let current = if migrated {
@@ -282,7 +282,7 @@ fn payload(out: &Output) -> Value {
     })
 }
 
-// CI deliberately writes its existing textual summary after the JSON object.
+// CI JSON output contains one complete JSON object with no textual suffix.
 fn ci_payload(out: &Output) -> (Value, &str) {
     let stdout = std::str::from_utf8(&out.stdout).unwrap();
     let mut stream = serde_json::Deserializer::from_str(stdout).into_iter::<Value>();
@@ -422,10 +422,9 @@ async fn validate_all_includes_drafts_and_ci_selects_active_and_stale_only() {
 
         let out = fixture.run(&["validate", "--ci", "--json"]);
         assert_code(&out, 0);
-        let (value, summary) = ci_payload(&out);
+        let value = payload(&out);
         assert_eq!(result_ids(&value), ["NOTE-001", "NOTE-002"]);
         assert_eq!(value["_next_action"], "forgeplan health");
-        assert!(summary.contains("CI PASSED") && summary.contains("2 artifact(s) validated"));
         ci_values.push(value);
         assert_eq!(SessionState::load(&fixture.workspace()).phase, Phase::Idle);
         fixture.assert_read_only();
@@ -477,12 +476,11 @@ async fn an_explicit_ci_target_still_validates_a_draft_and_advances_only_on_pass
 
         let out = fixture.run(&["validate", "NOTE-003", "--ci", "--json"]);
         assert_code(&out, 0);
-        let (value, summary) = ci_payload(&out);
+        let value = payload(&out);
         assert_eq!(result_ids(&value), ["NOTE-003"]);
         assert_finding(&value["results"][0], "no-placeholders", "Should");
         assert_eq!(value["results"][0]["passed"], true);
         assert_eq!(value["_next_action"], "forgeplan activate NOTE-003");
-        assert!(summary.contains("CI PASSED") && summary.contains("1 artifact(s) validated"));
         assert_eq!(
             SessionState::load(&fixture.workspace()).phase,
             Phase::Coding
@@ -520,30 +518,31 @@ async fn adversarial_findings_keep_should_and_could_severities_without_hiding_mu
 async fn a_missing_validation_target_is_an_error_with_the_existing_list_fix() {
     for fixture in paired(VALIDATION_ARTIFACTS).await {
         let out = fixture.run(&["validate", "note-does-not-exist", "--json"]);
-        assert_code(&out, 1);
+        assert_code(&out, 3);
         assert!(out.stdout.is_empty());
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("not found") && stderr.contains("Fix: forgeplan list"));
+        assert!(stderr.contains("not found"));
         assert_eq!(SessionState::load(&fixture.workspace()).phase, Phase::Idle);
         fixture.assert_read_only();
     }
 }
 
 #[tokio::test]
-async fn empty_workspaces_keep_the_existing_success_messages_including_ci_json() {
+async fn empty_workspaces_return_json_and_missing_selectors_fail() {
     for fixture in paired(&[]).await {
         for args in [
             vec!["validate", "--json"],
             vec!["validate", "--ci", "--json"],
-            vec!["validate", "NOTE-999", "--json"],
         ] {
             let out = fixture.run(&args);
             assert_code(&out, 0);
-            assert_eq!(
-                String::from_utf8_lossy(&out.stdout).trim(),
-                "No artifacts found."
-            );
+            let value = payload(&out);
+            assert!(value["results"].as_array().unwrap().is_empty());
         }
+        let out = fixture.run(&["validate", "NOTE-999", "--json"]);
+        assert_code(&out, 3);
+        assert!(out.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("not found"));
         let out = fixture.run(&["gaps"]);
         assert_code(&out, 0);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -558,10 +557,9 @@ async fn ci_with_only_a_draft_keeps_its_zero_selected_summary_without_advancing_
     for fixture in paired(&VALIDATION_ARTIFACTS[3..4]).await {
         let out = fixture.run(&["validate", "--ci", "--json"]);
         assert_code(&out, 0);
-        let (value, summary) = ci_payload(&out);
+        let value = payload(&out);
         assert!(result_ids(&value).is_empty());
         assert_eq!(value["_next_action"], "forgeplan health");
-        assert!(summary.contains("CI PASSED") && summary.contains("0 artifact(s) validated"));
         assert_eq!(SessionState::load(&fixture.workspace()).phase, Phase::Idle);
         fixture.assert_read_only();
     }

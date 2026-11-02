@@ -8,60 +8,52 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let workspace = forgeplan_core::workspace::find_workspace(&cwd).ok_or_else(|| {
         anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first.")
     })?;
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace).await?;
     let (record, relations, incoming, view_metadata) = if common::index_migrated(&workspace) {
-        let read = common::workspace_read(&workspace).await?;
-        // The reference is resolved through the ONE shared resolver, over
-        // the documents the capture holds. A name two documents answer to
-        // names NEITHER of them: the command says which two, and exits
-        // non-zero. It never picks one.
-        let resolution = common::resolve_against_capture(&read, id);
-        let canonical = match &resolution.outcome {
-            common::Resolution::Found(found) => found.identity.canonical_key.clone(),
-            other => {
-                let failure = common::resolution_failure(other, id, &resolution.candidates);
+        let selected = match forgeplan_core::constellation::facade::open_workspace_selector_with_permit(&workspace, &permit, id).await {
+            Ok(Some(selected)) => selected,
+            Ok(None) => {
+                let failure = common::resolution_failure(&common::Resolution::NotFound, id, &[]);
                 common::print_resolution_failure(&failure);
                 return Err(common::resolution_failure_error(&failure));
             }
+            Err(forgeplan_core::constellation::ConstellationError::Resolve(error)) => {
+                let outcome: common::Resolution = Err(error).into();
+                let candidates = match &outcome {
+                    common::Resolution::Ambiguous { candidates, .. }
+                    | common::Resolution::ConflictingCanonicalKey { candidates, .. } => candidates.as_slice(),
+                    _ => &[],
+                };
+                let failure = common::resolution_failure(&outcome, id, candidates);
+                common::print_resolution_failure(&failure);
+                return Err(common::resolution_failure_error(&failure));
+            }
+            Err(error) => return Err(error.into()),
         };
-        let record = read
-            .get_record_by_key(&canonical)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Artifact '{id}' is not in the captured view\nFix: forgeplan index"
-                )
-            })?
-            .clone();
+        let record = selected.record().clone();
         // The edges are held under the canonical key. The report names each
         // endpoint by the display id a reader knows it by, and carries the
         // key beside it — so a document that shares its display id with
         // another is still named exactly.
-        let display_by_key: std::collections::HashMap<String, String> = read
-            .records()
-            .iter()
-            .map(|record| (record.canonical_key.clone(), record.id.clone()))
-            .collect();
         let name = |endpoint: &str| -> String {
-            display_by_key
-                .get(endpoint)
-                .cloned()
-                .unwrap_or_else(|| endpoint.to_string())
+            selected.display_for_key(endpoint).unwrap_or(endpoint).to_string()
         };
-        let relations = read
-            .get_relations_by_key(&canonical)
+        let relations = selected
+            .relations()
             .into_iter()
             .map(|(target, relation)| (name(&target), target, relation))
             .collect::<Vec<_>>();
-        let incoming = read
-            .get_incoming_relations(&canonical)
+        let incoming = selected
+            .incoming_relations()
             .into_iter()
             .map(|(source, relation)| (name(&source), source, relation))
             .collect::<Vec<_>>();
         let metadata = serde_json::json!({
             "index": "constellation",
-            "generation_id": read.view().descriptor().map(|descriptor| &descriptor.generation_id),
-            "snapshot_id": read.snapshot_id(),
-            "source_set_digest": read.source_set_digest(),
-            "persisted": read.is_persisted(),
+            "generation_id": selected.generation_id(),
+            "snapshot_id": selected.snapshot_id(),
+            "source_set_digest": selected.source_set_digest(),
+            "persisted": selected.is_persisted(),
         });
         (record, relations, incoming, Some(metadata))
     } else {
@@ -70,7 +62,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         // two rows answer to names neither of them — the command says which
         // two, and exits non-zero.
         let store = common::store().await?;
-        let resolution = common::resolve_against_legacy_index(&store, &workspace, id).await?;
+        let resolution = common::resolve_against_legacy_index(&store, &permit, &workspace, id).await?;
         let canonical = match &resolution.outcome {
             common::Resolution::Found(found) => found.identity.canonical_key.clone(),
             other => {
@@ -80,19 +72,19 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             }
         };
         let record = store
-            .get_record(&canonical)
+            .get_record(&permit, &canonical)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' missing after resolution"))?;
         // The edges are held under the canonical key. The report names each
         // endpoint by the display id a reader knows it by, and carries the
         // key beside it.
         let mut relations: Vec<(String, String, String)> = Vec::new();
-        for (target, relation) in store.get_relations(&record.id).await? {
+        for (target, relation) in store.get_relations(&permit, &canonical).await? {
             // A qualified or forward reference (`ADR-001@ws-b`) is not a
             // selector in this workspace. It stays verbatim: one unresolved
             // edge must not make the whole document unreadable.
             let display = store
-                .resolve_display_id(&target)
+                .resolve_display_id(&permit, &target)
                 .await
                 .ok()
                 .flatten()
@@ -100,9 +92,9 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             relations.push((display, target, relation));
         }
         let mut incoming: Vec<(String, String, String)> = Vec::new();
-        for (source, relation) in store.get_incoming_relations(&record.id).await? {
+        for (source, relation) in store.get_incoming_relations(&permit, &canonical).await? {
             let display = store
-                .resolve_display_id(&source)
+                .resolve_display_id(&permit, &source)
                 .await
                 .ok()
                 .flatten()

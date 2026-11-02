@@ -442,7 +442,10 @@ fn maybe_prepare_semantic(non_interactive: bool, with_model: bool) {
 /// If LanceStore::init fails, removes the partially created .forgeplan/ directory.
 async fn init_with_rollback(cwd: &std::path::Path, project_name: &str) -> Result<()> {
     let ws = init_workspace(cwd, project_name)?;
-    if let Err(e) = LanceStore::init(&ws).await {
+    let guard = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws).await?;
+    let initialized = LanceStore::init_new(&ws, &guard).await;
+    drop(guard);
+    if let Err(e) = initialized {
         // Rollback: remove partially created workspace
         let _ = tokio::fs::remove_dir_all(&ws).await;
         return Err(e);
@@ -715,6 +718,9 @@ async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Res
 /// CRITICALLY: artifact .md files are never touched. Bodies, links,
 /// custom frontmatter, agent stamps — all preserved.
 async fn refresh_existing_workspace(workspace: &std::path::Path, project_name: &str) -> Result<()> {
+    let guard = forgeplan_core::workspace::lock::acquire_workspace_lock(workspace).await?;
+    common::ensure_ordinary_mutation_allowed(workspace)?;
+    let migrated = common::index_migrated(workspace);
     // Ensure every artifact subdir exists.
     for dir_name in ARTIFACT_DIRS {
         let dir = workspace.join(dir_name);
@@ -787,7 +793,7 @@ async fn refresh_existing_workspace(workspace: &std::path::Path, project_name: &
     // retired `artifacts`/`evidence`/`relations` tables beside the live index,
     // and nothing can remove them afterwards. The canonical markdown is
     // already the source of truth there; publishing it is `forgeplan index`.
-    if common::index_migrated(workspace) {
+    if migrated {
         println!(
             "  {} Index owned by the constellation protocol — kept as is \
              (`forgeplan index` reconciles it)",
@@ -795,7 +801,7 @@ async fn refresh_existing_workspace(workspace: &std::path::Path, project_name: &
         );
     } else {
         // Idempotent for an existing dataset, so this is safe to repeat.
-        LanceStore::init(workspace).await?;
+        LanceStore::open_for_write(workspace, &guard).await?;
     }
 
     // PROB-062: refresh the canonical .gitignore section. The workspace
@@ -809,6 +815,10 @@ async fn refresh_existing_workspace(workspace: &std::path::Path, project_name: &
             "warning: could not refresh canonical .gitignore section during --force \
              reinit: {e}"
         );
+    }
+    drop(guard);
+    if !migrated {
+        common::drain_legacy_semantic_after_mutation(workspace).await?;
     }
     Ok(())
 }
@@ -1018,13 +1028,14 @@ async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
     // same ordering `common::open_store_locked_tolerating_constellation`
     // uses, and for the same reason.
     let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(workspace).await?;
+    common::ensure_ordinary_mutation_allowed(workspace)?;
     let migrated = common::index_migrated(workspace);
     // `LanceStore::init` CREATES the tables when they are absent. It is only
     // safe on a layout that still owns a legacy index.
     let store = if migrated {
         None
     } else {
-        Some(LanceStore::init(workspace).await?)
+        Some(LanceStore::open_for_write(workspace, &lock).await?)
     };
     let options = ScanImportOptions::default();
 
@@ -1033,10 +1044,12 @@ async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
         project_root,
         workspace,
         Some(&lock),
+        None,
         store.as_ref(),
         &options,
     )
     .await?;
+    drop(store);
     drop(lock);
 
     if result.total_found == 0 {
@@ -1086,6 +1099,8 @@ async fn run_scan_import(project_root: &Path, workspace: &Path) -> Result<()> {
         }
         if migrated {
             common::reconcile_after_file_mutation(workspace).await;
+        } else {
+            common::drain_legacy_semantic_after_mutation(workspace).await?;
         }
     }
 

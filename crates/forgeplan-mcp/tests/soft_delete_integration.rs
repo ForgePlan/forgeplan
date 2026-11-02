@@ -18,7 +18,8 @@ use tempfile::TempDir;
 async fn new_ws_with_artifact() -> (TempDir, std::path::PathBuf, LanceStore, NewArtifact) {
     let tmp = TempDir::new().unwrap();
     let ws = workspace::init_workspace(tmp.path(), "test-project").unwrap();
-    let store = LanceStore::init(&ws).await.unwrap();
+    let lock = workspace::acquire_workspace_lock(&ws).await.unwrap();
+    let store = LanceStore::init_new(&ws, &lock).await.unwrap();
 
     let artifact = NewArtifact {
         canonical_key: "PRD-001".into(),
@@ -33,7 +34,7 @@ async fn new_ws_with_artifact() -> (TempDir, std::path::PathBuf, LanceStore, New
         valid_until: None,
         tags: Vec::new(),
     };
-    store.create_artifact_for_test(&artifact).await.unwrap();
+    store.create_artifact_for_test(&lock, &artifact).await.unwrap();
     (tmp, ws, store, artifact)
 }
 
@@ -44,9 +45,10 @@ async fn soft_delete_capture_writes_receipt_before_mutation() {
     // exist on disk BEFORE the store mutation happens (crash invariant
     // ADR #4 of PRD-055).
     let (_tmp, ws, store, _artifact) = new_ws_with_artifact().await;
+    let lock = workspace::acquire_workspace_lock(&ws).await.unwrap();
 
     // Simulate what soft_delete_capture does for a Delete op:
-    let record = store.get_record("PRD-001").await.unwrap().unwrap();
+    let record = store.get_record(&lock, "PRD-001").await.unwrap().unwrap();
     let receipt_id = forgeplan_core::undo::generate_receipt_id("prd", "PRD-001");
     let snapshot = forgeplan_core::undo::ArtifactSnapshot {
         id: record.id.clone(),
@@ -85,7 +87,7 @@ async fn soft_delete_capture_writes_receipt_before_mutation() {
     assert_eq!(listed[0].snapshot.id, "PRD-001");
 
     // Now it's safe to remove from store.
-    store.delete_artifact_for_test("PRD-001").await.unwrap();
+    store.delete_artifact_for_test(&lock, "PRD-001").await.unwrap();
 
     // Invariant still holds: receipt survives.
     let listed = list_receipts(&ws).await.unwrap();

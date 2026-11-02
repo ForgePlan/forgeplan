@@ -25,18 +25,14 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
         );
     }
 
-    let (_, source) = common::open_read_source().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
 
     // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    let canonical = match &source {
-        common::ReadSource::Legacy(store) => store.resolve_id(artifact_id).await?,
-        common::ReadSource::Captured(read) => read.resolve_id(artifact_id),
-    }
-    .ok_or_else(|| anyhow::anyhow!("Artifact '{artifact_id}' not found\nFix: forgeplan list"))?;
+    let (canonical, _) = common::resolve_required_identity(&source, &ws, artifact_id).await?;
     let artifact_id = canonical.as_str();
 
     let record: Cow<'_, ArtifactRecord> = match &source {
-        common::ReadSource::Legacy(store) => store.get_record(artifact_id).await?.map(Cow::Owned),
+        common::ReadSource::Legacy(store) => store.get_record(&_read_guard, artifact_id).await?.map(Cow::Owned),
         common::ReadSource::Captured(read) => read.get_record(artifact_id).map(Cow::Borrowed),
     }
     .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", artifact_id))?;
@@ -71,12 +67,12 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
 
     let (outgoing, incoming) = match &source {
         common::ReadSource::Legacy(store) => (
-            store.get_relations(&record.id).await?,
-            store.get_incoming_relations(&record.id).await?,
+            store.get_relations(&_read_guard, &record.canonical_key).await?,
+            store.get_incoming_relations(&_read_guard, &record.canonical_key).await?,
         ),
         common::ReadSource::Captured(read) => (
-            read.get_relations(&record.id),
-            read.get_incoming_relations(&record.id),
+            read.get_relations(&record.canonical_key),
+            read.get_incoming_relations(&record.canonical_key),
         ),
     };
 

@@ -16,9 +16,12 @@ use forgeplan_core::scoring::reff::r_eff_recursive;
 use std::collections::HashSet;
 use tempfile::TempDir;
 
-async fn make_store(tmp: &TempDir) -> LanceStore {
+async fn make_store(tmp: &TempDir) -> (LanceStore, forgeplan_core::workspace::lock::WorkspaceLock) {
     let ws = tmp.path().join(".forgeplan");
-    LanceStore::init(&ws).await.unwrap()
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    std::fs::write(ws.join("config.yaml"), "project_name: scoring_cascade\n").unwrap();
+    let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+    (store, lock)
 }
 
 fn artifact(id: &str, kind: &str, status: &str, body: &str) -> NewArtifact {
@@ -39,9 +42,9 @@ fn artifact(id: &str, kind: &str, status: &str, body: &str) -> NewArtifact {
 
 const CANONICAL: &str = "verdict: supports\ncongruence_level: 3\nevidence_type: measurement\n";
 
-async fn score(store: &LanceStore, id: &str) -> f64 {
+async fn score(store: &LanceStore, lock: &forgeplan_core::workspace::lock::WorkspaceLock, id: &str) -> f64 {
     let mut seen: HashSet<String> = HashSet::new();
-    r_eff_recursive(id, store, &mut seen).await.unwrap().r_eff
+    r_eff_recursive(id, store, lock, &mut seen).await.unwrap().r_eff
 }
 
 /// #325. A pack has no packs, so asking it for its evidence found none and
@@ -51,13 +54,13 @@ async fn score(store: &LanceStore, id: &str) -> f64 {
 #[tokio::test]
 async fn a_canonical_leaf_pack_is_worth_something_on_its_own() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp).await;
+    let (store, lock) = make_store(&tmp).await;
     store
-        .create_artifact_for_test(&artifact("EVID-001", "evidence", "active", CANONICAL))
+        .create_artifact_for_test(&lock, &artifact("EVID-001", "evidence", "active", CANONICAL))
         .await
         .unwrap();
 
-    let s = score(&store, "EVID-001").await;
+    let s = score(&store, &lock, "EVID-001").await;
     assert!(
         (s - 1.0).abs() < 1e-9,
         "supports + CL3 is the strongest a pack can state; got {s}"
@@ -69,9 +72,9 @@ async fn a_canonical_leaf_pack_is_worth_something_on_its_own() {
 #[tokio::test]
 async fn the_leaf_score_still_discriminates() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp).await;
+    let (store, lock) = make_store(&tmp).await;
     store
-        .create_artifact_for_test(&artifact(
+        .create_artifact_for_test(&lock, &artifact(
             "EVID-002",
             "evidence",
             "active",
@@ -89,7 +92,7 @@ async fn the_leaf_score_still_discriminates() {
     // penalties, so tightening it to `s > 0.0` made the test wrong rather than
     // stronger. Mutation testing found the first mistake; running the fixed
     // tree found the second.
-    let s = score(&store, "EVID-002").await;
+    let s = score(&store, &lock, "EVID-002").await;
     assert!(
         (s - 0.5).abs() < 1e-9,
         "a weakening pack states half a case, not none and not all; got {s}"
@@ -110,21 +113,21 @@ async fn the_leaf_score_still_discriminates() {
 #[tokio::test]
 async fn a_pack_is_not_dragged_down_by_the_artifact_it_supports() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp).await;
+    let (store, lock) = make_store(&tmp).await;
     store
-        .create_artifact_for_test(&artifact("PRD-001", "prd", "active", "no evidence here"))
+        .create_artifact_for_test(&lock, &artifact("PRD-001", "prd", "active", "no evidence here"))
         .await
         .unwrap();
     store
-        .create_artifact_for_test(&artifact("EVID-003", "evidence", "active", CANONICAL))
+        .create_artifact_for_test(&lock, &artifact("EVID-003", "evidence", "active", CANONICAL))
         .await
         .unwrap();
     store
-        .add_relation_for_test("EVID-003", "PRD-001", "informs")
+        .add_relation_for_test(&lock, "EVID-003", "PRD-001", "informs")
         .await
         .unwrap();
 
-    let s = score(&store, "EVID-003").await;
+    let s = score(&store, &lock, "EVID-003").await;
     assert!(
         (s - 1.0).abs() < 1e-9,
         "the pack's own quality does not depend on what it informs; got {s}"
@@ -151,49 +154,49 @@ async fn a_pack_is_not_dragged_down_by_the_artifact_it_supports() {
 #[tokio::test]
 async fn a_pack_with_children_is_not_dragged_down_by_what_it_informs() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp).await;
+    let (store, lock) = make_store(&tmp).await;
 
     // The independent source of weakness, two hops away from the pack.
     store
-        .create_artifact_for_test(&artifact("PRD-201", "prd", "active", "no evidence at all"))
+        .create_artifact_for_test(&lock, &artifact("PRD-201", "prd", "active", "no evidence at all"))
         .await
         .unwrap();
     // The decision the pack supports — evidenced, but zeroed by its own parent.
     store
-        .create_artifact_for_test(&artifact("PRD-200", "prd", "active", "built on PRD-201"))
+        .create_artifact_for_test(&lock, &artifact("PRD-200", "prd", "active", "built on PRD-201"))
         .await
         .unwrap();
     store
-        .add_relation_for_test("PRD-200", "PRD-201", "based_on")
+        .add_relation_for_test(&lock, "PRD-200", "PRD-201", "based_on")
         .await
         .unwrap();
 
     // The pack under test, plus a child so the FR-001 early return does not fire.
     store
-        .create_artifact_for_test(&artifact("EVID-200", "evidence", "active", CANONICAL))
+        .create_artifact_for_test(&lock, &artifact("EVID-200", "evidence", "active", CANONICAL))
         .await
         .unwrap();
     store
-        .create_artifact_for_test(&artifact("EVID-201", "evidence", "active", CANONICAL))
+        .create_artifact_for_test(&lock, &artifact("EVID-201", "evidence", "active", CANONICAL))
         .await
         .unwrap();
     store
-        .add_relation_for_test("EVID-201", "EVID-200", "informs")
+        .add_relation_for_test(&lock, "EVID-201", "EVID-200", "informs")
         .await
         .unwrap();
     store
-        .add_relation_for_test("EVID-200", "PRD-200", "informs")
+        .add_relation_for_test(&lock, "EVID-200", "PRD-200", "informs")
         .await
         .unwrap();
 
     // Precondition: the decision really is zero, or this test proves nothing.
-    let prd = score(&store, "PRD-200").await;
+    let prd = score(&store, &lock, "PRD-200").await;
     assert_eq!(
         prd, 0.0,
         "setup is wrong — PRD-200 must be zeroed by PRD-201"
     );
 
-    let s = score(&store, "EVID-200").await;
+    let s = score(&store, &lock, "EVID-200").await;
     assert!(
         s > 0.0,
         "a measurement's reliability must not depend on the decision it justifies; got {s}"
@@ -208,29 +211,29 @@ async fn a_pack_with_children_is_not_dragged_down_by_what_it_informs() {
 #[tokio::test]
 async fn an_exempt_note_does_not_poison_what_is_built_on_it() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp).await;
+    let (store, lock) = make_store(&tmp).await;
     store
-        .create_artifact_for_test(&artifact("NOTE-001", "note", "active", "a design choice"))
+        .create_artifact_for_test(&lock, &artifact("NOTE-001", "note", "active", "a design choice"))
         .await
         .unwrap();
     store
-        .create_artifact_for_test(&artifact("PRD-002", "prd", "active", "well evidenced"))
+        .create_artifact_for_test(&lock, &artifact("PRD-002", "prd", "active", "well evidenced"))
         .await
         .unwrap();
     store
-        .create_artifact_for_test(&artifact("EVID-004", "evidence", "active", CANONICAL))
+        .create_artifact_for_test(&lock, &artifact("EVID-004", "evidence", "active", CANONICAL))
         .await
         .unwrap();
     store
-        .add_relation_for_test("EVID-004", "PRD-002", "informs")
+        .add_relation_for_test(&lock, "EVID-004", "PRD-002", "informs")
         .await
         .unwrap();
     store
-        .add_relation_for_test("PRD-002", "NOTE-001", "based_on")
+        .add_relation_for_test(&lock, "PRD-002", "NOTE-001", "based_on")
         .await
         .unwrap();
 
-    let s = score(&store, "PRD-002").await;
+    let s = score(&store, &lock, "PRD-002").await;
     assert!(
         s > 0.0,
         "a Note the methodology exempts from evidence must not zero its dependants; got {s}"
@@ -244,29 +247,29 @@ async fn an_exempt_note_does_not_poison_what_is_built_on_it() {
 #[tokio::test]
 async fn an_unevidenced_prd_still_drags_its_dependants_down() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp).await;
+    let (store, lock) = make_store(&tmp).await;
     store
-        .create_artifact_for_test(&artifact("PRD-100", "prd", "active", "no evidence"))
+        .create_artifact_for_test(&lock, &artifact("PRD-100", "prd", "active", "no evidence"))
         .await
         .unwrap();
     store
-        .create_artifact_for_test(&artifact("PRD-101", "prd", "active", "well evidenced"))
+        .create_artifact_for_test(&lock, &artifact("PRD-101", "prd", "active", "well evidenced"))
         .await
         .unwrap();
     store
-        .create_artifact_for_test(&artifact("EVID-005", "evidence", "active", CANONICAL))
+        .create_artifact_for_test(&lock, &artifact("EVID-005", "evidence", "active", CANONICAL))
         .await
         .unwrap();
     store
-        .add_relation_for_test("EVID-005", "PRD-101", "informs")
+        .add_relation_for_test(&lock, "EVID-005", "PRD-101", "informs")
         .await
         .unwrap();
     store
-        .add_relation_for_test("PRD-101", "PRD-100", "based_on")
+        .add_relation_for_test(&lock, "PRD-101", "PRD-100", "based_on")
         .await
         .unwrap();
 
-    let s = score(&store, "PRD-101").await;
+    let s = score(&store, &lock, "PRD-101").await;
     assert_eq!(
         s, 0.0,
         "an unevidenced PRD in the chain is debt the score must keep showing"

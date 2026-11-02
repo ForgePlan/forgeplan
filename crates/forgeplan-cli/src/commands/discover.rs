@@ -19,6 +19,7 @@ pub async fn run_start(name: &str) -> Result<()> {
     // opening a store was pure second-writer exposure. Lock is still taken
     // (session files are workspace state), and it is now the ONLY lock.
     let (workspace, _lock) = common::open_workspace_locked().await?;
+    common::ensure_ordinary_mutation_allowed(&workspace)?;
 
     let session = DiscoverSession::new(name);
     save_session(&workspace, &session)
@@ -246,6 +247,7 @@ pub async fn run_complete(session_id: &str) -> Result<()> {
         return Ok(());
     }
 
+    common::ensure_ordinary_mutation_allowed(&workspace)?;
     session.complete();
     save_session(&workspace, &session)?;
 

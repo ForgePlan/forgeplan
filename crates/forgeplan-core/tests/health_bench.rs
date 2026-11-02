@@ -51,7 +51,10 @@ async fn seed_workspace(
     total: usize,
     active_with_phase: usize,
 ) -> LanceStore {
-    let store = LanceStore::init(workspace).await.expect("init store");
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(workspace)
+        .await
+        .expect("acquire workspace lock");
+    let store = LanceStore::init_new(workspace, &lock).await.expect("init store");
     for i in 0..total {
         let kind = KINDS[i % KINDS.len()];
         let id = format!("{}-BENCH-{i:05}", kind.to_uppercase());
@@ -63,7 +66,7 @@ async fn seed_workspace(
             "active"
         };
         store
-            .create_artifact_for_test(&NewArtifact {
+            .create_artifact_for_test(&lock, &NewArtifact {
                 canonical_key: id.clone(),
                 id: id.clone(),
                 kind: kind.to_string(),
@@ -83,6 +86,7 @@ async fn seed_workspace(
             .await
             .expect("seed");
     }
+    drop(lock);
 
     let phases = [
         Phase::Shape,
@@ -114,6 +118,7 @@ async fn measure_one(total: usize, active_with_phase: usize) -> (Duration, Durat
     let tempdir = TempDir::new().expect("tempdir");
     let workspace = tempdir.path().join(".forgeplan");
     std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::write(workspace.join("config.yaml"), "project_name: health_bench\n").unwrap();
 
     let seed_start = Instant::now();
     let store = seed_workspace(&workspace, total, active_with_phase).await;
@@ -122,9 +127,12 @@ async fn measure_one(total: usize, active_with_phase: usize) -> (Duration, Durat
         total,
         seed_start.elapsed()
     );
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace)
+        .await
+        .expect("acquire read permit");
 
     let cold_start = Instant::now();
-    let (_report, _mismatches) = health_report_with_phase(&store, &workspace)
+    let (_report, _mismatches) = health_report_with_phase(&store, &permit, &workspace)
         .await
         .expect("health_report_with_phase cold");
     let cold = cold_start.elapsed();
@@ -133,7 +141,7 @@ async fn measure_one(total: usize, active_with_phase: usize) -> (Duration, Durat
     let warm_runs = 3;
     for _ in 0..warm_runs {
         let start = Instant::now();
-        let (_r, _m) = health_report_with_phase(&store, &workspace)
+        let (_r, _m) = health_report_with_phase(&store, &permit, &workspace)
             .await
             .expect("health_report_with_phase warm");
         warm_total += start.elapsed();

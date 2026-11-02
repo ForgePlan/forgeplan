@@ -17,9 +17,9 @@ pub async fn run(
     tag_filter: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (_, source, _read_guard) = common::open_read_source().await?;
     let all: Cow<'_, [ArtifactRecord]> = match &source {
-        common::ReadSource::Legacy(store) => Cow::Owned(store.list_records(None).await?),
+        common::ReadSource::Legacy(store) => Cow::Owned(store.list_records(&_read_guard, None).await?),
         common::ReadSource::Captured(read) => Cow::Borrowed(read.records()),
     };
 

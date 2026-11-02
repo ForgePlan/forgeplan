@@ -4,7 +4,7 @@ use forgeplan_core::projection;
 use crate::commands::common;
 
 pub async fn run(id: &str, reason: &str) -> anyhow::Result<()> {
-    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (ws, lock, store) = common::open_store_locked_checked(&[(id, true)]).await?;
     run_file_first(ws, lock, id, reason, store.as_ref()).await
 }
 
@@ -21,16 +21,16 @@ async fn run_file_first(
     reason: &str,
     store: Option<&forgeplan_core::db::store::LanceStore>,
 ) -> anyhow::Result<()> {
-    let read = common::workspace_read(&ws).await?;
-    let canonical = read
-        .resolve_id(id)
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found\nFix: forgeplan list"))?;
+    let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock).await?;
+    let resolution = common::resolve_against_capture(&read, id);
+    let (canonical, display_id) = common::require_found_identity(id, &resolution)?;
     let record = read
         .get_record(&canonical)
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {canonical}\nFix: forgeplan list"))?;
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     if let Some(store) = store {
-        if let Some(stored) = store.get_record(&record.canonical_key).await? {
-            projection::sync_file_to_store(store, &ws, &stored).await?;
+        if let Some(stored) = store.get_record(&lock, &record.canonical_key).await? {
+            projection::sync_file_to_store(&lock, store, &ws, &stored).await?;
         }
     }
 
@@ -40,26 +40,24 @@ async fn run_file_first(
         let ctx = projection::MutationContext::new(&ws, &lock, store);
         forgeplan_core::lifecycle::canonical::reopen_captured(&ctx, &read, &canonical, reason)
             .await
-            .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
+            .map_err(|e| {
+                if store.is_some() {
+                    anyhow::anyhow!("reopen failed; canonical files may be partially committed, semantic backlog may be pending: {}\nFix: forgeplan validate {}", e, canonical)
+                } else {
+                    anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical)
+                }
+            })?
     };
 
-    common::log_change_field(
-        &ws,
-        store,
-        &canonical,
-        "update",
-        ("status", Some(&record.status), Some("deprecated")),
-        "cli",
-    )
+    common::log_change_field(&ws, &lock, store, &canonical,
+    "update",
+    ("status", Some(&record.status), Some("deprecated")),
+    "cli",)
     .await;
-    common::log_change_field(
-        &ws,
-        store,
-        &result.new_id,
-        "create",
-        ("status", None, Some("draft")),
-        "cli",
-    )
+    common::log_change_field(&ws, &lock, store, &result.new_id,
+    "create",
+    ("status", None, Some("draft")),
+    "cli",)
     .await;
 
     let published = if store.is_none() {
@@ -68,15 +66,17 @@ async fn run_file_first(
         drop(lock);
         Some(common::reconcile_after_file_mutation(&ws).await)
     } else {
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&ws).await?;
         None
     };
 
-    println!("  Reopened {canonical} → deprecated");
+    println!("  Reopened {display_id} → deprecated");
     println!(
-        "  Created {} ({}, draft) with lineage from {canonical}",
+        "  Created {} ({}, draft) with lineage from {display_id}",
         result.new_id, result.new_kind
     );
-    println!("  Link: {} --based_on--> {canonical}", result.new_id);
+    println!("  Link: {} --based_on--> {display_id}", result.new_id);
     println!("  Key: {}", result.new_key);
 
     let next_hints: Vec<Hint> = vec![

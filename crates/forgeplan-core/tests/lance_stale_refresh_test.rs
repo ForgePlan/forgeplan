@@ -5,14 +5,14 @@
 //!
 //! # Test strategy
 //!
-//! 1. Init a workspace via `LanceStore::init` → "writer" handle.
+//! 1. Init a workspace via `LanceStore::init_new` → "writer" handle.
 //! 2. Insert one artifact via the writer.
 //! 3. Open a SECOND `LanceStore` on the same path → "stale-able" handle
 //!    (currently fresh, but its `Table` references will be invalidated
 //!    once we rewrite the fragments below).
 //! 4. Through the FIRST handle (or directly via fs) blow away
 //!    `.forgeplan/lance/` and rebuild it: drop the writer handle, then
-//!    `rm -rf` the directory, then `LanceStore::init` again so we end up
+//!    `rm -rf` the directory, then `LanceStore::init_new` again so we end up
 //!    with the empty schema. We then re-insert the artifact into the
 //!    rebuilt store (otherwise the stale handle's retry would hit the
 //!    new manifest but find no rows — that's a different failure mode).
@@ -72,15 +72,17 @@ async fn stale_handle_auto_recovers_after_external_reindex() {
     let ws = tmp.path().join(".forgeplan");
 
     // 1. Writer-side init + seed.
-    let writer = LanceStore::init(&ws).await.expect("LanceStore::init #1");
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    std::fs::write(ws.join("config.yaml"), "project_name: stale_refresh\n").unwrap();
+    let writer = LanceStore::init_new(&ws, &lock).await.expect("LanceStore::init_new #1");
     writer
-        .create_artifact_for_test(&fixture_prd("PRD-001"))
+        .create_artifact_for_test(&lock, &fixture_prd("PRD-001"))
         .await
         .expect("seed PRD-001");
 
     // Verify writer can read what it wrote — sanity check.
     let found = writer
-        .get_record("PRD-001")
+        .get_record(&lock, "PRD-001")
         .await
         .expect("read PRD-001 from writer");
     assert!(found.is_some(), "writer should see its own write");
@@ -92,7 +94,7 @@ async fn stale_handle_auto_recovers_after_external_reindex() {
 
     // Confirm the stale handle sees PRD-001 right now.
     let pre = stale
-        .get_record("PRD-001")
+        .get_record(&lock, "PRD-001")
         .await
         .expect("stale handle reads PRD-001 pre-reindex");
     assert!(
@@ -101,33 +103,37 @@ async fn stale_handle_auto_recovers_after_external_reindex() {
     );
 
     // 3. Simulate an external `forgeplan reindex`:
-    //    (a) drop the writer so no FS locks are held;
+    //    (a) finish the first writer and acquire a fresh workspace guard;
     //    (b) `rm -rf .forgeplan/lance/` — rewrites every fragment under
     //        new UUIDs once we init again;
-    //    (c) `LanceStore::init` again to recreate the schema + tables;
+    //    (c) `LanceStore::init_new` again to recreate the schema + tables;
     //    (d) re-insert PRD-001 so the "after reindex" state is non-empty.
     //
     // The stale handle (`stale`) still points at the OLD manifest /
     // fragment UUIDs — its next read would normally fail with
     // `lance error: Not found …data/<old uuid>.lance` (PROB-074).
     drop(writer);
+    drop(lock);
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
 
     let lance_dir = ws.join("lance");
     std::fs::remove_dir_all(&lance_dir).expect("rm -rf lance/");
 
-    let writer2 = LanceStore::init(&ws).await.expect("LanceStore::init #2");
+    let writer2 = LanceStore::init_new(&ws, &lock).await.expect("LanceStore::init_new #2");
     writer2
-        .create_artifact_for_test(&fixture_prd("PRD-001"))
+        .create_artifact_for_test(&lock, &fixture_prd("PRD-001"))
         .await
         .expect("re-seed PRD-001 after reindex");
     drop(writer2);
+    drop(lock);
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await.unwrap();
 
     // 4. Now read through the stale handle. With the PROB-074 fix the
     //    stale-manifest error is caught by `with_retry_on_stale`, the
     //    handle is refreshed via `checkout_latest`, and the read
     //    succeeds against the new manifest.
     let recovered = stale
-        .get_record("PRD-001")
+        .get_record(&permit, "PRD-001")
         .await
         .expect("stale handle recovers via with_retry_on_stale (PROB-074)");
     assert!(
@@ -143,7 +149,7 @@ async fn stale_handle_auto_recovers_after_external_reindex() {
     //    without further retries — checkout_latest is sticky, the handle
     //    now references the current manifest.
     let again = stale
-        .get_record("PRD-001")
+        .get_record(&permit, "PRD-001")
         .await
         .expect("second read after recovery");
     assert!(again.is_some(), "post-recovery reads stay green");
@@ -162,19 +168,21 @@ async fn refresh_is_noop_when_manifest_is_current() {
     let tmp = TempDir::new().expect("tempdir");
     let ws = tmp.path().join(".forgeplan");
 
-    let store = LanceStore::init(&ws).await.expect("init");
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    std::fs::write(ws.join("config.yaml"), "project_name: stale_refresh\n").unwrap();
+    let store = LanceStore::init_new(&ws, &lock).await.expect("init");
     store
-        .create_artifact_for_test(&fixture_prd("PRD-001"))
+        .create_artifact_for_test(&lock, &fixture_prd("PRD-001"))
         .await
         .expect("seed PRD-001");
     store
-        .create_artifact_for_test(&fixture_prd("PRD-002"))
+        .create_artifact_for_test(&lock, &fixture_prd("PRD-002"))
         .await
         .expect("seed PRD-002");
 
     // Snapshot state BEFORE refresh.
     let before = store
-        .list_artifacts(None)
+        .list_artifacts(&lock, None)
         .await
         .expect("list_artifacts before refresh");
     let mut before_ids: Vec<String> = before.iter().map(|a| a.id.clone()).collect();
@@ -182,13 +190,13 @@ async fn refresh_is_noop_when_manifest_is_current() {
 
     // Refresh is safe on a fresh store with current manifest.
     store
-        .refresh()
+        .refresh(&lock)
         .await
         .expect("refresh is no-op when current");
 
     // Snapshot state AFTER refresh — must be byte-identical.
     let after = store
-        .list_artifacts(None)
+        .list_artifacts(&lock, None)
         .await
         .expect("list_artifacts after refresh");
     let mut after_ids: Vec<String> = after.iter().map(|a| a.id.clone()).collect();
@@ -206,7 +214,7 @@ async fn refresh_is_noop_when_manifest_is_current() {
 
     // Original contract: data still readable.
     let record = store
-        .get_record("PRD-001")
+        .get_record(&lock, "PRD-001")
         .await
         .expect("read after refresh");
     assert!(record.is_some(), "data still visible after no-op refresh");
@@ -236,9 +244,11 @@ async fn stale_handle_propagates_error_when_refresh_fails() {
     let ws = tmp.path().join(".forgeplan");
 
     // Init and seed via writer handle.
-    let writer = LanceStore::init(&ws).await.expect("init");
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    std::fs::write(ws.join("config.yaml"), "project_name: stale_refresh\n").unwrap();
+    let writer = LanceStore::init_new(&ws, &lock).await.expect("init");
     writer
-        .create_artifact_for_test(&fixture_prd("PRD-001"))
+        .create_artifact_for_test(&lock, &fixture_prd("PRD-001"))
         .await
         .expect("seed");
 
@@ -247,7 +257,7 @@ async fn stale_handle_propagates_error_when_refresh_fails() {
 
     // Verify it works right now.
     let pre = stale
-        .get_record("PRD-001")
+        .get_record(&lock, "PRD-001")
         .await
         .expect("pre-drop read succeeds");
     assert!(
@@ -260,12 +270,14 @@ async fn stale_handle_propagates_error_when_refresh_fails() {
     drop(writer);
     let lance_dir = ws.join("lance");
     std::fs::remove_dir_all(&lance_dir).expect("rm -rf lance/");
+    drop(lock);
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await.unwrap();
 
     // After the lance directory is gone there is no manifest to checkout.
     // `with_retry_on_stale` fires, `refresh()` fails (or the retry budget
     // is consumed), and the error must propagate as `Err(_)` — not
     // `Ok(None)` and not a panic.
-    let result = stale.get_record("PRD-001").await;
+    let result = stale.get_record(&permit, "PRD-001").await;
     let err = result.expect_err(
         "get_record must return Err when lance directory is gone after stale-handle retry",
     );
@@ -306,7 +318,9 @@ async fn stale_handle_propagates_error_when_refresh_fails() {
 async fn retry_budget_exhausts_after_n_attempts_returns_typed_error() {
     let tmp = TempDir::new().expect("tempdir");
     let ws = tmp.path().join(".forgeplan");
-    let store = LanceStore::init(&ws).await.expect("init");
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    std::fs::write(ws.join("config.yaml"), "project_name: stale_refresh\n").unwrap();
+    let store = LanceStore::init_new(&ws, &lock).await.expect("init");
 
     // Synthetic stale-manifest error that `is_stale_manifest_error`
     // recognises (Pass 2 fallback: anchored on `Not found:` prefix +
@@ -317,7 +331,7 @@ async fn retry_budget_exhausts_after_n_attempts_returns_typed_error() {
     // Closure always returns the same stale error. `with_retry_on_stale`
     // will run its full budget and then construct `RetryExhausted`.
     let result: anyhow::Result<()> = store
-        .with_retry_on_stale(|| async move {
+        .with_retry_on_stale(&lock, || async move {
             // Each invocation gets a fresh anyhow::Error — chains are
             // not reused across calls. Result type is unit; the budget
             // logic doesn't care about T.
@@ -369,7 +383,9 @@ async fn retry_budget_exhausts_after_n_attempts_returns_typed_error() {
 async fn refresh_rate_limit_skips_within_debounce_window() {
     let tmp = TempDir::new().expect("tempdir");
     let ws = tmp.path().join(".forgeplan");
-    let store = LanceStore::init(&ws).await.expect("init");
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    std::fs::write(ws.join("config.yaml"), "project_name: stale_refresh\n").unwrap();
+    let store = LanceStore::init_new(&ws, &lock).await.expect("init");
 
     assert_eq!(
         store.refresh_call_count(),
@@ -383,7 +399,7 @@ async fn refresh_rate_limit_skips_within_debounce_window() {
     // detections back-to-back. All happen inside the 250ms debounce —
     // only the FIRST refresh attempt should actually execute.
     let _ignored: anyhow::Result<()> = store
-        .with_retry_on_stale(|| async move { Err(anyhow::anyhow!("{stale_text}")) })
+        .with_retry_on_stale(&lock, || async move { Err(anyhow::anyhow!("{stale_text}")) })
         .await;
 
     let count = store.refresh_call_count();
@@ -412,11 +428,13 @@ async fn refresh_rate_limit_skips_within_debounce_window() {
 async fn should_skip_refresh_debounce_directly_blocks_back_to_back() {
     let tmp = TempDir::new().expect("tempdir");
     let ws = tmp.path().join(".forgeplan");
-    let store = LanceStore::init(&ws).await.expect("init");
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    std::fs::write(ws.join("config.yaml"), "project_name: stale_refresh\n").unwrap();
+    let store = LanceStore::init_new(&ws, &lock).await.expect("init");
 
     // Two consecutive refresh() calls with zero sleep between them.
     // The first proceeds; the second is inside the debounce window.
-    store.refresh().await.expect("first refresh");
+    store.refresh(&lock).await.expect("first refresh");
     let count_after_first = store.refresh_call_count();
     assert_eq!(
         count_after_first, 1,
@@ -428,7 +446,7 @@ async fn should_skip_refresh_debounce_directly_blocks_back_to_back() {
     // `with_retry_on_stale`'s policy. So this test asserts that two
     // back-to-back FORCED refreshes both proceed — it's the negative
     // contract: the gate is in the retry loop, NOT in refresh().
-    store.refresh().await.expect("second forced refresh");
+    store.refresh(&lock).await.expect("second forced refresh");
     let count_after_second = store.refresh_call_count();
     assert_eq!(
         count_after_second, 2,

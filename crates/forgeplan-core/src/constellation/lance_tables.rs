@@ -343,26 +343,9 @@ pub(crate) fn embedding_literal(vector: &[f32], dim: usize) -> Result<String, Co
     Ok(out)
 }
 
-/// The active pair of tables, together with the connection that owns them.
-///
-/// Same shape decision as [`OpenedTable`], and the same reason. A `Table`
-/// holds an `Arc<dyn Database>` (`table.rs:369-371`), so a table that outlives
-/// the connection it came from points at a database nothing holds. On the
-/// write side that is worse than a failed read: it is a commit whose
-/// durability accounting is detached from the store that performed it.
-///
-/// So no accessor yields a bare `Table` or a bare `Connection`. The write path
-/// needs *operations*, not handles, so it gets operations: `merge_into_*`,
-/// `delete_from_*`, `update_*_columns`, `restore_*_to`, `*_version`. A future
-/// caller who needs a raw handle must change this shape then, with the same
-/// reasoning — not route around it now.
+/// Active writer tables. Handles remain private to preserve durability tracking.
 pub struct IndexTables {
-    /// **Held, never read** — and that is the point.
-    ///
-    /// A `Table` holds an `Arc<dyn Database>` (`table.rs:369-371`), so it must
-    /// never outlive the `Connection` that owns that database. Deleting this
-    /// field would reintroduce the dropped-connection bug P2e-7 closed: a
-    /// writer whose storage options were released while its handle lived.
+    /// Retained with the writer handles for their database context.
     #[allow(dead_code)]
     connection: lancedb::Connection,
     artifacts: lancedb::Table,
@@ -435,6 +418,32 @@ impl IndexTables {
             self.relations_version().await?,
             self.sections_version().await?,
         ))
+    }
+
+    /// Clear an unpublished bootstrap dataset when its complete replacement is
+    /// empty. Never use this on a published generation.
+    pub(super) async fn clear_empty_bootstrap_dataset(
+        &self,
+        role: &str,
+    ) -> Result<(), ConstellationError> {
+        let table = match role {
+            "artifacts" => &self.artifacts,
+            "relations" => &self.relations,
+            "sections" => &self.sections,
+            _ => return Err(ConstellationError::Io {
+                detail: format!("unknown bootstrap dataset {role}"),
+            }),
+        };
+        table.delete("true").await.map_err(|error| ConstellationError::Io {
+            detail: format!("cannot clear unpublished {role} dataset: {error}"),
+        })?;
+        match role {
+            "artifacts" => super::fault_barrier_if_selected("after_artifacts_commit"),
+            "relations" => super::fault_barrier_if_selected("after_relations_commit"),
+            "sections" => super::fault_barrier_if_selected("after_sections_commit"),
+            _ => unreachable!(),
+        }
+        Ok(())
     }
 
     /// `merge_insert` against the artifacts table.
@@ -536,11 +545,8 @@ impl IndexTables {
             &super::publisher::MERGE_KEY,
         )
         .await?;
-        // After the sections commit of the **exact captured set** returned. An
-        // empty set still commits — an empty batch with the right schema, not
-        // a skipped table — so this stage is reachable for a
-        // `semantic_unavailable` capture, which is what makes "the generation
-        // publishes zero sections" observable rather than inferred.
+        // Empty replacements are handled separately by bootstrap; the merge
+        // primitive refuses an empty batch.
         super::fault_barrier_if_selected("after_sections_commit");
         Ok(outcome)
     }
@@ -596,11 +602,18 @@ impl IndexTables {
         captured: &super::capture::CapturedSourceView,
         profile_id: &str,
     ) -> Result<super::jobs::EligibilityReport, ConstellationError> {
+        Self::artifacts_eligibility_for(self.artifacts_table(), captured, profile_id).await
+    }
+
+    async fn artifacts_eligibility_for(
+        table: &lancedb::Table,
+        captured: &super::capture::CapturedSourceView,
+        profile_id: &str,
+    ) -> Result<super::jobs::EligibilityReport, ConstellationError> {
         use futures::TryStreamExt;
         use lancedb::query::ExecutableQuery;
 
-        let stream = self
-            .artifacts_table()
+        let stream = table
             .query()
             .execute()
             .await
@@ -678,11 +691,19 @@ impl IndexTables {
         captured: &super::capture::CapturedSourceView,
         profile_id: &str,
     ) -> Result<super::jobs::EligibilityReport, ConstellationError> {
+        Self::sections_eligibility_for(self.sections_table(), captured, profile_id).await
+    }
+
+    async fn sections_eligibility_for(
+        table: &lancedb::Table,
+        captured: &super::capture::CapturedSourceView,
+        profile_id: &str,
+    ) -> Result<super::jobs::EligibilityReport, ConstellationError> {
         use futures::TryStreamExt;
         use lancedb::query::ExecutableQuery;
 
         let stream =
-            self.sections_table()
+            table
                 .query()
                 .execute()
                 .await
@@ -1336,6 +1357,22 @@ impl IndexTables {
         .await
     }
 
+    pub(super) async fn restore_for_repair(
+        &self,
+        role: &str,
+        version: u64,
+        workspace: &std::path::Path,
+        repair: &super::facade::RepairContext<'_>,
+    ) -> Result<u64, ConstellationError> {
+        let table = match role {
+            "artifacts" => self.artifacts_table(),
+            "relations" => self.relations_table(),
+            "sections" => self.sections_table(),
+            _ => return Err(ConstellationError::Io { detail: format!("unknown table role {role}") }),
+        };
+        restore_to_published_inner(table, role, version, workspace, Some(repair)).await
+    }
+
     /// Publish a vector onto an **existing** section row, conditionally.
     ///
     /// The same guarded-write contract as
@@ -1483,6 +1520,29 @@ pub async fn create_active_tables(
     wrapper: Arc<DurabilityTrackingStore>,
     workspace: &std::path::Path,
 ) -> Result<IndexTables, ConstellationError> {
+    create_active_tables_inner(index_root, marker, wrapper, workspace, false)
+        .await
+        .map(|(tables, _)| tables)
+}
+
+/// Resume an unpublished bootstrap, creating or opening each dataset separately.
+/// The caller must have established that CURRENT is absent while holding the owner.
+pub(super) async fn resume_bootstrap_tables(
+    index_root: &std::path::Path,
+    marker: &super::manifest::ProtocolMarker,
+    wrapper: Arc<DurabilityTrackingStore>,
+    workspace: &std::path::Path,
+) -> Result<(IndexTables, bool), ConstellationError> {
+    create_active_tables_inner(index_root, marker, wrapper, workspace, true).await
+}
+
+async fn create_active_tables_inner(
+    index_root: &std::path::Path,
+    marker: &super::manifest::ProtocolMarker,
+    wrapper: Arc<DurabilityTrackingStore>,
+    workspace: &std::path::Path,
+    resume: bool,
+) -> Result<(IndexTables, bool), ConstellationError> {
     marker.validate()?;
 
     let connection = open_wrapped_connection(index_root).await?;
@@ -1493,39 +1553,46 @@ pub async fn create_active_tables(
     // on the way out.
     let wrapper: Arc<dyn lance_io::object_store::WrappingObjectStore> = wrapper;
     let mut created: Vec<lancedb::Table> = Vec::with_capacity(super::storage::ACTIVE_TABLES.len());
+    let mut all_created = true;
     // `ACTIVE_TABLES` is `[(&str, &str)]` — `(role, table_name)` — so the role
     // is the tuple's first element, not the tuple itself.
     for (role, _) in storage::ACTIVE_TABLES {
         let uri = storage::table_uri_for_role(marker, role, index_root)?;
         storage::assert_not_wrapped_route(&uri)?;
 
-        // Matched on the typed Lance error, not on its message. A string
-        // match would break the first time Lance reworded it, and would
-        // silently turn the restart transition into a failure — which would
-        // make every restart of a bootstrapped workspace look broken.
-        let native = match lancedb::table::NativeTable::create_empty(
-            &uri,
-            role,
-            Vec::new(),
-            schema_for_role(role)?,
-            Some(Arc::clone(&wrapper)),
-            None,
-            None,
-            None,
-            false,
-        )
-        .await
-        {
-            Ok(table) => table,
-            Err(lancedb::Error::TableAlreadyExists { .. }) => {
-                return Err(ConstellationError::TableAlreadyExists {
-                    role: role.to_string(),
-                });
+        // Opening first avoids a failed create operation contaminating the
+        // durability tracker when resuming an already-created dataset.
+        let existing = if resume {
+            match lancedb::table::NativeTable::open_with_params(
+                &uri, role, Vec::new(), Some(Arc::clone(&wrapper)),
+                None, None, None, false, None,
+            ).await {
+                Ok(table) => {
+                    all_created = false;
+                    Some(table)
+                }
+                Err(lancedb::Error::TableNotFound { .. }) => None,
+                Err(error) => return Err(ConstellationError::IndexGenerationUnavailable {
+                    detail: format!("cannot open the {role} bootstrap table at {uri}: {error}"),
+                }),
             }
-            Err(e) => {
-                return Err(ConstellationError::Io {
-                    detail: format!("cannot create the {role} table at {uri}: {e}"),
-                });
+        } else {
+            None
+        };
+        let native = if let Some(table) = existing {
+            table
+        } else {
+            match lancedb::table::NativeTable::create_empty(
+                &uri, role, Vec::new(), schema_for_role(role)?,
+                Some(Arc::clone(&wrapper)), None, None, None, false,
+            ).await {
+                Ok(table) => table,
+                Err(lancedb::Error::TableAlreadyExists { .. }) => {
+                    return Err(ConstellationError::TableAlreadyExists { role: role.to_string() });
+                }
+                Err(error) => return Err(ConstellationError::Io {
+                    detail: format!("cannot create the {role} table at {uri}: {error}"),
+                }),
             }
         };
 
@@ -1549,12 +1616,12 @@ pub async fn create_active_tables(
     retain_managed_table_versions(&artifacts, "artifacts", workspace).await?;
     retain_managed_table_versions(&relations, "relations", workspace).await?;
     retain_managed_table_versions(&sections, "sections", workspace).await?;
-    Ok(IndexTables {
+    Ok((IndexTables {
         connection,
         artifacts,
         relations,
         sections,
-    })
+    }, all_created))
 }
 
 /// Open the **existing** active pair for staging, at their current heads.
@@ -1600,6 +1667,26 @@ pub async fn open_active_tables(
     marker: &super::manifest::ProtocolMarker,
     wrapper: Arc<DurabilityTrackingStore>,
     workspace: &std::path::Path,
+) -> Result<IndexTables, ConstellationError> {
+    open_active_tables_inner(index_root, marker, wrapper, workspace, None).await
+}
+
+pub(super) async fn open_active_tables_for_repair(
+    index_root: &std::path::Path,
+    marker: &super::manifest::ProtocolMarker,
+    wrapper: Arc<DurabilityTrackingStore>,
+    workspace: &std::path::Path,
+    repair: &super::facade::RepairContext<'_>,
+) -> Result<IndexTables, ConstellationError> {
+    open_active_tables_inner(index_root, marker, wrapper, workspace, Some(repair)).await
+}
+
+async fn open_active_tables_inner(
+    index_root: &std::path::Path,
+    marker: &super::manifest::ProtocolMarker,
+    wrapper: Arc<DurabilityTrackingStore>,
+    workspace: &std::path::Path,
+    repair: Option<&super::facade::RepairContext<'_>>,
 ) -> Result<IndexTables, ConstellationError> {
     // Shadow the parameter with its trait-object form. `Arc::clone` is
     // `impl<T: ?Sized> Clone for Arc<T>` and does **not** unsize on the way
@@ -1724,9 +1811,9 @@ pub async fn open_active_tables(
         database,
     );
 
-    retain_managed_table_versions(&artifacts, "artifacts", workspace).await?;
-    retain_managed_table_versions(&relations, "relations", workspace).await?;
-    retain_managed_table_versions(&sections, "sections", workspace).await?;
+    retain_managed_table_versions_inner(&artifacts, "artifacts", workspace, repair).await?;
+    retain_managed_table_versions_inner(&relations, "relations", workspace, repair).await?;
+    retain_managed_table_versions_inner(&sections, "sections", workspace, repair).await?;
     Ok(IndexTables {
         connection,
         artifacts,
@@ -1735,127 +1822,81 @@ pub async fn open_active_tables(
     })
 }
 
-/// Open the active tables **without any writer store and without creating
-/// anything**.
-///
-/// [`open_active_tables`] is the writer's constructor, and it is the wrong one
-/// for a caller whose contract is "reads only, changes nothing": it hands the
-/// tables a `DurabilityTrackingStore` and, for the sections role, runs
-/// `NativeTable::create_empty` when the dataset is absent. That creation is
-/// correct for admission — it is the documented upgrade path, and it happens
-/// under an owner whose closure barrier will sync it — and wrong everywhere
-/// else, because a caller with no publisher in hand has no closure to take.
-/// The write would land and never be part of a synced set.
-///
-/// So this constructor opens each role with `write_store_wrapper: None`
-/// (the same unwrapped reader route [`open_table_at_version`] uses) and
-/// creates nothing. A missing dataset is
-/// [`ConstellationError::IndexGenerationUnavailable`], not a creation: a
-/// caller that wants the upgrade goes through admission.
-///
-/// The returned handle is the same [`IndexTables`] type, so the eligibility
-/// reads are shared. Callers of this function must not use its write
-/// operations — they would be unsynced writes, which is exactly what this
-/// constructor exists to make impossible to do by accident.
+/// Read-only active tables, exposing eligibility scans but no mutations.
+pub struct ReadonlyIndexTables {
+    artifacts: lancedb::Table,
+    sections: lancedb::Table,
+}
+
+impl ReadonlyIndexTables {
+    pub async fn artifacts_eligibility(
+        &self,
+        captured: &super::capture::CapturedSourceView,
+        profile_id: &str,
+    ) -> Result<super::jobs::EligibilityReport, ConstellationError> {
+        IndexTables::artifacts_eligibility_for(&self.artifacts, captured, profile_id).await
+    }
+
+    pub async fn sections_eligibility(
+        &self,
+        captured: &super::capture::CapturedSourceView,
+        profile_id: &str,
+    ) -> Result<super::jobs::EligibilityReport, ConstellationError> {
+        IndexTables::sections_eligibility_for(&self.sections, captured, profile_id).await
+    }
+}
+
+/// Open existing active tables without connecting to or creating a database.
 pub async fn open_active_tables_readonly(
     index_root: &std::path::Path,
     marker: &super::manifest::ProtocolMarker,
-) -> Result<IndexTables, ConstellationError> {
-    let connection = open_wrapped_connection(index_root).await?;
-    let database = Arc::clone(connection.database());
-    let mut opened = Vec::with_capacity(super::storage::ACTIVE_TABLES.len());
+) -> Result<ReadonlyIndexTables, ConstellationError> {
+    let mut opened = Vec::with_capacity(storage::ACTIVE_TABLES.len());
     for (role, table_name) in storage::ACTIVE_TABLES {
         let uri = storage::resolve_table_uri(index_root, marker, role, table_name)?;
         storage::assert_not_wrapped_route(&uri)?;
-        let native = lancedb::table::NativeTable::open_with_params(
-            &uri,
-            role,
-            Vec::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            None,
-        )
-        .await
-        .map_err(|e| ConstellationError::IndexGenerationUnavailable {
-            detail: format!("cannot open the {role} table at {uri}: {e}"),
+        let path = index_root.join(format!("{table_name}.lance"));
+        let table = open_existing_native_table(&path, role).await.map_err(|e| {
+            ConstellationError::IndexGenerationUnavailable {
+                detail: format!("cannot open the {role} table at {}: {e}", path.display()),
+            }
         })?;
-        // Same reasoning as the writer path: the sections role resolves to
-        // `TABLE_SECTIONS_V2`, so no dataset reachable from here can carry a
-        // pre-v2 schema, and a v1 index was refused by the protocol version
-        // before this function ran.
-        opened.push((role, native));
+        opened.push(table);
     }
-
-    // `opened` is in `ACTIVE_TABLES` order: artifacts, relations, sections.
-    // The role string is carried only to keep the vector's shape equal to the
-    // writer constructor's; the handles below are taken positionally, exactly
-    // as `open_active_tables` does, because a wrong order here would pair a
-    // reader with the wrong schema.
     let mut iter = opened.into_iter();
-    let artifacts = lancedb::table::Table::new(
-        Arc::new(
-            iter.next()
-                .ok_or_else(|| ConstellationError::Io {
-                    detail: "no artifacts table was opened".to_string(),
-                })?
-                .1,
-        ),
-        Arc::clone(&database),
-    );
-    let relations = lancedb::table::Table::new(
-        Arc::new(
-            iter.next()
-                .ok_or_else(|| ConstellationError::Io {
-                    detail: "no relations table was opened".to_string(),
-                })?
-                .1,
-        ),
-        Arc::clone(&database),
-    );
-    let sections = lancedb::table::Table::new(
-        Arc::new(
-            iter.next()
-                .ok_or_else(|| ConstellationError::Io {
-                    detail: "no sections table was opened".to_string(),
-                })?
-                .1,
-        ),
-        database,
-    );
-
-    Ok(IndexTables {
-        connection,
-        artifacts,
-        relations,
-        sections,
-    })
+    let artifacts = iter.next().ok_or_else(|| ConstellationError::Io {
+        detail: "no artifacts table was opened".to_string(),
+    })?;
+    let _relations = iter.next().ok_or_else(|| ConstellationError::Io {
+        detail: "no relations table was opened".to_string(),
+    })?;
+    let sections = iter.next().ok_or_else(|| ConstellationError::Io {
+        detail: "no sections table was opened".to_string(),
+    })?;
+    Ok(ReadonlyIndexTables { artifacts, sections })
 }
 
-/// An opened table together with the connection that owns it.
-///
-/// # Why this type exists instead of returning the `Table`
-///
-/// A `Table` holds an `Arc<dyn Database>` (`table.rs:369-371`), so returning
-/// one while dropping the `Connection` it came from leaves the handle pointing
-/// at a database nothing holds any more. The mistake is invisible in review —
-/// the signature is perfectly ordinary — and it only fails when the handle is
-/// used after the connection is gone.
-///
-/// So this type does not expose a `Table` at all. It forwards the three
-/// operations a pinned reader needs — `schema`, `version` and `query_batches`
-/// — and there is consequently **no way** to obtain a `Table` that outlives
-/// the connection. Returning `(Connection, Table)` would make the bug
-/// *possible to write* rather than impossible to write, which is why that
-/// shape was not chosen.
+/// Open an existing local dataset without the create-capable database API.
+pub(crate) async fn open_existing_native_table(
+    dataset_path: &std::path::Path,
+    table_name: &str,
+) -> anyhow::Result<lancedb::Table> {
+    let absolute = if dataset_path.is_absolute() {
+        dataset_path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(dataset_path)
+    };
+    let uri = reqwest::Url::from_file_path(&absolute)
+        .map_err(|_| anyhow::anyhow!("invalid dataset path: {}", absolute.display()))?;
+    let native = lancedb::table::NativeTable::open_with_params(
+        uri.as_str(), table_name, Vec::new(), None, None, None, None, false, None,
+    ).await?;
+    let base: Arc<dyn lancedb::table::BaseTable> = Arc::new(native);
+    Ok(lancedb::Table::from(base))
+}
+
+/// A table pinned to an exact version, exposing read operations only.
 pub struct OpenedTable {
-    /// **Held, never read** — the same lifetime role as
-    /// [`IndexTables::connection`]. A pinned reader's `Table` must not outlive
-    /// the connection that owns its database.
-    #[allow(dead_code)]
-    connection: lancedb::Connection,
     table: lancedb::Table,
 }
 
@@ -2221,10 +2262,7 @@ impl OpenedTable {
     }
 }
 
-/// Open an existing table at an **exact** version, on the wrapped route.
-///
-/// Returns an [`OpenedTable`], which owns the connection; see that type for
-/// why a bare `Table` is not returned.
+/// Open an existing table at an **exact** version, exposing read operations only.
 ///
 /// **The reader is deliberately unwrapped.** `write_store_wrapper` is passed
 /// as `None`, so this table observes nothing through a
@@ -2241,9 +2279,7 @@ impl OpenedTable {
 ///   writer uses, so a read could observe the writer's in-flight writes —
 ///   exactly what a pinned reader must not do.
 ///
-/// The table is still opened on the `file-object-store` scheme, which is the
-/// part that matters for correctness: it is the plain `file` fast path, not
-/// the wrapping, that would bypass the pinned store.
+/// The reader uses a local file URL and does not use a writer store wrapper.
 ///
 /// `checkout_latest` is never called. A reader that refreshed itself would
 /// answer a different question than the one that pinned it.
@@ -2255,26 +2291,18 @@ pub async fn open_table_at_version(
 ) -> Result<OpenedTable, ConstellationError> {
     let uri = storage::table_uri_for_role(marker, role, index_root)?;
     storage::assert_not_wrapped_route(&uri)?;
-    let connection = open_wrapped_connection(index_root).await?;
-    let database = Arc::clone(connection.database());
-
-    let native = lancedb::table::NativeTable::open_with_params(
-        &uri,
-        role,
-        Vec::new(),
-        None,
-        None,
-        None,
-        None,
-        false,
-        None,
-    )
-    .await
-    .map_err(|e| ConstellationError::IndexGenerationUnavailable {
-        detail: format!("cannot open the {role} table at {uri}: {e}"),
+    let table_name = storage::ACTIVE_TABLES.iter()
+        .find(|(candidate, _)| *candidate == role)
+        .map(|(_, name)| *name)
+        .ok_or_else(|| ConstellationError::IndexProtocolMismatch {
+            detail: format!("unknown active table role `{role}`"),
+        })?;
+    let path = index_root.join(format!("{table_name}.lance"));
+    let table = open_existing_native_table(&path, role).await.map_err(|e| {
+        ConstellationError::IndexGenerationUnavailable {
+            detail: format!("cannot open the {role} table at {}: {e}", path.display()),
+        }
     })?;
-
-    let table = lancedb::table::Table::new(Arc::new(native), database);
     // The exact version, never `checkout_latest`. A reader that refreshed
     // itself would answer a different question than the one that pinned it.
     table
@@ -2286,7 +2314,7 @@ pub async fn open_table_at_version(
                  unavailable; there is no latest fallback."
             ),
         })?;
-    Ok(OpenedTable { connection, table })
+    Ok(OpenedTable { table })
 }
 
 /// Rewind one writer to the published baseline: `checkout(v)` → `restore()` →
@@ -2312,6 +2340,16 @@ async fn restore_to_published(
     role: &str,
     published_version: u64,
     workspace: &std::path::Path,
+) -> Result<u64, ConstellationError> {
+    restore_to_published_inner(table, role, published_version, workspace, None).await
+}
+
+async fn restore_to_published_inner(
+    table: &lancedb::Table,
+    role: &str,
+    published_version: u64,
+    workspace: &std::path::Path,
+    repair: Option<&super::facade::RepairContext<'_>>,
 ) -> Result<u64, ConstellationError> {
     table.checkout(published_version).await.map_err(|e| {
         ConstellationError::IndexGenerationUnavailable {
@@ -2346,11 +2384,7 @@ async fn restore_to_published(
     // Restore also restores the old cleanup configuration. That commit must
     // not collect the original pin before the retention policy is reapplied.
     {
-        let _guard = crate::workspace::acquire_workspace_lock(workspace)
-            .await
-            .map_err(|e| ConstellationError::Io {
-                detail: format!("cannot lock the workspace to restore {role}: {e}"),
-            })?;
+        let _guard = super::facade::acquire_index_workspace_lock(workspace, repair).await?;
         lance::dataset::write::CommitBuilder::new(dataset)
             .with_skip_auto_cleanup(true)
             .execute(transaction)
@@ -2365,7 +2399,7 @@ async fn restore_to_published(
         .map_err(|e| ConstellationError::Io {
             detail: format!("could not return the {role} writer to latest after restore: {e}"),
         })?;
-    retain_managed_table_versions(table, role, workspace).await?;
+    retain_managed_table_versions_inner(table, role, workspace, repair).await?;
     // The head created by the restore. Distinct from `published_version` by
     // construction, and recorded as itself.
     table.version().await.map_err(|e| ConstellationError::Io {
@@ -2380,6 +2414,15 @@ async fn retain_managed_table_versions(
     table: &lancedb::Table,
     role: &str,
     workspace: &std::path::Path,
+) -> Result<(), ConstellationError> {
+    retain_managed_table_versions_inner(table, role, workspace, None).await
+}
+
+async fn retain_managed_table_versions_inner(
+    table: &lancedb::Table,
+    role: &str,
+    workspace: &std::path::Path,
+    repair: Option<&super::facade::RepairContext<'_>>,
 ) -> Result<(), ConstellationError> {
     let dataset = table
         .dataset()
@@ -2398,11 +2441,7 @@ async fn retain_managed_table_versions(
     {
         return Ok(());
     }
-    let _guard = crate::workspace::acquire_workspace_lock(workspace)
-        .await
-        .map_err(|e| ConstellationError::Io {
-            detail: format!("cannot lock the workspace for {role} retention: {e}"),
-        })?;
+    let _guard = super::facade::acquire_index_workspace_lock(workspace, repair).await?;
     table
         .as_native()
         .ok_or_else(|| ConstellationError::Io {
@@ -2418,6 +2457,51 @@ async fn retain_managed_table_versions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_marker() -> super::super::manifest::ProtocolMarker {
+        super::super::manifest::ProtocolMarker {
+            protocol_version: crate::constellation::FORMAT_VERSION,
+            state: super::super::manifest::BootstrapState::Active,
+            index_epoch: 1,
+            checkout_id: "local-test".to_string(),
+            table_names: super::super::manifest::ProtocolMarker::active_table_names(),
+            storage_scheme: super::super::manifest::STORAGE_SCHEME_FILE_OBJECT_STORE.to_string(),
+            bootstrap_attempt: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn read_open_never_recreates_deleted_root_and_keeps_exact_pin() {
+        use arrow_array::{RecordBatch, StringArray};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("lance");
+        std::fs::create_dir(&root).unwrap();
+        let connection = lancedb::connect(root.to_str().unwrap()).execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, false)]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["before"]))]).unwrap();
+        let table = connection.create_table(super::super::manifest::TABLE_ARTIFACTS_V1, batch)
+            .execute().await.unwrap();
+        let version = table.version().await.unwrap();
+        table.update().column("value", "'after'").execute().await.unwrap();
+        let pinned = open_table_at_version(&root, &test_marker(), "artifacts", version).await.unwrap();
+        assert_eq!(pinned.version().await.unwrap(), version);
+        let batches = pinned.query_batches().await.unwrap();
+        let values = batches[0].column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(values.value(0), "before");
+        drop(pinned);
+        drop(table);
+        drop(connection);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(matches!(
+            open_table_at_version(&root, &test_marker(), "artifacts", version).await,
+            Err(ConstellationError::IndexGenerationUnavailable { .. })
+        ));
+        assert!(matches!(
+            open_active_tables_readonly(&root, &test_marker()).await,
+            Err(ConstellationError::IndexGenerationUnavailable { .. })
+        ));
+        assert!(!root.exists());
+    }
 
     fn field_names(schema: &Schema) -> Vec<&str> {
         schema.fields().iter().map(|f| f.name().as_str()).collect()

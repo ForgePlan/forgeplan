@@ -12,7 +12,7 @@ pub async fn run(
     limit: usize,
     json: bool,
 ) -> Result<()> {
-    let (_workspace, source) = common::open_read_source().await?;
+    let (_workspace, source, _read_guard) = common::open_read_source().await?;
 
     let filter = ArtifactFilter {
         kind: Some("memory".to_string()),
@@ -21,7 +21,7 @@ pub async fn run(
     let stored;
     let mut records: Vec<_> = match &source {
         common::ReadSource::Legacy(store) => {
-            stored = store.list_records(Some(&filter)).await?;
+            stored = store.list_records(&_read_guard, Some(&filter)).await?;
             stored.iter().collect()
         }
         common::ReadSource::Captured(read) => read

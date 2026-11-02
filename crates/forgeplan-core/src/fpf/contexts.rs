@@ -177,10 +177,11 @@ fn name_from_members(members: &[String], index: usize) -> String {
 /// group for singletons, or None if the artifact is absent from the graph.
 pub async fn detect_for_artifact(
     store: &crate::db::store::LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     artifact_id: &str,
 ) -> anyhow::Result<Option<(String, usize, f64)>> {
-    let all_records = store.list_records(None).await?;
-    let all_relations = store.get_all_relations().await?;
+    let all_records = store.list_records(permit, None).await?;
+    let all_relations = store.get_all_relations(permit).await?;
     Ok(detect_for_artifact_from_records(
         &all_records,
         &all_relations,
@@ -267,12 +268,23 @@ mod tests {
         .unwrap();
         assert!(!ws.join("lance").exists());
 
-        let store = LanceStore::init(&tmp.path().join("legacy/.forgeplan"))
-            .await
-            .unwrap();
+        let legacy_ws = tmp.path().join("legacy/.forgeplan");
+        let guard = crate::workspace::lock::acquire_workspace_lock(&legacy_ws).await.unwrap();
+        let store = LanceStore::init_new(&legacy_ws, &guard).await.unwrap();
+        for directory in crate::workspace::ARTIFACT_DIRS {
+            let source = ws.join(directory);
+            let dest = legacy_ws.join(directory);
+            std::fs::create_dir_all(&dest).unwrap();
+            for entry in std::fs::read_dir(source).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_file() {
+                    std::fs::copy(entry.path(), dest.join(entry.file_name())).unwrap();
+                }
+            }
+        }
         for record in read.records() {
             store
-                .create_artifact(&NewArtifact {
+                .create_artifact(&guard, &NewArtifact {
                     canonical_key: record.canonical_key.clone(),
                     id: record.id.clone(),
                     kind: record.kind.clone(),
@@ -290,7 +302,7 @@ mod tests {
         }
         for (source, target, relation) in read.get_all_relations() {
             store
-                .add_relation(&source, &target, &relation)
+                .add_relation(&guard, &source, &target, &relation)
                 .await
                 .unwrap();
         }
@@ -303,7 +315,7 @@ mod tests {
             ("DOES-NOT-EXIST", None),
         ] {
             let captured = detect_for_artifact_captured(&read, id).await.unwrap();
-            let legacy = detect_for_artifact(&store, id).await.unwrap();
+            let legacy = detect_for_artifact(&store, &guard, id).await.unwrap();
             assert_eq!(captured, expected, "{id}");
             assert_eq!(legacy, expected, "{id}");
         }

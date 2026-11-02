@@ -2,7 +2,6 @@
 
 use crate::commands::common;
 use anyhow::{Context, Result};
-use forgeplan_core::artifact::store::resolve_artifact_path;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 use forgeplan_core::workspace::lock::WorkspaceLock;
@@ -21,14 +20,21 @@ async fn current_tags(path: &std::path::Path) -> Result<Vec<String>> {
 
 /// Add tags to an artifact.
 pub async fn run_add(id: &str, tags: &[String]) -> Result<()> {
-    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (ws, _lock, store) = common::open_store_locked_checked(&[(id, true)]).await?;
+    let resolution = if store.is_some() {
+        common::resolve_against_workspace(&ws, id).await?
+    } else {
+        common::resolve_against_capture(&forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &_lock).await?, id)
+    };
+    let (key, display_id) = common::require_found_identity(id, &resolution)?;
+    let id = key.as_str();
     let Some(store) = store else {
-        return run_add_file_first(ws, _lock, id, tags).await;
+        return run_add_file_first(ws, _lock, id, &display_id, tags).await;
     };
 
     // Verify artifact exists
     let _existing = store
-        .get_record(id)
+        .get_record(&_lock, id)
         .await
         .with_context(|| format!("Failed to load {}", id))?
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {}", id))?;
@@ -38,21 +44,31 @@ pub async fn run_add(id: &str, tags: &[String]) -> Result<()> {
     }
 
     // PRD-073 file-first: helper handles sync→add_tags→render in one shot.
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     projection::add_tags_with_projection(
         &projection::MutationContext::new(&ws, &_lock, Some(&store)),
         id,
         tags,
     )
     .await
-    .with_context(|| format!("Failed to add tags to {}", id))?;
+    .with_context(|| format!("Failed to add tags to {}", id))
+    .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?;
 
     let updated = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact disappeared after update: {}", id))?;
+        .get_record(&_lock, id)
+        .await
+        .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?
+        .ok_or_else(|| common::describe_possible_legacy_partial_commit(
+            true,
+            anyhow::anyhow!("Artifact disappeared after update: {}", id),
+        ))?;
 
     let added = updated.tags.len().saturating_sub(_existing.tags.len());
-    println!("  ✓ Added {} tag(s) to {}", added, id);
+    drop(store);
+    drop(_lock);
+    common::drain_legacy_semantic_after_mutation(&ws).await?;
+
+    println!("  ✓ Added {} tag(s) to {}", added, display_id);
     print_current_tags(&updated.tags);
 
     print_tag_added_hint(tags);
@@ -72,16 +88,19 @@ async fn run_add_file_first(
     ws: std::path::PathBuf,
     lock: WorkspaceLock,
     id: &str,
+    display_id: &str,
     tags: &[String],
 ) -> Result<()> {
-    let path = resolve_artifact_path(&ws, id)
-        .await
+    let path = forgeplan_core::artifact::documents::resolve_in_workspace(&ws, id)
+        .await?
+        .map(|document| ws.join(document.relative_path))
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {}", id))?;
     if tags.is_empty() {
         anyhow::bail!("No tags provided. Usage: forgeplan tag <id> <tag>...");
     }
     let before = current_tags(&path).await?;
 
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     projection::add_tags_with_projection(
         &projection::MutationContext::new(&ws, &lock, None),
         id,
@@ -94,7 +113,7 @@ async fn run_add_file_first(
     // from the bytes that were just written, not from a pre-mutation view.
     let after = current_tags(&path).await?;
     let added = after.len().saturating_sub(before.len());
-    println!("  ✓ Added {} tag(s) to {}", added, id);
+    println!("  ✓ Added {} tag(s) to {}", added, display_id);
     print_current_tags(&after);
 
     common::note_constellation_owns_index();
@@ -107,13 +126,20 @@ async fn run_add_file_first(
 
 /// Remove tags from an artifact.
 pub async fn run_remove(id: &str, tags: &[String]) -> Result<()> {
-    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (ws, _lock, store) = common::open_store_locked_checked(&[(id, true)]).await?;
+    let resolution = if store.is_some() {
+        common::resolve_against_workspace(&ws, id).await?
+    } else {
+        common::resolve_against_capture(&forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &_lock).await?, id)
+    };
+    let (key, display_id) = common::require_found_identity(id, &resolution)?;
+    let id = key.as_str();
     let Some(store) = store else {
-        return run_remove_file_first(ws, _lock, id, tags).await;
+        return run_remove_file_first(ws, _lock, id, &display_id, tags).await;
     };
 
     let _existing = store
-        .get_record(id)
+        .get_record(&_lock, id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {}", id))?;
 
@@ -122,20 +148,30 @@ pub async fn run_remove(id: &str, tags: &[String]) -> Result<()> {
     }
 
     // PRD-073 file-first: helper handles sync→remove_tags→render in one shot.
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     projection::remove_tags_with_projection(
         &projection::MutationContext::new(&ws, &_lock, Some(&store)),
         id,
         tags,
     )
     .await
-    .with_context(|| format!("Failed to remove tags from {}", id))?;
+    .with_context(|| format!("Failed to remove tags from {}", id))
+    .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?;
 
     let updated = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact disappeared after update: {}", id))?;
+        .get_record(&_lock, id)
+        .await
+        .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?
+        .ok_or_else(|| common::describe_possible_legacy_partial_commit(
+            true,
+            anyhow::anyhow!("Artifact disappeared after update: {}", id),
+        ))?;
 
-    println!("  ✓ Removed {} tag(s) from {}", tags.len(), id);
+    drop(store);
+    drop(_lock);
+    common::drain_legacy_semantic_after_mutation(&ws).await?;
+
+    println!("  ✓ Removed {} tag(s) from {}", tags.len(), display_id);
     print_current_tags(&updated.tags);
 
     // PRD-071: verify state after un-tagging.
@@ -154,16 +190,19 @@ async fn run_remove_file_first(
     ws: std::path::PathBuf,
     lock: WorkspaceLock,
     id: &str,
+    display_id: &str,
     tags: &[String],
 ) -> Result<()> {
-    let path = resolve_artifact_path(&ws, id)
-        .await
+    let path = forgeplan_core::artifact::documents::resolve_in_workspace(&ws, id)
+        .await?
+        .map(|document| ws.join(document.relative_path))
         .ok_or_else(|| anyhow::anyhow!("Artifact not found: {}", id))?;
 
     if tags.is_empty() {
         anyhow::bail!("No tags provided. Usage: forgeplan untag <id> <tag>...");
     }
 
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     projection::remove_tags_with_projection(
         &projection::MutationContext::new(&ws, &lock, None),
         id,
@@ -173,7 +212,7 @@ async fn run_remove_file_first(
     .with_context(|| format!("Failed to remove tags from {}", id))?;
 
     let after = current_tags(&path).await?;
-    println!("  ✓ Removed {} tag(s) from {}", tags.len(), id);
+    println!("  ✓ Removed {} tag(s) from {}", tags.len(), display_id);
     print_current_tags(&after);
 
     common::note_constellation_owns_index();

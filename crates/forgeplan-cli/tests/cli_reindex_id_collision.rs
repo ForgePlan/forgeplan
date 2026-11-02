@@ -1,10 +1,5 @@
-//! #394 regression — reindex MUST surface duplicate-id collisions instead of
-//! silently overwriting (last-writer-wins). Two `.md` files carrying the same
-//! frontmatter `id` both resolve to one LanceDB row; before this fix the file
-//! processed second silently shadowed the first with no anomaly reported (and
-//! `read_dir` order is not even stable, so *which* one won was arbitrary).
-//! This drives the REAL binary against a real workspace with a hand-crafted
-//! collision — the exact shape of the PRD-012 / EVID-143 dogfood collisions.
+//! Reindex must reject duplicate canonical keys without choosing a file.
+//! A shared display id alone is not a collision.
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -66,10 +61,8 @@ fn find_md(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
     panic!("no .md file for {id} in {}", dir.display());
 }
 
-/// Main trace: two files, same `id`, different filenames → reindex must report
-/// the collision LOUDLY, name both files, count it in the summary, and still
-/// exit 0 (non-fatal, so a pre-existing collision does not brick an onboarding
-/// `git clone && forgeplan reindex`).
+/// A copied document claims the same canonical key and must be refused
+/// before either claimant can overwrite the index.
 #[test]
 fn reindex_reports_duplicate_id_collision() {
     let tmp = TempDir::new().unwrap();
@@ -97,12 +90,7 @@ fn reindex_reports_duplicate_id_collision() {
         .output()
         .unwrap();
 
-    // Non-fatal: a collision must NOT brick reindex (onboarding safety).
-    assert!(
-        out.status.success(),
-        "reindex must stay non-fatal on a collision: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert_eq!(out.status.code(), Some(4), "reindex must refuse a duplicate key: {}", String::from_utf8_lossy(&out.stderr));
 
     let combined = format!(
         "{}{}",
@@ -110,15 +98,7 @@ fn reindex_reports_duplicate_id_collision() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // The collision must be LOUD, name the id, and list BOTH files.
-    assert!(
-        combined.contains("duplicate-id collision"),
-        "reindex must announce the collision; got:\n{combined}"
-    );
-    assert!(
-        combined.contains(&prd),
-        "collision report must name the colliding id {prd}; got:\n{combined}"
-    );
+    // Both physical claimants must be identified in the refusal.
     let orig_name = original.file_name().unwrap().to_string_lossy().to_string();
     assert!(
         combined.contains(&orig_name),
@@ -128,17 +108,11 @@ fn reindex_reports_duplicate_id_collision() {
         combined.contains("onboarding-shadow-copy.md"),
         "collision report must list the shadow file; got:\n{combined}"
     );
-    // Summary must COUNT it — a block alone can be scrolled past; the count is
-    // the machine-readable signal an agent/CI greps.
-    assert!(
-        combined.contains("1 id-collisions"),
-        "summary must count id-collisions; got:\n{combined}"
-    );
+    assert_eq!(std::fs::read_to_string(&original).unwrap(), content);
+    assert!(std::fs::read_to_string(&dup).unwrap().contains("Shadow copy body"));
 }
 
-/// Negative control: a clean workspace reindex reports zero collisions and
-/// prints no collision block. Guards against a false-positive that would fire
-/// on every ordinary single-file artifact.
+/// A clean workspace reindexes without a collision refusal.
 #[test]
 fn reindex_reports_zero_collisions_on_clean_workspace() {
     let tmp = TempDir::new().unwrap();
@@ -157,10 +131,7 @@ fn reindex_reports_zero_collisions_on_clean_workspace() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        combined.contains("0 id-collisions"),
-        "clean workspace must report 0 id-collisions; got:\n{combined}"
-    );
+    assert!(combined.contains("Reindex complete"), "{combined}");
     assert!(
         !combined.contains("duplicate-id collision"),
         "clean workspace must NOT print a collision block; got:\n{combined}"

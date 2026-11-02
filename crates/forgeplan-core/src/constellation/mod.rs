@@ -66,7 +66,9 @@ pub mod storage;
 pub mod view;
 pub mod workspace_read;
 
-mod durability;
+pub(crate) mod durability;
+#[cfg(windows)]
+pub(crate) use durability::{read_mutable_file, replace_mutable_file};
 mod owner;
 
 /// Test-only publication/native fault barriers (ADR-029 §8).
@@ -156,6 +158,14 @@ pub enum DiagnosticCode {
     PublicationUncertain,
     /// Two paths claim the same canonical identity.
     IdentityCollision,
+    /// A selector matched more than one display alias.
+    Ambiguous,
+    /// Multiple documents claim the same canonical key.
+    ConflictingCanonicalKey,
+    /// A selector cannot name an artifact.
+    InvalidSelector,
+    /// The full document set could not be observed.
+    IncompleteCapture,
     /// A `links:` entry is malformed or names a target we cannot represent.
     InvalidLinks,
     /// The active embedding profile is not the one a vector was built with.
@@ -197,6 +207,10 @@ impl DiagnosticCode {
             Self::IndexGenerationUnavailable => "index_generation_unavailable",
             Self::PublicationUncertain => "publication_uncertain",
             Self::IdentityCollision => "identity_collision",
+            Self::Ambiguous => "ambiguous",
+            Self::ConflictingCanonicalKey => "conflicting_canonical_key",
+            Self::InvalidSelector => "invalid_selector",
+            Self::IncompleteCapture => "incomplete_capture",
             Self::InvalidLinks => "invalid_links",
             Self::ProfileIncompatible => "profile_incompatible",
             Self::IncarnationMismatch => "incarnation_mismatch",
@@ -299,6 +313,8 @@ pub enum ConstellationError {
     IndexBusy { detail: String },
     /// A durable format carries a field this build cannot represent.
     IndexProtocolMismatch { detail: String },
+    /// The full source census could not resolve an artifact selector.
+    Resolve(crate::artifact::canonical_key::ResolveError),
     /// The active tables already exist.
     ///
     /// **Not a failure.** `NativeTable::create` / `create_empty` map
@@ -371,6 +387,12 @@ impl ConstellationError {
         match self {
             Self::SourceBusy { .. } => DiagnosticCode::SourceBusy,
             Self::IndexBusy { .. } => DiagnosticCode::IndexBusy,
+            Self::Resolve(error) => match error {
+                crate::artifact::canonical_key::ResolveError::Ambiguous { .. } => DiagnosticCode::Ambiguous,
+                crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey { .. } => DiagnosticCode::ConflictingCanonicalKey,
+                crate::artifact::canonical_key::ResolveError::InvalidSelector { .. } => DiagnosticCode::InvalidSelector,
+                crate::artifact::canonical_key::ResolveError::IncompleteCapture { .. } => DiagnosticCode::IncompleteCapture,
+            },
             Self::IndexProtocolMismatch { .. } | Self::ProtocolOverflow { .. } => {
                 DiagnosticCode::IndexProtocolMismatch
             }
@@ -403,6 +425,7 @@ impl fmt::Display for ConstellationError {
                 "source_busy: source still moving after {attempts} capture attempts in {elapsed_ms}ms"
             ),
             Self::IndexBusy { detail } => write!(f, "index_busy: {detail}"),
+            Self::Resolve(error) => write!(f, "{}: {error}", self.code().as_str()),
             Self::IndexProtocolMismatch { detail } => {
                 write!(f, "index_protocol_mismatch: {detail}")
             }

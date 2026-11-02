@@ -38,6 +38,17 @@ async fn connect(workspace: &Path) -> lancedb::Connection {
         .unwrap()
 }
 
+async fn seed_legacy_core_tables(db: &lancedb::Connection) {
+    for (name, core_schema) in [
+        ("artifacts", schema::artifacts_schema()),
+        ("relations", schema::relations_schema()),
+        ("evidence", schema::evidence_schema()),
+    ] {
+        db.create_table(name, vec![RecordBatch::new_empty(core_schema)])
+            .execute().await.unwrap();
+    }
+}
+
 async fn table_names(workspace: &Path) -> Vec<String> {
     let db = connect(workspace).await;
     let mut names = db.table_names().execute().await.unwrap();
@@ -316,9 +327,10 @@ async fn legacy_and_auxiliary_handles_share_history_without_duplicate_events() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = temp.path().join(".forgeplan");
     let lock = acquire_workspace_lock(&workspace).await.unwrap();
-    let legacy = LanceStore::init(&workspace).await.unwrap();
+    std::fs::write(workspace.join("config.yaml"), "project_name: history_compat\n").unwrap();
+    let legacy = LanceStore::init_new(&workspace, &lock).await.unwrap();
     let first = entry("2026-01-01T00:00:00Z", "PRD-001", "create", "cli");
-    legacy.log_change(&first).await.unwrap();
+    legacy.log_change(&lock, &first).await.unwrap();
     let baseline = table_names(&workspace).await;
     let history = AuxiliaryStore::open_history_or_create(&workspace)
         .await
@@ -332,23 +344,29 @@ async fn legacy_and_auxiliary_handles_share_history_without_duplicate_events() {
     drop(legacy);
     drop(lock);
 
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace)
+        .await.unwrap();
     let legacy = LanceStore::open(&workspace).await.unwrap();
     let history = AuxiliaryStore::open_history_existing(&workspace)
         .await
         .unwrap();
     for (id, source, limit) in [
         (None, None, 10),
-        (Some("PRD-001"), None, 1),
         (None, Some("git_sync"), 10),
-        (Some("PRD-001"), Some("cli"), 10),
-        (Some("DELETED-001"), None, 10),
         (None, None, 0),
     ] {
         assert_eq!(
-            rows(&legacy.get_change_log(id, source, limit).await.unwrap()),
+            rows(&legacy.get_change_log(&permit, id, source, limit).await.unwrap()),
             rows(&history.get_change_log(id, source, limit).await.unwrap())
         );
     }
+    // The identity-aware handle refuses to attribute unkeyed rows; the
+    // auxiliary handle is a literal reader without an artifact index.
+    let error = legacy.get_change_log(&permit, Some("PRD-001"), None, 10).await.unwrap_err();
+    assert!(error.to_string().contains("history identity is indeterminate"));
+    let missing = legacy.get_change_log(&permit, Some("DELETED-001"), None, 10).await.unwrap_err();
+    assert!(missing.to_string().contains("history identity is indeterminate"));
+    assert_eq!(history.get_change_log(Some("PRD-001"), None, 10).await.unwrap().len(), 2);
     assert_eq!(
         rows(&history.get_change_log(None, None, 10).await.unwrap()),
         rows(&[second, first])
@@ -445,9 +463,17 @@ async fn malformed_history_schema_is_not_reported_as_empty_or_migrated() {
         assert_eq!(table.schema().await.unwrap().fields(), schema.fields());
         assert_eq!(table_names(&workspace).await, ["change_log"]);
         assert_no_other_history_tables(&workspace);
-        let legacy = LanceStore::init(&workspace).await.unwrap();
+        // Add a legacy core index only after the auxiliary-only isolation checks.
+        // The malformed history remains untouched and the legacy read must
+        // reject its schema rather than return an empty history.
+        let lock = acquire_workspace_lock(&workspace).await.unwrap();
+        seed_legacy_core_tables(&db).await;
+        drop(lock);
+        let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace)
+            .await.unwrap();
+        let legacy = LanceStore::open(&workspace).await.unwrap();
         let message = legacy
-            .get_change_log(None, None, 10)
+            .get_change_log(&permit, None, None, 10)
             .await
             .unwrap_err()
             .to_string();
@@ -657,14 +683,15 @@ async fn nullable_required_history_schema_and_malformed_rows_are_errors_for_both
             // A real legacy owner reaches the same shared schema/query guard.
             // Its explicit initialization is fixture setup, not an auxiliary
             // history side effect.
-            let legacy = LanceStore::init(&workspace).await.unwrap();
+            seed_legacy_core_tables(&db).await;
+            let legacy = LanceStore::open(&workspace).await.unwrap();
             for (id, source, limit) in [
                 (None, None, 100),
                 (Some("PRD-001"), Some("cli"), 1),
                 (None, None, 0),
             ] {
                 let message = legacy
-                    .get_change_log(id, source, limit)
+                    .get_change_log(&lock, id, source, limit)
                     .await
                     .unwrap_err()
                     .to_string();

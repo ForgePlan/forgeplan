@@ -14,21 +14,21 @@ pub async fn run(id: &str, yes: bool) -> anyhow::Result<()> {
     // legacy store: the canonical markdown is the source of truth there, and
     // the derived row is whatever the last reconcile published — which is
     // behind the bytes by definition after any hand edit.
-    let (record, all_relations) = match &store {
+    let (record, canonical, all_relations) = match &store {
         Some(store) => {
             let resolution = common::resolve_against_workspace(&ws, id).await?;
-            let (id, _) = common::require_found_identity(id, &resolution)?;
-            let record = store.get_record(&id).await?.ok_or_else(|| {
+            let (canonical, _) = common::require_found_identity(id, &resolution)?;
+            let record = store.get_record(&lock, &canonical).await?.ok_or_else(|| {
                 anyhow::anyhow!(
                     "Artifact '{}' not found
 Fix: forgeplan list",
-                    id
+                    canonical
                 )
             })?;
-            (record, store.get_all_relations().await?)
+            (record, canonical, store.get_all_relations(&lock).await?)
         }
         None => {
-            let read = common::workspace_read(&ws).await?;
+            let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock).await?;
             let resolution = common::resolve_against_capture(&read, id);
             let (canonical, _) = common::require_found_identity(id, &resolution)?;
             let record = read.get_record(&canonical).cloned().ok_or_else(|| {
@@ -38,26 +38,38 @@ Fix: forgeplan list",
                     canonical
                 )
             })?;
-            (record, read.get_all_relations())
+            (record, canonical, read.get_all_relations())
         }
     };
-    let id = record.id.as_str();
+    // ADR-030: the destructive work is addressed by the canonical key the
+    // resolver just returned. Re-resolving the display alias after the receipt
+    // has already moved this document's file would hand the next step a
+    // selector whose only remaining claimant is the SIBLING that legitimately
+    // shares the alias — deleting a document the operator never named.
+    let target = canonical.as_str();
+    let display = record.id.as_str();
 
-    // Check for dependents (other artifacts linking TO this one)
+    // Check for dependents (other artifacts linking TO this one). Relation
+    // endpoints are canonical keys (ADR-030), so the test is taken in that
+    // space; the warning still prints the display alias a human recognises.
     let dependents: Vec<_> = all_relations
         .iter()
-        .filter(|(_, target, _)| target.eq_ignore_ascii_case(id))
+        .filter(|(_, endpoint, _)| endpoint.eq_ignore_ascii_case(target))
         .collect();
 
     if !dependents.is_empty() {
-        eprintln!("  WARNING: {} has {} dependent(s):", id, dependents.len());
+        eprintln!(
+            "  WARNING: {} has {} dependent(s):",
+            display,
+            dependents.len()
+        );
         for (source, _, rel) in &dependents {
-            eprintln!("    {} --{}--> {}", source, rel, id);
+            eprintln!("    {} --{}--> {}", source, rel, display);
         }
         if !yes {
             anyhow::bail!(
                 "{} has {} dependent(s). Use --yes to confirm deletion despite dependents.",
-                id,
+                display,
                 dependents.len()
             );
         }
@@ -71,12 +83,23 @@ Fix: forgeplan list",
             record.title
         );
     }
+    // Confirmation and selector refusal happen before opening the index for
+    // writing. Re-read the normalized v5 record and edges after preparation.
+    drop(store);
+    let store = common::prepare_store_locked_checked(&ws, &lock, &[(target, true)]).await?;
+    let (record, all_relations) = if let Some(store) = &store {
+        let record = store.get_record(&lock, target).await?
+            .ok_or_else(|| anyhow::anyhow!("Artifact '{target}' disappeared during write preparation"))?;
+        (record, store.get_all_relations(&lock).await?)
+    } else {
+        (record, all_relations)
+    };
 
     // Cascade: delete all relations involving this artifact.
     // Count from already-fetched data to avoid double table scan.
     let relation_count = all_relations
         .iter()
-        .filter(|(s, t, _)| s.eq_ignore_ascii_case(id) || t.eq_ignore_ascii_case(id))
+        .filter(|(s, t, _)| s.eq_ignore_ascii_case(target) || t.eq_ignore_ascii_case(target))
         .count();
 
     // PRD-055 + audit follow-up 2026-05-01: capture soft-delete receipt
@@ -88,15 +111,19 @@ Fix: forgeplan list",
     // The relations come from whichever read source produced `record`, so a
     // migrated workspace (where `artifacts.lance` is retired and must not be
     // opened) gets byte-identical receipts instead of no receipts at all.
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     let captured_relations = capture_relations(&record, &all_relations);
     let receipt_id = match &store {
         Some(store) => {
-            undo::soft_delete_capture(&ws, store, &record, undo::DestructiveOp::Delete, None, None)
-                .await?
+            undo::soft_delete_capture(&ws, &lock, store, &record, undo::DestructiveOp::Delete, None, None)
+                .await
+                .map_err(|e| common::describe_possible_legacy_partial_commit(true, e.into()))?
         }
         None => {
             undo::soft_delete_capture_with_relations(
                 &ws,
+                &lock,
+                None,
                 &record,
                 captured_relations,
                 undo::DestructiveOp::Delete,
@@ -116,9 +143,10 @@ Fix: forgeplan list",
     // stops there — the derived row retires on the reconcile pass below.
     projection::delete_artifact_with_projection(
         &projection::MutationContext::new(&ws, &lock, store.as_ref()),
-        id,
+        target,
     )
-    .await?;
+    .await
+    .map_err(|e| common::describe_possible_legacy_partial_commit(store.is_some(), e.into()))?;
 
     if store.is_none() {
         common::note_constellation_owns_index();
@@ -126,6 +154,10 @@ Fix: forgeplan list",
         // commit, and a held guard would turn the capture into a 30 s timeout.
         drop(lock);
         common::reconcile_after_file_mutation(&ws).await;
+    } else {
+        drop(store);
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&ws).await?;
     }
 
     if relation_count > 0 {

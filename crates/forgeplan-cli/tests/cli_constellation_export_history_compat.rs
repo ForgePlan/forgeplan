@@ -51,9 +51,7 @@ fn run_json(root: &Path, args: &[&str]) -> Value {
     serde_json::from_str(&run_ok(root, args)).unwrap()
 }
 
-fn files_fixture() -> TempDir {
-    let root = TempDir::new().unwrap();
-    let ws = workspace::init_workspace(root.path(), "Export history compatibility").unwrap();
+fn write_fixture_files(ws: &Path) {
     for (relative, body) in [
         (PRD_PATH, PRD),
         ("evidence/EVID-023-export-proof.md", EVIDENCE),
@@ -61,17 +59,24 @@ fn files_fixture() -> TempDir {
     ] {
         std::fs::write(ws.join(relative), body).unwrap();
     }
+}
+
+fn files_fixture() -> TempDir {
+    let root = TempDir::new().unwrap();
+    let ws = workspace::init_workspace(root.path(), "Export history compatibility").unwrap();
+    write_fixture_files(&ws);
     root
 }
 
 /// Populate real legacy rows and relations without rewriting the canonical fixture bytes.
 fn legacy_fixture() -> (TempDir, Value) {
-    let root = files_fixture();
-    let ws = root.path().join(".forgeplan");
+    let root = TempDir::new().unwrap();
+    let ws = workspace::init_workspace(root.path(), "Export history compatibility").unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let expected_prd = runtime.block_on(async {
         let lock = acquire_workspace_lock(&ws).await.unwrap();
-        let store = LanceStore::init(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        write_fixture_files(&ws);
         let ctx = MutationContext::new(&ws, &lock, Some(&store));
         for (id, kind, title, body) in [
             ("EVID-023", "evidence", "Export proof", EVIDENCE),
@@ -111,8 +116,8 @@ fn legacy_fixture() -> (TempDir, Value) {
                 .unwrap();
         }
         // A nonzero cached legacy score must not be replaced with a placeholder.
-        store.update_r_eff_score("PRD-021", 0.625).await.unwrap();
-        let record = store.get_record("PRD-021").await.unwrap().unwrap();
+        store.update_r_eff_score(&lock, "PRD-021", 0.625).await.unwrap();
+        let record = store.get_record(&lock, "PRD-021").await.unwrap().unwrap();
         expected_prd(&record.created_at, &record.updated_at, 0.625, PRD, "PRD-021")
     });
     (root, expected_prd)
@@ -313,10 +318,11 @@ fn empty_export_keeps_the_default_file_and_version_one_bundle_contract() {
         if managed {
             migrate(root.path());
         } else {
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(LanceStore::init(&ws))
-                .unwrap();
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let lock = acquire_workspace_lock(&ws).await.unwrap();
+                LanceStore::init_new(&ws, &lock).await.unwrap();
+                drop(lock);
+            });
         }
         let stdout = run_ok(root.path(), &["export"]);
         assert!(
@@ -492,10 +498,10 @@ fn entry(
 fn seed_old_history(root: &Path, entries: &[ChangeLogEntry]) {
     let ws = root.join(".forgeplan");
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let _lock = acquire_workspace_lock(&ws).await.unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
         let store = LanceStore::open(&ws).await.unwrap();
         for entry in entries {
-            store.log_change(entry).await.unwrap();
+            store.log_change(&lock, entry).await.unwrap();
         }
     });
 }

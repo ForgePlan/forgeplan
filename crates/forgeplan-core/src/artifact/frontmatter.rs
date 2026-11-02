@@ -45,6 +45,17 @@ pub(crate) fn parse_frontmatter_borrowed(content: &str) -> anyhow::Result<(Front
     Ok((fm, body))
 }
 
+#[derive(Debug)]
+struct FrontmatterLimitError(usize);
+
+impl std::fmt::Display for FrontmatterLimitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Frontmatter too large ({} bytes, max 64KB)", self.0)
+    }
+}
+
+impl std::error::Error for FrontmatterLimitError {}
+
 fn parse_frontmatter_slice(content: &str) -> anyhow::Result<(Frontmatter, &str)> {
     let content = content.trim_start();
     if !content.starts_with("---") {
@@ -57,7 +68,7 @@ fn parse_frontmatter_slice(content: &str) -> anyhow::Result<(Frontmatter, &str)>
     let yaml_str = &after_first[..end];
     // Guard against YAML bomb / excessively large frontmatter (max 64 KB)
     if yaml_str.len() > 65536 {
-        anyhow::bail!("Frontmatter too large ({} bytes, max 64KB)", yaml_str.len());
+        return Err(FrontmatterLimitError(yaml_str.len()).into());
     }
     let fm: Frontmatter = serde_yaml::from_str(yaml_str)?;
     // Body starts after closing --- and newline
@@ -184,17 +195,17 @@ pub fn slug_from_frontmatter(fm: &Frontmatter) -> Option<&str> {
 /// nested block is still a declaration — an ordinary update must not
 /// change it, so it has to be seen before the update is written.
 ///
-/// Layers are read with the same rule the merge uses: a nested block is
-/// followed only while it is another frontmatter block. A body that merely
-/// contains a horizontal rule does not parse as frontmatter and stops the
-/// walk.
-pub fn declared_canonical_keys(content: &str) -> Vec<String> {
+/// Walk every consecutively parseable block, including blocks beyond the
+/// merge boundary: an update must not hide a conflicting declaration in its
+/// body. An oversized block is an error, not a successful partial walk.
+pub fn declared_canonical_keys(content: &str) -> anyhow::Result<Vec<String>> {
     let mut keys: Vec<String> = Vec::new();
     let mut remaining = content.trim_start();
-    // Bounded walk: a document has a handful of frontmatter layers at most.
-    for _ in 0..8 {
-        let Ok((fm, next)) = parse_frontmatter_slice(remaining) else {
-            break;
+    loop {
+        let (fm, next) = match parse_frontmatter_slice(remaining) {
+            Ok(parsed) => parsed,
+            Err(error) if error.is::<FrontmatterLimitError>() => return Err(error),
+            Err(_) => break,
         };
         if let Some(slug) = slug_from_frontmatter(&fm) {
             let slug = slug.trim().to_string();
@@ -208,7 +219,7 @@ pub fn declared_canonical_keys(content: &str) -> Vec<String> {
         }
         remaining = trimmed;
     }
-    keys
+    Ok(keys)
 }
 
 /// Write a canonical key into a document's frontmatter.
@@ -250,13 +261,37 @@ pub fn ensure_canonical_key(content: &str, canonical_key: &str) -> anyhow::Resul
 /// Only the verified identity-repair operation may change a key — it does
 /// not come through this path.
 pub fn refuse_canonical_key_change(current_key: &str, incoming: &str) -> anyhow::Result<()> {
-    for key in declared_canonical_keys(incoming) {
+    for key in declared_canonical_keys(incoming)? {
         if key != current_key {
             anyhow::bail!(
                 "canonical key change refused: the document is '{current_key}', \
                  but the update declares '{key}'"
             );
         }
+    }
+    Ok(())
+}
+
+/// Refuse an import whose complete source declares a different canonical key.
+///
+/// A body that is not a complete document for this id and kind remains
+/// literal body text. Call this before deleting or replacing an existing file.
+pub fn verify_import_canonical_key(
+    id: &str,
+    kind: &str,
+    body: &str,
+    key: &str,
+) -> anyhow::Result<()> {
+    let Ok((fm, _)) = parse_frontmatter_slice(body) else {
+        return Ok(());
+    };
+    if fm.get("id").and_then(|v| v.as_str()) == Some(id)
+        && fm.get("kind").and_then(|v| v.as_str()) == Some(kind)
+        && let Some(declared) = slug_from_frontmatter(&fm)
+        && crate::artifact::types::is_canonical_key(declared)
+        && declared != key
+    {
+        anyhow::bail!("import canonical key {key:?} conflicts with document key {declared:?}");
     }
     Ok(())
 }
@@ -500,6 +535,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn import_rejects_conflicting_full_document_identity() {
+        let source = "---\nid: NOTE-001\nkind: note\nslug: note-original\n---\n\nBody.\n";
+        assert!(verify_import_canonical_key("NOTE-001", "note", source, "note-other").is_err());
+        assert!(verify_import_canonical_key("NOTE-001", "note", source, "note-original").is_ok());
+        assert!(verify_import_canonical_key("NOTE-002", "note", source, "note-other").is_ok());
+    }
+
+    #[test]
     fn ensure_canonical_key_writes_the_key_into_the_document() {
         let key = "prd-auth-system-k0123456789abcdef0123456789abcdef";
         // A document with frontmatter keeps its block and gains the key.
@@ -546,7 +589,7 @@ mod tests {
     fn declared_canonical_keys_sees_nested_and_outer_layers() {
         let content = "---\nid: PRD-001\nkind: prd\n---\n\n\
                         ---\nslug: prd-auth-system\nid: PRD-001\n---\n\nBody.\n";
-        let keys = declared_canonical_keys(content);
+        let keys = declared_canonical_keys(content).unwrap();
         assert_eq!(
             keys,
             vec!["prd-auth-system".to_string()],
@@ -555,12 +598,68 @@ mod tests {
 
         let outer = "---\nid: PRD-001\nkind: prd\nslug: prd-auth-system\n---\n\nBody.\n";
         assert_eq!(
-            declared_canonical_keys(outer),
+            declared_canonical_keys(outer).unwrap(),
             vec!["prd-auth-system".to_string()]
         );
 
         // A body without any frontmatter declares nothing.
-        assert!(declared_canonical_keys("Just a body.\n").is_empty());
+        assert!(declared_canonical_keys("Just a body.\n").unwrap().is_empty());
+    }
+
+    fn layered_update(depth: usize, final_slug: &str) -> String {
+        let mut body = "---\nid: PRD-001\nkind: prd\n---\n\n".repeat(depth - 1);
+        body.push_str(&format!("---\nslug: {final_slug}\n---\n\nBody.\n"));
+        body
+    }
+
+    #[test]
+    fn declarations_are_not_truncated_and_limits_fail_closed() {
+        for depth in [8, 9, 32] {
+            let body = layered_update(depth, "prd-other");
+            let error = refuse_canonical_key_change("prd-original", &body).unwrap_err();
+            assert!(error.to_string().contains("prd-other"), "{error}");
+            let same = layered_update(depth, "prd-original");
+            refuse_canonical_key_change("prd-original", &same).unwrap();
+        }
+        let oversized = format!(
+            "---\nid: PRD-001\nkind: prd\n---\n\n---\ntitle: {}\n---\n",
+            "x".repeat(65536)
+        );
+        assert!(refuse_canonical_key_change("prd-original", &oversized)
+            .unwrap_err().to_string().contains("Frontmatter too large"));
+        assert!(refuse_canonical_key_change("prd-original", "---\ntitle: [\n---\n").is_ok());
+    }
+
+    #[tokio::test]
+    async fn both_update_paths_reject_deep_identity_substitution() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::projection::{MutationContext, create_artifact_with_projection, update_body_file_first, update_body_with_projection};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = init_workspace(tmp.path(), "guard-test").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        let key = "prd-original";
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let artifact = NewArtifact {
+            canonical_key: key.into(), id: "PRD-001".into(), kind: "prd".into(),
+            status: "draft".into(), title: "Original".into(), body: "Original body".into(),
+            depth: "standard".into(), author: None, parent_epic: None,
+            valid_until: None, tags: vec![],
+        };
+        let path = create_artifact_with_projection(&ctx, &artifact).await.unwrap();
+        let original = tokio::fs::read(&path).await.unwrap();
+        let row_before = store.get_record(&lock, key).await.unwrap().unwrap().body;
+        for depth in [8, 9] {
+            let body = layered_update(depth, "prd-other");
+            let error = update_body_file_first(&path, &body).await.unwrap_err();
+            assert!(error.to_string().contains("prd-other"), "{error}");
+            let error = update_body_with_projection(&ctx, key, &body).await.unwrap_err();
+            assert!(error.to_string().contains("prd-other"), "{error}");
+            assert_eq!(tokio::fs::read(&path).await.unwrap(), original);
+            assert_eq!(store.get_record(&lock, key).await.unwrap().unwrap().body, row_before);
+        }
     }
 
     #[test]

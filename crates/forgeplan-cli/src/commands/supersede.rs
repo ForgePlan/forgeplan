@@ -9,7 +9,7 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
     // artifact's relation graph. On a migrated workspace that graph is the
     // canonical Markdown, so the read is one capture and the writes go through
     // the file-first helpers — no retired table is opened.
-    let (ws, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (ws, _lock, store) = common::open_store_locked_checked(&[(id, true), (by, true)]).await?;
 
     let Some(store) = store else {
         return run_file_first(ws, _lock, id, by).await;
@@ -26,66 +26,65 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
     let by = by.as_str();
 
     let old_status = store
-        .get_record(id)
+        .get_record(&_lock, id)
         .await?
         .map(|r| r.status)
         .unwrap_or_else(|| "active".to_string());
 
     // Sync file→LanceDB before lifecycle call (preserve user edits)
-    if let Some(record) = store.get_record(id).await? {
-        projection::sync_file_to_store(&store, &ws, &record).await?;
+    common::ensure_ordinary_mutation_allowed(&ws)?;
+    if let Some(record) = store.get_record(&_lock, id).await? {
+        projection::sync_file_to_store(&_lock, &store, &ws, &record).await?;
     }
 
     // PRD-071 contract: error path emits a `Fix:` marker line so agents have a
     // deterministic next action (validate the source, or pick a different
     // replacement target).
-    let result = lifecycle::supersede(&store, id, by)
+    let result = lifecycle::supersede(&_lock, &store, id, by)
         .await
-        .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id))?;
+        .map_err(|e| common::describe_possible_legacy_partial_commit(
+            true,
+            anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, id),
+        ))?;
 
     // Re-render projection with updated status
-    if let Some(record) = store.get_record(id).await? {
-        let links = store.get_relations(id).await.unwrap_or_default();
-        projection::render_projection(
-            &ws,
-            &record.id,
-            &record.kind,
-            &record.title,
-            &record.status,
-            &record.depth,
-            record.author.as_deref(),
-            record.parent_epic.as_deref(),
-            record.valid_until.as_deref(),
-            &record.body,
-            &links,
-        )
-        .await?;
+    if let Some(record) = store.get_record(&_lock, id).await.map_err(|e| common::describe_possible_legacy_partial_commit(true, e))? {
+        let links = store.get_relations(&_lock, &record.canonical_key).await
+            .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?;
+        projection::render_projection_record(&ws, &record, &links).await
+            .map_err(|e| common::describe_possible_legacy_partial_commit(true, e.into()))?;
     }
 
-    common::log_change_field(
-        &ws,
-        Some(&store),
-        id,
-        "update",
-        ("status", Some(&old_status), Some("superseded")),
-        "cli",
-    )
+    common::log_change_field(&ws, &_lock, Some(&store), id,
+    "update",
+    ("status", Some(&old_status), Some("superseded")),
+    "cli",)
     .await;
+
+    let mut rescored = Vec::new();
+    for target in forgeplan_core::scoring::rescore_evidence_dependents(&store, &_lock, id).await {
+        let display = store
+            .resolve_display_id(&_lock, &target)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(target);
+        rescored.push(display);
+    }
+    let by_ref_form = match store.get_record(&_lock, by).await.map_err(|e| common::describe_possible_legacy_partial_commit(true, e))? {
+        Some(rec) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id),
+        None => by.to_string(),
+    };
+    drop(store);
+    drop(_lock);
+    common::drain_legacy_semantic_after_mutation(&ws).await?;
 
     println!("  Superseded {id} → {by}");
 
     // ADR-020: a displaced evidence pack just left the R_eff min of the
     // artifacts it informs — refresh their cached scores now so `get`/`list`
     // serve the recovered value without a manual `forgeplan score`.
-    for target in forgeplan_core::scoring::rescore_evidence_dependents(&store, id).await {
-        // The dependent is named by its canonical key; the report names it
-        // by the display id a reader can act on.
-        let display = store
-            .resolve_display_id(&target)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or(target);
+    for display in rescored {
         println!("  Rescored {display} (displaced evidence left its weakest-link min)");
     }
 
@@ -103,10 +102,6 @@ pub async fn run(id: &str, by: &str) -> anyhow::Result<()> {
     // PRD-071: verify the resolved successor exists and is in good shape.
     // Use its slug pre-merge or display id post-merge for the `forgeplan get`
     // hint; the fallback is the canonical key already resolved above.
-    let by_ref_form = match store.get_record(by).await? {
-        Some(rec) => forgeplan_core::artifact::frontmatter::refs_form_from_body(&rec.body, &rec.id),
-        None => by.to_string(),
-    };
     let next_hints: Vec<Hint> = vec![
         Hint::info(format!("Superseded by {} — verify successor", by_ref_form))
             .with_action(format!("forgeplan get {}", by_ref_form)),
@@ -129,7 +124,7 @@ async fn run_file_first(
     id: &str,
     by: &str,
 ) -> anyhow::Result<()> {
-    let read = common::workspace_read(&ws).await?;
+    let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock).await?;
     let resolution = common::resolve_against_capture(&read, id);
     let (canonical, _) = common::require_found_identity(id, &resolution)?;
     let resolution = common::resolve_against_capture(&read, by);
@@ -141,6 +136,7 @@ async fn run_file_first(
 
     // Scoped so the context's borrow of the lock guard ends before the
     // reconcile pass below — that pass re-acquires the same lock.
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     let result = {
         let ctx = projection::MutationContext::new(&ws, &lock, None);
         forgeplan_core::lifecycle::canonical::supersede_captured(
@@ -153,14 +149,10 @@ async fn run_file_first(
         .map_err(|e| anyhow::anyhow!("{}\nFix: forgeplan validate {}", e, canonical))?
     };
 
-    common::log_change_field(
-        &ws,
-        None,
-        &canonical,
-        "update",
-        ("status", Some(old_status), Some("superseded")),
-        "cli",
-    )
+    common::log_change_field(&ws, &lock, None, &canonical,
+    "update",
+    ("status", Some(old_status), Some("superseded")),
+    "cli",)
     .await;
 
     common::note_constellation_owns_index();

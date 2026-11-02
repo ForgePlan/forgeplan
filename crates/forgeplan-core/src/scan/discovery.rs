@@ -42,28 +42,30 @@ pub fn discover_markdown_files(root: &Path) -> anyhow::Result<Vec<DiscoveredFile
     // Scan standard doc directories
     for dir_name in SCAN_DIRS {
         let dir = root.join(dir_name);
-        if dir.is_dir() {
-            collect_markdown_recursive(&dir, root, &skip_dirs, &mut results)?;
+        match std::fs::symlink_metadata(&dir) {
+            Ok(metadata) if metadata.is_dir() => {
+                collect_markdown_recursive(&dir, root, &skip_dirs, &mut results)?;
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
     }
 
     // Also scan root-level .md files (README.md, ARCHITECTURE.md, etc.)
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for entry in entries.flatten() {
+    {
+        let entries = std::fs::read_dir(root)?;
+        for entry in entries {
+            let entry = entry?;
             let path = entry.path();
-            // Skip symlinks
-            if let Ok(meta) = std::fs::symlink_metadata(&path)
-                && meta.file_type().is_symlink()
-            {
+            let meta = std::fs::symlink_metadata(&path)?;
+            if meta.file_type().is_symlink() {
                 continue;
             }
-            if path.is_file() && has_markdown_ext(&path) {
-                // Skip oversized files
-                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                if size > MAX_FILE_SIZE {
-                    continue;
-                }
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if meta.is_file() && has_markdown_ext(&path) {
+                {
+                    let name = path.file_name().and_then(|n| n.to_str())
+                        .ok_or_else(|| anyhow::anyhow!("invalid UTF-8 source filename: {}", path.display()))?;
                     // Skip common non-artifact files
                     if matches!(
                         name.to_lowercase().as_str(),
@@ -75,14 +77,16 @@ pub fn discover_markdown_files(root: &Path) -> anyhow::Result<Vec<DiscoveredFile
                     ) {
                         continue;
                     }
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-                        results.push(DiscoveredFile {
-                            path: path.clone(),
-                            relative_path: relative,
-                            content,
-                        });
+                    if meta.len() > MAX_FILE_SIZE {
+                        anyhow::bail!("scan source {} exceeds the size limit", path.display());
                     }
+                    let content = std::fs::read_to_string(&path)?;
+                    let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+                    results.push(DiscoveredFile {
+                        path: path.clone(),
+                        relative_path: relative,
+                        content,
+                    });
                 }
             }
         }
@@ -114,36 +118,33 @@ fn collect_markdown_recursive_depth(
     depth: usize,
 ) -> anyhow::Result<()> {
     if depth > MAX_DEPTH {
-        return Ok(());
+        anyhow::bail!("scan source directory {} exceeds the depth limit", dir.display());
     }
     let entries = std::fs::read_dir(dir)?;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry?;
         let path = entry.path();
-        // Skip symlinks to prevent traversal outside project
-        if let Ok(meta) = std::fs::symlink_metadata(&path)
-            && meta.file_type().is_symlink()
-        {
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.file_type().is_symlink() {
             continue;
         }
-        if path.is_dir() {
+        if meta.is_dir() {
             let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if !skip_dirs.contains(&dir_name) {
                 collect_markdown_recursive_depth(&path, root, skip_dirs, results, depth + 1)?;
             }
-        } else if path.is_file() && has_markdown_ext(&path) {
-            // Skip files exceeding size limit
-            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        } else if meta.is_file() && has_markdown_ext(&path) {
+            let size = meta.len();
             if size > MAX_FILE_SIZE {
-                continue;
+                anyhow::bail!("scan source {} exceeds the size limit", path.display());
             }
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-                results.push(DiscoveredFile {
-                    path: path.clone(),
-                    relative_path: relative,
-                    content,
-                });
-            }
+            let content = std::fs::read_to_string(&path)?;
+            let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            results.push(DiscoveredFile {
+                path: path.clone(),
+                relative_path: relative,
+                content,
+            });
         }
     }
     Ok(())
@@ -161,6 +162,18 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn invalid_utf8_source_and_missing_scan_root_are_errors() {
+        let tmp = TempDir::new().unwrap();
+        assert!(discover_markdown_files(&tmp.path().join("missing")).is_err());
+        fs::write(tmp.path().join("bad.md"), [0xff]).unwrap();
+        assert!(discover_markdown_files(tmp.path()).is_err());
+        fs::remove_file(tmp.path().join("bad.md")).unwrap();
+        fs::create_dir_all(tmp.path().join("docs")).unwrap();
+        fs::write(tmp.path().join("docs/bad.md"), [0xff]).unwrap();
+        assert!(discover_markdown_files(tmp.path()).is_err());
+    }
 
     #[test]
     fn discovers_files_in_docs_dir() {

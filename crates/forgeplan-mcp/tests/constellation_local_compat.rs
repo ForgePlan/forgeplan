@@ -148,7 +148,7 @@ fn write_corpus(ws: &Path) {
 
 /// The same corpus as `LanceStore` rows, so the legacy branch answers from
 /// data equal to the migrated branch's.
-async fn seed_store(store: &LanceStore) {
+async fn seed_store(store: &LanceStore, lock: &forgeplan_core::workspace::lock::WorkspaceLock) {
     for (id, kind, status, title, body) in [
         ("PRD-001", "prd", "draft", "Auth rewrite", PRD_001),
         ("ADR-002", "adr", "active", "Session storage", ADR_002),
@@ -161,7 +161,7 @@ async fn seed_store(store: &LanceStore) {
         ),
     ] {
         store
-            .create_artifact_for_test(&NewArtifact {
+            .create_artifact_for_test(lock, &NewArtifact {
                 canonical_key: id.into(),
                 id: id.into(),
                 kind: kind.into(),
@@ -182,7 +182,7 @@ async fn seed_store(store: &LanceStore) {
     // `based_on`. Written here so the anomaly detector has something real to
     // find on the legacy layout too.
     store
-        .add_relation_for_test("EVID-003", "PRD-001", "based_on")
+        .add_relation_for_test(lock, "EVID-003", "PRD-001", "based_on")
         .await
         .expect("seed based_on relation");
 }
@@ -232,7 +232,7 @@ fn git_init_with_base_commit(root: &Path) -> String {
 
 /// Commit the corpus so `forgeplan_release_notes` has a range to walk.
 fn git_commit_corpus(root: &Path, message: &str) {
-    git(root, &["add", "-A", ".forgeplan"]);
+    git(root, &["add", "-A", ".forgeplan", ":!.forgeplan/lance", ":!.forgeplan/.lock"]);
     git(root, &["commit", "-q", "-m", message]);
 }
 
@@ -244,12 +244,14 @@ async fn legacy_workspace() -> (TempDir, PathBuf, PathBuf, String) {
     let root = tmp.path().to_path_buf();
     let ws = forgeplan_core::workspace::init_workspace(&root, "mcp-compat-legacy")
         .expect("init workspace");
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    let store = LanceStore::init_new(&ws, &lock).await.expect("init legacy tables");
     write_corpus(&ws);
     write_source_module(&root);
     let base = git_init_with_base_commit(&root);
     git_commit_corpus(&root, "corpus");
-    let store = LanceStore::init(&ws).await.expect("init legacy tables");
-    seed_store(&store).await;
+    seed_store(&store, &lock).await;
+    drop(lock);
     assert!(
         !forgeplan_core::constellation::facade::workspace_is_migrated(&ws),
         "fixture precondition: a workspace with no published generation is legacy"

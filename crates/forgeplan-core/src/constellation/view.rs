@@ -131,6 +131,7 @@ impl ReadView {
                 error
             }
         })?;
+        manifest.require_addressable()?;
         manifest.validate_section_membership()?;
         if descriptor.format_version != FORMAT_VERSION {
             return Err(ConstellationError::IndexProtocolMismatch {
@@ -507,6 +508,7 @@ mod tests {
             tokenizer: None,
             body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
+            conflict_artifacts: Vec::new(),
             sections: Vec::new(),
             coverage: Coverage {
                 expected: entries.len() + invalid,
@@ -568,6 +570,27 @@ mod tests {
             Some((4, 2, 6)),
             "the triple is exactly what the manifest pins; the descriptor adds nothing to it"
         );
+    }
+
+    #[test]
+    fn diagnostic_generation_can_be_pinned_but_not_opened_as_normal_view() {
+        use crate::constellation::manifest::ConflictSource;
+        let (_tmp, root, mut descriptor) = pinned_fixture();
+        let path = root.join(&descriptor.manifest_path);
+        let mut manifest: GenerationManifest = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        manifest.coverage = Coverage { expected: 2, read: 0, invalid: 0, unavailable: 0, excluded: 2 };
+        manifest.conflict_inventory = ["a", "b"].iter().map(|name| ConflictSource {
+            relative_path: format!("prds/{name}.md"), canonical_key: "shared".into(),
+            display_id: name.to_string(), title: name.to_string(), source_digest: name.to_string(),
+            declared_outgoing: Vec::new(),
+        }).collect();
+        manifest.semantic_blocked_paths = vec!["prds/a.md".into(), "prds/b.md".into()];
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        std::fs::write(path, &bytes).unwrap();
+        descriptor.manifest_sha256 = sha256_hex(&bytes);
+        let pin = Arc::new(crate::constellation::storage::pin_generation_read(&root, &descriptor).unwrap());
+        assert_eq!(pin.manifest().conflict_inventory.len(), 2);
+        assert!(ReadView::from_manifest(pin.manifest_arc(), descriptor, pin).is_err());
     }
 
     /// The versions a persisted view serves come from the manifest alone.

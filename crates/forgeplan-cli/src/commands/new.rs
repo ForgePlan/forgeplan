@@ -28,7 +28,7 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
 
     let kind: ArtifactKind = kind_str.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let (workspace, _lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (workspace, _lock, store) = common::open_store_locked_checked(&[]).await?;
 
     // Duplicate guard (FR-001 of PRD-043): warn before creating an artifact
     // whose title closely matches an existing one of the same kind. On a
@@ -41,7 +41,7 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
                 kind: Some(template_key_for_filter.clone()),
                 status: None,
             };
-            store.list_artifacts(Some(&filter)).await?
+            store.list_artifacts(&_lock, Some(&filter)).await?
         }
         None => forgeplan_core::artifact::store::list_artifacts(&workspace)
             .await?
@@ -172,7 +172,6 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
     let today_owned = today.clone();
     let template_key_owned = template_key.to_string();
     let prefix_owned = prefix.clone();
-    let slug_owned = slug.clone();
     let template_owned: String = template.to_string();
     let depth_owned = depth.to_string();
     let build = move |id: &str, number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
@@ -187,7 +186,7 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         vars.insert("Title".to_string(), title_owned.clone());
         let mut rendered = render_template(&template_owned, &vars);
         rendered = rendered.replace("YYYY-MM-DD", &today_owned);
-        rendered = augment_frontmatter_with_id_fields(&rendered, &slug_owned, number)
+        rendered = augment_frontmatter_with_id_fields(&rendered, canonical_key, number)
             .with_context(|| format!("failed to augment frontmatter for {id}"))?;
         let heading_pattern = format!("# {}-{}: ", prefix_owned, nnn);
         if let Some(pos) = rendered.find(&heading_pattern) {
@@ -220,6 +219,7 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
     // write happens under that same serialization — NOT the per-kind
     // id-alloc lock id_alloc takes internally, which guards a different
     // thing on a different lock file.
+    common::ensure_ordinary_mutation_allowed(&workspace)?;
     let allocated = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
         &workspace,
         &_lock,
@@ -230,18 +230,23 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         &build,
     )
     .await
-    .with_context(|| format!("canonical-key creation failed for kind {prefix}"))?;
+    .with_context(|| format!("canonical-key creation failed for kind {prefix}"))
+    .map_err(|e| common::describe_possible_legacy_partial_commit(store.is_some(), e))?;
     let id = allocated.id;
     let canonical_key = allocated.canonical_key;
     let filepath = allocated.filepath;
 
-    common::log_change(&workspace, store.as_ref(), &id, "create", "cli").await;
+    common::log_change(&workspace, &_lock, store.as_ref(), &id, "create", "cli").await;
     if store.is_none() {
         common::note_constellation_owns_index();
         // Lock must drop before reconcile — see
         // `common::reconcile_after_file_mutation`.
         drop(_lock);
         common::reconcile_after_file_mutation(&workspace).await;
+    } else {
+        drop(store);
+        drop(_lock);
+        common::drain_legacy_semantic_after_mutation(&workspace).await?;
     }
 
     println!("  Created: {}", filepath.display());

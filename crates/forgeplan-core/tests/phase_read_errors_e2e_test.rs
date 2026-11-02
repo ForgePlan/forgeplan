@@ -11,24 +11,20 @@
 //!
 //! ## Test strategy
 //!
-//! 1. Initialise a workspace via `LanceStore::init` (creates `.forgeplan/`
-//!    and the LanceDB tables under it).
+//! 1. Initialise a workspace via `LanceStore::init_new` under a workspace lock.
 //! 2. Seed an artifact directly via the `test-helpers` escape hatch
 //!    (`create_artifact_for_test`) — we are NOT exercising the
 //!    projection pipeline, only the health-scan phase-read path.
-//! 3. Write garbage bytes to `.forgeplan/state/<id>.yaml` so
-//!    `serde_yaml::from_slice` fails. The corrupted YAML path
-//!    quarantines + returns `Ok(None)` per the existing contract.
-//! 4. Wait, that path returns `Ok(None)` — not `Err`. So `phase_read_errors`
-//!    will NOT increment for a corrupt-YAML file under the current
-//!    contract.
+//! 3. Make `.forgeplan/state/<id>.yaml` unreadable so the phase read fails
+//!    with an I/O error.
 //!
 //! ## What actually increments `phase_read_errors`?
 //!
-//! `read_phase` returns `Err(_)` only when:
+//! `read_phase` returns `Err(_)` when:
 //! - `validate_artifact_id` rejects the id (path traversal etc.) — but the
 //!   id has already been validated upstream by the time `health_report`
 //!   sees it, so this branch is unreachable via the health path.
+//! - The state file is invalid, too large, or uses an unsupported schema.
 //! - `tokio::fs::read` returns an error OTHER than `NotFound`. The path
 //!   exists (try_exists returned true) — to trigger this we need EACCES
 //!   or EIO. Easiest in a test: write a 0-permission file (mode 000)
@@ -58,13 +54,11 @@ async fn corrupted_phase_yaml_increments_phase_read_errors() {
     // 1. Initialise LanceStore — creates .forgeplan/ + tables. We do NOT
     //    use `init_workspace` because that requires a project name and
     //    creates artefact subdirs we don't need for this test; raw
-    //    LanceStore::init is enough to satisfy `health_report_with_phase`.
-    let store = LanceStore::init(&ws).await.expect("LanceStore::init");
-
-    // Also write a minimal config.yaml so `load_config` succeeds.
-    // `is_enabled(&config)` defaults to true when the phase block is
-    // missing — perfect for our scenario (we want phase tracking ON).
+    //    LanceStore::init_new is enough to satisfy `health_report_with_phase`.
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    // A missing phase block leaves tracking enabled.
     std::fs::write(ws.join("config.yaml"), "project_name: fr020_e2e\n").expect("write config.yaml");
+    let store = LanceStore::init_new(&ws, &lock).await.expect("LanceStore::init_new");
 
     // 2. Seed an active PRD via the test-helpers escape hatch. We need it
     //    to be `active` because `health_report_with_phase` filters phase
@@ -83,9 +77,10 @@ async fn corrupted_phase_yaml_increments_phase_read_errors() {
         tags: Vec::new(),
     };
     store
-        .create_artifact_for_test(&prd)
+        .create_artifact_for_test(&lock, &prd)
         .await
         .expect("create_artifact_for_test");
+    drop(lock);
 
     // 3. Create the state file at the path read_phase will check, then
     //    chmod it to 000 so the read fails with EACCES (NOT a NotFound,
@@ -96,10 +91,7 @@ async fn corrupted_phase_yaml_increments_phase_read_errors() {
     let state_dir = ws.join("state");
     std::fs::create_dir_all(&state_dir).expect("mkdir state dir");
     let state_path = state_dir.join("PRD-001.yaml");
-    // Write a valid-looking PhaseState YAML so the failure mode is *I/O*
-    // (EACCES on open) rather than a parse error. Parse errors quarantine
-    // to `.yaml.corrupt.<ts>` + return `Ok(None)` — that does NOT
-    // increment phase_read_errors.
+    // Write a valid state so this case exercises an I/O error, not a parse error.
     std::fs::write(
         &state_path,
         "artifact_id: PRD-001\n\
@@ -121,8 +113,9 @@ async fn corrupted_phase_yaml_increments_phase_read_errors() {
     perms.set_mode(0o000);
     std::fs::set_permissions(&state_path, perms).expect("chmod 000");
 
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await.unwrap();
     // 4. Run health_report_with_phase. Expect phase_read_errors == 1.
-    let (report, _mismatches) = health_report_with_phase(&store, &ws)
+    let (report, _mismatches) = health_report_with_phase(&store, &permit, &ws)
         .await
         .expect("health_report_with_phase");
 
@@ -159,9 +152,10 @@ async fn corrupted_phase_yaml_increments_phase_read_errors() {
 async fn clean_phase_yaml_does_not_increment_phase_read_errors() {
     let tmp = TempDir::new().expect("tempdir");
     let ws = tmp.path().join(".forgeplan");
-    let store = LanceStore::init(&ws).await.expect("LanceStore::init");
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
     std::fs::write(ws.join("config.yaml"), "project_name: fr020_e2e_clean\n")
         .expect("write config.yaml");
+    let store = LanceStore::init_new(&ws, &lock).await.expect("LanceStore::init_new");
 
     let prd = NewArtifact {
         canonical_key: "PRD-002".to_string(),
@@ -177,13 +171,15 @@ async fn clean_phase_yaml_does_not_increment_phase_read_errors() {
         tags: Vec::new(),
     };
     store
-        .create_artifact_for_test(&prd)
+        .create_artifact_for_test(&lock, &prd)
         .await
         .expect("create_artifact_for_test");
+    drop(lock);
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await.unwrap();
 
     // No state file at all — `read_phase` returns `Ok(None)` early via
     // `try_exists == false`. NOT an error → counter stays 0.
-    let (report, _) = health_report_with_phase(&store, &ws)
+    let (report, _) = health_report_with_phase(&store, &permit, &ws)
         .await
         .expect("health_report_with_phase");
 
@@ -202,6 +198,8 @@ async fn clean_phase_yaml_does_not_increment_phase_read_errors() {
 async fn test_helpers_gate_is_active() {
     let tmp = TempDir::new().expect("tempdir");
     let ws = tmp.path().join(".forgeplan");
-    let _store = LanceStore::init(&ws).await.expect("LanceStore::init");
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    std::fs::write(ws.join("config.yaml"), "project_name: fr020_e2e_helpers\n").unwrap();
+    let _store = LanceStore::init_new(&ws, &lock).await.expect("LanceStore::init_new");
     // Compilation alone proves the gate; no runtime assertion needed.
 }

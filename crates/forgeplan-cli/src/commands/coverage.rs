@@ -66,15 +66,17 @@ pub async fn run_scan(path: Option<&str>) -> anyhow::Result<()> {
 
 /// `forgeplan coverage` — show decision coverage per module
 pub async fn run_coverage() -> anyhow::Result<()> {
-    let (ws, store) = common::open_store_tolerating_constellation().await?;
+    let ws = common::find_workspace_path()?;
+    let read_guard = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await?;
+    let (_, store) = common::open_store_tolerating_constellation().await?;
     let project_root = ws.parent().unwrap_or(&ws);
 
     println!("  Scanning codebase...");
     let mut modules = coverage::scan_modules(project_root).await?;
     let report = if let Some(store) = store {
-        coverage::build_coverage(&mut modules, &store).await?
+        coverage::build_coverage(&mut modules, &store, &read_guard).await?
     } else {
-        let read = common::workspace_read(&ws).await?;
+        let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &read_guard).await?;
         coverage::build_coverage_from_records(&mut modules, read.records())
     };
 
@@ -133,12 +135,14 @@ pub async fn run_coverage() -> anyhow::Result<()> {
 
 /// `forgeplan coverage --backfill` — add "Affected Files" section to artifacts missing it
 pub async fn run_backfill() -> anyhow::Result<()> {
-    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (ws, lock, store) = common::open_store_locked_checked(&[]).await?;
     let migrated = store.is_none();
     let updated = match store {
-        Some(store) => coverage::backfill_affected_files(&store).await?,
+        Some(store) => coverage::backfill_affected_files(&store, &lock)
+            .await
+            .map_err(|error| common::describe_possible_legacy_partial_commit(true, error))?,
         None => {
-            let read = common::workspace_read(&ws).await?;
+            let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock).await?;
             let ctx = projection::MutationContext::new(&ws, &lock, None);
             let mut updated = Vec::new();
 
@@ -160,7 +164,7 @@ pub async fn run_backfill() -> anyhow::Result<()> {
                     continue;
                 };
                 if let Err(e) =
-                    projection::update_body_with_projection(&ctx, &record.id, &new_body).await
+                    projection::update_body_with_projection(&ctx, &record.canonical_key, &new_body).await
                 {
                     eprintln!("  Warning: backfill failed for {}: {e}", record.id);
                     continue;
@@ -170,6 +174,15 @@ pub async fn run_backfill() -> anyhow::Result<()> {
             updated
         }
     };
+
+    if !migrated && !updated.is_empty() {
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&ws).await?;
+    } else if migrated && !updated.is_empty() {
+        common::note_constellation_owns_index();
+        drop(lock);
+        common::reconcile_after_file_mutation(&ws).await;
+    }
 
     let hint_list: Vec<Hint> = if updated.is_empty() {
         println!("  All active PRD/RFC/ADR already have 'Affected Files' section.");
@@ -189,11 +202,6 @@ pub async fn run_backfill() -> anyhow::Result<()> {
     };
     print!("{}", hints::render_next_action_line(&hint_list));
 
-    if migrated && !updated.is_empty() {
-        common::note_constellation_owns_index();
-        drop(lock);
-        common::reconcile_after_file_mutation(&ws).await;
-    }
 
     Ok(())
 }

@@ -1,0 +1,132 @@
+name: Identity Windows verification
+
+on:
+  push:
+    branches: ['ci/identity-windows-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: identity-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '2'
+
+jobs:
+  identity-windows:
+    name: Identity on native Windows NTFS
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout exact requested revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Record revision and filesystem
+        id: environment
+        run: |
+          New-Item -ItemType Directory -Force ci-logs | Out-Null
+          git rev-parse HEAD | Tee-Object ci-logs/revision.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot identify checked-out revision' }
+          rustc --version --verbose | Tee-Object ci-logs/rustc.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot identify Rust compiler' }
+          Get-Volume | Format-Table DriveLetter,FileSystem,SizeRemaining,Size | Out-String | Tee-Object ci-logs/volumes.txt
+          $drive = (Get-Item $env:GITHUB_WORKSPACE).PSDrive.Name
+          $volume = Get-Volume -DriveLetter $drive -ErrorAction Stop
+          if ($volume.FileSystem -ne 'NTFS') { throw "Expected NTFS, got $($volume.FileSystem)" }
+          if ($volume.SizeRemaining -lt 15GB) { throw 'Insufficient free disk space before build' }
+          $temp = Join-Path $env:GITHUB_WORKSPACE 'ci-temp'
+          New-Item -ItemType Directory -Force $temp | Out-Null
+          "TEMP=$temp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TMP=$temp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Check workspace default configuration
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: |
+          cargo check --locked --workspace --all-targets 2>&1 | Tee-Object ci-logs/check-default.txt
+          if ($LASTEXITCODE -ne 0) { throw "Default cargo check failed: $LASTEXITCODE" }
+      - name: Check workspace semantic configuration
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: |
+          cargo check --locked --workspace --all-targets --features semantic-search 2>&1 | Tee-Object ci-logs/check-semantic.txt
+          if ($LASTEXITCODE -ne 0) { throw "Semantic cargo check failed: $LASTEXITCODE" }
+      - name: Run native identity and filesystem tests
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $failures = @()
+          $filters = @(
+            'artifact::canonical_key::tests',
+            'artifact::sidecar::tests',
+            'artifact::identity_repair::tests',
+            'phase::store::tests',
+            'claim::tests',
+            'db::migrate::tests',
+            'scan::import::tests',
+            'constellation::durability::'
+          )
+          foreach ($filter in $filters) {
+            $name = $filter.Replace('::', '-')
+            $log = "ci-logs/test-$name.txt"
+            cargo test --locked -p forgeplan-core --lib --features 'semantic-search,test-helpers' $filter -- --nocapture 2>&1 | Tee-Object $log
+            $exit = $LASTEXITCODE
+            if ($exit -ne 0) {
+              $failures += "$filter (cargo exit $exit)"
+              continue
+            }
+            $results = Select-String -Path $log -Pattern '^test result: ok\. [1-9][0-9]* passed;'
+            if (-not $results) { $failures += "$filter (RUN DID NOT HAPPEN)" }
+          }
+          if ($failures.Count -gt 0) { throw "Core suite failures: $($failures -join '; ')" }
+      - name: Run public CLI and MCP identity regressions
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $failures = @()
+          $tests = @(
+            @('forgeplan', 'identity_cli_review_regressions'),
+            @('forgeplan', 'cli_phase_advance'),
+            @('forgeplan', 'cli_constellation_fpf_compat'),
+            @('forgeplan-mcp', 'identity_resolution_mcp'),
+            @('forgeplan-mcp', 'constellation_migrated_read')
+          )
+          foreach ($case in $tests) {
+            $package = $case[0]
+            $test = $case[1]
+            $log = "ci-logs/test-$package-$test.txt"
+            cargo test --locked -p $package --features 'semantic-search,forgeplan-core/test-helpers' --test $test -- --nocapture 2>&1 | Tee-Object $log
+            $exit = $LASTEXITCODE
+            if ($exit -ne 0) {
+              $failures += "$package/$test (cargo exit $exit)"
+              continue
+            }
+            $results = Select-String -Path $log -Pattern '^test result: ok\. [1-9][0-9]* passed;'
+            if (-not $results) { $failures += "$package/$test (RUN DID NOT HAPPEN)" }
+          }
+          if ($failures.Count -gt 0) { throw "Public suite failures: $($failures -join '; ')" }
+      - name: Record final free disk space
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force ci-logs | Out-Null
+          Get-Volume | Format-Table DriveLetter,FileSystem,SizeRemaining,Size | Out-String | Tee-Object ci-logs/final-volumes.txt
+      - name: Preserve verification logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: identity-windows-${{ github.sha }}
+          path: ci-logs/
+          if-no-files-found: error
+          retention-days: 14

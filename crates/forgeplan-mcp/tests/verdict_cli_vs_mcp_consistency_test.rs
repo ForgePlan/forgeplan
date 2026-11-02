@@ -52,12 +52,12 @@ const ACTIVE_ARTIFACTS: &[(&str, &str, &str, Phase)] = &[
 /// phase mismatches across 6 kinds, both paths agree byte-for-byte.
 #[tokio::test]
 async fn cli_and_mcp_agree_on_verdict_with_six_phase_mismatches() {
-    let fixture = McpFixture::new_with_seed(|store| async move {
+    let fixture = McpFixture::new_with_seed(|store, seed_guard| async move {
         // Seed 6 active artifacts via the test-helpers create path so the
         // server-side reader sees them on first scan.
         for (id, kind, title, _phase) in ACTIVE_ARTIFACTS {
             store
-                .create_artifact_for_test(&NewArtifact {
+                .create_artifact_for_test(&seed_guard, &NewArtifact {
                     canonical_key: (*id).to_string(),
                     id: (*id).to_string(),
                     kind: (*kind).to_string(),
@@ -89,7 +89,7 @@ async fn cli_and_mcp_agree_on_verdict_with_six_phase_mismatches() {
         for (i, (id, _kind, _title, _phase)) in ACTIVE_ARTIFACTS.iter().enumerate() {
             let evid = format!("EVID-L-H3-{i:03}");
             store
-                .create_artifact_for_test(&NewArtifact {
+                .create_artifact_for_test(&seed_guard, &NewArtifact {
                     canonical_key: evid.clone(),
                     id: evid.clone(),
                     kind: "evidence".to_string(),
@@ -109,7 +109,7 @@ async fn cli_and_mcp_agree_on_verdict_with_six_phase_mismatches() {
                 .await
                 .expect("seed evidence");
             store
-                .add_relation_for_test(&evid, id, "informs")
+                .add_relation_for_test(&seed_guard, &evid, id, "informs")
                 .await
                 .expect("seed informs relation");
         }
@@ -145,10 +145,13 @@ async fn cli_and_mcp_agree_on_verdict_with_six_phase_mismatches() {
     let cli_store = forgeplan_core::db::store::LanceStore::open(&fixture.workspace_path)
         .await
         .expect("open store");
-    let (cli_report, cli_mismatches) =
-        health_report_with_phase(&cli_store, &fixture.workspace_path)
+    let (cli_report, cli_mismatches) = {
+        let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&fixture.workspace_path)
+            .await.expect("workspace read lock");
+        health_report_with_phase(&cli_store, &permit, &fixture.workspace_path)
             .await
-            .expect("health_report_with_phase");
+            .expect("health_report_with_phase")
+    };
     let cli_verdict = cli_report.verdict;
     let cli_summary = cli_verdict.human_summary();
     let cli_mismatch_count = cli_mismatches.len();

@@ -49,8 +49,14 @@ pub mod store;
 mod posix;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_provider;
 
 pub use store::DurabilityTrackingStore;
+#[cfg(windows)]
+pub(crate) use windows::{open_directory_no_reparse, read_mutable_file, replace_mutable_file};
+#[cfg(windows)]
+pub(crate) use windows_provider::windows_wrapped_session;
 
 use super::capture::FilesystemSupport;
 use super::{ConstellationError, DiagnosticCode, SourceDiagnostic};
@@ -72,19 +78,42 @@ pub(crate) fn platform_barrier(
     if diagnostic.is_some() {
         return (FilesystemSupport::Unsupported, None, diagnostic);
     }
-    let barrier: Arc<dyn PlatformDurability> = Arc::new(selected_barrier());
-    (support, Some(barrier), None)
+    #[cfg(windows)]
+    {
+        let _ = support;
+        return (
+            FilesystemSupport::Unsupported,
+            None,
+            Some(SourceDiagnostic::new(
+                DiagnosticCode::UnsupportedIndexFilesystem,
+                None,
+                "Windows live object-store namespace durability is not established",
+            )),
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        let barrier: Arc<dyn PlatformDurability> = Arc::new(selected_barrier());
+        (support, Some(barrier), None)
+    }
 }
 
-/// The barrier adapter for this build's target.
-///
-/// Windows gets the NTFS write-through adapter; everything else keeps the
-/// POSIX `sync_all` adapter unchanged. The two report different
-/// `adapter_name()`s precisely so a diagnostic can say which barrier actually
-/// ran — a durability claim that cannot name its mechanism is not auditable.
+/// Select the NTFS primitive adapter after validating the backing volume.
+/// Only for explicit write-through primitives and exclusive private-stage
+/// sealing, never for the general live object-store route.
 #[cfg(windows)]
-fn selected_barrier() -> WindowsNtfsDurability {
-    windows::WindowsNtfsDurability
+pub(crate) fn windows_ntfs_primitive_barrier(
+    index_root: &Path,
+) -> (
+    FilesystemSupport,
+    Option<Arc<dyn PlatformDurability>>,
+    Option<SourceDiagnostic>,
+) {
+    let (support, diagnostic) = classify_index_root(index_root);
+    if diagnostic.is_some() {
+        return (FilesystemSupport::Unsupported, None, diagnostic);
+    }
+    (support, Some(Arc::new(WindowsNtfsDurability)), None)
 }
 
 #[cfg(not(windows))]
@@ -104,6 +133,83 @@ use windows::WindowsNtfsDurability;
 #[cfg(windows)]
 fn verify_volume(index_root: &Path) -> Result<(), String> {
     windows::verify_local_ntfs(index_root)
+}
+
+/// Verify that the path is backed by a local fixed NTFS volume and its
+/// existing directory components are not reparse points.
+#[cfg(windows)]
+pub(crate) fn verify_local_ntfs(path: &Path) -> Result<(), String> {
+    windows::verify_local_ntfs(path)
+}
+
+/// Construct a lossless local URI for a session from `windows_wrapped_session`.
+/// The default Lance provider cannot decode these path escapes correctly.
+#[cfg(windows)]
+pub(crate) fn windows_wrapped_uri(path: &Path) -> Result<String, ConstellationError> {
+    windows::verify_local_ntfs(path).map_err(|detail| ConstellationError::DurabilityUnavailable { detail })?;
+    windows_wrapped_uri_for_path(path)
+}
+
+#[cfg(windows)]
+fn windows_wrapped_uri_for_path(path: &Path) -> Result<String, ConstellationError> {
+    if !path.is_absolute()
+        || !matches!(path.components().next(), Some(std::path::Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)))
+    {
+        return Err(ConstellationError::DurabilityUnavailable {
+            detail: format!("{} is not an absolute local drive path", path.display()),
+        });
+    }
+    let key = object_store::path::Path::from_absolute_path(path)
+        .map_err(|error| ConstellationError::DurabilityUnavailable {
+            detail: format!("cannot encode local path {}: {error}", path.display()),
+        })?;
+    let file_url = reqwest::Url::from_file_path(path).map_err(|_| ConstellationError::DurabilityUnavailable {
+        detail: format!("cannot encode local file URL for {}", path.display()),
+    })?;
+    let actual = object_store::local::LocalFileSystem::new()
+        .path_to_filesystem(&key)
+        .map_err(|error| ConstellationError::DurabilityUnavailable {
+            detail: format!("cannot resolve local path {}: {error}", path.display()),
+        })?;
+    if !path_is_within(path, &actual) || !path_is_within(&actual, path) {
+        return Err(ConstellationError::DurabilityUnavailable {
+            detail: format!("wrapped URI does not resolve to {}", path.display()),
+        });
+    }
+    Ok(file_url.as_str().replacen("file:", "file-object-store:", 1))
+}
+
+/// Create directories through the Windows write-through namespace primitive.
+#[cfg(windows)]
+pub(crate) fn ensure_dir(path: &Path) -> Result<(), ConstellationError> {
+    WindowsNtfsDurability.ensure_dir(path)
+}
+
+/// Move on one volume without replacing an existing destination.
+#[cfg(windows)]
+pub(crate) fn move_noreplace_write_through(
+    src: &Path,
+    dest: &Path,
+) -> Result<(), ConstellationError> {
+    WindowsNtfsDurability.move_write_through(src, dest, false)
+}
+
+
+/// Seal an exclusively owned, unpublished staging tree. An interrupted seal
+/// leaves the entire stage unusable and the caller must rebuild a fresh stage.
+#[cfg(windows)]
+pub(crate) fn seal_unpublished_tree(root: &Path) -> Result<(), ConstellationError> {
+    windows::seal_unpublished_tree(root)
+}
+
+/// Wrap the local Lance store for a private legacy migration stage.
+#[cfg(windows)]
+pub(crate) fn tracked_legacy_store(
+    root: &Path,
+    tracker: Arc<StageTracker>,
+    platform: Arc<dyn PlatformDurability>,
+) -> Arc<DurabilityTrackingStore> {
+    Arc::new(DurabilityTrackingStore::for_private_stage(root, tracker, platform))
 }
 
 /// POSIX side of [`verify_volume`]: no volume check applies, because the
@@ -127,20 +233,29 @@ fn verify_volume(_index_root: &Path) -> Result<(), String> {
 pub(crate) fn classify_index_root(
     index_root: &Path,
 ) -> (FilesystemSupport, Option<SourceDiagnostic>) {
-    let Ok(meta) = std::fs::symlink_metadata(index_root) else {
-        // Not created yet — bootstrap will create it under the owner lock.
-        return (FilesystemSupport::Supported, None);
-    };
-
-    if !meta.is_dir() {
-        return (
-            FilesystemSupport::Unsupported,
-            Some(SourceDiagnostic::new(
-                DiagnosticCode::UnsupportedIndexFilesystem,
-                None,
-                "index root exists but is not a directory",
-            )),
-        );
+    match std::fs::symlink_metadata(index_root) {
+        Ok(meta) if !meta.is_dir() => {
+            return (
+                FilesystemSupport::Unsupported,
+                Some(SourceDiagnostic::new(
+                    DiagnosticCode::UnsupportedIndexFilesystem,
+                    None,
+                    "index root exists but is not a directory",
+                )),
+            );
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return (
+                FilesystemSupport::Unsupported,
+                Some(SourceDiagnostic::new(
+                    DiagnosticCode::UnsupportedIndexFilesystem,
+                    None,
+                    format!("cannot inspect index root: {error}"),
+                )),
+            );
+        }
     }
 
     if let Err(detail) = verify_volume(index_root) {
@@ -255,12 +370,12 @@ pub(crate) fn same_physical_file(locked: &std::fs::File, name: &Path) -> Result<
     Ok(locked_id == named_id)
 }
 
-/// The physical identity of a file an open descriptor already holds.
+/// The physical identity of an open file or directory descriptor.
 #[cfg(windows)]
 pub(crate) fn physical_identity_of(file: &std::fs::File) -> Result<PhysicalIdentity, String> {
     use std::os::windows::io::AsRawHandle;
     // `std`'s `RawHandle` and `HANDLE` are both `*mut core::ffi::c_void`.
-    windows::identity_from_handle(file.as_raw_handle(), "the locked manifest handle")
+    windows::identity_from_handle(file.as_raw_handle(), "the open file or directory handle")
 }
 
 #[cfg(unix)]
@@ -741,8 +856,8 @@ impl StageTracker {
             // that never existed; the correct resolution is from the root,
             // and confinement is what `index_root` is then FOR: a tracked
             // write that lands outside it is a violation, not a name.
-            let path = Path::new("/").join(relative);
-            if !path.starts_with(index_root) {
+            let path = tracked_filesystem_path(relative)?;
+            if !path_is_within(&path, index_root) {
                 return Err(ConstellationError::DurabilityUnavailable {
                     detail: format!(
                         "touched file {} is outside the index root; the stage must not \
@@ -796,8 +911,8 @@ impl StageTracker {
             // durability domain — they are skipped, not refused: a written
             // FILE outside the root is rejected above, while a shared
             // ancestor is just metadata about where that file lives.
-            let path = Path::new("/").join(relative);
-            if !path.starts_with(index_root) {
+            let path = tracked_filesystem_path(relative)?;
+            if !path_is_within(&path, index_root) {
                 continue;
             }
             if path.is_dir() {
@@ -832,6 +947,64 @@ impl StageTracker {
     }
 }
 
+#[cfg(windows)]
+fn tracked_filesystem_path(key: &str) -> Result<std::path::PathBuf, ConstellationError> {
+    let path = object_store::path::Path::parse(key).map_err(|error| {
+        ConstellationError::DurabilityUnavailable { detail: format!("invalid tracked path {key}: {error}") }
+    })?;
+    object_store::local::LocalFileSystem::new()
+        .path_to_filesystem(&path)
+        .map_err(|error| ConstellationError::DurabilityUnavailable {
+            detail: format!("cannot resolve tracked path {key}: {error}"),
+        })
+}
+
+#[cfg(not(windows))]
+fn tracked_filesystem_path(key: &str) -> Result<std::path::PathBuf, ConstellationError> {
+    Ok(Path::new("/").join(key))
+}
+
+#[cfg(not(windows))]
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+}
+
+/// Compare local drive paths by components, accepting both ordinary and
+/// verbatim drive prefixes. Name components compare exactly to remain safe on
+/// case-sensitive NTFS directories.
+#[cfg(windows)]
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+
+    fn eq_component(a: Component<'_>, b: Component<'_>) -> bool {
+        match (a, b) {
+            (Component::Prefix(a), Component::Prefix(b)) => {
+                let drive = |prefix| match prefix {
+                    Prefix::Disk(d) | Prefix::VerbatimDisk(d) => Some(d.to_ascii_uppercase()),
+                    _ => None,
+                };
+                matches!((drive(a.kind()), drive(b.kind())), (Some(a), Some(b)) if a == b)
+            }
+            (Component::RootDir, Component::RootDir) => true,
+            (Component::Normal(a), Component::Normal(b)) => {
+                a.encode_wide().eq(b.encode_wide())
+            }
+            _ => false,
+        }
+    }
+    if !path.is_absolute() || !root.is_absolute() {
+        return false;
+    }
+    let mut path_components = path.components();
+    for root_component in root.components() {
+        if !path_components.next().is_some_and(|component| eq_component(component, root_component)) {
+            return false;
+        }
+    }
+    !path_components.any(|component| matches!(component, Component::ParentDir | Component::CurDir | Component::Prefix(_) | Component::RootDir))
+}
+
 /// Parent of a relative object path, or `None` at the root.
 ///
 /// Object-store paths always use `/`, including on Windows, so this splits on
@@ -859,6 +1032,38 @@ fn mark_ancestors(directories: &mut BTreeSet<String>, path: &str) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_confinement_accepts_verbatim_drives_but_not_sibling_or_case_alias() {
+        assert!(path_is_within(Path::new(r"C:\Data\stage\file"), Path::new(r"\\?\C:\Data\stage")));
+        assert!(path_is_within(Path::new(r"\\?\C:\Data\stage\file"), Path::new(r"C:\Data\stage")));
+        assert!(!path_is_within(Path::new(r"C:\Data\stage-other\file"), Path::new(r"C:\Data\stage")));
+        assert!(!path_is_within(Path::new(r"C:\data\stage\file"), Path::new(r"C:\Data\stage")));
+        assert!(!path_is_within(Path::new(r"D:\Data\stage\file"), Path::new(r"C:\Data\stage")));
+        assert!(!path_is_within(Path::new(r"C:\Data\stage\..\outside"), Path::new(r"C:\Data\stage")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wrapped_uri_handles_normal_and_verbatim_paths_without_loss() {
+        let normal = Path::new(r"C:\Data\stage\table.lance");
+        let verbatim = Path::new(r"\\?\C:\Data\stage\table.lance");
+        assert_eq!(windows_wrapped_uri_for_path(normal).unwrap(), "file-object-store:///C:/Data/stage/table.lance");
+        assert_eq!(windows_wrapped_uri_for_path(verbatim).unwrap(), "file-object-store:///C:/Data/stage/table.lance");
+        assert_eq!(windows_wrapped_uri_for_path(Path::new(r"C:\Data\has space")).unwrap(), "file-object-store:///C:/Data/has%20space");
+        assert!(windows_wrapped_uri_for_path(Path::new(r"\\server\share\data")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn live_barrier_is_never_selected() {
+        let tmp = TempDir::new().unwrap();
+        let (support, barrier, diagnostic) = platform_barrier(tmp.path());
+        assert_eq!(support, FilesystemSupport::Unsupported);
+        assert!(barrier.is_none());
+        assert!(diagnostic.is_some());
+    }
 
     #[test]
     fn parent_of_splits_on_the_object_store_separator() {
@@ -1073,8 +1278,8 @@ mod tests {
         assert_eq!(PosixDurability.adapter_name(), "posix-sync-all");
     }
 
-    /// Adapter selection is platform-independent logic: whatever the host, a
-    /// supported root must get a barrier and the barrier must name itself.
+    /// POSIX live roots yield a self-naming barrier.
+    #[cfg(not(windows))]
     #[test]
     fn a_supported_root_yields_a_self_naming_barrier() {
         let tmp = TempDir::new().unwrap();
@@ -1119,6 +1324,7 @@ mod tests {
 
     /// A root that does not exist is `Uninitialized`, not an error, and still
     /// yields a barrier so bootstrap can ask the question before creating it.
+    #[cfg(not(windows))]
     #[test]
     fn a_missing_root_is_supported_and_yields_a_barrier() {
         let tmp = TempDir::new().unwrap();

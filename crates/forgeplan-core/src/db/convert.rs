@@ -12,7 +12,7 @@ use crate::db::store::NewArtifact;
 
 /// Convert a NewArtifact into an Arrow RecordBatch using the artifacts schema.
 ///
-/// The embedding column is set to null (no vector computed at creation time).
+/// The embedding and semantic binding columns are null at creation time.
 pub fn artifact_to_batch(artifact: &NewArtifact, now: &str) -> anyhow::Result<RecordBatch> {
     let schema = schema::artifacts_schema();
     artifact_to_batch_with_schema(artifact, now, &schema)
@@ -25,6 +25,7 @@ pub(crate) fn artifact_to_batch_with_schema(
 ) -> anyhow::Result<RecordBatch> {
     let embedding_col = make_null_embedding_col(1);
     let tags_col = build_tags_list_array(std::iter::once(artifact.tags.as_slice()));
+    let semantic_unbound: Arc<dyn Array> = Arc::new(StringArray::from(vec![None::<&str>]));
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -53,16 +54,19 @@ pub(crate) fn artifact_to_batch_with_schema(
             ])),
             embedding_col,
             Arc::new(tags_col),
-            // canonical_key — ADR-030: the row's authoritative identity. The
-            // column is NOT NULL, so a caller that did not prepare a key gets
-            // the legacy rule applied to the row's own document (the
-            // frontmatter slug when it declares a valid one, the display id
-            // otherwise) rather than an empty, unaddressable row.
+            // canonical_key — ADR-030: the row's authoritative identity.
+            // When no key was prepared, derive it from the document.
             Arc::new(StringArray::from(vec![crate::db::store::canonical_key_of(
                 &artifact.canonical_key,
                 &artifact.id,
                 &artifact.body,
             )])),
+            semantic_unbound.clone(),
+            semantic_unbound.clone(),
+            semantic_unbound.clone(),
+            semantic_unbound.clone(),
+            semantic_unbound.clone(),
+            semantic_unbound,
         ],
     )?;
     Ok(batch)
@@ -312,6 +316,52 @@ mod tests {
         assert_eq!(summaries[0].kind, "prd");
         assert_eq!(summaries[0].status, "draft");
         assert_eq!(summaries[0].title, "Test PRD");
+    }
+
+    #[test]
+    fn artifact_arrow_round_trip_has_unbound_semantic_columns() {
+        let mut artifact = sample_artifact();
+        artifact.canonical_key = "canonical-prd".to_string();
+        artifact.tags = vec!["source=code".to_string()];
+        let schema = schema::artifacts_schema();
+        let batches = [
+            artifact_to_batch(&artifact, "2026-01-01T00:00:00Z").unwrap(),
+            artifact_to_batch_with_schema(&artifact, "2026-01-01T00:00:00Z", &schema).unwrap(),
+        ];
+
+        for batch in batches {
+            assert_eq!(batch.schema().as_ref(), schema.as_ref());
+            assert_eq!(batch.num_rows(), 1);
+            assert_eq!(batch.num_columns(), 22);
+            assert_eq!(batch.schema().field(15).name(), "canonical_key");
+            for (index, name) in [
+                "semantic_input_digest",
+                "semantic_profile_digest",
+                "semantic_vector_digest",
+                "semantic_job_id",
+                "semantic_attempt_token",
+                "semantic_state",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let field = batch.schema().field(16 + index).clone();
+                assert_eq!(field.name().as_str(), *name);
+                assert_eq!(field.data_type(), &arrow_schema::DataType::Utf8);
+                assert!(field.is_nullable());
+                let column = batch.column(16 + index);
+                let strings = column.as_any().downcast_ref::<StringArray>().unwrap();
+                assert!(strings.is_null(0), "{name} must be unbound");
+            }
+            assert_eq!(extract_tags(&batch, 0), vec!["source=code"]);
+            let summaries = batch_to_artifacts(&batch).unwrap();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].canonical_key, artifact.canonical_key);
+            assert_eq!(summaries[0].id, artifact.id);
+            assert_eq!(summaries[0].title, artifact.title);
+            assert_eq!(summaries[0].kind, artifact.kind);
+            assert_eq!(summaries[0].status, artifact.status);
+        }
     }
 
     #[test]

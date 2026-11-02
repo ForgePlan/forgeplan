@@ -270,7 +270,8 @@ async fn default_watch_keeps_legacy_sync_and_observes_a_file_change() {
     let store = forgeplan_core::db::store::LanceStore::open(&workspace.workspace())
         .await
         .unwrap();
-    let record = store.get_record("PRD-001").await.unwrap().unwrap();
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace.workspace()).await.unwrap();
+    let record = store.get_record(&permit, "PRD-001").await.unwrap().unwrap();
     assert!(record.body.contains("maintenance_legacy_change_sentinel"));
     assert!(!workspace.lance().join(storage::CURRENT_FILE_NAME).exists());
     assert!(
@@ -365,9 +366,10 @@ async fn migrate_still_runs_real_legacy_schema_migrations_and_keeps_rows() {
     let store = forgeplan_core::db::store::LanceStore::open(&workspace.workspace())
         .await
         .unwrap();
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace.workspace()).await.unwrap();
     assert!(
         store
-            .get_record("PRD-001")
+            .get_record(&permit, "PRD-001")
             .await
             .unwrap()
             .unwrap()
@@ -375,6 +377,7 @@ async fn migrate_still_runs_real_legacy_schema_migrations_and_keeps_rows() {
             .contains(INITIAL_BODY)
     );
     drop(store);
+    drop(permit);
     workspace.run_ok(&["migrate"]);
 }
 

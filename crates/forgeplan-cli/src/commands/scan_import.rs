@@ -14,21 +14,18 @@ use crate::commands::common;
 /// when it declares none. An import never mints a key, and the derived index
 /// row is keyed by that same key.
 pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
-    // A preview acquires NOTHING. Taking the workspace lock would create
-    // `.forgeplan/.lock`, and opening the store would run its schema
-    // migrations — so `--dry-run` on a legacy layout would perform exactly
-    // the mutations it promises not to perform, and a read-only workspace
-    // would fail on a lock it never needed.
-    let (ws, lock, store) = if dry_run {
-        (common::find_workspace_path()?, None, None)
+    // A dry run holds a shared permit rather than a writer lock or store.
+    let (ws, lock) = if dry_run {
+        (common::find_workspace_path()?, None)
     } else {
-        // Lock + OPTIONAL legacy store, decided before either is opened: on a
-        // constellation-managed workspace the store is `None` and the Markdown
-        // write is the whole mutation. `open_store_locked` used to refuse here.
-        let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
-        (ws, Some(lock), store)
+        let (ws, lock) = common::open_workspace_locked().await?;
+        (ws, Some(lock))
     };
-    let migrated = store.is_none() && !dry_run;
+    let read_guard = if dry_run {
+        Some(forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await?)
+    } else {
+        None
+    };
     let project_root = ws
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine project root"))?;
@@ -37,6 +34,30 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
         dry_run,
         custom_path: path.map(|s| s.to_string()),
     };
+    let (store, plan, allocation) = if let Some(lock) = lock.as_ref() {
+        let kinds = forgeplan_core::scan::import::scan_import_kinds(project_root, &options)?;
+        let allocation = forgeplan_core::artifact::id_alloc::acquire_allocation_guard(&ws, lock, &kinds).await?;
+        let before_store = if common::index_migrated(&ws) {
+            None
+        } else {
+            Some(forgeplan_core::db::store::LanceStore::open(&ws).await?)
+        };
+        let before = forgeplan_core::scan::import::plan_scan_import(
+            project_root, &ws, lock, &allocation, before_store.as_ref(), &options,
+        ).await?;
+        drop(before_store);
+        let store = common::prepare_store_locked_checked(&ws, lock, &[]).await?;
+        let after = forgeplan_core::scan::import::plan_scan_import(
+            project_root, &ws, lock, &allocation, store.as_ref(), &options,
+        ).await?;
+        if before != after {
+            anyhow::bail!("scan identities or sources changed while reopening the index");
+        }
+        (store, Some(after), Some(allocation))
+    } else {
+        (None, None, None)
+    };
+    let migrated = store.is_none() && !dry_run;
 
     if dry_run {
         println!(
@@ -48,9 +69,19 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
     // PRD-058 FR-001 + S1-R2: the canonical Markdown is written FIRST for
     // every imported document, and the legacy projection is taken afterwards
     // only where one still exists. No source file is ever moved or deleted.
-    let result =
-        scan_and_import_to_workspace(project_root, &ws, lock.as_ref(), store.as_ref(), &options)
-            .await?;
+
+    let result = match (&plan, &lock, &allocation) {
+        (Some(plan), Some(lock), Some(allocation)) =>
+            forgeplan_core::scan::import::execute_scan_import_plan(
+                project_root, &ws, lock, allocation, store.as_ref(), &options, plan,
+            ).await,
+        _ => scan_and_import_to_workspace(
+            project_root, &ws, None,
+            read_guard.as_ref().map(|guard| guard as &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit),
+            None, &options,
+        ).await,
+    }.map_err(|error| common::describe_possible_legacy_partial_commit(!dry_run && !migrated, error))?;
+    drop(allocation);
     drop(lock);
 
     // ONE reconcile for the whole successful batch, after the lock is
@@ -68,6 +99,18 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
             );
         }
         common::reconcile_after_file_mutation(&ws).await;
+    } else if !dry_run && !migrated {
+        drop(store);
+        if let Err(error) = common::drain_legacy_semantic_after_mutation(&ws).await {
+            let failures: Vec<_> = result.entries.iter().filter_map(|entry| match &entry.status {
+                ImportStatus::Failed(message) => Some(format!("{}: {message}", entry.relative_path)),
+                _ => None,
+            }).collect();
+            if !failures.is_empty() {
+                anyhow::bail!("scan import errors: {}; canonical state may be committed; semantic backlog pending: {error}", failures.join("; "));
+            }
+            return Err(error);
+        }
     }
 
     // Print results
@@ -157,6 +200,9 @@ pub async fn run(path: Option<&str>, dry_run: bool) -> Result<()> {
             String::new()
         }
     );
+    if result.failed > 0 && !dry_run {
+        anyhow::bail!("scan import failed for {} document(s); canonical changes may have been committed", result.failed);
+    }
 
     // File-level id-collision warning (PRD-008 dup class): two+ files → one id.
     // The resolver then returns desynced status/body (status from one file,

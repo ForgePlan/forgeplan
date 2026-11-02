@@ -60,9 +60,9 @@ pub async fn run(
     // refusing — and it returns the journal it would have written without
     // writing it.
     let scan = match &store {
-        Some(store) => anomalies::detect_anomalies_with_journal(store, &ws, &filter).await?,
+        Some(store) => anomalies::detect_anomalies_with_journal(store, &_lock, &ws, &filter).await?,
         None => {
-            let read = common::workspace_read(&ws).await?;
+            let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &_lock).await?;
             anomalies::detect_anomalies_captured_with_journal(&read, &ws, &filter).await?
         }
     };

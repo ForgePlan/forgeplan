@@ -136,9 +136,11 @@ fn add_worktree(main_root: &Path, wt_root: &Path, branch: &str) -> bool {
 async fn forgeplan_init(root: &Path, name: &str) {
     let ws = forgeplan_core::workspace::init_workspace(root, name)
         .unwrap_or_else(|e| panic!("init_workspace({}) failed: {e}", root.display()));
-    forgeplan_core::db::store::LanceStore::init(&ws)
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws).await.unwrap();
+    forgeplan_core::db::store::LanceStore::init_new(&ws, &lock)
         .await
-        .unwrap_or_else(|e| panic!("LanceStore::init({}) failed: {e}", ws.display()));
+        .unwrap_or_else(|e| panic!("LanceStore::init_new({}) failed: {e}", ws.display()));
+    drop(lock);
 }
 
 /// A fully-wired main repo + ONE linked worktree, both `forgeplan init`'d.

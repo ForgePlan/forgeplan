@@ -38,7 +38,7 @@ impl Fixture {
         let project = TempDir::new().expect("temporary project");
         let ws = init_workspace(project.path(), "native-playbook-compat").expect("workspace");
         let lock = acquire_workspace_lock(&ws).await.expect("fixture lock");
-        let store = LanceStore::init(&ws).await.expect("legacy fixture tables");
+        let store = LanceStore::init_new(&ws, &lock).await.expect("legacy fixture tables");
         let ctx = MutationContext::new(&ws, &lock, Some(&store));
         seed(&ctx, "NOTE-007", "note", "Original note", NOTE_BODY, &[]).await;
         seed(&ctx, "ADR-003", "adr", "Native decision", ADR_BODY, &[]).await;
@@ -106,10 +106,13 @@ impl Fixture {
                 .expect("captured artifact")
                 .clone()
         } else {
+            let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&self.ws)
+                .await
+                .expect("legacy read permit");
             LanceStore::open(&self.ws)
                 .await
                 .expect("legacy read")
-                .get_record(id)
+                .get_record(&permit, id)
                 .await
                 .expect("get record")
                 .expect("legacy artifact")
@@ -705,7 +708,7 @@ async fn native_new_waits_for_the_workspace_lock_then_releases_it_before_reconci
 }
 
 #[tokio::test]
-async fn native_ingest_reports_link_errors_without_discarding_its_real_write() {
+async fn native_ingest_rejects_invalid_link_before_any_canonical_write() {
     for migrated in [false, true] {
         let fixture = Fixture::new(migrated).await;
         write_ingest_sources(fixture.project.path());
@@ -721,6 +724,11 @@ async fn native_ingest_reports_link_errors_without_discarding_its_real_write() {
                 .replace("if_exists: skip", "if_exists: error"),
         )
         .expect("link error policy");
+        let canonical_before: BTreeMap<_, _> = files(&fixture.ws)
+            .into_iter()
+            .filter(|(path, _)| path.extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        let index_before = files(&fixture.ws.join("lance"));
         let result = dispatch(
             &fixture,
             ForgeplanOp::Ingest,
@@ -728,25 +736,13 @@ async fn native_ingest_reports_link_errors_without_discarding_its_real_write() {
         )
         .await;
         assert!(!result.success);
-        assert!(
-            result
-                .stderr
-                .expect("link error")
-                .contains("invalid artifact id")
-        );
-        let path = result.output_path.expect("the canonical draft was created");
-        assert!(path.exists());
-        assert_eq!(
-            fixture.record("NOTE-008").await.title,
-            "Imported native note"
-        );
-        if migrated {
-            let read = open_workspace_read(&fixture.ws, None, CaptureLimits::default())
-                .await
-                .expect("read the completed part of the failed operation");
-            assert!(read.is_persisted());
-            assert!(read.get_relations("NOTE-008").is_empty());
-        }
+        assert!(result.output_path.is_none(), "a rejected batch must not report a created artifact");
+        let canonical_after: BTreeMap<_, _> = files(&fixture.ws)
+            .into_iter()
+            .filter(|(path, _)| path.extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        assert_eq!(canonical_after, canonical_before, "preflight must not change canonical files");
+        assert_eq!(files(&fixture.ws.join("lance")), index_before, "preflight must not change the index");
         assert!(!fixture.project.path().join("escaped").exists());
         fixture.assert_owner();
     }
@@ -759,7 +755,7 @@ async fn unmarked_title_collision_does_not_mask_the_imported_artifact() {
         let lock = acquire_workspace_lock(&fixture.ws)
             .await
             .expect("fixture lock");
-        let store = LanceStore::open(&fixture.ws).await.expect("fixture store");
+        let store = LanceStore::open_for_write(&fixture.ws, &lock).await.expect("fixture store");
         let ctx = MutationContext::new(&fixture.ws, &lock, Some(&store));
         seed(
             &ctx,
