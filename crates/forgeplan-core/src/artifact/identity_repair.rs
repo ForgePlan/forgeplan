@@ -1177,7 +1177,7 @@ fn inventory_digest(documents: &[CensusDocument], sidecars: &[CensusSidecar]) ->
         field(&mut hasher, sidecar.relative_path.as_bytes());
         field(&mut hasher, sidecar.file_sha256.as_bytes());
     }
-    format!("v2:{:x}", hasher.finalize())
+    format!("v2:{}", crate::constellation::hex_encode(&hasher.finalize()))
 }
 
 /// The documents that claim the same canonical key.

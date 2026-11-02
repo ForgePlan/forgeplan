@@ -4263,6 +4263,8 @@ mod tests {
                 source_digest: "a".repeat(64),
                 document_count: 1,
                 completed: true,
+                embeddings: None,
+                semantic: None,
             };
             std::fs::write(root.join(crate::db::migrate::IDENTITY_V5_MARKER_FILE), serde_json::to_vec(&marker).unwrap()).unwrap();
             let publisher = IndexPublisher::acquire(&root, Arc::new(object_store::memory::InMemory::new())).unwrap();

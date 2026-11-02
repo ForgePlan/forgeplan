@@ -608,6 +608,7 @@ mod tests {
 
     #[tokio::test]
     async fn candidate_index_loads_both_owners_and_remembers_real_writes() {
+        use crate::constellation::capture::CaptureLimits;
         use crate::constellation::facade::{MaintainCapability, maintain_index};
         use crate::db::store::{LanceStore, NewArtifact};
         use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
@@ -752,7 +753,7 @@ mod tests {
                 "NOTE-003"
             );
             let next = crate::artifact::id_alloc::reserve_display_number(
-                &ws, store.as_ref(), &ArtifactKind::Note, 3,
+                &ws, &lock, store.as_ref(), &ArtifactKind::Note, 3,
             ).await.unwrap();
             assert_eq!(next.id, "NOTE-005");
             assert_eq!(

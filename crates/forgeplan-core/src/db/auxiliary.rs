@@ -1080,9 +1080,11 @@ mod tests {
                 assert!(!ws.join("lance").join(format!("{name}.lance")).exists());
             }
 
-            // init intentionally seeds a legacy fixture, not the auxiliary
-            // access under test. Its shared query paths must reject it too.
-            let legacy = LanceStore::init(&ws).await.unwrap();
+            // Seed an actual legacy index without altering the FPF table.
+            crate::db::migrate::populated_identity_v4_workspace_for_test(temp.path())
+                .await
+                .unwrap();
+            let legacy = LanceStore::open(&ws).await.unwrap();
             assert!(
                 legacy
                     .list_fpf_sections()
@@ -1159,7 +1161,10 @@ mod tests {
                 assert!(message.contains(column), "{message}");
                 assert!(message.contains("non-nullable"), "{message}");
             }
-            let legacy = LanceStore::init(&ws).await.unwrap();
+            crate::db::migrate::populated_identity_v4_workspace_for_test(temp.path())
+                .await
+                .unwrap();
+            let legacy = LanceStore::open(&ws).await.unwrap();
             for message in [
                 legacy.list_fpf_sections().await.unwrap_err().to_string(),
                 legacy
@@ -1255,7 +1260,10 @@ mod tests {
             );
             drop(auxiliary);
 
-            let legacy = LanceStore::init(&ws).await.unwrap();
+            crate::db::migrate::populated_identity_v4_workspace_for_test(temp.path())
+                .await
+                .unwrap();
+            let legacy = LanceStore::open(&ws).await.unwrap();
             assert_eq!(legacy.search_fpf("calculus", 5).await.unwrap().len(), 1);
             assert_eq!(legacy.list_fpf_sections().await.unwrap().len(), 1);
             assert!(legacy.get_fpf_section("B.3").await.unwrap().is_some());
@@ -1513,27 +1521,10 @@ mod tests {
     #[tokio::test]
     async fn auxiliary_open_preserves_an_existing_legacy_workspace() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let ws = tmp.path().join(".forgeplan");
-        tokio::fs::create_dir_all(&ws).await.unwrap();
-        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
-        let legacy = LanceStore::init_new(&ws, &lock).await.unwrap();
-        drop(lock);
-        legacy
-            .create_artifact(&crate::db::store::NewArtifact {
-                canonical_key: "PRD-001".into(),
-                id: "PRD-001".into(),
-                kind: "prd".into(),
-                status: "draft".into(),
-                title: "Legacy artifact".into(),
-                body: "# Body\n\nkept\n".into(),
-                depth: "standard".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: vec![],
-            })
+        let ws = crate::db::migrate::populated_identity_v4_workspace_for_test(tmp.path())
             .await
             .unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
 
         AuxiliaryStore::open_or_create(&ws).await.unwrap();
 
@@ -1545,7 +1536,7 @@ mod tests {
         }
         let reopened = LanceStore::open(&ws).await.unwrap();
         assert!(
-            reopened.get_record("PRD-001").await.unwrap().is_some(),
+            reopened.get_record(&lock, "PRD-001").await.unwrap().is_some(),
             "the legacy row must still be readable after auxiliary access"
         );
     }

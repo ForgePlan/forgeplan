@@ -877,6 +877,8 @@ mod tests {
             source_digest: "a".repeat(64),
             document_count: 0,
             completed: true,
+            embeddings: None,
+            semantic: None,
         };
         std::fs::write(&marker_path, serde_json::to_vec(&marker).unwrap()).unwrap();
         let journal = workspace.join("identity-repair/repair-1");

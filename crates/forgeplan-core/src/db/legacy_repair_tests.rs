@@ -64,7 +64,7 @@ async fn repair_recomputes_exact_vectors_and_preserves_all_v4_tables() {
         let title = migrate::required_string(row, "title").unwrap();
         let body = store::record_large_string(row, "body", 0).unwrap();
         let input = format!("{} {}", title, body.chars().take(2000).collect::<String>());
-        let hash = format!("{:x}", Sha256::digest(input.as_bytes()));
+        let hash = crate::constellation::hex_encode(&Sha256::digest(input.as_bytes()));
         assert_eq!(profile.input_digests[&key], hash);
         let vector = convert::extract_embedding(row, 0).unwrap();
         assert_eq!(vector, vec![input.len() as f32; schema::EMBEDDING_DIM as usize]);

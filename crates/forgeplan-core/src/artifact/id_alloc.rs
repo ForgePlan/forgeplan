@@ -1340,7 +1340,7 @@ mod tests {
         .await
         .unwrap();
         let row = store
-            .get_record(&created.canonical_key)
+            .get_record(&guard, &created.canonical_key)
             .await
             .unwrap()
             .unwrap();

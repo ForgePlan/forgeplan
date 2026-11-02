@@ -241,7 +241,9 @@ impl Dispatcher for PluginDispatcher {
 mod tests {
     use super::*;
     use crate::playbook::types::{Delegation, OnError, Step};
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::path::Path;
 
     /// PROB-050 A-6 closure (HIGH-1 audit fix on PR-E):
@@ -297,6 +299,7 @@ mod tests {
 
     /// Write a self-deleting executable script to the per-test tempdir.
     /// Returns the script path; caller is responsible for cleanup.
+    #[cfg(unix)]
     fn write_test_script(test_id: &str, body: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "forgeplan-plugin-dispatcher-{}-{}-{}",
@@ -317,6 +320,7 @@ mod tests {
     }
 
     /// Best-effort cleanup — ignore errors, parent dir may not exist.
+    #[cfg(unix)]
     fn cleanup_test_script(script: &Path) {
         if let Some(parent) = script.parent() {
             let _ = std::fs::remove_file(script);
@@ -486,14 +490,12 @@ mod tests {
     /// against the canonicalized expected path to keep this test cross-distro.
     #[test]
     fn plugin_dispatcher_resolve_binary_prefers_explicit_override() {
+        #[cfg(unix)]
         let echo = PathBuf::from("/bin/echo");
-        if !echo.is_file() {
-            return;
-        }
-        let echo_canonical = match std::fs::canonicalize(&echo) {
-            Ok(p) => p,
-            Err(_) => return, // unusual filesystem; skip
-        };
+        #[cfg(not(unix))]
+        let echo = std::env::current_exe().expect("current test executable");
+        if !echo.is_file() { return; }
+        let echo_canonical = std::fs::canonicalize(&echo).expect("canonical executable");
         let dispatcher =
             PluginDispatcher::new(PathBuf::from("/tmp")).with_claude_binary(echo.clone());
         let resolved = dispatcher.resolve_binary().expect("must resolve");
@@ -530,14 +532,12 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn plugin_dispatcher_with_task_tool_alias_still_works() {
+        #[cfg(unix)]
         let echo = PathBuf::from("/bin/echo");
-        if !echo.is_file() {
-            return;
-        }
-        let echo_canonical = match std::fs::canonicalize(&echo) {
-            Ok(p) => p,
-            Err(_) => return,
-        };
+        #[cfg(not(unix))]
+        let echo = std::env::current_exe().expect("current test executable");
+        if !echo.is_file() { return; }
+        let echo_canonical = std::fs::canonicalize(&echo).expect("canonical executable");
         let dispatcher = PluginDispatcher::new(PathBuf::from("/tmp")).with_task_tool(echo.clone());
         assert_eq!(dispatcher.resolve_binary(), Some(echo_canonical));
     }
@@ -550,6 +550,7 @@ mod tests {
     /// <slug> --output-format json --max-budget-usd <usd> --allowedTools
     /// <T1> ...`. We replace the binary with a shell script that echoes
     /// its argv as JSON-ish lines, then assert each required token.
+    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_uses_claude_print_argv() {
         // Script echoes argv to stdout, then emits a valid JSON envelope so
@@ -590,6 +591,7 @@ printf '{"is_error": false, "result": "ok", "total_cost_usd": 0.01}\n'
     /// stdout so the dispatcher surfaces the captured stderr (which the
     /// fake script populated with `__ARG__:<value>` per-arg). This lets us
     /// verify every required token is in the constructed argv.
+    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_argv_visible_via_failure_path() {
         // Print argv lines to BOTH stdout (visible in stdout_preview) and
@@ -636,6 +638,7 @@ done
 
     /// `produces_at` adds `--add-dir <abs-parent>` to argv so the agent
     /// has Write permission for the target directory.
+    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_with_produces_at_includes_add_dir() {
         let body = r#"#!/bin/sh
@@ -684,6 +687,7 @@ printf 'noop'  # non-JSON → parse failure → diag includes stderr
     /// AC-1 (ADR-011): a successful `claude --print` JSON envelope (
     /// `{"is_error": false, ...}`) maps to `DispatchOutcome { success:
     /// true, output_path: Some(produces_at), stderr: None }`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_parses_claude_print_json_success() {
         let body = r#"#!/bin/sh
@@ -710,6 +714,7 @@ printf '{"is_error": false, "total_cost_usd": 0.42, "duration_ms": 1234, "result
 
     /// API errors (`is_error=true`, `api_error_status=rate_limited`) map
     /// to `success=false` and surface the status in the diagnostic.
+    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_classifies_api_error_as_failure() {
         let body = r#"#!/bin/sh
@@ -736,6 +741,7 @@ printf '{"is_error": true, "api_error_status": "rate_limited", "total_cost_usd":
 
     /// Non-JSON stdout (e.g. legacy binary, fixture using `/bin/echo`)
     /// surfaces a parse-failure diagnostic with raw stdout/stderr context.
+    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_handles_non_json_stdout_gracefully() {
         let echo = PathBuf::from("/bin/echo");
@@ -755,12 +761,29 @@ printf '{"is_error": true, "api_error_status": "rate_limited", "total_cost_usd":
         );
     }
 
+    /// The Windows test executable is a real native subprocess, but is not a
+    /// Claude binary and cannot return a Claude JSON envelope for these args.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn dispatch_windows_native_non_json_process_is_reported() {
+        let workspace = tempfile::TempDir::new().expect("temporary workspace");
+        let executable = std::env::current_exe().expect("current test executable");
+        let dispatcher = PluginDispatcher::new(workspace.path().to_path_buf())
+            .with_claude_binary(executable)
+            .with_default_timeout(Duration::from_secs(10));
+        let step = plugin_step("plug-nonjson", "c4-architecture", "c4-code");
+        let outcome = dispatcher.dispatch(&step).await.expect("subprocess result");
+        assert!(!outcome.success);
+        assert!(outcome.stderr.expect("diagnostic").contains("failed to decode"));
+    }
+
     // -----------------------------------------------------------------
     // Timeout handling
     // -----------------------------------------------------------------
 
     /// FR-9 (lifecycle): a subprocess that outlives the timeout reports
     /// `success=false` and surfaces a synthetic `timed out` diagnostic.
+    #[cfg(unix)]
     #[tokio::test]
     async fn plugin_dispatcher_propagates_step_timeout_seconds() {
         let body = "#!/bin/sh\nsleep 5\n";
