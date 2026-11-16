@@ -660,16 +660,12 @@ mod tests {
             assert!(out.status.success(), "git {args:?} failed");
         };
         run(&["init", "-q"]);
-        run(&[
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "user.name=t",
-            "commit",
-            "-qm",
-            "init",
-            "--allow-empty",
-        ]);
+        // Persist the identity locally: subsequent run_git calls do not pass
+        // `-c`, so a bare CI runner without a global user.name would fail on
+        // the second commit.
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        run(&["commit", "-qm", "init", "--allow-empty"]);
         tmp
     }
 
