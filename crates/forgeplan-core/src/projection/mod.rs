@@ -2062,8 +2062,21 @@ async fn atomic_markdown_write(path: &Path, bytes: &[u8]) -> std::io::Result<()>
         std::process::id(),
     ));
     tokio::fs::write(&tmp, bytes).await?;
+    // Fault-injection seam (test-helpers only, no-op in production builds):
+    // the temp file is byte-complete here and the target still holds the old
+    // bytes. A SIGKILL at this stage proves the atomicity primitive — readers
+    // observe exactly the old file, and the staged temp carries the entire
+    // new render, never a truncated one.
+    crate::constellation::fault_barrier_if_selected("before_projection_rename");
     match tokio::fs::rename(&tmp, path).await {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            // The canonical file is now byte-complete new; nothing derived
+            // (LanceDB row, constellation generation) has been touched yet.
+            // A kill here is the ADR-003 file-first crash window: file new,
+            // index old, and the next sync/maintain reconciles from the file.
+            crate::constellation::fault_barrier_if_selected("after_projection_rename");
+            Ok(())
+        }
         Err(e) => {
             let _ = tokio::fs::remove_file(&tmp).await;
             Err(e)

@@ -266,6 +266,18 @@ name = "constellation_fault_process"
 path = "tests/constellation_fault_process.rs"
 required-features = ["test-helpers"]
 
+# SPEC-008 L09/F11 (issue #538) S14 fault-injection: process-crash proofs for
+# the three named write/read seams that the publication-stage harness above
+# does not reach — the artifact Markdown write ↔ derived index boundary
+# (projection), a pinned scope handle held across a writer SIGKILL and a
+# reader killed between read and return, and a crash between chunk admission
+# and the pending-jobs manifest publish (embed). Same real child/SIGKILL/
+# restart protocol, test-helpers-only barriers.
+[[test]]
+name = "fault_injection_s14"
+path = "tests/fault_injection_s14.rs"
+required-features = ["test-helpers"]
+
 # The metadata-only tokenizer loader and the section layout it resolves: the
 # fingerprint's inputs, the actual token limit, the header budget, and the
 # absent-metadata state. Runs in the `no-semantic` build on purpose — that is

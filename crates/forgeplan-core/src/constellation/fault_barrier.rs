@@ -46,12 +46,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
-/// The eleven agreed stage names.
+/// The fourteen agreed stage names.
 ///
 /// These strings are the contract with the fault harness and are checked
 /// against the environment value, so a typo is a refusal rather than a stage
 /// that silently never fires.
-pub const STAGES: [&str; 11] = [
+pub const STAGES: [&str; 14] = [
     "after_artifacts_commit",
     "after_relations_commit",
     "after_sections_commit",
@@ -63,6 +63,17 @@ pub const STAGES: [&str; 11] = [
     "after_current_ack",
     "owner_acquired",
     "native_call_entered",
+    // Artifact Markdown write ↔ derived index (projection/artifact seam).
+    // Fires inside the one choke point every projection write goes through,
+    // so a kill at either boundary proves the ADR-003 file-first ordering:
+    // the canonical file is byte-complete old or byte-complete new, never
+    // torn, and the derived index lags or leads by a whole row, never a half.
+    "before_projection_rename",
+    "after_projection_rename",
+    // Embedding: rows/chunks admitted but the pending-jobs manifest publish
+    // not yet performed. A kill here must leave the published generation
+    // untouched and the abandoned head restoreable by the next owner.
+    "before_pending_publish",
 ];
 
 /// Environment variable naming the parent's loopback endpoint.
@@ -357,14 +368,14 @@ mod tests {
     // proof, so that dial is asserted directly.
     // -----------------------------------------------------------------------
 
-    /// The eleven stage names are the contract with the harness.
+    /// The fourteen stage names are the contract with the harness.
     ///
     /// They travel as strings through an environment variable and are compared
     /// by equality on both sides, so a renamed stage is a stage that never
     /// fires — and it fails silently, as a fault run that reports nothing. The
     /// list is pinned here as well as in the shared contract for that reason.
     #[test]
-    fn the_stage_vocabulary_is_exactly_the_eleven_agreed_names() {
+    fn the_stage_vocabulary_is_exactly_the_fourteen_agreed_names() {
         assert_eq!(
             STAGES.to_vec(),
             vec![
@@ -379,6 +390,9 @@ mod tests {
                 "after_current_ack",
                 "owner_acquired",
                 "native_call_entered",
+                "before_projection_rename",
+                "after_projection_rename",
+                "before_pending_publish",
             ]
         );
         let mut unique = STAGES.to_vec();
