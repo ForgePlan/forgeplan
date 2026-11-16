@@ -12,6 +12,7 @@
 //!
 //! | Module | Contract |
 //! |---|---|
+//! | [`adapter`] | External constellation sources behind a byte-level [`adapter::SourceAdapter`]: open a scope, read pinned bytes, return canonical identity, create-only reverse path |
 //! | [`capture`] | SPEC-008 "Формальный критерий stable capture": two full enumerate/bytes/config passes, bounded attempts and budget, immutable confirmed set, `sourceSetDigest` |
 //! | [`jobs`] | `EmbeddingProfile` / `EmbeddingJob` / `SemanticState`, the input digest contract and the profile identity hash |
 //! | [`manifest`] | `CURRENT.json` and `generations/<id>.json` formats plus the descriptors built from a capture |
@@ -45,6 +46,7 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
+pub mod adapter;
 pub mod capture;
 pub mod context_pack;
 pub mod export;

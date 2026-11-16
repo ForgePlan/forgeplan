@@ -692,4 +692,47 @@ mod tests {
         );
         assert_eq!(plan.tombstones[0].incarnation, 2);
     }
+
+    /// F11 (issue #538): changing ONE document must plan an incremental
+    /// rebuild, not a full re-scan. Of three documents, exactly the edited
+    /// one becomes an `Update` carrying the new digest; the other two keep
+    /// their exact published digests as `Unchanged` — nothing about them is
+    /// re-derived. The signal is per-path: captured `source_digest` against
+    /// the published manifest's `source_entries` under an unchanged
+    /// `config_digest` (mtime / size / HEAD are never identity here).
+    #[test]
+    fn changing_one_document_marks_only_it_as_an_update() {
+        let previous = manifest(vec![
+            entry("PRD-001", "prds/PRD-001-a.md", "d1"),
+            entry("PRD-002", "prds/PRD-002-b.md", "d2"),
+            entry("PRD-003", "prds/PRD-003-c.md", "d3"),
+        ]);
+        let captured = complete(vec![
+            entry("PRD-001", "prds/PRD-001-a.md", "d1"),
+            entry("PRD-002", "prds/PRD-002-b.md", "d2-changed"),
+            entry("PRD-003", "prds/PRD-003-c.md", "d3"),
+        ]);
+        let plan = plan_reconcile(&captured, Some(&previous));
+
+        assert_eq!(plan.count(DeltaAction::Update), 1);
+        assert_eq!(plan.count(DeltaAction::Unchanged), 2);
+        assert_eq!(plan.count(DeltaAction::Create), 0);
+        assert_eq!(plan.count(DeltaAction::Delete), 0);
+        assert!(plan.tombstones.is_empty());
+        assert!(plan.publishable);
+
+        let changed = plan
+            .for_path("prds/PRD-002-b.md")
+            .expect("the edited path must have a delta");
+        assert_eq!(changed.action, DeltaAction::Update);
+        assert_eq!(changed.source_digest.as_deref(), Some("d2-changed"));
+
+        // The untouched rows keep their published digest verbatim — an
+        // incremental plan re-scans nothing, re-derives nothing.
+        let untouched = plan
+            .for_path("prds/PRD-001-a.md")
+            .expect("the untouched path must have a delta");
+        assert_eq!(untouched.action, DeltaAction::Unchanged);
+        assert_eq!(untouched.source_digest.as_deref(), Some("d1"));
+    }
 }

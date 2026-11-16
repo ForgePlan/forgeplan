@@ -9751,4 +9751,194 @@ mod tests {
         assert!(!fallback.via_trigram);
         assert_eq!(fallback.hits[0].canonical_key, "SPEC-003-filenameonly");
     }
+
+    /// F11 (issue #538), pipeline level: changing ONE document rebuilds the
+    /// index incrementally, and the pinned search serves the new revision
+    /// with no `embed` call anywhere in the test.
+    ///
+    /// What each assertion proves, against a real temp workspace and the real
+    /// publisher:
+    ///
+    /// * a pass with one edited file publishes a **new generation**, and only
+    ///   **one** source entry moved — the other two keep their exact
+    ///   published `source_digest`, so nothing about them was re-derived
+    ///   (an incremental plan, not a full re-scan);
+    /// * the pinned lexical search answers at the **new** generation and
+    ///   finds the new revision while the old one is gone — the edit is
+    ///   served the moment `maintain_index` returns, no manual step between;
+    /// * a third pass with nothing changed publishes **nothing**: the same
+    ///   generation comes back, `commits` is empty and no verification ran —
+    ///   an unchanged index is not rebuilt at all.
+    #[tokio::test]
+    async fn one_document_change_publishes_a_new_generation_and_search_serves_the_new_revision() {
+        let tmp = workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let capability = MaintainCapability::for_strict_maintenance(root.clone());
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(120);
+
+        // The `workspace()` fixture pre-seeds `prds/PRD-001-auth.md`. This
+        // test owns its corpus (three documents), so the seeded one is
+        // removed before the first capture — otherwise it would be a fourth
+        // source entry and the "one moved / two untouched" story would not
+        // be exact.
+        std::fs::remove_file(root.join("prds/PRD-001-auth.md")).unwrap();
+
+        let alpha = "---\nid: PRD-101\nkind: prd\nstatus: active\ntitle: Alpha\n---\n\nalpha-unique-token-aaa body.\n";
+        let beta_v1 =
+            "---\nid: PRD-102\nkind: prd\nstatus: active\ntitle: Beta\n---\n\nbeta-old-unique-token body.\n";
+        let gamma = "---\nid: PRD-103\nkind: prd\nstatus: active\ntitle: Gamma\n---\n\ngamma-unique-token-ccc body.\n";
+        std::fs::write(root.join("prds/PRD-101-alpha.md"), alpha).unwrap();
+        std::fs::write(root.join("prds/PRD-102-beta.md"), beta_v1).unwrap();
+        std::fs::write(root.join("prds/PRD-103-gamma.md"), gamma).unwrap();
+
+        let (first, first_outcome) =
+            maintain_index(&capability, CaptureLimits::default(), deadline())
+                .await
+                .unwrap();
+        let first_generation = first_outcome.generation_id.clone();
+        assert_eq!(first.manifest.source_entries.len(), 3);
+
+        let digest_of = |manifest: &GenerationManifest, rel: &str| -> String {
+            manifest
+                .source_entries
+                .iter()
+                .find(|entry| entry.relative_path == rel)
+                .unwrap_or_else(|| panic!("no source entry for {rel:?}"))
+                .source_digest
+                .clone()
+        };
+
+        let alpha_v1_digest = digest_of(&first.manifest, "prds/PRD-101-alpha.md");
+        let beta_v1_digest = digest_of(&first.manifest, "prds/PRD-102-beta.md");
+        let gamma_v1_digest = digest_of(&first.manifest, "prds/PRD-103-gamma.md");
+        assert_ne!(alpha_v1_digest, beta_v1_digest);
+        assert_ne!(beta_v1_digest, gamma_v1_digest);
+
+        // Pass one serves the old revision and cannot serve the new one.
+        let old_hits = search_pinned_lexical(
+            &capability.index_root(),
+            "beta-old-unique-token",
+            10,
+            &NO_FILTER,
+        )
+        .await
+        .unwrap();
+        assert!(old_hits.hits.iter().any(|h| h.canonical_key == "PRD-102"));
+        let absent = search_pinned_lexical(
+            &capability.index_root(),
+            "beta-new-unique-token",
+            10,
+            &NO_FILTER,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !absent.hits.iter().any(|h| h.canonical_key == "PRD-102"),
+            "the new revision must not be servable before it exists"
+        );
+
+        // Edit ONE document.
+        let beta_v2 =
+            "---\nid: PRD-102\nkind: prd\nstatus: active\ntitle: Beta revised\n---\n\nbeta-new-unique-token body.\n";
+        std::fs::write(root.join("prds/PRD-102-beta.md"), beta_v2).unwrap();
+
+        let (second, second_outcome) =
+            maintain_index(&capability, CaptureLimits::default(), deadline())
+                .await
+                .unwrap();
+
+        // A new generation was published, pinned at later table versions.
+        assert_ne!(second_outcome.generation_id, first_generation);
+        assert_ne!(second.descriptor.generation_id, first.descriptor.generation_id);
+        assert_ne!(
+            second.manifest.table_versions.artifacts,
+            first.manifest.table_versions.artifacts
+        );
+
+        // The edited row moved...
+        assert_ne!(
+            digest_of(&second.manifest, "prds/PRD-102-beta.md"),
+            beta_v1_digest
+        );
+        // ...and the two untouched rows kept their EXACT published digests:
+        // the incremental pass re-derived nothing about them.
+        assert_eq!(
+            digest_of(&second.manifest, "prds/PRD-101-alpha.md"),
+            alpha_v1_digest
+        );
+        assert_eq!(
+            digest_of(&second.manifest, "prds/PRD-103-gamma.md"),
+            gamma_v1_digest
+        );
+        let moved = second
+            .manifest
+            .source_entries
+            .iter()
+            .filter(|entry| {
+                digest_of(&second.manifest, &entry.relative_path)
+                    != digest_of(&first.manifest, &entry.relative_path)
+            })
+            .count();
+        assert_eq!(moved, 1, "exactly one source moved across the generation");
+
+        // The pinned search answers at the just-published generation and
+        // serves the new revision — no `embed`, no manual step in between.
+        let new_hits = search_pinned_lexical(
+            &capability.index_root(),
+            "beta-new-unique-token",
+            10,
+            &NO_FILTER,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            new_hits.generation_id, second_outcome.generation_id,
+            "the answer must come from the generation that was just published"
+        );
+        let hit = new_hits
+            .hits
+            .iter()
+            .find(|h| h.canonical_key == "PRD-102")
+            .expect("the new revision must be findable in the pinned index");
+        assert_eq!(hit.title, "Beta revised");
+        let gone = search_pinned_lexical(
+            &capability.index_root(),
+            "beta-old-unique-token",
+            10,
+            &NO_FILTER,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !gone.hits.iter().any(|h| h.canonical_key == "PRD-102"),
+            "the old revision must be gone from the served generation"
+        );
+        let gamma_hits = search_pinned_lexical(
+            &capability.index_root(),
+            "gamma-unique-token-ccc",
+            10,
+            &NO_FILTER,
+        )
+        .await
+        .unwrap();
+        assert!(gamma_hits.hits.iter().any(|h| h.canonical_key == "PRD-103"));
+
+        // A pass with nothing changed publishes NOTHING: the same generation
+        // comes back, no commit staged anything, no verification ran. An
+        // unchanged index is not rebuilt at all.
+        let (third, third_outcome) =
+            maintain_index(&capability, CaptureLimits::default(), deadline())
+                .await
+                .unwrap();
+        assert_eq!(third_outcome.generation_id, second_outcome.generation_id);
+        assert_eq!(third.manifest.generation_id, second.manifest.generation_id);
+        assert!(
+            third_outcome.commits.is_empty(),
+            "a no-op pass must stage nothing"
+        );
+        assert!(
+            third_outcome.verification.is_none(),
+            "a pass that staged nothing needs no verification"
+        );
+    }
 }
