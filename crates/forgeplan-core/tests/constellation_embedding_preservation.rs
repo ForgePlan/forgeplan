@@ -1061,7 +1061,10 @@ async fn a_byte_identical_recreate_is_issued_as_its_own_work() {
             .effective_sections_version(&manifest)
             .expect("sections version");
         let table = forgeplan_core::constellation::lance_tables::open_table_at_version(
-            &index_root, &marker, "sections", version,
+            &index_root,
+            &marker,
+            "sections",
+            version,
         )
         .await
         .unwrap();
@@ -1069,7 +1072,10 @@ async fn a_byte_identical_recreate_is_issued_as_its_own_work() {
         for batch in &batches {
             let col = |name: &str| batch.column_by_name(name).unwrap();
             let strs = |name: &str| {
-                col(name).as_any().downcast_ref::<StringArray>().expect(name)
+                col(name)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect(name)
             };
             let u64s = |name: &str| {
                 col(name)
@@ -1085,12 +1091,23 @@ async fn a_byte_identical_recreate_is_issued_as_its_own_work() {
                     u64s("incarnation").value(row),
                     u64s("row_revision").value(row),
                     strs("semantic_state").value(row),
-                    if strs("profile_id").is_null(row) { "<null>" } else { strs("profile_id").value(row) },
-                    if strs("input_digest").is_null(row) { "<null>" } else { strs("input_digest").value(row) },
+                    if strs("profile_id").is_null(row) {
+                        "<null>"
+                    } else {
+                        strs("profile_id").value(row)
+                    },
+                    if strs("input_digest").is_null(row) {
+                        "<null>"
+                    } else {
+                        strs("input_digest").value(row)
+                    },
                 );
             }
         }
-        eprintln!("PENDING {:?}", manifest.pending_jobs.keys().collect::<Vec<_>>());
+        eprintln!(
+            "PENDING {:?}",
+            manifest.pending_jobs.keys().collect::<Vec<_>>()
+        );
     }
     let prepared = prepare_embedding_batch(&capability, &profile_a, deadline())
         .await
