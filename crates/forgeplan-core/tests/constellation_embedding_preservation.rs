@@ -1051,6 +1051,47 @@ async fn a_byte_identical_recreate_is_issued_as_its_own_work() {
 
     // The recreate is outstanding work: admission must see the recreated row
     // and its section, and nothing else.
+    // TEMP DIAGNOSTIC (linux CI divergence hunt): dump every sections row's
+    // semantic tuple so a failure shows whether the row exists and what it
+    // stored, instead of only the keys that were admitted.
+    {
+        let (descriptor, manifest) = pinned_descriptor_and_manifest(&index_root).await;
+        let marker = marker_for(&manifest);
+        let version = descriptor
+            .effective_sections_version(&manifest)
+            .expect("sections version");
+        let table = forgeplan_core::constellation::lance_tables::open_table_at_version(
+            &index_root, &marker, "sections", version,
+        )
+        .await
+        .unwrap();
+        let batches = table.query_batches().await.unwrap();
+        for batch in &batches {
+            let col = |name: &str| batch.column_by_name(name).unwrap();
+            let strs = |name: &str| {
+                col(name).as_any().downcast_ref::<StringArray>().expect(name)
+            };
+            let u64s = |name: &str| {
+                col(name)
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                    .expect(name)
+            };
+            for row in 0..batch.num_rows() {
+                eprintln!(
+                    "SECTION {} parent={} incarnation={} row_rev={} state={} profile={} input={}",
+                    strs("canonical_key").value(row),
+                    strs("parent_key").value(row),
+                    u64s("incarnation").value(row),
+                    u64s("row_revision").value(row),
+                    strs("semantic_state").value(row),
+                    if strs("profile_id").is_null(row) { "<null>" } else { strs("profile_id").value(row) },
+                    if strs("input_digest").is_null(row) { "<null>" } else { strs("input_digest").value(row) },
+                );
+            }
+        }
+        eprintln!("PENDING {:?}", manifest.pending_jobs.keys().collect::<Vec<_>>());
+    }
     let prepared = prepare_embedding_batch(&capability, &profile_a, deadline())
         .await
         .unwrap();
