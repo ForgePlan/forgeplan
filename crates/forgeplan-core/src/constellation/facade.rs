@@ -2965,6 +2965,13 @@ async fn prepare_embedding_batch_owned(
                 });
             }
         }
+        // Fault-injection seam (test-helpers only, no-op in production
+        // builds): every eligible row is admitted and every job is recorded
+        // in the pending set, but no generation names them yet. A SIGKILL
+        // here must leave CURRENT serving the previous complete generation
+        // and the next owner must restore the diverged head and republish —
+        // never a partial current generation with half the chunk rows.
+        super::fault_barrier_if_selected("before_pending_publish");
         publisher.publish(&next, Some(&profile_id))?;
         drop(guard);
         admission_generation
