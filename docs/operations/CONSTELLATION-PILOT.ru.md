@@ -215,7 +215,7 @@ EVID-202 фиксирует снимок
 `fmt --check` и semantic workspace all-targets check завершились с exit 0.
 Собраны CLI и standalone MCP с `semantic-search`, без `test-helpers`.
 
-На этих бинарниках прошли 6 full-host сессий, 32 RPC-запроса и 20 tool calls:
+На этих бинарниках прошли 6 full-host сессий, 32 RPC-запроса и 20 tool calls: <!-- mcp-count-drift: ignore (число вызовов инструментов, не реестр) -->
 реальные absolute/bare-name playbook-поиски в Y, claim/conflict/release одного
 `PRD-001`, отказы для внешнего пути, выходящей symlink и отсутствующего consent.
 Activity появилась только в Y; все байты X, включая logs и lock-файлы, сохранились.

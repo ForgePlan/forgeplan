@@ -21,7 +21,7 @@
 | Активных | 263 | `forgeplan health` — по статусам: active 263, draft 101, deprecated 68, superseded 5 |
 | Тестов | 3331 | Замерено прогоном по трём крейтам 2026-09-08 (core 2243 + cli 814 + mcp 274); `README.md` и CHANGELOG v0.37.0 обновлены из этого же замера, поэтому не являются независимым подтверждением |
 | CLI-команд | 82 | `README.md`; полный список — `Commands` enum в `crates/forgeplan-cli/src/main.rs` |
-| MCP-инструментов | 73 | `README.md`; число не менялось с v0.18.0 — единственная цифра из старой версии этого файла, которая совпала |
+| MCP-инструментов | 76 | `README.md`; до Constellation было 73 — число снова изменилось после Constellation read/full профилей |
 | EPIC завершено | 3 (EPIC-001/002/003) + brownfield Epic #287 в работе | `forgeplan health` по kind=epic (9 всего, часть активна, часть — черновики новых направлений) |
 
 **На что стоит обратить внимание прямо сейчас** (из `forgeplan health` на момент этого измерения):
@@ -58,7 +58,7 @@
 | 82 CLI-команды (было 56) | **Desktop App** (Tauri + React) — по-прежнему 0%, следов работы в репозитории нет |
 | Стилизованный терминал, `health`/`tree`/`blocked`/`order` дашборды | `forgeplan doctor` — верхнеуровневой команды по-прежнему нет; есть только `forgeplan plugins doctor` (диагностика detection/hints, не workspace в целом) — **другая функция под похожим именем**, легко перепутать |
 | Duplicate guard + stub detection (PRD-043) | `forgeplan links <id>` — визуализация связей артефакта — команды нет (проверено по `main.rs`) |
-| 73 MCP tools для AI-агентов | `forgeplan diff` — сравнение артефактов — команды нет |
+| 76 MCP tools для AI-агентов | `forgeplan diff` — сравнение артефактов — команды нет |
 | `forgeplan watch` существует (проверено в CLI enum) — но не проверялось, соответствует ли он «v2 hot-reload» из старого пункта | VS Code расширение — не найдено |
 | **Website — landing + docs + blog, RU/EN** (385 markdown-файлов в `website/src/content/`) — это была помечена как «HIGH-impact, не начато» в апрельской версии; на деле это самый большой закрытый разрыв за пять месяцев | |
 | `health --ci --fail-on --strict` — конфигурируемые пороги для CI (см. категорию Integrations) | |
@@ -106,7 +106,7 @@
 
 | Готово | Разрыв |
 |---|---|
-| MCP-сервер (73 tools, stdio) | **Linear/Jira sync** (NOTE-028) — не найдено |
+| MCP-сервер (76 tools, stdio) | **Linear/Jira sync** (NOTE-028) — не найдено |
 | LLM-интеграция (настраиваемый провайдер) | **GitHub Issues bridge** (артефакт ↔ issue, автоматический) — не найдено; вручную роль трекера сейчас играет `gh issue list` (29 открытых issue на момент измерения), но это не автосинхронизация |
 | git-sync теперь **задокументирован и автоматизирован** — хуки `post-merge`/`post-checkout` через `forgeplan setup` (v0.36.0); в апреле это тоже числилось «готово», но задним числом выяснилось, что реально нигде не документировалось (PROB-097) | **Slack/Teams-уведомления** — не найдено |
 | Claude Code hooks (safety, forge-mode) | Переиспользуемый публичный **GitHub Action** (`forgeplan/action@v1`) — не найдено; есть только внутренние workflow этого репозитория (`ci.yml`, `forgeplan-health.yml`, `security.yml`, `perf.yml`, `release.yml`, `assign-id.yml`) |

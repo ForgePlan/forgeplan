@@ -188,7 +188,7 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
   Migration: run `forgeplan score --all`; expect a small number of artifacts whose
   only evidence was retired to drop to 0 (1 of 89 here) — that is real debt the
   old formula masked.
-- **Исторические счётчики до Constellation**: 82 CLI commands (+`setup`; прежние «82» считали авто-`help` от clap), 73 MCP tools, 3349 tests + 9 doc-tests (CI `nextest`; 5 doc-tests pass, 4 ignored), 0 warnings on both feature configs. Не результат проверки текущего дерева.
+- **Исторические счётчики до Constellation**: 82 CLI commands (+`setup`; прежние «82» считали авто-`help` от clap), 73 MCP tools, 3349 tests + 9 doc-tests (CI `nextest`; 5 doc-tests pass, 4 ignored), 0 warnings on both feature configs. Не результат проверки текущего дерева. <!-- mcp-count-drift: ignore (pre-Constellation snapshot, сохранён как исторический) -->
 - **EPIC-001/002/003 ✅**, **Epic #287 ✅** (brownfield). Phase 5 (Desktop Tauri) — backlog
 - FPF KB semantic search via BGE-M3 on `tract` (pure-Rust inference — RFC-013; feature-gated, graceful fallback)
 

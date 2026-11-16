@@ -73,7 +73,7 @@ Markdown remains authoritative and the index derived. **Current correction:** us
 
 Current writable links are `informs`, `based_on`, `supersedes`, `contradicts`, `refines`; `contains` is not an accepted `link --relation` value. Graph, blind-spot, stale and health views help inspect recorded state, not prove every requirement or runtime behavior.
 
-Under the hood - three Rust crates: the core library (~12.8k lines), the CLI (76 commands), and an MCP server (73 tools, for AI agents via the Model Context Protocol). One binary, around 41 MB after compression, installable via `brew`, an install script, or by building from source.
+Under the hood - three Rust crates: the core library (~12.8k lines), the CLI (76 commands), and an MCP server (73 tools, for AI agents via the Model Context Protocol). One binary, around 41 MB after compression, installable via `brew`, an install script, or by building from source. <!-- mcp-count-drift: ignore (dated snapshot per post disclaimer) -->
 
 ---
 
@@ -174,7 +174,7 @@ As of writing (May 8, 2026):
 
 - **343 artefacts** in `.forgeplan/` - 60 PRDs, 12 ADRs, 9 RFCs, 4 Specs, 8 Epics, plus Evidence, Problems, Notes, Refresh.
 - **1995 tests**, 0 failures, 0 warnings on two feature configs.
-- **76 CLI commands**, **73 MCP tools**.
+- **76 CLI commands**, **73 MCP tools**. <!-- mcp-count-drift: ignore (dated snapshot per post disclaimer) -->
 - **3 Rust crates**: forgeplan-core (12.8k lines), forgeplan-cli, forgeplan-mcp.
 - **v0.30.0** today, release cadence every 2-4 weeks.
 - **One binary**, around 41 MB after compression (`strip` + `lto` + `codegen-units=1` + `opt-level=z`).
