@@ -125,6 +125,44 @@ async fn embed_once(
     complete_embedding_batch(capability, &prepared, &results, deadline()).await
 }
 
+/// `true` when this machine can actually produce sections — i.e. a tokenizer
+/// layout resolves against the local model cache. The tests that assert
+/// `"{key}#s{ordinal}"` keys in the admitted set exist *because* sections
+/// exist; with no usable layout a capture legitimately publishes none, and
+/// those assertions would be checking an empty table for meaning.
+///
+/// Same gate as `embedding_reference::embedder_or_skip` (PROB-102): a quiet
+/// early return reads as PASS, so a CI job that *does* warm a model cache can
+/// set `FORGEPLAN_REQUIRE_MODEL_IN_TESTS=1` and turn the skip into a loud
+/// failure. Local runs without the model keep the quiet skip — nobody should
+/// need the 2.1 GB snapshot to run the rest of this file.
+fn sections_available() -> bool {
+    use forgeplan_core::constellation::jobs::DEFAULT_MODEL_REPO;
+    matches!(
+        forgeplan_core::embed::tokenizer::resolve_layout(DEFAULT_MODEL_REPO),
+        forgeplan_core::embed::tokenizer::LayoutResolution::Available(_)
+    )
+}
+
+fn sections_or_skip(test_name: &str) -> bool {
+    if sections_available() {
+        return true;
+    }
+    if std::env::var("FORGEPLAN_REQUIRE_MODEL_IN_TESTS").as_deref() == Ok("1") {
+        panic!(
+            "{test_name}: FORGEPLAN_REQUIRE_MODEL_IN_TESTS=1 and no section layout \
+             resolved — a CI job that requires the model must fail loudly, not \
+             pass with zero assertions run."
+        );
+    }
+    eprintln!(
+        "\n!! {test_name} DID NOT RUN — NOTHING WAS VERIFIED.\n\
+         !! No section layout resolved (no cached tokenizer). Section-dependent\n\
+         !! assertions are skipped, not confirmed.\n"
+    );
+    false
+}
+
 /// Three artifacts, one of them slug-keyed so a later edit can change the
 /// canonical key without touching the path.
 ///
@@ -336,6 +374,9 @@ async fn pinned_section_rows(index_root: &Path) -> Vec<(String, String)> {
 #[tokio::test]
 async fn a_reconcile_with_one_edit_preserves_embeddings_on_unchanged_rows() {
     resume_admission();
+    if !sections_or_skip("a_reconcile_with_one_edit_preserves_embeddings_on_unchanged_rows") {
+        return;
+    }
     let tmp = linked_workspace();
     let capability = capability_for(&tmp);
     let index_root = capability.index_root().to_path_buf();
@@ -792,6 +833,9 @@ async fn a_metadata_only_edit_preserves_the_vector_and_the_claimed_space() {
 #[tokio::test]
 async fn a_document_replaced_at_the_same_path_does_not_inherit_the_old_vector() {
     resume_admission();
+    if !sections_or_skip("a_document_replaced_at_the_same_path_does_not_inherit_the_old_vector") {
+        return;
+    }
     let tmp = linked_workspace();
     let capability = capability_for(&tmp);
     let index_root = capability.index_root().to_path_buf();
@@ -1029,6 +1073,9 @@ async fn a_byte_identical_recreate_does_not_inherit_the_deleted_documents_vector
 #[tokio::test]
 async fn a_byte_identical_recreate_is_issued_as_its_own_work() {
     resume_admission();
+    if !sections_or_skip("a_byte_identical_recreate_is_issued_as_its_own_work") {
+        return;
+    }
     let tmp = linked_workspace();
     let capability = capability_for(&tmp);
     let index_root = capability.index_root().to_path_buf();
@@ -1051,64 +1098,6 @@ async fn a_byte_identical_recreate_is_issued_as_its_own_work() {
 
     // The recreate is outstanding work: admission must see the recreated row
     // and its section, and nothing else.
-    // TEMP DIAGNOSTIC (linux CI divergence hunt): dump every sections row's
-    // semantic tuple so a failure shows whether the row exists and what it
-    // stored, instead of only the keys that were admitted.
-    {
-        let (descriptor, manifest) = pinned_descriptor_and_manifest(&index_root).await;
-        let marker = marker_for(&manifest);
-        let version = descriptor
-            .effective_sections_version(&manifest)
-            .expect("sections version");
-        let table = forgeplan_core::constellation::lance_tables::open_table_at_version(
-            &index_root,
-            &marker,
-            "sections",
-            version,
-        )
-        .await
-        .unwrap();
-        let batches = table.query_batches().await.unwrap();
-        for batch in &batches {
-            let col = |name: &str| batch.column_by_name(name).unwrap();
-            let strs = |name: &str| {
-                col(name)
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .expect(name)
-            };
-            let u64s = |name: &str| {
-                col(name)
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt64Array>()
-                    .expect(name)
-            };
-            for row in 0..batch.num_rows() {
-                eprintln!(
-                    "SECTION {} parent={} incarnation={} row_rev={} state={} profile={} input={}",
-                    strs("canonical_key").value(row),
-                    strs("parent_key").value(row),
-                    u64s("incarnation").value(row),
-                    u64s("row_revision").value(row),
-                    strs("semantic_state").value(row),
-                    if strs("profile_id").is_null(row) {
-                        "<null>"
-                    } else {
-                        strs("profile_id").value(row)
-                    },
-                    if strs("input_digest").is_null(row) {
-                        "<null>"
-                    } else {
-                        strs("input_digest").value(row)
-                    },
-                );
-            }
-        }
-        eprintln!(
-            "PENDING {:?}",
-            manifest.pending_jobs.keys().collect::<Vec<_>>()
-        );
-    }
     let prepared = prepare_embedding_batch(&capability, &profile_a, deadline())
         .await
         .unwrap();
@@ -1852,6 +1841,9 @@ async fn a_failed_attempt_is_recorded_with_a_retry_delay_and_an_advanced_attempt
 #[tokio::test]
 async fn one_child_failure_and_completion_preserve_sibling_jobs() {
     resume_admission();
+    if !sections_or_skip("one_child_failure_and_completion_preserve_sibling_jobs") {
+        return;
+    }
     let tmp = linked_workspace();
     let capability = capability_for(&tmp);
     let index_root = capability.index_root().to_path_buf();
@@ -2044,6 +2036,9 @@ async fn a_completion_still_lands_after_a_recorded_failure_on_a_different_key() 
 #[tokio::test]
 async fn a_pending_job_for_a_deleted_document_is_retired() {
     resume_admission();
+    if !sections_or_skip("a_pending_job_for_a_deleted_document_is_retired") {
+        return;
+    }
     let tmp = linked_workspace();
     let capability = capability_for(&tmp);
     let index_root = capability.index_root().to_path_buf();
@@ -2192,6 +2187,9 @@ async fn restored_section_does_not_revive_a_retired_admission() {
 #[tokio::test]
 async fn a_mixed_batch_completes_the_live_keys_and_reports_the_superseded_one() {
     resume_admission();
+    if !sections_or_skip("a_mixed_batch_completes_the_live_keys_and_reports_the_superseded_one") {
+        return;
+    }
     let tmp = linked_workspace();
     let capability = capability_for(&tmp);
     let index_root = capability.index_root().to_path_buf();
