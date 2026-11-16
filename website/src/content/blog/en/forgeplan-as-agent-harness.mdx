@@ -51,7 +51,7 @@ This is the map I wish I'd had on day one.
 |---|---|---|
 | **Rules** | `CLAUDE.md` red lines + hint protocol PRD-071 | Agent invents its own ordering of steps |
 | **State** | `.forgeplan/state/<ID>.yaml` lifecycle + Hindsight MCP memory | Context loss between sessions |
-| **Tools** | 76 CLI commands + 73 MCP tools (typed, not free-form) | Agent reaches into raw filesystem and corrupts the index <!-- mcp-count-drift: ignore (dated snapshot per post disclaimer) --> |
+| **Tools** | 76 CLI commands + 73 MCP tools (typed, not free-form) | Agent reaches into raw filesystem and corrupts the index {/* mcp-count-drift: ignore (dated snapshot per post disclaimer) */} |
 | **Checks** | `forgeplan validate` + `forgeplan score` (R_eff weakest-link) + `tests/adr_003_invariant.rs` regression guard | Activation without evidence; decisions claiming to be supported when they aren't |
 | **Env** | LanceDB index derived from markdown + BGE-M3 1024d embeddings, fully local | Hidden remote dependencies; non-reproducible search results |
 
@@ -97,7 +97,7 @@ I'm calling these out in public because *Lecture 12* has a separate principle th
 
 If "harness engineering" is a new term to you, walkinglabs's twelve lectures are the cheapest hour of reading you'll do this quarter: [walkinglabs.github.io/learn-harness-engineering](https://walkinglabs.github.io/learn-harness-engineering/). They legitimised a vocabulary I'd been using badly for half a year.
 
-For installation, see [the repository](https://github.com/ForgePlan/forgeplan) and current docs; the package is `forgeplan`, not `forgeplan-cli`. The article's reported snapshot was v0.30.0, 343 workspace artifacts, 1995 tests, 76 CLI commands, 73 MCP tools and a ~41 MB stripped binary. The reported marketplace snapshot was 12 plugins, 60+ agents and 16 skills. These figures are historical reports, not newly measured results. <!-- mcp-count-drift: ignore (dated snapshot per post disclaimer) -->
+For installation, see [the repository](https://github.com/ForgePlan/forgeplan) and current docs; the package is `forgeplan`, not `forgeplan-cli`. The article's reported snapshot was v0.30.0, 343 workspace artifacts, 1995 tests, 76 CLI commands, 73 MCP tools and a ~41 MB stripped binary. The reported marketplace snapshot was 12 plugins, 60+ agents and 16 skills. These figures are historical reports, not newly measured results. {/* mcp-count-drift: ignore (dated snapshot per post disclaimer) */}
 
 GitHub stars: 1. That's not a typo. The thing has been head-down dogfooded for six months and the marketing is a week old. If the harness framing makes the work easier to find for the people it's actually for, that's the win.
 

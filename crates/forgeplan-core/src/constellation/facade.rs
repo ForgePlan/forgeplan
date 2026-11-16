@@ -9822,7 +9822,7 @@ mod tests {
 
         // Pass one serves the old revision and cannot serve the new one.
         let old_hits = search_pinned_lexical(
-            &capability.index_root(),
+            capability.index_root(),
             "beta-old-unique-token",
             10,
             &NO_FILTER,
@@ -9831,7 +9831,7 @@ mod tests {
         .unwrap();
         assert!(old_hits.hits.iter().any(|h| h.canonical_key == "PRD-102"));
         let absent = search_pinned_lexical(
-            &capability.index_root(),
+            capability.index_root(),
             "beta-new-unique-token",
             10,
             &NO_FILTER,
@@ -9892,7 +9892,7 @@ mod tests {
         // The pinned search answers at the just-published generation and
         // serves the new revision — no `embed`, no manual step in between.
         let new_hits = search_pinned_lexical(
-            &capability.index_root(),
+            capability.index_root(),
             "beta-new-unique-token",
             10,
             &NO_FILTER,
@@ -9910,7 +9910,7 @@ mod tests {
             .expect("the new revision must be findable in the pinned index");
         assert_eq!(hit.title, "Beta revised");
         let gone = search_pinned_lexical(
-            &capability.index_root(),
+            capability.index_root(),
             "beta-old-unique-token",
             10,
             &NO_FILTER,
@@ -9922,7 +9922,7 @@ mod tests {
             "the old revision must be gone from the served generation"
         );
         let gamma_hits = search_pinned_lexical(
-            &capability.index_root(),
+            capability.index_root(),
             "gamma-unique-token-ccc",
             10,
             &NO_FILTER,

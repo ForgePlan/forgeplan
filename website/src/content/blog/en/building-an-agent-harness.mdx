@@ -110,7 +110,7 @@ The mapping in brief:
 | Subsystem | Mechanism in ForgePlan |
 |---|---|
 | Instructions | Project-level `CLAUDE.md`, `AGENTS.md` as first reference, plugin instructions |
-| Tools | 76 CLI commands, 73 MCP tools, hint markers for machine parsing <!-- mcp-count-drift: ignore (dated snapshot per post disclaimer) --> |
+| Tools | 76 CLI commands, 73 MCP tools, hint markers for machine parsing {/* mcp-count-drift: ignore (dated snapshot per post disclaimer) */} |
 | Environment | `forgeplan` binary (`brew install`), feature flags, single executable, local-first |
 | State | `.forgeplan/state/<ID>.yaml`, git, per-project Hindsight MCP bank |
 | Checks | `validate`, `score`, `health`, `blindspots`, `blocked`, `stale`, `order` |
@@ -286,7 +286,7 @@ Why I write about gaps at all - two reasons. First: HN and r/programming audienc
 - **343 artifacts** in `.forgeplan/` (PRD / ADR / RFC / Spec / Epic / Evidence / Problem / Solution / Note / Refresh)
 - **1,995 tests** at time of writing (`cargo test`, 0 failures)
 - **76 CLI commands** (`forgeplan` / `fpl`)
-- **73 MCP tools** (rmcp over stdio) <!-- mcp-count-drift: ignore (dated snapshot per post disclaimer) -->
+- **73 MCP tools** (rmcp over stdio) {/* mcp-count-drift: ignore (dated snapshot per post disclaimer) */}
 - **0 warnings** on both feature configs (`cargo clippy --workspace --all-targets`)
 - **3 crates**: forgeplan-core (12.8K lines), forgeplan-cli, forgeplan-mcp
 - **v0.30.0** as of 2026-05-08

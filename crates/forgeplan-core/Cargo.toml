@@ -295,3 +295,12 @@ required-features = ["test-helpers"]
 name = "constellation_section_windows"
 path = "tests/constellation_section_windows.rs"
 required-features = ["test-helpers"]
+
+# C23 legacy-layout compatibility: `init_legacy_for_test` is
+# `test-helpers`-gated, so this target needs the same declaration as the
+# other gated suites or `cargo clippy --all-targets` (no features) fails
+# E0599 instead of skipping it.
+[[test]]
+name = "constellation_history_compat"
+path = "tests/constellation_history_compat.rs"
+required-features = ["test-helpers"]

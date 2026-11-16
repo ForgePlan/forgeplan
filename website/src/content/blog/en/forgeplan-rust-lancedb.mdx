@@ -21,7 +21,7 @@ What's specific to Forgeplan:
 - **Markdown is source of truth, LanceDB is a derived index** (ADR-003, compile-enforced after a 32-violation cleanup that ended with `pub(crate)` lockdown).
 - **Product scoring uses the weakest eligible evidence.** CL penalties are 0/0.1/0.4/0.9, but context fit must be assessed rather than inferred from "blog" versus "our measurement." The recursive scorer also uses verdicts, evidence types and dependencies. Activation has validation, substance and evidence-link gates; a score alone is not release approval.
 - **Hint protocol** (PRD-071): intended next-action markers are `Next:` / `Or:` / `Fix:` / `Wait:` / `Done.`. They help order work, but not every response carries a hint, and emitted hints can contain defects. Agents must still check the command contract and result.
-- **73 MCP tools** for Claude Code, Cursor, Aider. BGE-M3 1024d local search. <!-- mcp-count-drift: ignore (May 2026 snapshot per post disclaimer) -->
+- **73 MCP tools** for Claude Code, Cursor, Aider. BGE-M3 1024d local search. {/* mcp-count-drift: ignore (May 2026 snapshot per post disclaimer) */}
 
 Stack: Rust 3-crate workspace, LanceDB embedded, fastembed, rmcp. Single ~41 MB stripped binary. 1995 tests.
 
