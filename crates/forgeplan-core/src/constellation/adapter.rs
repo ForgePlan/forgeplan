@@ -85,11 +85,7 @@ pub trait SourceAdapter: Send + Sync {
     /// [`AdapterError::AlreadyExists`], whatever the bytes. A write never
     /// mutates a document that is already served, so a reader that pinned a
     /// path can trust the pin.
-    fn write_bytes(
-        &mut self,
-        relative_path: &str,
-        bytes: Vec<u8>,
-    ) -> Result<(), AdapterError>;
+    fn write_bytes(&mut self, relative_path: &str, bytes: Vec<u8>) -> Result<(), AdapterError>;
 }
 
 /// Why an adapter could not answer.
@@ -102,13 +98,9 @@ pub trait SourceAdapter: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdapterError {
     /// No bytes are pinned at this relative path.
-    NotFound {
-        relative_path: String,
-    },
+    NotFound { relative_path: String },
     /// The path exists; a create-only write refused to replace it.
-    AlreadyExists {
-        relative_path: String,
-    },
+    AlreadyExists { relative_path: String },
     /// The path is not a safe artifact-relative path.
     InvalidPath {
         relative_path: String,
@@ -128,7 +120,10 @@ impl std::fmt::Display for AdapterError {
                 write!(f, "adapter has no document pinned at {relative_path:?}")
             }
             Self::AlreadyExists { relative_path } => {
-                write!(f, "adapter document at {relative_path:?} already exists; create-only")
+                write!(
+                    f,
+                    "adapter document at {relative_path:?} already exists; create-only"
+                )
             }
             Self::InvalidPath {
                 relative_path,
@@ -216,15 +211,12 @@ impl<'a> AdapterScope<'a> {
         relative_path: &str,
     ) -> Result<ArtifactIdentity, AdapterError> {
         let bytes = self.pinned_bytes(relative_path)?;
-        let parsed = parse_artifact_file(
-            relative_path,
-            Arc::from(bytes),
-            DEFAULT_BODY_PREFIX_CHARS,
-        )
-        .map_err(|diagnostic| AdapterError::NotCanonical {
-            relative_path: relative_path.to_string(),
-            reason: diagnostic.detail,
-        })?;
+        let parsed =
+            parse_artifact_file(relative_path, Arc::from(bytes), DEFAULT_BODY_PREFIX_CHARS)
+                .map_err(|diagnostic| AdapterError::NotCanonical {
+                    relative_path: relative_path.to_string(),
+                    reason: diagnostic.detail,
+                })?;
         Ok(ArtifactIdentity {
             canonical_key: parsed.canonical_key,
             display_id: parsed.display_id,
@@ -325,11 +317,7 @@ impl SourceAdapter for InMemoryAdapter {
             })
     }
 
-    fn write_bytes(
-        &mut self,
-        relative_path: &str,
-        bytes: Vec<u8>,
-    ) -> Result<(), AdapterError> {
+    fn write_bytes(&mut self, relative_path: &str, bytes: Vec<u8>) -> Result<(), AdapterError> {
         validate_relative_path(relative_path)?;
         if self.documents.contains_key(relative_path) {
             return Err(AdapterError::AlreadyExists {
@@ -366,7 +354,10 @@ mod tests {
 
         let scope = AdapterScope::open(&adapter);
         assert_eq!(scope.source_id(), "external-system-1");
-        assert_eq!(scope.enumerate_artifacts(), vec!["prds/PRD-042.md".to_string()]);
+        assert_eq!(
+            scope.enumerate_artifacts(),
+            vec!["prds/PRD-042.md".to_string()]
+        );
         // The read answers exactly the stored bytes — a pin is the storage.
         assert_eq!(
             scope.pinned_bytes("prds/PRD-042.md").unwrap(),
@@ -494,8 +485,10 @@ mod tests {
         let err = scope
             .canonical_identity("prds/broken.md")
             .expect_err("bytes that are not a canonical document must not resolve to an identity");
-        assert!(matches!(err, AdapterError::NotCanonical { ref relative_path, .. }
-            if relative_path == "prds/broken.md"));
+        assert!(
+            matches!(err, AdapterError::NotCanonical { ref relative_path, .. }
+            if relative_path == "prds/broken.md")
+        );
         assert!(scope.identities().is_empty());
     }
 }

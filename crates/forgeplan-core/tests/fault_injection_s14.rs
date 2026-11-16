@@ -124,7 +124,11 @@ fn metadata_cache(root: &Path) -> PathBuf {
 /// Constellation fixture: a published workspace plus the metadata that makes
 /// a real sections commit happen (old ↔ new source swap, two link targets).
 fn source(variant: &str) -> String {
-    let target = if variant == "old" { "NOTE-901" } else { "NOTE-902" };
+    let target = if variant == "old" {
+        "NOTE-901"
+    } else {
+        "NOTE-902"
+    };
     format!(
         "---\nid: PRD-901\nkind: prd\nstatus: draft\ntitle: {variant} policy\ndepth: standard\nlinks:\n  - target: {target}\n    relation: based_on\n---\n\n## {variant} heading\n\n{variant} policy body with exact whitespace.  \n尾🙂\n"
     )
@@ -148,11 +152,10 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf) {
 
 /// Legacy fixture: a LanceDB-sink workspace with one seeded note.
 async fn legacy_fixture(root: &Path) -> (PathBuf, PathBuf) {
-    let workspace =
-        forgeplan_core::workspace::init_workspace(root, "s14-legacy-proof")
-            .expect("legacy workspace")
-            .canonicalize()
-            .expect("canonical legacy workspace");
+    let workspace = forgeplan_core::workspace::init_workspace(root, "s14-legacy-proof")
+        .expect("legacy workspace")
+        .canonicalize()
+        .expect("canonical legacy workspace");
     let lock = forgeplan_core::workspace::acquire_workspace_lock(&workspace)
         .await
         .expect("fixture lock");
@@ -340,13 +343,15 @@ async fn pinned_triple_at(
     for role in ["artifacts", "relations", "sections"] {
         tables.insert(
             role.to_string(),
-            json!(rows(
-                index_root,
-                &marker,
-                role,
-                versions[role].as_u64().expect("version")
-            )
-            .await?),
+            json!(
+                rows(
+                    index_root,
+                    &marker,
+                    role,
+                    versions[role].as_u64().expect("version")
+                )
+                .await?
+            ),
         );
     }
     Ok(json!({"result":"persisted", "descriptor":descriptor, "manifest":manifest, "tables":tables}))
@@ -412,7 +417,11 @@ fn assert_coherent(observation: &Value, allowed: &[&str]) {
     assert_eq!(relations.len(), 1, "exact outgoing replacement");
     assert_eq!(
         relations[0]["target"],
-        if *variant == "old" { "NOTE-901" } else { "NOTE-902" }
+        if *variant == "old" {
+            "NOTE-901"
+        } else {
+            "NOTE-902"
+        }
     );
     assert_eq!(relations[0]["relation"], "based_on");
     for field in ["source_digest", "incarnation", "row_revision"] {
@@ -578,8 +587,7 @@ async fn fault_process_child() {
                 .expect("child lock");
             let ctx = MutationContext::new(&workspace, &lock, None);
             let new_body = parse_frontmatter(&source("new")).expect("new body").1;
-            let outcome =
-                projection::update_body_with_projection(&ctx, "PRD-901", &new_body).await;
+            let outcome = projection::update_body_with_projection(&ctx, "PRD-901", &new_body).await;
             drop(lock);
             match outcome {
                 Ok(()) => json!({"result":"updated"}),
@@ -618,10 +626,13 @@ async fn fault_process_child() {
             let _pin = pin_generation_read(&index, &descriptor).expect("pin scope");
             println!("HANDLE_OPEN");
             let mut line = String::new();
-            let read = timeout(BOUND, BufReader::new(tokio::io::stdin()).read_line(&mut line))
-                .await
-                .expect("scope release deadline")
-                .expect("scope release line");
+            let read = timeout(
+                BOUND,
+                BufReader::new(tokio::io::stdin()).read_line(&mut line),
+            )
+            .await
+            .expect("scope release deadline")
+            .expect("scope release line");
             assert!(read > 0, "parent closed stdin before releasing the handle");
             assert_eq!(line.trim(), "release");
             let triple = pinned_triple_at(&index, &descriptor)
@@ -642,10 +653,13 @@ async fn fault_process_child() {
                 .expect("pinned triple read");
             println!("READ_COMPLETE {triple}");
             let mut line = String::new();
-            let read = timeout(BOUND, BufReader::new(tokio::io::stdin()).read_line(&mut line))
-                .await
-                .expect("hold deadline")
-                .expect("hold line");
+            let read = timeout(
+                BOUND,
+                BufReader::new(tokio::io::stdin()).read_line(&mut line),
+            )
+            .await
+            .expect("hold deadline")
+            .expect("hold line");
             assert!(read > 0, "parent closed stdin while we held");
             json!({"result":"held"})
         }
@@ -679,13 +693,24 @@ async fn projection_before_rename_kill_leaves_old_target_and_complete_tmp() {
     let temp = tempfile::TempDir::new().expect("fixture root");
     let (workspace, note_path) = legacy_fixture(temp.path()).await;
     let note_dir = note_path.parent().expect("notes dir").to_path_buf();
-    let file_name = note_path.file_name().expect("file name").to_string_lossy().into_owned();
+    let file_name = note_path
+        .file_name()
+        .expect("file name")
+        .to_string_lossy()
+        .into_owned();
     let old_bytes = std::fs::read(&note_path).expect("old canonical bytes");
     let (_, old_body) =
         parse_frontmatter(&String::from_utf8(old_bytes.clone()).expect("UTF-8 old file"))
             .expect("old file parses");
-    assert_eq!(old_body, LEGACY_OLD_BODY, "seeded canonical body is the old body");
-    assert_eq!(legacy_row_body(&workspace).await, LEGACY_OLD_BODY, "seeded row is old");
+    assert_eq!(
+        old_body, LEGACY_OLD_BODY,
+        "seeded canonical body is the old body"
+    );
+    assert_eq!(
+        legacy_row_body(&workspace).await,
+        LEGACY_OLD_BODY,
+        "seeded row is old"
+    );
 
     let barrier = Barrier::new("before_projection_rename").await;
     let mut command = child_command(&workspace, temp.path(), "legacy-update");
@@ -726,11 +751,22 @@ async fn projection_before_rename_kill_leaves_old_target_and_complete_tmp() {
     let (_, after_body) =
         parse_frontmatter(&std::fs::read_to_string(&note_path).expect("recovered file"))
             .expect("recovered file parses");
-    assert_eq!(after_body, LEGACY_NEW_BODY, "recovery writes the complete new body");
-    assert_eq!(legacy_row_body(&workspace).await, LEGACY_NEW_BODY, "recovery syncs the row");
-    let resolved = forgeplan_core::artifact::store::resolve_artifact_path(&workspace, "NOTE-007")
-        .await;
-    assert_eq!(resolved, Some(note_path.clone()), "document resolution ignores the stale temp");
+    assert_eq!(
+        after_body, LEGACY_NEW_BODY,
+        "recovery writes the complete new body"
+    );
+    assert_eq!(
+        legacy_row_body(&workspace).await,
+        LEGACY_NEW_BODY,
+        "recovery syncs the row"
+    );
+    let resolved =
+        forgeplan_core::artifact::store::resolve_artifact_path(&workspace, "NOTE-007").await;
+    assert_eq!(
+        resolved,
+        Some(note_path.clone()),
+        "document resolution ignores the stale temp"
+    );
     println!(
         "PROOF_OBSERVATION {}",
         json!({"case":"projection_before_rename","tmp_held_complete_new":true,"target_untouched":true,"recovered":true})
@@ -759,10 +795,12 @@ async fn projection_after_rename_kill_leaves_old_index_and_reconciles() {
 
     // The canonical file is a complete, parseable NEW render (rename landed).
     let bytes = std::fs::read(&note_path).expect("file after kill");
-    let (_, file_body) =
-        parse_frontmatter(&String::from_utf8(bytes.clone()).expect("UTF-8 file"))
-            .expect("post-crash file is a complete render");
-    assert_eq!(file_body, LEGACY_NEW_BODY, "the canonical file is fully new");
+    let (_, file_body) = parse_frontmatter(&String::from_utf8(bytes.clone()).expect("UTF-8 file"))
+        .expect("post-crash file is a complete render");
+    assert_eq!(
+        file_body, LEGACY_NEW_BODY,
+        "the canonical file is fully new"
+    );
     // The derived index is still the complete OLD row: this is the ADR-003
     // crash window between "file written" and "index updated".
     assert_eq!(legacy_row_body(&workspace).await, LEGACY_OLD_BODY);
@@ -780,7 +818,10 @@ async fn projection_after_rename_kill_leaves_old_index_and_reconciles() {
         .await
         .expect("row read")
         .expect("row exists");
-    assert_eq!(record.body, LEGACY_OLD_BODY, "index still old before reconcile");
+    assert_eq!(
+        record.body, LEGACY_OLD_BODY,
+        "index still old before reconcile"
+    );
     let changed = projection::sync_file_to_store(&guard, &store, &workspace, &record)
         .await
         .expect("file-first reconcile");
@@ -936,7 +977,10 @@ async fn scope_pin_survives_writer_sigkill_and_serves_complete_old_generation() 
             .expect("handle deadline")
             .expect("handle line");
         assert!(read > 0, "reader exited before holding the scope handle");
-        if line.split_once("HANDLE_OPEN").is_some_and(|(_, rest)| rest.trim().is_empty()) {
+        if line
+            .split_once("HANDLE_OPEN")
+            .is_some_and(|(_, rest)| rest.trim().is_empty())
+        {
             break;
         }
     }
@@ -972,7 +1016,10 @@ async fn scope_pin_survives_writer_sigkill_and_serves_complete_old_generation() 
             .await
             .expect("reader result deadline")
             .expect("reader result line");
-        assert!(read > 0, "reader exited without reporting its pinned result");
+        assert!(
+            read > 0,
+            "reader exited without reporting its pinned result"
+        );
         if result_line.split_once("PROOF_RESULT ").is_some() {
             break;
         }
@@ -981,11 +1028,7 @@ async fn scope_pin_survives_writer_sigkill_and_serves_complete_old_generation() 
         .await
         .expect("reader bound")
         .expect("reader status");
-    assert!(
-        status.success(),
-        "reader exit {:?}\n{result_line}",
-        status
-    );
+    assert!(status.success(), "reader exit {:?}\n{result_line}", status);
     let raw = result_line
         .split_once("PROOF_RESULT ")
         .map(|(_, value)| value)
@@ -997,8 +1040,7 @@ async fn scope_pin_survives_writer_sigkill_and_serves_complete_old_generation() 
         "the pinned scope served the exact complete old triple across the writer SIGKILL"
     );
     assert_eq!(
-        result["triple"]["manifest"]["generation_id"],
-        before["manifest"]["generation_id"],
+        result["triple"]["manifest"]["generation_id"], before["manifest"]["generation_id"],
         "the scope stayed bound to the immutable generation it was opened on"
     );
 
@@ -1066,7 +1108,10 @@ async fn reader_killed_between_read_and_return_leaves_no_partial_state() {
     // A fresh process observes byte-identical complete data: no partial state
     // survived and no reader lock residue blocks the next open.
     let after = child_output(child_command(&workspace, &cache, "inspect")).await;
-    assert_eq!(after, before, "reader death between read and return leaves no torn or partial state");
+    assert_eq!(
+        after, before,
+        "reader death between read and return leaves no torn or partial state"
+    );
     assert_coherent(&after, &["old"]);
     println!(
         "PROOF_OBSERVATION {}",
@@ -1115,8 +1160,7 @@ async fn embed_crash_between_chunk_admission_and_pending_publish_keeps_old_and_c
     let recovered = child_output(child_command(&workspace, &cache, "inspect")).await;
     assert_coherent(&recovered, &["old"]);
     assert_eq!(
-        recovered["tables"]["sections"],
-        before["tables"]["sections"],
+        recovered["tables"]["sections"], before["tables"]["sections"],
         "recovery ends on the same exact complete section set"
     );
     println!(

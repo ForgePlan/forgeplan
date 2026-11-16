@@ -9791,8 +9791,7 @@ mod tests {
         std::fs::remove_file(root.join("prds/PRD-001-auth.md")).unwrap();
 
         let alpha = "---\nid: PRD-101\nkind: prd\nstatus: active\ntitle: Alpha\n---\n\nalpha-unique-token-aaa body.\n";
-        let beta_v1 =
-            "---\nid: PRD-102\nkind: prd\nstatus: active\ntitle: Beta\n---\n\nbeta-old-unique-token body.\n";
+        let beta_v1 = "---\nid: PRD-102\nkind: prd\nstatus: active\ntitle: Beta\n---\n\nbeta-old-unique-token body.\n";
         let gamma = "---\nid: PRD-103\nkind: prd\nstatus: active\ntitle: Gamma\n---\n\ngamma-unique-token-ccc body.\n";
         std::fs::write(root.join("prds/PRD-101-alpha.md"), alpha).unwrap();
         std::fs::write(root.join("prds/PRD-102-beta.md"), beta_v1).unwrap();
@@ -9845,8 +9844,7 @@ mod tests {
         );
 
         // Edit ONE document.
-        let beta_v2 =
-            "---\nid: PRD-102\nkind: prd\nstatus: active\ntitle: Beta revised\n---\n\nbeta-new-unique-token body.\n";
+        let beta_v2 = "---\nid: PRD-102\nkind: prd\nstatus: active\ntitle: Beta revised\n---\n\nbeta-new-unique-token body.\n";
         std::fs::write(root.join("prds/PRD-102-beta.md"), beta_v2).unwrap();
 
         let (second, second_outcome) =
@@ -9856,7 +9854,10 @@ mod tests {
 
         // A new generation was published, pinned at later table versions.
         assert_ne!(second_outcome.generation_id, first_generation);
-        assert_ne!(second.descriptor.generation_id, first.descriptor.generation_id);
+        assert_ne!(
+            second.descriptor.generation_id,
+            first.descriptor.generation_id
+        );
         assert_ne!(
             second.manifest.table_versions.artifacts,
             first.manifest.table_versions.artifacts
