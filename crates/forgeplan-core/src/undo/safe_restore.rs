@@ -376,6 +376,7 @@ mod imp {
             }
             let stat = unsafe { stat.assume_init() };
             let meta = self.receipt_file.metadata()?;
+            #[allow(clippy::unnecessary_cast)] // dev_t is i32 on macOS, u64 on Linux
             if stat.st_dev as u64 != meta.dev() || stat.st_ino != meta.ino() {
                 anyhow::bail!("receipt changed before purge");
             }

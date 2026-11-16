@@ -32,6 +32,7 @@ use forgeplan_core::constellation::{ConstellationError, FORMAT_VERSION};
 use forgeplan_core::workspace::ARTIFACT_DIRS;
 use tempfile::TempDir;
 
+#[cfg(feature = "test-helpers")]
 use std::future::Future;
 fn deadline() -> std::time::Instant {
     std::time::Instant::now() + std::time::Duration::from_secs(120)
@@ -51,6 +52,7 @@ async fn with_section_metadata<F: Future>(future: F) -> F::Output {
     with_test_layout_cache(cache.path().to_path_buf(), future).await
 }
 
+#[cfg(feature = "test-helpers")]
 const NO_FILTER: PinnedFilter = PinnedFilter {
     kind: None,
     status: None,
