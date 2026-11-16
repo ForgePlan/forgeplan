@@ -244,8 +244,8 @@ async fn assert_record(
     assert_eq!(payload["id"], id);
     assert_eq!(
         payload["body"].as_str(),
-        Some(doc.raw.as_str()),
-        "get must return these exact canonical bytes"
+        Some(doc.prose.as_str()),
+        "get returns indexed prose; exact Markdown is read from the canonical file"
     );
     for key in ["kind", "status", "title", "depth"] {
         assert_eq!(
@@ -299,8 +299,11 @@ fn receipt_file(ws: &Path, response: &Value) -> PathBuf {
     ws.join("trash").join(format!("receipt-{id}.json"))
 }
 
-fn receipt(path: &Path) -> Value {
-    serde_json::from_slice(&std::fs::read(path).expect("persisted receipt")).expect("receipt JSON")
+async fn receipt(path: &Path) -> Value {
+    let receipt = forgeplan_core::undo::read_receipt(path)
+        .await
+        .expect("read receipt and durable completion marker");
+    serde_json::to_value(receipt).expect("serialize receipt")
 }
 
 fn assert_clean_restore(payload: &Value, id: &str) {
@@ -375,10 +378,13 @@ async fn metadata_omission_and_explicit_empty_body_have_distinct_canonical_resul
     assert_eq!(updated["title"], "Renamed source");
     assert_eq!(updated["status"], "draft");
     let renamed_path = only_artifact(&ws, SOURCE_ID);
-    assert_ne!(renamed_path, old_path);
+    assert_eq!(
+        renamed_path, old_path,
+        "title updates preserve the canonical document path"
+    );
     assert!(
-        !old_path.exists(),
-        "title rename must not leave a phantom file"
+        old_path.exists(),
+        "title update must keep the canonical file"
     );
     let renamed = document(&renamed_path);
     assert_eq!(
@@ -417,7 +423,7 @@ async fn metadata_omission_and_explicit_empty_body_have_distinct_canonical_resul
     )
     .await;
     assert_eq!(replaced["title"], "Final source");
-    assert!(!renamed_path.exists());
+    assert_eq!(only_artifact(&ws, SOURCE_ID), old_path);
     let final_doc = document(&only_artifact(&ws, SOURCE_ID));
     assert_eq!(final_doc.prose, body);
     assert_metadata_preserved(&emptied, &final_doc, &["title"]);
@@ -574,12 +580,12 @@ async fn delete_then_restore_by_artifact_id_recovers_exact_bytes_and_relations_i
     .await;
     let deleted = changed(&server, &ws, "forgeplan_delete", json!({"id": SOURCE_ID})).await;
     let path = receipt_file(&ws, &deleted);
-    let captured = receipt(&path);
+    let captured = receipt(&path).await;
     assert_eq!(captured["op"], "delete");
     assert_eq!(captured["consumed"], false);
     assert_eq!(
         captured["snapshot"]["body"].as_str(),
-        Some(original.raw.as_str())
+        Some(original.prose.as_str())
     );
     let mut captured_edges: Vec<(String, String, String, String)> =
         captured["snapshot"]["relations"]
@@ -642,11 +648,7 @@ async fn delete_then_restore_by_artifact_id_recovers_exact_bytes_and_relations_i
         original_notes,
         "recovery must not re-render away comments or change neighbours"
     );
-    assert!(
-        !trash.exists(),
-        "the original projection must have moved home"
-    );
-    let consumed = receipt(&path);
+    let consumed = receipt(&path).await;
     assert_eq!(consumed["consumed"], true);
     assert_eq!(
         consumed["snapshot"], captured["snapshot"],
@@ -739,7 +741,7 @@ async fn invalid_restore_override_is_non_mutating_and_a_valid_override_preserves
     assert_eq!(after.prose, original.prose);
     assert_metadata_preserved(&original, &after, &["status"]);
     assert_record(&server, &ws, SOURCE_ID, &[(TARGET_ID, "based_on")]).await;
-    let saved = receipt(&path);
+    let saved = receipt(&path).await;
     assert_eq!(saved["consumed"], true);
     assert_eq!(
         saved["snapshot"]["status"], "active",
@@ -747,7 +749,7 @@ async fn invalid_restore_override_is_non_mutating_and_a_valid_override_preserves
     );
     assert_eq!(
         saved["snapshot"]["body"].as_str(),
-        Some(original.raw.as_str())
+        Some(original.prose.as_str())
     );
 }
 
@@ -809,7 +811,8 @@ async fn terminal_restore_override_cannot_bypass_the_canonical_lifecycle_fsm() {
         "reversal must preserve the recorded deprecation history"
     );
     assert_record(&server, &ws, SOURCE_ID, &[(TARGET_ID, "based_on")]).await;
-    assert_eq!(receipt(&path)["consumed"], true);
+    let consumed = receipt(&path).await;
+    assert_eq!(consumed["consumed"], true);
 }
 
 #[tokio::test]
@@ -825,8 +828,10 @@ async fn undo_last_skips_a_consumed_receipt_and_restores_the_remaining_deleted_a
     let target_restored =
         changed(&server, &ws, "forgeplan_restore", json!({"id": TARGET_ID})).await;
     assert_clean_restore(&target_restored, TARGET_ID);
-    assert_eq!(receipt(&target_receipt)["consumed"], true);
-    assert_eq!(receipt(&source_receipt)["consumed"], false);
+    let target_consumed = receipt(&target_receipt).await;
+    let source_pending = receipt(&source_receipt).await;
+    assert_eq!(target_consumed["consumed"], true);
+    assert_eq!(source_pending["consumed"], false);
     assert!(artifact_paths(&ws, SOURCE_ID).is_empty());
 
     let undone = changed(
@@ -845,8 +850,10 @@ async fn undo_last_skips_a_consumed_receipt_and_restores_the_remaining_deleted_a
         original,
         "undo must recover original bytes without duplicating links"
     );
-    assert_eq!(receipt(&source_receipt)["consumed"], true);
-    assert_eq!(receipt(&target_receipt)["consumed"], true);
+    let source_consumed = receipt(&source_receipt).await;
+    let target_consumed = receipt(&target_receipt).await;
+    assert_eq!(source_consumed["consumed"], true);
+    assert_eq!(target_consumed["consumed"], true);
     assert_record(&server, &ws, SOURCE_ID, &[(TARGET_ID, "based_on")]).await;
     let target = assert_record(&server, &ws, TARGET_ID, &[]).await;
     assert_eq!(

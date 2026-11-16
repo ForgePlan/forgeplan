@@ -50,6 +50,11 @@ globset = "0.4"
 # `collect2: fatal error: ld terminated with signal 7 [Bus error]`.
 debug = "line-tables-only"
 
+# Full cached-model checksums must fit the maintenance scan window in dev too.
+# Keep every content check; optimize the hashing crate rather than the host's deadlines.
+[profile.dev.package."sha2:0.11"]
+opt-level = 3
+
 [profile.release]
 strip = true          # strip debug symbols (-16%)
 lto = "thin"          # link-time optimization (smaller + faster)

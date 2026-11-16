@@ -495,8 +495,8 @@ mod cached_model_tests {
             .join("models--BAAI--bge-m3")
             .join("snapshots")
             .join("rev0");
-        std::fs::create_dir_all(snapshot.join("onnx")).expect("create partial snapshot");
-        std::fs::write(snapshot.join("tokenizer.json"), "{}").expect("write tokenizer");
+        crate::embed::tokenizer::testing::write_whitespace_snapshot(&snapshot, 8192)
+            .expect("write complete tokenizer metadata");
 
         let error = CachedSnapshot::open_in(cache.path(), "bge-m3")
             .err()

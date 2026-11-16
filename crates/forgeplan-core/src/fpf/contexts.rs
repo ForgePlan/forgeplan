@@ -177,15 +177,16 @@ fn name_from_members(members: &[String], index: usize) -> String {
 /// group for singletons, or None if the artifact is absent from the graph.
 pub async fn detect_for_artifact(
     store: &crate::db::store::LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     artifact_id: &str,
 ) -> anyhow::Result<Option<(String, usize, f64)>> {
-    let all_records = store.list_records(None).await?;
-    let all_relations = store.get_all_relations().await?;
-    Ok(detect_for_artifact_from_records(
-        &all_records,
-        &all_relations,
-        artifact_id,
-    ))
+    let all_records = store.list_records(permit, None).await?;
+    let all_relations = store.get_all_relations(permit).await?;
+    let candidates = crate::artifact::documents::candidates_from_records(&all_records);
+    let canonical = crate::artifact::canonical_key::resolve_artifact(artifact_id, &candidates)?
+        .map(|resolved| resolved.identity.canonical_key);
+    Ok(canonical
+        .and_then(|key| detect_for_artifact_from_records(&all_records, &all_relations, &key)))
 }
 
 /// Detect an artifact's bounded context from one captured record and relation set.
@@ -195,34 +196,28 @@ pub async fn detect_for_artifact_captured(
     read: &WorkspaceRead,
     artifact_id: &str,
 ) -> anyhow::Result<Option<(String, usize, f64)>> {
-    Ok(detect_for_artifact_from_records(
-        read.records(),
-        &read.get_all_relations(),
-        artifact_id,
-    ))
+    let resolved = read.resolve_artifact(artifact_id)?;
+    Ok(resolved.and_then(|artifact| {
+        detect_for_artifact_from_records(
+            read.records(),
+            &read.get_all_relations(),
+            &artifact.identity.canonical_key,
+        )
+    }))
 }
 
 fn detect_for_artifact_from_records(
     records: &[ArtifactRecord],
     relations: &[(String, String, String)],
-    artifact_id: &str,
+    canonical_key: &str,
 ) -> Option<(String, usize, f64)> {
     let edges: Vec<(String, String)> = relations
         .iter()
         .map(|(s, t, _)| (s.clone(), t.clone()))
         .collect();
-    // The contexts hold **canonical keys** (see `detect`), so the requested
-    // artifact has to be named by its key too. The caller passes the display
-    // id, so it is translated here — through the record set, which is the
-    // only place that knows which key a display id stands for.
-    let canonical = records
-        .iter()
-        .find(|r| r.id == artifact_id || r.canonical_key == artifact_id)
-        .map(|r| r.canonical_key.clone())
-        .unwrap_or_else(|| artifact_id.to_string());
     detect(records, &edges)
         .into_iter()
-        .find(|c| c.members.iter().any(|m| m == &canonical))
+        .find(|c| c.members.iter().any(|member| member == canonical_key))
         .map(|c| (c.name, c.members.len(), c.cohesion))
 }
 
@@ -235,7 +230,8 @@ mod tests {
         use crate::db::store::{LanceStore, NewArtifact};
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let ws = tmp.path().join(".forgeplan");
+        let base = tmp.path().canonicalize().unwrap();
+        let ws = base.join(".forgeplan");
         for directory in crate::workspace::ARTIFACT_DIRS {
             std::fs::create_dir_all(ws.join(directory)).unwrap();
         }
@@ -267,43 +263,60 @@ mod tests {
         .unwrap();
         assert!(!ws.join("lance").exists());
 
-        let store = LanceStore::init(&tmp.path().join("legacy/.forgeplan"))
+        let legacy_ws = base.join("legacy/.forgeplan");
+        let guard = crate::workspace::lock::acquire_workspace_lock(&legacy_ws)
             .await
             .unwrap();
+        let store = LanceStore::init_new(&legacy_ws, &guard).await.unwrap();
+        for directory in crate::workspace::ARTIFACT_DIRS {
+            let source = ws.join(directory);
+            let dest = legacy_ws.join(directory);
+            std::fs::create_dir_all(&dest).unwrap();
+            for entry in std::fs::read_dir(source).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_file() {
+                    std::fs::copy(entry.path(), dest.join(entry.file_name())).unwrap();
+                }
+            }
+        }
         for record in read.records() {
             store
-                .create_artifact(&NewArtifact {
-                    canonical_key: record.canonical_key.clone(),
-                    id: record.id.clone(),
-                    kind: record.kind.clone(),
-                    status: record.status.clone(),
-                    title: record.title.clone(),
-                    body: record.body.clone(),
-                    depth: record.depth.clone(),
-                    author: record.author.clone(),
-                    parent_epic: record.parent_epic.clone(),
-                    valid_until: record.valid_until.clone(),
-                    tags: record.tags.clone(),
-                })
+                .create_artifact(
+                    &guard,
+                    &NewArtifact {
+                        canonical_key: record.canonical_key.clone(),
+                        id: record.id.clone(),
+                        kind: record.kind.clone(),
+                        status: record.status.clone(),
+                        title: record.title.clone(),
+                        body: record.body.clone(),
+                        depth: record.depth.clone(),
+                        author: record.author.clone(),
+                        parent_epic: record.parent_epic.clone(),
+                        valid_until: record.valid_until.clone(),
+                        tags: record.tags.clone(),
+                    },
+                )
                 .await
                 .unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
             store
-                .add_relation(&source, &target, &relation)
+                .add_relation(&guard, &source, &target, &relation)
                 .await
                 .unwrap();
         }
 
         for (id, expected) in [
             ("PRD-001", Some(("Context-1 (PRD)".to_string(), 2, 0.5))),
+            ("prd-1", Some(("Context-1 (PRD)".to_string(), 2, 0.5))),
             ("PRD-002", Some(("Context-1 (PRD)".to_string(), 2, 0.5))),
             ("NOTE-001", Some(("Unlinked".to_string(), 1, 0.0))),
             ("PRD-404", None),
-            ("DOES-NOT-EXIST", None),
+            ("prd-does-not-exist-k00000000000000000000000000000000", None),
         ] {
             let captured = detect_for_artifact_captured(&read, id).await.unwrap();
-            let legacy = detect_for_artifact(&store, id).await.unwrap();
+            let legacy = detect_for_artifact(&store, &guard, id).await.unwrap();
             assert_eq!(captured, expected, "{id}");
             assert_eq!(legacy, expected, "{id}");
         }
@@ -311,6 +324,145 @@ mod tests {
             !ws.join("lance").exists(),
             "context detection must remain read-only"
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_display_alias_is_ambiguous_for_both_artifact_apis() {
+        use crate::artifact::canonical_key::ResolveError;
+        use crate::db::store::{LanceStore, NewArtifact};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path().canonicalize().unwrap().join(".forgeplan");
+        for directory in crate::workspace::ARTIFACT_DIRS {
+            std::fs::create_dir_all(ws.join(directory)).unwrap();
+        }
+        for (path, id, slug) in [
+            ("alpha.md", "PRD-001", "prd-alpha"),
+            ("beta.md", "PRD-001", "prd-beta"),
+        ] {
+            std::fs::write(
+                ws.join("prds").join(path),
+                format!(
+                    "---\nid: {id}\nkind: prd\ntitle: {slug}\nslug: {slug}\n\
+                     status: draft\ndepth: standard\n---\n\n## Summary\n\nIdentity fixture.\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        let read = crate::constellation::facade::open_workspace_read(
+            &ws,
+            None,
+            crate::constellation::capture::CaptureLimits {
+                budget: std::time::Duration::from_secs(60),
+                ..crate::constellation::capture::CaptureLimits::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let legacy_ws = tmp.path().join("legacy/.forgeplan");
+        let guard = crate::workspace::lock::acquire_workspace_lock(&legacy_ws)
+            .await
+            .unwrap();
+        let store = LanceStore::init_new(&legacy_ws, &guard).await.unwrap();
+        for record in read.records() {
+            store
+                .create_artifact(
+                    &guard,
+                    &NewArtifact {
+                        canonical_key: record.canonical_key.clone(),
+                        id: record.id.clone(),
+                        kind: record.kind.clone(),
+                        status: record.status.clone(),
+                        title: record.title.clone(),
+                        body: record.body.clone(),
+                        depth: record.depth.clone(),
+                        author: record.author.clone(),
+                        parent_epic: record.parent_epic.clone(),
+                        valid_until: record.valid_until.clone(),
+                        tags: record.tags.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        for (selector, error) in [
+            (
+                "PRD-001",
+                detect_for_artifact_captured(&read, "PRD-001")
+                    .await
+                    .unwrap_err(),
+            ),
+            (
+                "PRD-001",
+                detect_for_artifact(&store, &guard, "PRD-001")
+                    .await
+                    .unwrap_err(),
+            ),
+        ] {
+            match error.downcast_ref::<ResolveError>() {
+                Some(ResolveError::Ambiguous { input, candidates }) => {
+                    assert_eq!(input, selector);
+                    assert_eq!(
+                        candidates
+                            .iter()
+                            .map(|candidate| candidate.canonical_key.as_str())
+                            .collect::<Vec<_>>(),
+                        ["prd-alpha", "prd-beta"]
+                    );
+                }
+                other => panic!(
+                    "expected ambiguity with complete candidates for {selector}, got {other:?}"
+                ),
+            }
+        }
+
+        // A canonical-key collision is not a listable read. Exercise the
+        // selector-only census that reports both conflicting claimants.
+        let collision_ws = tmp.path().join("collision/.forgeplan");
+        std::fs::create_dir_all(collision_ws.join("prds")).unwrap();
+        std::fs::write(collision_ws.join(".lock"), b"").unwrap();
+        for (path, id) in [("conflict-a.md", "PRD-002"), ("conflict-b.md", "PRD-003")] {
+            std::fs::write(
+                collision_ws.join("prds").join(path),
+                format!(
+                    "---\nid: {id}\nkind: prd\ntitle: Conflict\nslug: prd-conflict\n\
+                     status: draft\ndepth: standard\n---\n\nIdentity conflict.\n"
+                ),
+            )
+            .unwrap();
+        }
+        let collision_guard = crate::workspace::lock::acquire_workspace_read_lock(&collision_ws)
+            .await
+            .unwrap();
+        match crate::constellation::facade::open_workspace_selector_with_limits(
+            &collision_ws,
+            &collision_guard,
+            "prd-conflict",
+            crate::constellation::capture::CaptureLimits {
+                budget: std::time::Duration::from_secs(60),
+                ..crate::constellation::capture::CaptureLimits::default()
+            },
+        )
+        .await
+        {
+            Err(crate::constellation::ConstellationError::Resolve(
+                ResolveError::ConflictingCanonicalKey { key, candidates },
+            )) => {
+                assert_eq!(key, "prd-conflict");
+                assert_eq!(
+                    candidates
+                        .iter()
+                        .map(|candidate| candidate.display_id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["PRD-002", "PRD-003"]
+                );
+            }
+            Err(error) => panic!("expected selector collision inventory, got {error:?}"),
+            Ok(_) => panic!("canonical collision unexpectedly resolved"),
+        }
     }
 
     fn record(id: &str) -> ArtifactRecord {

@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::artifact::canonical_key::{
-    ArtifactCandidate, ResolvedArtifact, ResolveError, resolve_artifact,
+    ArtifactCandidate, ResolveError, ResolvedArtifact, resolve_artifact,
 };
 use crate::artifact::store::ArtifactSummary;
 use crate::constellation::workspace_read::WorkspaceRead;
@@ -56,9 +56,7 @@ use crate::db::store::{ArtifactRecord, WorkspaceDocument};
 /// be read in full would answer "not found" for everything it does not
 /// hold, and the specification forbids that answer for an unreadable
 /// document.
-pub async fn workspace_candidates(
-    workspace: &Path,
-) -> anyhow::Result<Vec<ArtifactCandidate>> {
+pub async fn workspace_candidates(workspace: &Path) -> anyhow::Result<Vec<ArtifactCandidate>> {
     let documents = crate::db::store::workspace_documents(workspace).await?;
     Ok(candidates_from_documents(&documents))
 }
@@ -117,11 +115,12 @@ pub async fn resolve_in_workspace(
     workspace: &Path,
     input: &str,
 ) -> Result<Option<ResolvedArtifact>, ResolveError> {
-    let documents = workspace_candidates(workspace).await.map_err(|error| {
-        ResolveError::IncompleteCapture {
-            message: error.to_string(),
-        }
-    })?;
+    let documents =
+        workspace_candidates(workspace)
+            .await
+            .map_err(|error| ResolveError::IncompleteCapture {
+                message: error.to_string(),
+            })?;
     resolve_artifact(input, &documents)
 }
 
@@ -277,7 +276,10 @@ mod tests {
             scanned_candidates[0].canonical_key, index_candidates[0].canonical_key,
             "the scan and the index must name one document the same way"
         );
-        assert_eq!(scanned_candidates[0].display_id, index_candidates[0].display_id);
+        assert_eq!(
+            scanned_candidates[0].display_id,
+            index_candidates[0].display_id
+        );
         assert_eq!(scanned_candidates[0].title, index_candidates[0].title);
     }
 
@@ -353,7 +355,12 @@ mod tests {
     #[tokio::test]
     async fn a_selector_two_workspace_documents_share_is_an_ambiguity_over_the_files() {
         let tmp = workspace_with(&[
-            ("prds/PRD-001-alpha.md", "PRD-001", "prd-alpha-k0123", "Alpha"),
+            (
+                "prds/PRD-001-alpha.md",
+                "PRD-001",
+                "prd-alpha-k0123",
+                "Alpha",
+            ),
             ("prds/PRD-001-beta.md", "PRD-001", "prd-beta-k0456", "Beta"),
         ]);
 

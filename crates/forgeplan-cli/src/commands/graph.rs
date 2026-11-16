@@ -9,15 +9,15 @@ use forgeplan_core::hypothesis::{HypothesisState, current_state_from_frontmatter
 use crate::commands::common;
 
 pub async fn run(json: bool, brownfield_only: bool) -> anyhow::Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (_, source, _read_guard) = common::open_read_source().await?;
     let relations = match &source {
-        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Legacy(store) => store.get_all_relations(&_read_guard).await?,
         common::ReadSource::Captured(read) => read.get_all_relations(),
     };
     let legacy_records;
     let records = match &source {
         common::ReadSource::Legacy(store) => {
-            legacy_records = store.list_records(None).await?;
+            legacy_records = store.list_records(&_read_guard, None).await?;
             legacy_records.as_slice()
         }
         common::ReadSource::Captured(read) => read.records(),

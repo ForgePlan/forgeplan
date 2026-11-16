@@ -327,7 +327,8 @@ mod tests {
 
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let auxiliary = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let auxiliary = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         let long_body = "é".repeat(320);
         let chunks: Vec<FpfChunk> = [
             ("trust", "A.1", "Trust anchor", long_body.as_str()),
@@ -350,7 +351,10 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
         })
         .collect();
-        auxiliary.insert_fpf_chunks(&chunks, None).await.unwrap();
+        auxiliary
+            .insert_fpf_chunks(&lock, &chunks, None)
+            .await
+            .unwrap();
         let title = "The Trust with Context Ledger Signals Purpose Excluded";
         let expected = format!(
             "\n\n## Relevant FPF Patterns (from knowledge base)\n\n\
@@ -369,10 +373,15 @@ mod tests {
             assert!(!ws.join("lance").join(table).exists());
         }
 
-        let legacy = LanceStore::init(&tmp.path().join("legacy/.forgeplan"))
+        let legacy_ws = tmp.path().join("legacy/.forgeplan");
+        let guard = crate::workspace::lock::acquire_workspace_lock(&legacy_ws)
             .await
             .unwrap();
-        legacy.insert_fpf_chunks(&chunks, None).await.unwrap();
+        let legacy = LanceStore::init_new(&legacy_ws, &guard).await.unwrap();
+        legacy
+            .insert_fpf_chunks(&guard, &chunks, None)
+            .await
+            .unwrap();
         assert_eq!(
             build_fpf_context(&legacy, title, "Unused body.")
                 .await
@@ -404,6 +413,7 @@ mod tests {
     async fn auxiliary_fpf_context_distinguishes_absent_and_empty_knowledge_bases() {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
         let absent = AuxiliaryStore::open_existing(&ws).await.unwrap();
         assert!(!absent.has_fpf());
         assert_eq!(
@@ -414,7 +424,7 @@ mod tests {
         );
         assert!(!ws.join("lance").exists());
 
-        let empty = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let empty = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         assert!(empty.has_fpf());
         assert_eq!(
             build_fpf_context_auxiliary(&empty, "Trust context", "Trust")

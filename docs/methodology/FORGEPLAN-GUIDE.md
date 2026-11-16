@@ -672,12 +672,15 @@ If you never run `forgeplan review` -> `forgeplan activate`, all artifacts remai
 
 ### 3. Validator requires sections missing from body
 
-Body contracts depend on the interface. The current captured `ArtifactRecord`
-used by ordinary reads retains the full Markdown file including frontmatter;
-CLI `get --json` exposes that full `body`. Full MCP pinned
-`forgeplan_constellation_get` returns prose in nested `artifact.body`.
-Do not treat those payloads as interchangeable. The validator still needs the
-required sections: a template filled only with Summary + FR is incomplete.
+Body contracts depend on the interface. On migrated workspaces, ordinary CLI
+`get --json` and full MCP `forgeplan_get` return captured Markdown after the
+outer frontmatter. A nested compatibility block may remain; `persisted` reports
+publication freshness, not a different body encoding. Pinned full-MCP get uses
+the nested `artifact.body`; legacy ordinary reads use the stored record body.
+Neither guarantees full-file bytes. Git snapshot get returns the complete
+committed file, including frontmatter. Use canonical source bytes for a
+working-tree file comparison. Validation still requires every MUST section;
+a template filled only with Summary + FR is incomplete.
 
 **Solution:** Fill all MUST sections for your depth. Or use aliases (Motivation instead of Problem, Out of Scope instead of Non-Goals).
 

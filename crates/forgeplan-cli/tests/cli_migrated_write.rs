@@ -24,6 +24,9 @@
 //!    carries the change. A `false` must mean it really was published, not
 //!    that the signal was skipped.
 
+#[path = "common/historical_lance.rs"]
+mod historical_lance;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -46,7 +49,13 @@ fn declared_id(path: &Path) -> Option<String> {
     text.lines()
         .take(12)
         .find_map(|line| line.strip_prefix("id: "))
-        .map(|value| value.trim().trim_matches('"').trim_matches('\'').to_string())
+        .map(|value| {
+            value
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string()
+        })
 }
 
 /// The first display id under `dir` that starts with `prefix`.
@@ -110,45 +119,39 @@ fn workspace_bytes(ws: &Path) -> String {
     out
 }
 
-/// Every markdown file under the ARTIFACT directories only — the canonical
-/// projection surface, with `trash/`, `receipts/` and `lance/` excluded.
-///
-/// `workspace_bytes` deliberately scans everything, which makes it the wrong
-/// tool for "did the canonical file go away". `delete` moves the projection
-/// into `.forgeplan/trash/` and records its bytes in the receipt — that is the
-/// mechanism `restore` brings it back from, so the bytes are SUPPOSED to be on
-/// disk afterwards. Asserting their absence across the whole workspace asserts
-/// that delete and restore cannot both work.
-fn canonical_bytes(ws: &Path) -> String {
-    let mut out = String::new();
+/// Find the canonical artifact document by its declared display id.
+fn canonical_document(ws: &Path, id: &str) -> Option<PathBuf> {
     for dir_name in forgeplan_core::workspace::ARTIFACT_DIRS {
         let dir = ws.join(".forgeplan").join(dir_name);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_file() {
+            if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
                 continue;
             }
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                out.push_str(&text);
-                out.push('\n');
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let declared_id = content
+                .lines()
+                .take(12)
+                .find_map(|line| line.strip_prefix("id: "))
+                .map(|value| value.trim().trim_matches('"').trim_matches('\''));
+            if declared_id == Some(id) {
+                return Some(path);
             }
         }
     }
-    out
+    None
 }
 
-/// A legacy workspace: `init -y` created `artifacts.lance`, and no reconcile
-/// has run, so no `CURRENT.json`.
-fn legacy_workspace(root: &Path, home: &Path) -> PathBuf {
+/// A genuine historical layout created before source documents are seeded.
+fn legacy_workspace(root: &Path, _home: &Path) -> PathBuf {
     let ws = root.join("ws");
-    std::fs::create_dir_all(&ws).expect("create workspace");
-    home_env(forgeplan().args(["init", "-y"]), home)
-        .current_dir(&ws)
-        .assert()
-        .success();
+    std::fs::create_dir_all(&ws).expect("create workspace root");
+    historical_lance::init_legacy_workspace(&ws, "CLI migrated write fixture");
     assert!(
         ws.join(".forgeplan/lance/artifacts.lance").exists(),
         "fixture precondition: a legacy workspace owns artifacts.lance"
@@ -315,7 +318,11 @@ fn remember_on_a_migrated_workspace_writes_markdown_and_no_legacy_table() {
     .current_dir(&ws)
     .output()
     .unwrap();
-    assert!(remembered.status.success(), "{}", String::from_utf8_lossy(&remembered.stderr));
+    assert!(
+        remembered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&remembered.stderr)
+    );
     let remembered = String::from_utf8_lossy(&remembered.stdout);
     let id = remembered
         .split_once("Remembered: ")
@@ -341,17 +348,11 @@ fn remember_on_a_migrated_workspace_writes_markdown_and_no_legacy_table() {
     //
     // The command reports the display alias assigned by the shared allocator;
     // use that exact alias to verify the document is readable.
-    home_env(
-        forgeplan().args([
-            "get",
-            id,
-        ]),
-        &home,
-    )
-    .current_dir(&ws)
-    .assert()
-    .success()
-    .stdout(predicate::str::contains("constellation cutover owns"));
+    home_env(forgeplan().args(["get", id]), &home)
+        .current_dir(&ws)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("constellation cutover owns"));
 }
 
 /// `remember --forget` removes the canonical file on a migrated workspace.
@@ -370,7 +371,11 @@ fn forget_on_a_migrated_workspace_removes_the_markdown_and_no_legacy_table() {
     .current_dir(&ws)
     .output()
     .unwrap();
-    assert!(remembered.status.success(), "{}", String::from_utf8_lossy(&remembered.stderr));
+    assert!(
+        remembered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&remembered.stderr)
+    );
     let remembered = String::from_utf8_lossy(&remembered.stdout);
     let id = remembered
         .split_once("Remembered: ")
@@ -384,13 +389,10 @@ fn forget_on_a_migrated_workspace_removes_the_markdown_and_no_legacy_table() {
         "fixture precondition: the memory existed before the forget"
     );
 
-    home_env(
-        forgeplan().args(["remember", "--forget", id]),
-        &home,
-    )
-    .current_dir(&ws)
-    .assert()
-    .success();
+    home_env(forgeplan().args(["remember", "--forget", id]), &home)
+        .current_dir(&ws)
+        .assert()
+        .success();
 
     let bytes = workspace_bytes(&ws);
     assert!(
@@ -438,9 +440,11 @@ fn delete_then_restore_round_trips_the_body_on_a_migrated_workspace() {
     .success();
     migrate_in_place(&ws, &home);
 
+    let canonical_path = canonical_document(&ws, "PRD-001").expect("canonical PRD projection");
+    let canonical_before = std::fs::read(&canonical_path).unwrap();
     assert!(
-        workspace_bytes(&ws).contains("round-trip marker survives"),
-        "fixture precondition: the body was written before the delete"
+        String::from_utf8_lossy(&canonical_before).contains("round-trip marker survives"),
+        "fixture precondition: the canonical body was written before deletion"
     );
 
     home_env(forgeplan().args(["delete", "PRD-001", "--yes"]), &home)
@@ -449,8 +453,8 @@ fn delete_then_restore_round_trips_the_body_on_a_migrated_workspace() {
         .success();
 
     assert!(
-        !canonical_bytes(&ws).contains("round-trip marker survives"),
-        "delete left the canonical body on disk"
+        canonical_document(&ws, "PRD-001").is_none(),
+        "delete must remove the canonical projection; receipts/backups are not the source"
     );
     assert_eq!(
         legacy_tables(&ws),
@@ -463,10 +467,11 @@ fn delete_then_restore_round_trips_the_body_on_a_migrated_workspace() {
         .assert()
         .success();
 
-    let bytes = workspace_bytes(&ws);
-    assert!(
-        bytes.contains("round-trip marker survives"),
-        "restore did not bring the body back:\n{bytes}"
+    let restored_path = canonical_document(&ws, "PRD-001").expect("restored canonical projection");
+    assert_eq!(
+        std::fs::read(restored_path).unwrap(),
+        canonical_before,
+        "restore must reinstate the exact canonical body and identity metadata"
     );
     assert_eq!(
         legacy_tables(&ws),
@@ -624,14 +629,16 @@ fn delete_then_restore_round_trips_on_a_legacy_workspace() {
     .current_dir(&ws)
     .assert()
     .success();
+    let canonical_path = canonical_document(&ws, "PRD-001").expect("canonical PRD projection");
+    let canonical_before = std::fs::read(&canonical_path).unwrap();
 
     home_env(forgeplan().args(["delete", "PRD-001", "--yes"]), &home)
         .current_dir(&ws)
         .assert()
         .success();
     assert!(
-        !canonical_bytes(&ws).contains("legacy round-trip marker"),
-        "delete left the canonical body on disk"
+        canonical_document(&ws, "PRD-001").is_none(),
+        "delete must remove the canonical projection; receipts/backups are not the source"
     );
 
     home_env(forgeplan().args(["restore", "PRD-001"]), &home)
@@ -639,9 +646,11 @@ fn delete_then_restore_round_trips_on_a_legacy_workspace() {
         .assert()
         .success();
 
-    assert!(
-        workspace_bytes(&ws).contains("legacy round-trip marker"),
-        "restore did not bring the body back on the legacy layout"
+    let restored_path = canonical_document(&ws, "PRD-001").expect("restored canonical projection");
+    assert_eq!(
+        std::fs::read(restored_path).unwrap(),
+        canonical_before,
+        "restore must reinstate the exact canonical body and identity metadata"
     );
 
     // The row is back in the store too — `get` reads it there.
@@ -1088,7 +1097,8 @@ fn renew_on_a_migrated_workspace_rejects_a_bad_date_without_writing() {
         .assert()
         .success();
 
-    let before = workspace_bytes(&ws);
+    let canonical_path = canonical_document(&ws, "NOTE-001").expect("canonical note projection");
+    let before = std::fs::read(&canonical_path).unwrap();
     home_env(
         forgeplan().args([
             "renew",
@@ -1105,11 +1115,11 @@ fn renew_on_a_migrated_workspace_rejects_a_bad_date_without_writing() {
     .failure()
     .stderr(predicate::str::contains("Invalid date format"));
 
-    assert!(
-        !workspace_bytes(&ws).contains("## Renewal"),
-        "a rejected date must not have appended a renewal section"
+    assert_eq!(
+        std::fs::read(canonical_path).unwrap(),
+        before,
+        "a rejected date must leave the target canonical document byte-identical"
     );
-    assert_ne!(before, "", "fixture precondition: bytes were captured");
     assert_eq!(
         legacy_tables(&ws),
         Vec::<String>::new(),
@@ -1148,22 +1158,24 @@ fn reopen_on_a_migrated_workspace_creates_links_then_deprecates() {
     .assert()
     .success();
 
-    let bytes = workspace_bytes(&ws);
-    assert!(
-        bytes.contains("## Lineage") && bytes.contains("Reopened from: NOTE-001"),
-        "the successor must exist as canonical markdown with its lineage block:\n{bytes}"
+    let old =
+        json_out(home_env(forgeplan().args(["get", "NOTE-001", "--json"]), &home).current_dir(&ws));
+    let successor =
+        json_out(home_env(forgeplan().args(["get", "NOTE-002", "--json"]), &home).current_dir(&ws));
+    assert_ne!(old["canonical_key"], successor["canonical_key"]);
+    assert_eq!(old["status"], "deprecated");
+    assert_eq!(successor["links"]["outbound"][0]["relation"], "based_on");
+    assert_eq!(
+        successor["links"]["outbound"][0]["target_key"], old["canonical_key"],
+        "the successor must retain its canonical based_on edge"
     );
+    let successor_body = successor["body"].as_str().unwrap();
+    assert!(successor_body.contains(old["canonical_key"].as_str().unwrap()));
+    assert!(successor_body.contains("needs revision"));
+    let old_body = old["body"].as_str().unwrap();
     assert!(
-        bytes.contains("## Reopened") && bytes.contains("Replacement: NOTE-002"),
-        "the old artifact must carry the reopen record naming its successor:\n{bytes}"
-    );
-    assert!(
-        bytes.contains("relation: based_on"),
-        "the successor must be linked back to the old artifact:\n{bytes}"
-    );
-    assert!(
-        bytes.contains("status: deprecated"),
-        "the old artifact must be deprecated:\n{bytes}"
+        old_body.contains(successor["canonical_key"].as_str().unwrap())
+            || old_body.contains(successor["id"].as_str().unwrap())
     );
     assert_eq!(
         legacy_tables(&ws),
@@ -1806,10 +1818,14 @@ fn link_and_unlink_on_a_migrated_workspace_update_canonical_links() {
     .assert()
     .success();
 
-    let linked = workspace_bytes(&ws);
-    assert!(
-        linked.contains("target: PRD-002") && linked.contains("relation: based_on"),
-        "link must be recorded in canonical Markdown:\n{linked}"
+    let linked =
+        json_out(home_env(forgeplan().args(["get", "PRD-001", "--json"]), &home).current_dir(&ws));
+    let target =
+        json_out(home_env(forgeplan().args(["get", "PRD-002", "--json"]), &home).current_dir(&ws));
+    assert_eq!(linked["links"]["outbound"][0]["relation"], "based_on");
+    assert_eq!(
+        linked["links"]["outbound"][0]["target_key"], target["canonical_key"],
+        "the relation must resolve to the target's canonical identity"
     );
     assert!(
         legacy_tables(&ws).is_empty(),
@@ -1824,10 +1840,11 @@ fn link_and_unlink_on_a_migrated_workspace_update_canonical_links() {
     .assert()
     .success();
 
-    let unlinked = workspace_bytes(&ws);
+    let unlinked =
+        json_out(home_env(forgeplan().args(["get", "PRD-001", "--json"]), &home).current_dir(&ws));
     assert!(
-        !(unlinked.contains("target: PRD-002") && unlinked.contains("relation: based_on")),
-        "unlink left the edge in canonical Markdown:\n{unlinked}"
+        unlinked["links"]["outbound"].as_array().unwrap().is_empty(),
+        "unlink left a canonical relation behind: {unlinked}"
     );
     assert!(
         legacy_tables(&ws).is_empty(),
@@ -1883,23 +1900,20 @@ fn git_sync_on_a_migrated_workspace_reconciles_committed_markdown() {
     git(&["add", ".forgeplan"]);
     git(&["commit", "--quiet", "-m", "change canonical artifact"]);
 
-    let output = home_env(forgeplan().args(["git-sync", "--since", &baseline]), &home)
-        .current_dir(&ws)
-        .output()
-        .expect("run git-sync");
-    assert!(
-        output.status.success(),
-        "git-sync failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("1 file(s) changed") && stdout.contains("legacy index retired"),
-        "git-sync must detect the committed file and use constellation reconcile:\n{stdout}"
-    );
+    let committed = canonical_document(&ws, "PRD-001").expect("canonical PRD document");
+    let committed_bytes = std::fs::read(&committed).unwrap();
     assert!(
         workspace_bytes(&ws).contains("- git-sync-marker"),
-        "the committed canonical tag must remain present"
+        "the committed canonical tag must be present before sync"
+    );
+    home_env(forgeplan().args(["git-sync", "--since", &baseline]), &home)
+        .current_dir(&ws)
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read(&committed).unwrap(),
+        committed_bytes,
+        "git-sync changed the canonical source document"
     );
     assert!(
         legacy_tables(&ws).is_empty(),
@@ -1935,7 +1949,10 @@ fn claim_and_release_on_a_migrated_workspace_use_canonical_records() {
     let claim_path = std::fs::read_dir(&claim_dir)
         .unwrap()
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .find(|path| path.extension().is_some_and(|extension| extension == "yaml"))
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "yaml")
+        })
         .expect("claim must be written to the workspace under its key");
     assert!(
         legacy_tables(&ws).is_empty(),

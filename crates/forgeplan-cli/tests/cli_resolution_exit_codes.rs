@@ -60,6 +60,7 @@ fn select(args: &[&str], selector: &str) -> Vec<String> {
 
 const SELECTOR_COMMANDS: &[&[&str]] = &[
     &["reason", "PRD-001"],
+    &["calibrate", "PRD-001"],
     &["context", "PRD-001"],
     &["delete", "PRD-001"],
     &["phase", "PRD-001"],
@@ -79,7 +80,10 @@ fn ambiguous_alias_exits_five_and_names_every_candidate_in_each_command() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(5), "{args:?}: {stderr}");
         for expected in ["prd-alpha", "prd-beta", "Alpha", "Beta"] {
-            assert!(stderr.contains(expected), "{args:?} omits {expected:?}: {stderr}");
+            assert!(
+                stderr.contains(expected),
+                "{args:?} omits {expected:?}: {stderr}"
+            );
         }
     }
 }
@@ -98,19 +102,18 @@ fn canonical_key_collision_exits_four_and_names_both_claimants_in_each_command()
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(4), "{selected:?}: {stderr}");
         for expected in ["First claimant", "Second claimant"] {
-            assert!(stderr.contains(expected), "{selected:?} omits {expected:?}: {stderr}");
+            assert!(
+                stderr.contains(expected),
+                "{selected:?} omits {expected:?}: {stderr}"
+            );
         }
     }
 }
 
 #[test]
 fn absent_selector_exits_three_in_each_command() {
-    let root = workspace_with_documents(&[(
-        "PRD-001-existing.md",
-        "PRD-001",
-        "prd-existing",
-        "Existing",
-    )]);
+    let root =
+        workspace_with_documents(&[("PRD-001-existing.md", "PRD-001", "prd-existing", "Existing")]);
 
     for args in SELECTOR_COMMANDS {
         let selected = select(args, "PRD-404");
@@ -118,6 +121,9 @@ fn absent_selector_exits_three_in_each_command() {
         let output = run(root.path(), &refs);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(3), "{selected:?}: {stderr}");
-        assert!(stderr.contains("Artifact 'PRD-404' not found"), "{selected:?}: {stderr}");
+        assert!(
+            stderr.contains("Artifact 'PRD-404' not found"),
+            "{selected:?}: {stderr}"
+        );
     }
 }

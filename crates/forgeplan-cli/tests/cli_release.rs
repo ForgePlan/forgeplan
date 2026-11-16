@@ -70,7 +70,10 @@ fn release_by_wrong_agent_fails_without_force() {
     let claims: Vec<_> = std::fs::read_dir(tmp.path().join(".forgeplan/claims"))
         .unwrap()
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|extension| extension == "yaml"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "yaml")
+        })
         .collect();
     assert_eq!(
         claims.len(),
@@ -134,7 +137,10 @@ fn release_ownership_hint_offers_identity_first_and_force_only_as_alternative() 
     let claims: Vec<_> = std::fs::read_dir(tmp.path().join(".forgeplan/claims"))
         .unwrap()
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|extension| extension == "yaml"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "yaml")
+        })
         .collect();
     assert_eq!(
         claims.len(),

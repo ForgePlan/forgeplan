@@ -6,9 +6,9 @@ use crate::commands::common;
 use crate::ui;
 
 pub async fn run() -> anyhow::Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (_, source, _read_guard) = common::open_read_source().await?;
     let gaps = match source {
-        common::ReadSource::Legacy(store) => gaps::find_gaps(&store).await?,
+        common::ReadSource::Legacy(store) => gaps::find_gaps(&store, &_read_guard).await?,
         common::ReadSource::Captured(read) => gaps::find_gaps_captured(&read),
     };
 

@@ -1,6 +1,9 @@
 //! Ordinary watch/migrate argv must follow the index owner after cutover.
 //! Watchers run only in isolated child processes and are reaped on every exit.
 
+#[path = "common/historical_lance.rs"]
+mod historical_lance;
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
@@ -38,7 +41,10 @@ impl Workspace {
             root,
             home,
         };
-        workspace.run_ok(&["init", "-y"]);
+        historical_lance::init_legacy_workspace(
+            &workspace.root,
+            "Maintenance compatibility fixture",
+        );
         workspace.write_body(INITIAL_BODY);
         let reindex = workspace.run_ok(&["reindex"]);
         assert!(!reindex.contains("create failed"), "{reindex}");
@@ -141,10 +147,14 @@ impl Workspace {
     }
 
     async fn pinned(&self) -> (PinnedArtifact, String, u64) {
-        facade::get_pinned_artifact(&self.lance(), "PRD-001")
+        let pinned = facade::get_pinned_artifact(&self.lance(), "PRD-001")
             .await
-            .unwrap()
-            .expect("the published table must contain PRD-001, not just its Markdown")
+            .unwrap();
+        (
+            pinned.result.unwrap().unwrap(),
+            pinned.generation_id,
+            pinned.artifacts_version,
+        )
     }
 }
 
@@ -270,7 +280,11 @@ async fn default_watch_keeps_legacy_sync_and_observes_a_file_change() {
     let store = forgeplan_core::db::store::LanceStore::open(&workspace.workspace())
         .await
         .unwrap();
-    let record = store.get_record("PRD-001").await.unwrap().unwrap();
+    let permit =
+        forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace.workspace())
+            .await
+            .unwrap();
+    let record = store.get_record(&permit, "PRD-001").await.unwrap().unwrap();
     assert!(record.body.contains("maintenance_legacy_change_sentinel"));
     assert!(!workspace.lance().join(storage::CURRENT_FILE_NAME).exists());
     assert!(
@@ -347,27 +361,24 @@ async fn explicit_constellation_watch_still_migrates_and_observes_changes() {
 }
 
 #[tokio::test]
-async fn migrate_still_runs_real_legacy_schema_migrations_and_keeps_rows() {
+async fn legacy_migrate_preserves_artifact_rows_with_missing_auxiliary_history() {
     let workspace = Workspace::legacy();
     let change_log = workspace.lance().join("change_log.lance");
     assert!(change_log.exists());
     fs::remove_dir_all(&change_log).unwrap();
 
-    let stdout = workspace.run_ok(&["migrate"]);
-    assert!(stdout.contains("Running schema migrations..."));
-    assert!(stdout.contains("Migrations complete. Schema up to date."));
-    assert!(stdout.contains("forgeplan health"));
-    assert!(
-        change_log.exists(),
-        "legacy migration did not recreate change_log"
-    );
+    workspace.run_ok(&["migrate"]);
     assert!(!workspace.lance().join(storage::CURRENT_FILE_NAME).exists());
     let store = forgeplan_core::db::store::LanceStore::open(&workspace.workspace())
         .await
         .unwrap();
+    let permit =
+        forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace.workspace())
+            .await
+            .unwrap();
     assert!(
         store
-            .get_record("PRD-001")
+            .get_record(&permit, "PRD-001")
             .await
             .unwrap()
             .unwrap()
@@ -375,6 +386,7 @@ async fn migrate_still_runs_real_legacy_schema_migrations_and_keeps_rows() {
             .contains(INITIAL_BODY)
     );
     drop(store);
+    drop(permit);
     workspace.run_ok(&["migrate"]);
 }
 

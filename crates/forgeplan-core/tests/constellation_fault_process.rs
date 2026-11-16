@@ -2,6 +2,7 @@
 //! Each publication stage is reached by a real three-table mutation. A fresh
 //! child reads CURRENT and exact pinned tables, never an ephemeral fallback.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -145,8 +146,10 @@ fn source(variant: &str) -> String {
 }
 
 fn fixture(root: &Path) -> (PathBuf, PathBuf) {
-    let workspace =
-        forgeplan_core::workspace::init_workspace(root, "publication-proof").expect("workspace");
+    let workspace = forgeplan_core::workspace::init_workspace(root, "publication-proof")
+        .expect("workspace")
+        .canonicalize()
+        .expect("canonical workspace fixture");
     std::fs::write(workspace.join("prds/PRD-901-policy.md"), source("old")).expect("old canonical");
     for id in ["NOTE-901", "NOTE-902"] {
         std::fs::write(
@@ -620,24 +623,51 @@ async fn process_child() {
             );
             assert!(
                 gaps.is_empty(),
-                "live durable work cannot disappear after process death"
+                "live durable work cannot disappear after process death: {gaps:?}"
             );
             assert!(
                 !manifest.pending_jobs.is_empty(),
                 "real durable pending required"
             );
+            let mut expected_keys = BTreeSet::new();
+            for (parent_key, group) in &manifest.pending_jobs {
+                assert!(
+                    forgeplan_core::constellation::jobs::section_parent_key(parent_key).is_none(),
+                    "pending map is bounded by parent artifacts"
+                );
+                for key in group.inputs.keys() {
+                    assert_eq!(
+                        forgeplan_core::constellation::jobs::section_parent_key(key)
+                            .unwrap_or(key.as_str()),
+                        parent_key.as_str(),
+                        "each child input remains grouped under its parent artifact"
+                    );
+                    assert!(
+                        expected_keys.insert(key.clone()),
+                        "pending child keys are unique"
+                    );
+                }
+            }
             assert!(
                 manifest.pending_jobs.len() <= captured.artifacts.len(),
                 "durable queue is bounded by parents, not section/event count"
             );
-            for key in manifest.pending_jobs.keys() {
-                assert!(
-                    forgeplan_core::constellation::jobs::section_parent_key(key).is_none(),
-                    "pending map is bounded by parent artifacts"
-                );
-            }
             let mut inputs = Vec::new();
+            let mut recovered_keys = BTreeSet::new();
             for input in recovered {
+                let parent_key = forgeplan_core::constellation::jobs::section_parent_key(
+                    &input.job.canonical_key,
+                )
+                .unwrap_or(&input.job.canonical_key);
+                let durable_job = manifest
+                    .pending_jobs
+                    .get(parent_key)
+                    .and_then(|group| group.inputs.get(&input.job.canonical_key))
+                    .expect("recovered input has an original durable admission");
+                assert_eq!(
+                    &input.job, durable_job,
+                    "recovery preserves the exact issued binding, token, and retry state"
+                );
                 let digest = digest_hex(input.input_text.as_bytes());
                 assert_eq!(
                     digest, input.job.input_digest,
@@ -646,9 +676,17 @@ async fn process_child() {
                 if let Some(binding) = manifest.section_binding(&input.job.canonical_key) {
                     assert_eq!(binding.section_input_digest, digest);
                 }
+                assert!(
+                    recovered_keys.insert(input.job.canonical_key.clone()),
+                    "each pending child input is recovered once"
+                );
                 inputs.push(json!({"key":input.job.canonical_key,"input_digest":digest}));
             }
             assert!(!inputs.is_empty(), "zero recovered inputs is not recovery");
+            assert_eq!(
+                recovered_keys, expected_keys,
+                "recovery reconstructs every and only child input in the durable groups"
+            );
             json!({"result":"recovered", "pending":manifest.pending_jobs,"inputs":inputs})
         }
         "late-completions" => {
@@ -807,14 +845,64 @@ async fn process_child() {
                     .await
                     .expect("publish controlled vectors");
             assert!(!written.published.is_empty());
+            let current = read_current(&workspace.join("lance"))
+                .expect("CURRENT")
+                .expect("published");
+            let manifest =
+                read_manifest(&workspace.join("lance"), &current).expect("published manifest");
+            let previous_note_901_sections: Vec<_> = manifest
+                .section_bindings
+                .iter()
+                .filter(|binding| binding.parent_key == "NOTE-901")
+                .map(|binding| {
+                    (
+                        binding.section_key.clone(),
+                        binding.section_input_digest.clone(),
+                    )
+                })
+                .collect();
+            assert!(
+                !previous_note_901_sections.is_empty(),
+                "the stale prefilter fixture includes indexed NOTE-901 section inputs"
+            );
+            let previous_note_902_sections: Vec<_> = manifest
+                .section_bindings
+                .iter()
+                .filter(|binding| binding.parent_key == "NOTE-902")
+                .map(|binding| {
+                    (
+                        binding.section_key.clone(),
+                        binding.section_input_digest.clone(),
+                    )
+                })
+                .collect();
+            assert!(
+                !previous_note_902_sections.is_empty(),
+                "the stale prefilter fixture includes indexed NOTE-902 section inputs"
+            );
             std::fs::write(workspace.join("prds/PRD-901-policy.md"), source("new"))
                 .expect("invalidate best-scoring parent");
             let note = workspace.join("notes/NOTE-901-target.md");
+            let note_text = std::fs::read_to_string(&note).expect("note");
+            assert!(note_text.contains("id: NOTE-901\n"));
+            assert!(note_text.contains("title: NOTE-901\n"));
             std::fs::write(
                 &note,
-                std::fs::read_to_string(&note).expect("note") + "Changed input.\n",
+                note_text.replace("title: NOTE-901\n", "title: Updated\n"),
             )
-            .expect("invalidate another early row");
+            .expect("change targeted section header input");
+            let after_note_901 =
+                capture_source(&CaptureRequest::new(&workspace), CaptureLimits::default())
+                    .await
+                    .expect("capture title-changed target");
+            for (key, previous_digest) in &previous_note_901_sections {
+                assert!(
+                    after_note_901
+                        .section(key)
+                        .is_none_or(|section| section.input_digest.as_str() != previous_digest),
+                    "each previously indexed NOTE-901 section input changed or disappeared"
+                );
+            }
             let read = open_workspace_read(&workspace, None, CaptureLimits::default())
                 .await
                 .expect("fresh ephemeral capture");
@@ -845,11 +933,26 @@ async fn process_child() {
             );
             assert!(outcome.eligible_rows > 0);
             let last = workspace.join("notes/NOTE-902-target.md");
+            let last_text = std::fs::read_to_string(&last).expect("last note");
+            assert!(last_text.contains("id: NOTE-902\n"));
+            assert!(last_text.contains("title: NOTE-902\n"));
             std::fs::write(
                 &last,
-                std::fs::read_to_string(&last).expect("last note") + "Changed input.\n",
+                last_text.replace("title: NOTE-902\n", "title: Updated\n"),
             )
-            .expect("make every input stale");
+            .expect("change final targeted section header input");
+            let after_note_902 =
+                capture_source(&CaptureRequest::new(&workspace), CaptureLimits::default())
+                    .await
+                    .expect("capture all-stale source");
+            for (key, previous_digest) in &previous_note_902_sections {
+                assert!(
+                    after_note_902
+                        .section(key)
+                        .is_none_or(|section| section.input_digest.as_str() != previous_digest),
+                    "each previously indexed NOTE-902 section input changed or disappeared"
+                );
+            }
             let all_stale = open_workspace_read(&workspace, None, CaptureLimits::default())
                 .await
                 .expect("fresh complete source capture");

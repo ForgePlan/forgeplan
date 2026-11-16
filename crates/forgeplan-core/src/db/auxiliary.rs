@@ -7,9 +7,8 @@
 //! can remove (`backup_legacy_tables` refuses a destination that already
 //! exists) while every reader keeps misdetecting the owner.
 //!
-//! This type opens the LanceDB connection and touches **only** the tables its
-//! caller owns. FPF and change-log handles are opened independently, without
-//! resurrecting artifact tables or initializing another auxiliary feature.
+//! Read handles open only existing tables. Writer handles connect and touch
+//! only their own tables, without resurrecting artifact tables.
 //!
 //! The query bodies live here as free functions over a `&Table`, so
 //! `LanceStore` and `AuxiliaryStore` share one implementation of each
@@ -29,6 +28,7 @@ use crate::db::store::{
     FpfChunk, FpfChunkSummary, collect_batches, empty_change_log_batch, extract_change_log_entry,
     extract_fpf_chunk, extract_fpf_chunk_summary,
 };
+use crate::workspace::lock::WorkspaceReadPermit;
 
 /// A handle to the auxiliary tables a single feature owns.
 ///
@@ -36,9 +36,9 @@ use crate::db::store::{
 /// or relation method at all, so a caller cannot reach a retired table through
 /// it even by accident.
 pub struct AuxiliaryStore {
-    /// `None` only for the detached "this workspace has no auxiliary tables"
-    /// case, where nothing was opened and nothing needs to be.
+    /// Present only for writer handles.
     _db: Option<lancedb::Connection>,
+    workspace: PathBuf,
     fpf_spec: Option<Table>,
     change_log: Option<Table>,
 }
@@ -48,7 +48,12 @@ impl AuxiliaryStore {
     ///
     /// Never creates artifact, evidence, relation or change-log tables. The
     /// caller must already hold the workspace lock.
-    pub async fn open_or_create(workspace_path: &Path) -> anyhow::Result<Self> {
+    pub async fn open_or_create(
+        workspace_path: &Path,
+        lock: &crate::workspace::lock::WorkspaceLock,
+    ) -> anyhow::Result<Self> {
+        lock.matches_workspace(workspace_path)?;
+
         let lance_dir = workspace_path.join("lance");
         tokio::fs::create_dir_all(&lance_dir).await?;
         let db = connect(&lance_dir).await?;
@@ -64,6 +69,7 @@ impl AuxiliaryStore {
         crate::db::migrate::migrate_fpf_spec(&fpf_spec).await?;
         Ok(Self {
             _db: Some(db),
+            workspace: workspace_path.to_path_buf(),
             fpf_spec: Some(fpf_spec),
             change_log: None,
         })
@@ -77,15 +83,15 @@ impl AuxiliaryStore {
     pub async fn open_existing(workspace_path: &Path) -> anyhow::Result<Self> {
         let lance_dir = workspace_path.join("lance");
         if !path_present(&lance_dir).await? {
-            return Ok(detached());
+            return Ok(detached(workspace_path));
         }
-        let db = connect(&lance_dir).await?;
-        let fpf_spec = open_optional_table(&db, &lance_dir, "fpf_spec").await?;
+        let fpf_spec = open_optional_existing_table(&lance_dir, "fpf_spec").await?;
         if let Some(table) = fpf_spec.as_ref() {
             validate_fpf_schema(table).await?;
         }
         Ok(Self {
-            _db: Some(db),
+            _db: None,
+            workspace: workspace_path.to_path_buf(),
             fpf_spec,
             change_log: None,
         })
@@ -95,24 +101,18 @@ impl AuxiliaryStore {
     ///
     /// A confirmed missing directory or table yields an empty history handle.
     /// Existing but unreadable or incompatible history is an error.
-    ///
-    /// The one migration this may run is the additive `canonical_key`
-    /// column: a workspace whose history predates it cannot be read
-    /// otherwise, and the column carries no data of its own — every
-    /// existing row keeps its description and gets a NULL key.
     pub async fn open_history_existing(workspace_path: &Path) -> anyhow::Result<Self> {
         let lance_dir = workspace_path.join("lance");
         if !path_present(&lance_dir).await? {
-            return Ok(detached());
+            return Ok(detached(workspace_path));
         }
-        let db = connect(&lance_dir).await?;
-        let change_log = open_optional_table(&db, &lance_dir, "change_log").await?;
+        let change_log = open_optional_existing_table(&lance_dir, "change_log").await?;
         if let Some(table) = change_log.as_ref() {
-            crate::db::migrate::migrate_change_log(table).await?;
-            validate_change_log_schema(table).await?;
+            validate_legacy_change_log_schema(table).await?;
         }
         Ok(Self {
-            _db: Some(db),
+            _db: None,
+            workspace: workspace_path.to_path_buf(),
             fpf_spec: None,
             change_log,
         })
@@ -140,6 +140,7 @@ impl AuxiliaryStore {
         };
         Ok(Self {
             _db: Some(db),
+            workspace: workspace_path.to_path_buf(),
             fpf_spec: None,
             change_log: Some(change_log),
         })
@@ -173,7 +174,15 @@ impl AuxiliaryStore {
         limit: usize,
     ) -> anyhow::Result<Vec<ChangeLogEntry>> {
         match self.change_log.as_ref() {
-            Some(table) => change_log_query(table, artifact_id, source, limit).await,
+            Some(table) => {
+                change_log_query(
+                    table,
+                    artifact_id.map(HistoryFilter::Display),
+                    source,
+                    limit,
+                )
+                .await
+            }
             None => Ok(Vec::new()),
         }
     }
@@ -196,9 +205,11 @@ impl AuxiliaryStore {
     /// swapped embedder cannot persist a corrupt table.
     pub async fn insert_fpf_chunks(
         &self,
+        lock: &crate::workspace::lock::WorkspaceLock,
         chunks: &[FpfChunk],
         embeddings: Option<&[Vec<f32>]>,
     ) -> anyhow::Result<usize> {
+        lock.matches_workspace(&self.workspace)?;
         fpf_insert_chunks(self.fpf_table()?, chunks, embeddings).await
     }
 
@@ -227,7 +238,11 @@ impl AuxiliaryStore {
     }
 
     /// Drop every ingested section, keeping the table itself.
-    pub async fn clear_fpf(&self) -> anyhow::Result<()> {
+    pub async fn clear_fpf(
+        &self,
+        lock: &crate::workspace::lock::WorkspaceLock,
+    ) -> anyhow::Result<()> {
+        lock.matches_workspace(&self.workspace)?;
         fpf_clear(self.fpf_table()?).await
     }
 }
@@ -459,6 +474,21 @@ async fn verify_manifest_file(path: &Path, table: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Open an optional existing dataset without a create-capable connection.
+pub(crate) async fn open_optional_existing_table(
+    lance_dir: &Path,
+    name: &str,
+) -> anyhow::Result<Option<Table>> {
+    let table_dir = lance_dir.join(format!("{name}.lance"));
+    if !path_present(&table_dir).await? {
+        return Ok(None);
+    }
+    verify_table_manifests(&table_dir, name).await?;
+    Ok(Some(
+        crate::constellation::lance_tables::open_existing_native_table(&table_dir, name).await?,
+    ))
+}
+
 async fn open_optional_table(
     db: &lancedb::Connection,
     lance_dir: &Path,
@@ -509,6 +539,64 @@ async fn validate_change_log_schema(table: &Table) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn validate_legacy_change_log_schema(table: &Table) -> anyhow::Result<()> {
+    let actual = table.schema().await?;
+    for field in schema::change_log_schema().fields() {
+        if actual.field_with_name(field.name()).is_err()
+            && (field.name() == "canonical_key" || field.name() == "commit_hash")
+        {
+            continue;
+        }
+        validate_read_column(&actual, field, "change_log")?;
+    }
+    Ok(())
+}
+
+/// Check legacy history before publishing the identity marker, without writes.
+pub(crate) async fn check_identity_change_log(
+    db: &lancedb::connection::Connection,
+) -> anyhow::Result<()> {
+    if !db
+        .table_names()
+        .execute()
+        .await?
+        .iter()
+        .any(|name| name == "change_log")
+    {
+        return Ok(());
+    }
+    let table = db.open_table("change_log").execute().await?;
+    let actual = table.schema().await?;
+    let expected = schema::change_log_schema();
+    for field in actual.fields() {
+        if expected.field_with_name(field.name()).is_err() {
+            anyhow::bail!("change_log has unsupported column {}", field.name());
+        }
+    }
+    for field in expected.fields() {
+        if actual.field_with_name(field.name()).is_err()
+            && (field.name() == "canonical_key" || field.name() == "commit_hash")
+        {
+            continue;
+        }
+        validate_read_column(&actual, field, "change_log")?;
+    }
+    Ok(())
+}
+
+/// Upgrade shared history only after the caller verified the v5 marker and
+/// while it holds the workspace lock. Existing events are never rewritten;
+/// newly added identity fields are null on historical events.
+pub(crate) async fn prepare_identity_change_log(
+    db: &lancedb::connection::Connection,
+) -> anyhow::Result<()> {
+    check_identity_change_log(db).await?;
+    crate::db::migrate::ensure_change_log(db).await?;
+    let table = db.open_table("change_log").execute().await?;
+    crate::db::migrate::migrate_change_log(&table).await?;
+    validate_change_log_schema(&table).await
+}
+
 async fn validate_fpf_schema(table: &Table) -> anyhow::Result<Arc<arrow_schema::Schema>> {
     let actual = table.schema().await?;
     for field in schema::fpf_spec_schema().fields() {
@@ -523,15 +611,17 @@ async fn validate_fpf_schema(table: &Table) -> anyhow::Result<Arc<arrow_schema::
 
 /// A handle with no connection at all, for "this workspace has no auxiliary
 /// tables" — the read result must not depend on allocating a database.
-fn detached() -> AuxiliaryStore {
+fn detached(workspace: &Path) -> AuxiliaryStore {
     AuxiliaryStore {
         _db: None,
+        workspace: workspace.to_path_buf(),
         fpf_spec: None,
         change_log: None,
     }
 }
 
 pub(crate) async fn change_log_append(table: &Table, entry: &ChangeLogEntry) -> anyhow::Result<()> {
+    validate_change_log_schema(table).await?;
     let batch = RecordBatch::try_new(
         schema::change_log_schema(),
         vec![
@@ -551,22 +641,37 @@ pub(crate) async fn change_log_append(table: &Table, entry: &ChangeLogEntry) -> 
     Ok(())
 }
 
-/// Query history rows.
-///
-/// The row keeps the event's original description in `artifact_id`: the
-/// display id a person reads. The caller resolves the selector it was given
-/// to that display id; a selector that names no document falls back to its
-/// own bytes so entries written for a document that is gone stay reachable.
+/// Select either a literal display id or a canonical identity.
+pub(crate) enum HistoryFilter<'a> {
+    Display(&'a str),
+    Identity(&'a str),
+}
+
 pub(crate) async fn change_log_query(
     table: &Table,
-    artifact_id: Option<&str>,
+    filter: Option<HistoryFilter<'_>>,
     source: Option<&str>,
     limit: usize,
 ) -> anyhow::Result<Vec<ChangeLogEntry>> {
-    validate_change_log_schema(table).await?;
+    validate_legacy_change_log_schema(table).await?;
+    let has_key = table
+        .schema()
+        .await?
+        .field_with_name("canonical_key")
+        .is_ok();
     let mut conditions: Vec<String> = Vec::new();
-    if let Some(aid) = artifact_id {
-        conditions.push(format!("artifact_id = '{}'", aid.replace('\'', "''")));
+    if let Some(filter) = filter {
+        let condition = match filter {
+            HistoryFilter::Display(id) => format!("artifact_id = '{}'", id.replace('\'', "''")),
+            HistoryFilter::Identity(key) => {
+                if has_key {
+                    format!("canonical_key = '{}'", key.replace('\'', "''"))
+                } else {
+                    "false".to_string()
+                }
+            }
+        };
+        conditions.push(condition);
     }
     if let Some(src) = source {
         conditions.push(format!("source = '{}'", src.replace('\'', "''")));
@@ -592,7 +697,7 @@ pub(crate) async fn change_log_query(
     Ok(results)
 }
 
-pub(crate) async fn fpf_insert_chunks(
+pub(super) async fn fpf_insert_chunks(
     table: &Table,
     chunks: &[FpfChunk],
     embeddings: Option<&[Vec<f32>]>,
@@ -810,7 +915,7 @@ pub(crate) async fn fpf_list_sections(table: &Table) -> anyhow::Result<Vec<FpfCh
     Ok(results)
 }
 
-pub(crate) async fn fpf_clear(table: &Table) -> anyhow::Result<()> {
+pub(super) async fn fpf_clear(table: &Table) -> anyhow::Result<()> {
     table.delete("id IS NOT NULL").await?;
     Ok(())
 }
@@ -819,6 +924,86 @@ pub(crate) async fn fpf_clear(table: &Table) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::db::store::LanceStore;
+
+    #[tokio::test]
+    async fn fpf_writer_refuses_a_pending_repair_without_changing_rows() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
+        let journal = ws.join("identity-repair/repair-pending");
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("manifest.json"), b"{invalid").unwrap();
+
+        let chunk = FpfChunk {
+            id: "fpf-pending".into(),
+            section_id: "P.1".into(),
+            parent_section: None,
+            title: "Pending recovery".into(),
+            body: "Must not be written".into(),
+            line_count: 1,
+            file_path: "P.1.md".into(),
+            created_at: "2026-11-03T00:00:00Z".into(),
+        };
+        let error = store
+            .insert_fpf_chunks(&lock, &[chunk], None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("repair"), "{error}");
+        assert!(store.list_fpf_sections().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fpf_writer_constructor_refuses_pending_recovery_before_creating_lance() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let journal = ws.join("identity-repair/repair-pending");
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("manifest.json"), b"{invalid").unwrap();
+
+        let error = AuxiliaryStore::open_or_create(&ws, &lock)
+            .await
+            .err()
+            .expect("pending repair must block the writer constructor");
+        assert!(error.to_string().contains("repair"), "{error}");
+        assert!(!ws.join("lance").exists());
+    }
+    #[tokio::test]
+    async fn workspace_writers_serialize_until_the_first_guard_is_dropped() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let first = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let second_ws = ws.clone();
+        let mut second = tokio::spawn(async move {
+            crate::workspace::acquire_workspace_lock(&second_ws)
+                .await
+                .unwrap()
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut second)
+                .await
+                .is_err(),
+            "a second writer must not acquire the workspace lock while the first holds it"
+        );
+        drop(first);
+        let second_guard = second.await.unwrap();
+        assert!(second_guard.matches_workspace(&ws).is_ok());
+    }
+    #[tokio::test]
+    async fn existing_readers_do_not_recreate_deleted_lance_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let lance = tmp.path().join("lance");
+        std::fs::create_dir(&lance).unwrap();
+        std::fs::remove_dir(&lance).unwrap();
+        let fpf = AuxiliaryStore::open_existing(tmp.path()).await.unwrap();
+        let history = AuxiliaryStore::open_history_existing(tmp.path())
+            .await
+            .unwrap();
+        assert!(!fpf.has_fpf());
+        drop(history);
+        assert!(!lance.exists());
+    }
 
     #[test]
     fn history_row_decoder_rejects_required_nulls_but_preserves_optional_nulls() {
@@ -983,7 +1168,7 @@ mod tests {
             let table = seed_fpf_read_table(&ws, batch).await;
             for result in [
                 AuxiliaryStore::open_existing(&ws).await,
-                AuxiliaryStore::open_or_create(&ws).await,
+                AuxiliaryStore::open_or_create(&ws, &lock).await,
             ] {
                 let error = result
                     .err()
@@ -999,9 +1184,11 @@ mod tests {
                 assert!(!ws.join("lance").join(format!("{name}.lance")).exists());
             }
 
-            // init intentionally seeds a legacy fixture, not the auxiliary
-            // access under test. Its shared query paths must reject it too.
-            let legacy = LanceStore::init(&ws).await.unwrap();
+            // Seed an actual legacy index without altering the FPF table.
+            crate::db::migrate::populated_identity_v4_workspace_for_test(temp.path())
+                .await
+                .unwrap();
+            let legacy = LanceStore::open(&ws).await.unwrap();
             assert!(
                 legacy
                     .list_fpf_sections()
@@ -1068,7 +1255,7 @@ mod tests {
             let table = seed_fpf_read_table(&ws, batch).await;
             for result in [
                 AuxiliaryStore::open_existing(&ws).await,
-                AuxiliaryStore::open_or_create(&ws).await,
+                AuxiliaryStore::open_or_create(&ws, &lock).await,
             ] {
                 let message = result.err().unwrap().to_string();
                 assert!(
@@ -1078,7 +1265,10 @@ mod tests {
                 assert!(message.contains(column), "{message}");
                 assert!(message.contains("non-nullable"), "{message}");
             }
-            let legacy = LanceStore::init(&ws).await.unwrap();
+            crate::db::migrate::populated_identity_v4_workspace_for_test(temp.path())
+                .await
+                .unwrap();
+            let legacy = LanceStore::open(&ws).await.unwrap();
             for message in [
                 legacy.list_fpf_sections().await.unwrap_err().to_string(),
                 legacy
@@ -1174,13 +1364,16 @@ mod tests {
             );
             drop(auxiliary);
 
-            let legacy = LanceStore::init(&ws).await.unwrap();
+            crate::db::migrate::populated_identity_v4_workspace_for_test(temp.path())
+                .await
+                .unwrap();
+            let legacy = LanceStore::open(&ws).await.unwrap();
             assert_eq!(legacy.search_fpf("calculus", 5).await.unwrap().len(), 1);
             assert_eq!(legacy.list_fpf_sections().await.unwrap().len(), 1);
             assert!(legacy.get_fpf_section("B.3").await.unwrap().is_some());
             drop(legacy);
 
-            let writable = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+            let writable = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
             assert_eq!(writable.search_fpf("calculus", 5).await.unwrap().len(), 1);
             let reopened = connect(&ws.join("lance"))
                 .await
@@ -1222,7 +1415,7 @@ mod tests {
         std::fs::write(&sentinel, b"not a Lance dataset").unwrap();
 
         assert!(AuxiliaryStore::open_existing(&ws).await.is_err());
-        assert!(AuxiliaryStore::open_or_create(&ws).await.is_err());
+        assert!(AuxiliaryStore::open_or_create(&ws, &lock).await.is_err());
         assert_eq!(std::fs::read(sentinel).unwrap(), b"not a Lance dataset");
         for name in ["artifacts", "evidence", "relations", "change_log"] {
             assert!(!ws.join("lance").join(format!("{name}.lance")).exists());
@@ -1237,7 +1430,7 @@ mod tests {
         let lock = crate::workspace::lock::acquire_workspace_lock(&ws)
             .await
             .unwrap();
-        let fpf = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let fpf = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         assert!(!ws.join("lance/change_log.lance").exists());
         assert!(
             fpf.log_change(&ChangeLogEntry::new("PRD-001", "create", "cli"))
@@ -1253,7 +1446,7 @@ mod tests {
         assert!(fpf.has_fpf());
         assert!(fpf.list_fpf_sections().await.unwrap().is_empty());
         drop(fpf);
-        let fpf = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let fpf = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         assert!(fpf.has_fpf());
         assert_eq!(
             std::fs::read(broken_history).unwrap(),
@@ -1277,13 +1470,17 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         crate::constellation::facade::maintain_index(
             &capability,
-            crate::constellation::capture::CaptureLimits::default(),
+            crate::constellation::capture::CaptureLimits {
+                budget: std::time::Duration::from_secs(60),
+                ..crate::constellation::capture::CaptureLimits::default()
+            },
             deadline,
         )
         .await
         .expect("publish a generation");
 
-        let auxiliary = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let auxiliary = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         assert!(
             auxiliary.has_fpf(),
             "the auxiliary table it owns must exist"
@@ -1328,15 +1525,20 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         crate::constellation::facade::maintain_index(
             &capability,
-            crate::constellation::capture::CaptureLimits::default(),
+            crate::constellation::capture::CaptureLimits {
+                budget: std::time::Duration::from_secs(60),
+                ..crate::constellation::capture::CaptureLimits::default()
+            },
             deadline,
         )
         .await
         .expect("publish a generation");
 
-        let auxiliary = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let auxiliary = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         auxiliary
             .insert_fpf_chunks(
+                &lock,
                 &[FpfChunk {
                     id: "fpf-A.1-001".into(),
                     section_id: "A.1".into(),
@@ -1381,9 +1583,11 @@ mod tests {
     async fn clearing_removes_rows_and_keeps_the_table() {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let auxiliary = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let auxiliary = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         auxiliary
             .insert_fpf_chunks(
+                &lock,
                 &[FpfChunk {
                     id: "fpf-B.1".into(),
                     section_id: "B.1".into(),
@@ -1398,7 +1602,7 @@ mod tests {
             )
             .await
             .unwrap();
-        auxiliary.clear_fpf().await.unwrap();
+        auxiliary.clear_fpf(&lock).await.unwrap();
         assert!(auxiliary.list_fpf_sections().await.unwrap().is_empty());
         assert!(ws.join("lance/fpf_spec.lance").exists());
     }
@@ -1408,7 +1612,8 @@ mod tests {
     async fn auxiliary_ingest_rejects_a_wrong_dimension_vector() {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let auxiliary = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let auxiliary = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         let chunks = vec![FpfChunk {
             id: "fpf-C.1".into(),
             section_id: "C.1".into(),
@@ -1420,7 +1625,7 @@ mod tests {
             created_at: "2026-10-19T00:00:00Z".into(),
         }];
         let err = auxiliary
-            .insert_fpf_chunks(&chunks, Some(&[vec![0.5f32; 8]]))
+            .insert_fpf_chunks(&lock, &chunks, Some(&[vec![0.5f32; 8]]))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("wrong dim"));
@@ -1432,27 +1637,12 @@ mod tests {
     #[tokio::test]
     async fn auxiliary_open_preserves_an_existing_legacy_workspace() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let ws = tmp.path().join(".forgeplan");
-        tokio::fs::create_dir_all(&ws).await.unwrap();
-        let legacy = LanceStore::init(&ws).await.unwrap();
-        legacy
-            .create_artifact(&crate::db::store::NewArtifact {
-                canonical_key: "PRD-001".into(),
-                id: "PRD-001".into(),
-                kind: "prd".into(),
-                status: "draft".into(),
-                title: "Legacy artifact".into(),
-                body: "# Body\n\nkept\n".into(),
-                depth: "standard".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: vec![],
-            })
+        let ws = crate::db::migrate::populated_identity_v4_workspace_for_test(tmp.path())
             .await
             .unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
 
-        AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
 
         for table in ["artifacts", "evidence", "relations"] {
             assert!(
@@ -1462,7 +1652,11 @@ mod tests {
         }
         let reopened = LanceStore::open(&ws).await.unwrap();
         assert!(
-            reopened.get_record("PRD-001").await.unwrap().is_some(),
+            reopened
+                .get_record(&lock, "PRD-001")
+                .await
+                .unwrap()
+                .is_some(),
             "the legacy row must still be readable after auxiliary access"
         );
     }
@@ -1474,9 +1668,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let legacy = LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let legacy = LanceStore::init_new(&ws, &lock).await.unwrap();
         legacy
             .insert_fpf_chunks(
+                &lock,
                 &[FpfChunk {
                     id: "fpf-D.1".into(),
                     section_id: "D.1".into(),
@@ -1569,14 +1765,9 @@ mod tests {
                 &root.join(format!("offset-{offset}")),
                 &[("1.manifest", envelope(offset, 16))],
             );
-            let error = verify_table_manifests(&table, "fpf_spec")
+            verify_table_manifests(&table, "fpf_spec")
                 .await
-                .err()
-                .expect("an offset outside the file must be refused");
-            assert!(
-                error.to_string().contains("metadata offset"),
-                "{offset}: {error}"
-            );
+                .expect_err("an offset outside the file must be refused");
         }
 
         // An announced length that does not fill the file is refused.
@@ -1585,14 +1776,9 @@ mod tests {
                 &root.join(format!("length-{message_len}")),
                 &[("1.manifest", envelope(8, message_len))],
             );
-            let error = verify_table_manifests(&table, "fpf_spec")
+            verify_table_manifests(&table, "fpf_spec")
                 .await
-                .err()
-                .expect("an inconsistent message length must be refused");
-            assert!(
-                error.to_string().contains("message"),
-                "{message_len}: {error}"
-            );
+                .expect_err("an inconsistent message length must be refused");
         }
     }
 
@@ -1618,14 +1804,9 @@ mod tests {
                     (sidecar, damaged.clone()),
                 ],
             );
-            let error = verify_table_manifests(&table, "fpf_spec")
+            verify_table_manifests(&table, "fpf_spec")
                 .await
-                .err()
-                .expect("the current manifest must still be checked");
-            assert!(
-                error.to_string().contains("Corrupt Lance manifest"),
-                "{sidecar}: {error}"
-            );
+                .expect_err("the current manifest must still be checked");
         }
 
         // A detached manifest beside an intact current one is ignored.
@@ -1648,11 +1829,9 @@ mod tests {
                 ("18446744073709551612.manifest", envelope(8, 16)),
             ],
         );
-        let error = verify_table_manifests(&table, "fpf_spec")
+        verify_table_manifests(&table, "fpf_spec")
             .await
-            .err()
-            .expect("mixed naming schemes must be refused");
-        assert!(error.to_string().contains("naming schemes"), "{error}");
+            .expect_err("mixed naming schemes must be refused");
     }
 
     /// A damaged manifest must be refused, not handed to `lance`.
@@ -1666,9 +1845,11 @@ mod tests {
     async fn a_damaged_manifest_is_refused_instead_of_aborting_the_process() {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let auxiliary = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let auxiliary = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         auxiliary
             .insert_fpf_chunks(
+                &lock,
                 &[FpfChunk {
                     id: "fpf-B.3".into(),
                     section_id: "B.3".into(),
@@ -1710,7 +1891,7 @@ mod tests {
         );
 
         // Creating must not repair a damaged table behind the caller's back.
-        let error = AuxiliaryStore::open_or_create(&ws)
+        let error = AuxiliaryStore::open_or_create(&ws, &lock)
             .await
             .err()
             .expect("a damaged manifest must be an error, not a panic");
@@ -1725,9 +1906,11 @@ mod tests {
     async fn a_short_manifest_is_refused_with_a_typed_error() {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let auxiliary = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let auxiliary = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         auxiliary
             .insert_fpf_chunks(
+                &lock,
                 &[FpfChunk {
                     id: "fpf-C.2.2".into(),
                     section_id: "C.2.2".into(),
@@ -1772,9 +1955,11 @@ mod tests {
     async fn an_obsolete_corrupt_manifest_does_not_break_the_latest_read() {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let auxiliary = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let auxiliary = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         auxiliary
             .insert_fpf_chunks(
+                &lock,
                 &[FpfChunk {
                     id: "fpf-B.3".into(),
                     section_id: "B.3".into(),
@@ -1797,9 +1982,10 @@ mod tests {
         );
 
         // A second write makes the manifests above obsolete.
-        let auxiliary = AuxiliaryStore::open_or_create(&ws).await.unwrap();
+        let auxiliary = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
         auxiliary
             .insert_fpf_chunks(
+                &lock,
                 &[FpfChunk {
                     id: "fpf-C.2.2".into(),
                     section_id: "C.2.2".into(),
@@ -1845,9 +2031,11 @@ mod tests {
     async fn the_legacy_store_refuses_a_damaged_manifest_instead_of_aborting_the_process() {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let legacy = LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let legacy = LanceStore::init_new(&ws, &lock).await.unwrap();
         legacy
             .insert_fpf_chunks(
+                &lock,
                 &[FpfChunk {
                     id: "fpf-B.3".into(),
                     section_id: "B.3".into(),

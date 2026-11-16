@@ -74,8 +74,8 @@ fn import_rejects_kind_mismatch_on_force() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Import would change kind") || stderr.contains("would change kind"),
-        "expected HIGH-6 kind-mismatch message in stderr, got:\n{stderr}"
+        stderr.contains("identity conflict"),
+        "rejected import must report an identity conflict, got:\n{stderr}"
     );
 
     // Existing artifact must remain a PRD post-failure.
@@ -88,6 +88,7 @@ fn import_rejects_kind_mismatch_on_force() {
         .stdout
         .clone();
     let json: serde_json::Value = serde_json::from_slice(&get_out).unwrap();
+    assert_eq!(json["id"], "PRD-001");
     assert_eq!(
         json["kind"].as_str(),
         Some("prd"),
@@ -124,7 +125,8 @@ fn import_rejects_kind_mismatch_via_slug_resolution() {
 
     let payload = serde_json::json!({
         "artifacts": [{
-            "id": &slug,
+            "id": "PRD-001",
+            "canonical_key": &slug,
             "kind": "adr",
             "status": "draft",
             "title": "Pretender via slug",
@@ -148,9 +150,22 @@ fn import_rejects_kind_mismatch_via_slug_resolution() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("would change kind"),
-        "expected HIGH-6 message, got:\n{stderr}"
+        stderr.contains("identity conflict"),
+        "slug-keyed kind mismatch must report an identity conflict, got:\n{stderr}"
     );
+    let existing = forgeplan()
+        .args(["get", "PRD-001", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let existing: serde_json::Value = serde_json::from_slice(&existing).unwrap();
+    assert_eq!(existing["id"], "PRD-001");
+    assert_eq!(existing["canonical_key"], slug);
+    assert_eq!(existing["kind"], "prd");
+    assert_eq!(existing["title"], "Existing PRD");
 }
 
 #[test]

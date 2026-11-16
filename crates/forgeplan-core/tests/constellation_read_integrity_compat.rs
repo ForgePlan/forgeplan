@@ -15,7 +15,7 @@ use forgeplan_core::constellation::facade::{
     workspace_is_migrated,
 };
 use forgeplan_core::constellation::manifest::{
-    BootstrapState, CurrentDescriptor, GenerationManifest, ProtocolMarker,
+    BootstrapState, CurrentDescriptor, GenerationManifest, LEGACY_TABLES, ProtocolMarker,
 };
 use forgeplan_core::constellation::storage::{
     ACTIVE_TABLES, CURRENT_FILE_NAME, PROTOCOL_RELATIVE_PATH, build_table_uri, read_current,
@@ -28,6 +28,7 @@ use tempfile::TempDir;
 const SOURCE: &str = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Integrity\n\
     links:\n  - target: PRD-002\n    relation: refines\n---\n\n\
     ## Integrity\n\nCanonical sentinel.\n";
+const SOURCE_BODY: &str = "## Integrity\n\nCanonical sentinel.\n";
 
 fn workspace() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().expect("temporary workspace");
@@ -169,7 +170,11 @@ async fn an_uninitialized_empty_workspace_is_a_real_empty_read_without_an_index(
 #[tokio::test]
 async fn an_ordinary_legacy_layout_does_not_claim_constellation_ownership() {
     let (_tmp, root) = workspace();
-    std::fs::create_dir_all(root.join("lance/artifacts.lance")).unwrap();
+    std::fs::create_dir_all(
+        root.join("lance")
+            .join(format!("{}.lance", LEGACY_TABLES[0])),
+    )
+    .unwrap();
     assert!(!workspace_is_migrated(&root));
     let before = tree(&root);
     let read = open_workspace_read(&root, None, CaptureLimits::default())
@@ -194,7 +199,7 @@ async fn a_valid_published_snapshot_returns_exact_records_links_and_pins_without
     assert!(read.is_persisted());
     assert_eq!(read.snapshot_id(), descriptor.generation_id);
     assert_eq!(read.records().len(), 2);
-    assert_eq!(read.get_record("PRD-001").unwrap().body, SOURCE);
+    assert_eq!(read.get_record("PRD-001").unwrap().body, SOURCE_BODY);
     assert_eq!(
         read.get_relations("PRD-001"),
         vec![("PRD-002".into(), "refines".into())]
@@ -220,9 +225,49 @@ async fn a_valid_generation_does_not_require_recreating_a_lost_marker() {
     let read = open_workspace_read(&root, None, CaptureLimits::default())
         .await
         .unwrap();
-    assert!(read.is_persisted());
-    assert_eq!(read.get_record("PRD-001").unwrap().body, SOURCE);
+    assert_eq!(
+        read.captured().checkout_id,
+        read.view().manifest().unwrap().checkout_id,
+        "lost-marker recovery must use the path-bound published checkout"
+    );
+    assert_eq!(
+        read.captured().index_epoch,
+        read.view().manifest().unwrap().index_epoch,
+        "lost-marker recovery must retain the verified published epoch"
+    );
     assert_eq!(tree(&root), before);
+    assert_no_legacy_tables(&root);
+}
+
+#[tokio::test]
+async fn a_lost_marker_does_not_adopt_a_foreign_current_checkout() {
+    let (_tmp, root) = published().await;
+    let index = root.join("lance");
+    std::fs::remove_file(index.join(PROTOCOL_RELATIVE_PATH)).unwrap();
+    let mut descriptor = read_current(&index).unwrap().unwrap();
+    let mut manifest = read_manifest(&index, &descriptor).unwrap();
+    descriptor.checkout_id = "foreign-checkout".to_string();
+    manifest.checkout_id = descriptor.checkout_id.clone();
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    std::fs::write(index.join(&descriptor.manifest_path), &manifest_bytes).unwrap();
+    descriptor.manifest_sha256 =
+        forgeplan_core::artifact::identity_repair::sha256_hex(&manifest_bytes);
+    std::fs::write(
+        index.join(CURRENT_FILE_NAME),
+        serde_json::to_vec(&descriptor).unwrap(),
+    )
+    .unwrap();
+    assert!(read_manifest(&index, &descriptor).is_ok());
+    let before = tree(&root);
+    let error = open_workspace_read(&root, None, CaptureLimits::default())
+        .await
+        .expect_err("a foreign checkout descriptor must not be adopted");
+    assert_eq!(error.code(), DiagnosticCode::IndexGenerationUnavailable);
+    assert_eq!(
+        tree(&root),
+        before,
+        "refusal must not repair or rewrite state"
+    );
     assert_no_legacy_tables(&root);
 }
 
@@ -236,7 +281,10 @@ async fn changed_source_still_yields_a_fresh_ephemeral_capture_over_valid_physic
         .await
         .unwrap();
     assert!(!read.is_persisted());
-    assert_eq!(read.get_record("PRD-001").unwrap().body, changed);
+    assert_eq!(
+        read.get_record("PRD-001").unwrap().body,
+        "## Integrity\n\nChanged sentinel.\n"
+    );
     assert!(read.view().vector_cache().is_some());
     assert_eq!(
         tree(&root),
@@ -288,15 +336,12 @@ async fn a_generation_manifest_alone_prevents_legacy_recreation_after_pointer_lo
 
 #[tokio::test]
 async fn interrupted_legacy_backups_without_a_marker_or_current_claim_managed_ownership() {
-    for name in [
-        "artifacts.legacy-backup.lance",
-        "relations.legacy-backup.lance",
-        "evidence.legacy-backup.lance",
-    ] {
+    for legacy_table in LEGACY_TABLES {
         let (_tmp, root) = workspace();
-        std::fs::create_dir_all(root.join("lance").join(name)).unwrap();
+        let name = format!("{legacy_table}.legacy-backup.lance");
+        std::fs::create_dir_all(root.join("lance").join(&name)).unwrap();
         std::fs::write(
-            root.join("lance").join(name).join("preserved-data"),
+            root.join("lance").join(&name).join("preserved-data"),
             b"never recreate a legacy writer",
         )
         .unwrap();
@@ -315,7 +360,7 @@ async fn an_unpublished_initializing_layout_keeps_its_read_only_ephemeral_behavi
         serde_json::to_vec(&ProtocolMarker::initializing(1, "fixture", 1)).unwrap(),
     )
     .unwrap();
-    std::fs::create_dir(index.join("artifacts.legacy-backup.lance")).unwrap();
+    std::fs::create_dir(index.join(format!("{}.legacy-backup.lance", LEGACY_TABLES[0]))).unwrap();
     let before = tree(&root);
     assert!(workspace_is_migrated(&root));
     let read = open_workspace_read(&root, None, CaptureLimits::default())
@@ -583,7 +628,10 @@ async fn a_valid_snapshot_ignores_unreadable_legacy_table_contents() {
         .await
         .expect("captured reads never consult the poisoned legacy tables");
     assert!(read.is_persisted());
-    assert_eq!(read.get_record("PRD-001").unwrap().body, SOURCE);
+    assert_eq!(
+        read.get_record("PRD-001").unwrap().body,
+        "## Integrity\n\nCanonical sentinel.\n"
+    );
     assert_eq!(tree(&root), before);
 }
 

@@ -9,7 +9,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use forgeplan_core::artifact::types::{ArtifactKind, slugify};
 use forgeplan_core::claim::ClaimStore;
 use forgeplan_core::dispatch::{
     self, ArtifactCandidate, DEFAULT_OVERLAP_THRESHOLD, MAX_AFFECTED_FILE_LEN, MAX_AFFECTED_FILES,
@@ -45,14 +44,22 @@ pub async fn run(
         anyhow::bail!("--overlap-threshold must be in [0.0, 1.0]");
     }
 
-    let (ws, source) = common::open_read_source().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
     let legacy_records;
     let records = match &source {
         common::ReadSource::Legacy(store) => {
-            legacy_records = store.list_records(None).await?;
+            legacy_records = store.list_records(&_read_guard, None).await?;
             legacy_records.as_slice()
         }
         common::ReadSource::Captured(read) => read.records(),
+    };
+    let epic_key = match epic {
+        Some(selector) => Some(
+            common::resolve_required_identity(&source, &ws, selector)
+                .await?
+                .0,
+        ),
+        None => None,
     };
 
     // Default status filter is `draft` — the dispatch-relevant set.
@@ -66,13 +73,15 @@ pub async fn run(
     // Compute blocked set so dependency-blocked artifacts never land in a
     // parallel bucket (FR-003).
     let relations = match &source {
-        common::ReadSource::Legacy(store) => store.get_all_relations().await?,
+        common::ReadSource::Legacy(store) => store.get_all_relations(&_read_guard).await?,
         common::ReadSource::Captured(read) => read.get_all_relations(),
     };
     let resolved_ids: HashSet<String> = records
         .iter()
         .filter(|record| {
-            record.status == "active" || record.status == "deprecated" || record.status == "superseded"
+            record.status == "active"
+                || record.status == "deprecated"
+                || record.status == "superseded"
         })
         .map(|record| record.canonical_key.clone())
         .collect();
@@ -82,34 +91,65 @@ pub async fn run(
     let mut candidates = Vec::new();
     let mut skipped_parse_errors = 0usize;
     let mut skipped_blocked = Vec::<String>::new();
+    let legacy_documents = if matches!(&source, common::ReadSource::Legacy(_)) {
+        forgeplan_core::artifact::documents::workspace_candidates(&ws).await?
+    } else {
+        Vec::new()
+    };
+    let mut legacy_by_key = HashMap::new();
+    for document in &legacy_documents {
+        if legacy_by_key
+            .insert(document.canonical_key.as_str(), document)
+            .is_some()
+        {
+            let refusal =
+                common::resolve_in_document_set(&document.canonical_key, &legacy_documents);
+            return Err(common::refuse_resolution(
+                &document.canonical_key,
+                &refusal,
+                &legacy_documents,
+            ));
+        }
+    }
     for summary in summaries {
         let fields = match &source {
             common::ReadSource::Legacy(_) => {
-                read_dispatch_fm_fields(
-                    &ws,
-                    &summary.kind,
-                    &summary.id,
-                    &summary.title,
-                    &summary.canonical_key,
-                )
-                .await
+                match legacy_by_key.get(summary.canonical_key.as_str()) {
+                    Some(document) => {
+                        read_dispatch_fm_fields(&ws.join(&document.relative_path)).await
+                    }
+                    None => DispatchFmFields {
+                        parse_failed: true,
+                        ..Default::default()
+                    },
+                }
             }
-            common::ReadSource::Captured(_) => parse_dispatch_fm_fields(&summary.body),
+            common::ReadSource::Captured(read) => read
+                .captured()
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.canonical_key == summary.canonical_key)
+                .map(|artifact| dispatch_fm_fields(&artifact.frontmatter, &artifact.body))
+                .unwrap_or(DispatchFmFields {
+                    parse_failed: true,
+                    ..Default::default()
+                }),
         };
         if fields.parse_failed {
             skipped_parse_errors += 1;
             continue;
         }
-        if let Some(wanted) = epic
-            && fields.parent_epic.as_deref() != Some(wanted)
-        {
-            continue;
+        if let Some(wanted) = epic_key.as_deref() {
+            let Some(parent) = fields.parent_epic.as_deref() else {
+                continue;
+            };
+            let (parent_key, _) = common::resolve_required_identity(&source, &ws, parent).await?;
+            if parent_key != wanted {
+                continue;
+            }
         }
-        // The blocking graph is read in the display-id namespace, so the
-        // blocked check stays there; the candidate id is the canonical key
-        // because that is what the claim set is keyed by.
-        if blocked_ids.contains(&summary.id) {
-            skipped_blocked.push(summary.id.clone());
+        if blocked_ids.contains(&summary.canonical_key) {
+            skipped_blocked.push(summary.canonical_key.clone());
             continue;
         }
         candidates.push(ArtifactCandidate {
@@ -126,7 +166,31 @@ pub async fn run(
         .await
         .map_err(|e| anyhow::anyhow!("list_active_map: {e}"))?;
     let claimed_count = claimed_map.len();
-    let claimed_set: HashSet<String> = claimed_map.into_keys().collect();
+    let mut claimed_set = HashSet::with_capacity(claimed_count);
+    for input in claimed_map.into_keys() {
+        let resolution = match &source {
+            common::ReadSource::Legacy(_) => {
+                common::resolve_in_document_set(&input, &legacy_documents)
+            }
+            common::ReadSource::Captured(read) => {
+                forgeplan_mcp::convert::resolve_in_capture(read, &input)
+            }
+        };
+        match resolution {
+            common::Resolution::Found(found) => {
+                claimed_set.insert(found.identity.canonical_key);
+            }
+            common::Resolution::NotFound => {}
+            refusal => {
+                return Err(common::refuse_resolution(
+                    &input,
+                    &refusal,
+                    &legacy_documents,
+                ));
+            }
+        }
+    }
+    skipped_blocked.retain(|key| !claimed_set.contains(key));
 
     // CLI path doesn't expose `--agent-skills` for now (the MCP tool keeps
     // it for orchestrator-driven dispatch). Empty skill list = match
@@ -218,7 +282,12 @@ pub async fn run(
         let presentation_buckets: Vec<Vec<String>> = plan
             .buckets
             .iter()
-            .map(|bucket| bucket.iter().map(|key| display_id(key).to_string()).collect())
+            .map(|bucket| {
+                bucket
+                    .iter()
+                    .map(|key| display_id(key).to_string())
+                    .collect()
+            })
             .collect();
         let presentation_serial: Vec<_> = plan
             .serial_queue
@@ -311,40 +380,15 @@ struct DispatchFmFields {
 /// Read dispatcher-relevant frontmatter fields from an artifact's markdown
 /// projection. Mirrors the MCP-side helper of the same name (kept private
 /// there) so CLI dispatch produces identical decisions.
-async fn read_dispatch_fm_fields(
-    ws: &std::path::Path,
-    kind: &str,
-    id: &str,
-    title: &str,
-    canonical_key: &str,
-) -> DispatchFmFields {
-    let artifact_kind = match kind.parse::<ArtifactKind>() {
-        Ok(k) => k,
-        Err(_) => return DispatchFmFields::default(),
-    };
-    if id.contains('/') || id.contains('\\') || id.contains("..") {
-        return DispatchFmFields {
-            parse_failed: true,
-            ..Default::default()
-        };
-    }
-    let dir = ws.join(artifact_kind.dir_name());
-    // A document minted under a key is filed as `<canonical_key>.md`; one
-    // that predates the key keeps its historical `{id}-{slug}.md`. The file
-    // on disk decides which one it is.
-    let keyed = dir.join(format!("{canonical_key}.md"));
-    let historical = dir.join(format!("{}-{}.md", id, slugify(title)));
-    let content = match tokio::fs::read_to_string(&keyed).await {
-        Ok(s) => s,
-        Err(_) => match tokio::fs::read_to_string(&historical).await {
-            Ok(s) => s,
-            Err(_) => {
-                return DispatchFmFields {
-                    parse_failed: true,
-                    ..Default::default()
-                };
-            }
-        },
+async fn read_dispatch_fm_fields(path: &std::path::Path) -> DispatchFmFields {
+    let content = match tokio::fs::read_to_string(path).await {
+        Ok(content) => content,
+        Err(_) => {
+            return DispatchFmFields {
+                parse_failed: true,
+                ..Default::default()
+            };
+        }
     };
     parse_dispatch_fm_fields(&content)
 }
@@ -360,13 +404,19 @@ fn parse_dispatch_fm_fields(content: &str) -> DispatchFmFields {
             };
         }
     };
+    dispatch_fm_fields(&fm, &body)
+}
 
+fn dispatch_fm_fields(
+    fm: &forgeplan_core::artifact::frontmatter::Frontmatter,
+    body: &str,
+) -> DispatchFmFields {
     let mut files = fm
         .get("affected_files")
         .map(dispatch::parse_affected_files_from_fm)
         .unwrap_or_default();
     if files.is_empty() {
-        let from_section = forgeplan_core::validation::checks::extract_affected_files(&body);
+        let from_section = forgeplan_core::validation::checks::extract_affected_files(body);
         files = from_section
             .into_iter()
             .filter(|s| s.len() <= MAX_AFFECTED_FILE_LEN)

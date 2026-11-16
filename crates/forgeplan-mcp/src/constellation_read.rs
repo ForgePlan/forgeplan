@@ -19,16 +19,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use forgeplan_core::constellation::ConstellationError;
 use forgeplan_core::constellation::context_pack;
-use forgeplan_core::constellation::federation::{self, FederatedGet, QueryMode};
+use forgeplan_core::constellation::federation::{self, QueryMode};
 use forgeplan_core::constellation::graph::{self, GraphBounds};
 use forgeplan_core::constellation::impact::{self, ImpactBounds};
 use forgeplan_core::constellation::registry;
 use forgeplan_core::constellation::snapshot::{self, ConstellationSnapshot};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock, ProtocolVersion};
 use rmcp::schemars::{self, JsonSchema};
-use rmcp::{ErrorData as McpError, tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{ErrorData as McpError, RoleServer, tool, tool_router};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -42,35 +43,108 @@ struct ScopeHandle {
     /// `None` means the source could not be read at open; that failure is
     /// reported by the first read rather than by `open`.
     versions: Vec<Option<String>>,
+    source_ids: Vec<Option<String>>,
+}
+#[cfg(test)]
+struct ReadPause {
+    reached: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl ScopeHandle {
-    /// Refuse a read when any source's bytes moved since the scope opened.
-    ///
-    /// A scope is a promise about *these* bytes. Re-reading a live source
-    /// after an edit and calling the answer the same scope is how an agent
-    /// ends up reasoning about text it never received.
-    async fn ensure_current(&self) -> Result<(), String> {
-        for (spec, recorded) in self.specs.iter().zip(&self.versions) {
-            let Some(recorded) = recorded else {
-                continue;
+    fn verify_read(
+        &self,
+        specs: &[federation::SourceSpec],
+        sources: &[federation::SourceRef],
+        failures: &[federation::SourceFailure],
+    ) -> Result<(), String> {
+        for spec in specs {
+            let Some(index) = self
+                .specs
+                .iter()
+                .position(|candidate| candidate.path == spec.path && candidate.role == spec.role)
+            else {
+                return Err(format!(
+                    "source {} is not bound to this scope",
+                    spec.path.display()
+                ));
             };
-            match federation::live_source_version(spec).await {
-                Ok(current) if &current == recorded => {}
-                Ok(_) => {
+            let version = &self.versions[index];
+            let source_id = &self.source_ids[index];
+            let served = sources.iter().find(|source| {
+                source_id.as_deref() == Some(source.source_id.as_str())
+                    || (source_id.is_none()
+                        && spec
+                            .path
+                            .canonicalize()
+                            .ok()
+                            .is_some_and(|path| path.to_string_lossy() == source.path))
+            });
+            match (version, served) {
+                (Some(recorded), Some(source))
+                    if source.source_set_digest.as_deref() == Some(recorded.as_str()) => {}
+                (Some(_), _) => {
                     return Err(format!(
-                        "source {} changed since this scope was opened; reopen the scope or \
-                         take a snapshot and read that",
+                        "source {} changed or could not be verified against this scope; reopen the scope or take a snapshot",
                         spec.path.display()
                     ));
                 }
-                Err(failure) => {
+                (None, Some(_)) => {
                     return Err(format!(
-                        "source {} can no longer be read: {}",
-                        spec.path.display(),
-                        failure.reason
+                        "source {} was not readable when this scope opened; reopen the scope before reading its current bytes",
+                        spec.path.display()
                     ));
                 }
+                (None, None)
+                    if failures.iter().any(|failure| {
+                        failure.path == spec.path.display().to_string()
+                            || spec
+                                .path
+                                .canonicalize()
+                                .ok()
+                                .is_some_and(|path| path.to_string_lossy() == failure.path)
+                    }) => {}
+                (None, None) => {
+                    return Err(format!(
+                        "source {} has no read witness for this scope; reopen the scope",
+                        spec.path.display()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn verify_failed_read(
+        &self,
+        specs: &[federation::SourceSpec],
+        error: &ConstellationError,
+    ) -> Result<(), String> {
+        if let ConstellationError::ResolveRead {
+            sources, failures, ..
+        } = error
+        {
+            return self.verify_read(specs, sources, failures);
+        }
+        if !matches!(error, ConstellationError::SourceUnavailable { .. }) {
+            return Ok(());
+        }
+        for spec in specs {
+            let Some(index) = self
+                .specs
+                .iter()
+                .position(|opened| opened.path == spec.path && opened.role == spec.role)
+            else {
+                return Err(format!(
+                    "source {} is not part of this scope; reopen the scope",
+                    spec.path.display()
+                ));
+            };
+            let current = federation::live_source_version(spec).await.ok();
+            if current != self.versions[index] {
+                return Err(format!(
+                    "source {} changed or could not be verified against this scope; reopen the scope or take a snapshot",
+                    spec.path.display()
+                ));
             }
         }
         Ok(())
@@ -88,6 +162,8 @@ pub struct ConstellationReadServer {
     handles: Arc<Mutex<HashMap<String, Handle>>>,
     next_handle: Arc<AtomicU64>,
     tool_router: ToolRouter<Self>,
+    #[cfg(test)]
+    before_live_query: Arc<Mutex<Option<ReadPause>>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -128,8 +204,28 @@ pub struct SearchParams {
 pub struct PackParams {
     /// What the agent must do — ranking terms come from this text.
     pub task: String,
-    /// Token budget (estimated tokens, chars/4; default 8000).
+    /// Estimated full-result allowance (UTF-8 bytes divided by four, rounded up).
     pub budget: Option<usize>,
+    /// Exact cap on serialized MCP tool result bytes.
+    pub byte_cap: Option<usize>,
+    /// Explicit source-qualified artifact selectors.
+    pub seeds: Option<Vec<String>>,
+    /// Maximum relation depth (default 4, maximum 64).
+    pub max_depth: Option<usize>,
+    /// Maximum visited artifacts (default 256, maximum 4096).
+    pub max_nodes: Option<usize>,
+    /// Maximum declared edges (default 1024, maximum 16384).
+    pub max_edges: Option<usize>,
+    /// Maximum traversal milliseconds (default 5000, maximum 60000).
+    pub max_millis: Option<u64>,
+    /// Require complete sources, traversal and delivery in one result.
+    pub require_complete: Option<bool>,
+    /// Continuation from the previous response with unchanged inputs.
+    pub cursor: Option<String>,
+    /// Retrieval mode; only `lexical` is supported.
+    pub retrieval_mode: Option<String>,
+    /// Include Mermaid navigation for the declared graph.
+    pub mermaid: Option<bool>,
     /// Strict reads (default) fail with `source_unavailable` when a
     /// required source cannot answer; `false` accepts a partial answer.
     pub strict: Option<bool>,
@@ -176,13 +272,30 @@ pub struct GetParams {
 }
 
 fn ok_json(v: serde_json::Value) -> Result<CallToolResult, McpError> {
-    Ok(CallToolResult::success(vec![Content::text(
+    Ok(CallToolResult::success(vec![ContentBlock::text(
         serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()),
     )]))
 }
 
+fn pack_result(pack: &context_pack::ContextPack) -> Result<CallToolResult, String> {
+    let text = serde_json::to_string(pack).map_err(|e| e.to_string())?;
+    Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+}
+
+fn pack_measure(pack: &context_pack::ContextPack, modern: bool) -> Result<usize, String> {
+    let mut result = pack_result(pack)?;
+    // ServerHandler strips complete resultType for protocol versions before
+    // 2026-07-28; measure that same public result, not the pre-dispatch value.
+    if !modern {
+        result.result_type = None;
+    }
+    serde_json::to_vec(&result)
+        .map(|bytes| bytes.len())
+        .map_err(|e| e.to_string())
+}
+
 fn fail(reason: &str, detail: impl std::fmt::Display) -> Result<CallToolResult, McpError> {
-    Ok(CallToolResult::success(vec![Content::text(
+    Ok(CallToolResult::success(vec![ContentBlock::text(
         serde_json::to_string_pretty(&json!({"error": reason, "detail": detail.to_string()}))
             .unwrap(),
     )]))
@@ -201,6 +314,41 @@ fn mode_of(strict: Option<bool>) -> QueryMode {
 /// so a caller can tell "a required source is down" apart from ordinary
 /// I/O trouble — the distinction the strict/partial contract exists for.
 fn fail_read(e: ConstellationError) -> Result<CallToolResult, McpError> {
+    fail_read_with_input(e, None)
+}
+
+fn fail_read_with_input(
+    e: ConstellationError,
+    requested_input: Option<&str>,
+) -> Result<CallToolResult, McpError> {
+    if let ConstellationError::Resolve(error) | ConstellationError::ResolveRead { error, .. } = &e {
+        use forgeplan_core::artifact::canonical_key::ResolveError;
+        let (input, candidates) = match error {
+            ResolveError::Ambiguous { input, candidates } => {
+                (Some(input.as_str()), Some(candidates))
+            }
+            ResolveError::ConflictingCanonicalKey { key, candidates } => {
+                (Some(key.as_str()), Some(candidates))
+            }
+            ResolveError::InvalidSelector { input } => (Some(input.as_str()), None),
+            ResolveError::IncompleteCapture { .. } => (None, None),
+        };
+        let candidates: Vec<_> = candidates
+            .into_iter()
+            .flatten()
+            .map(|candidate| {
+                json!({
+                    "canonical_key": candidate.canonical_key,
+                    "display_id": candidate.display_id,
+                    "title": candidate.title,
+                    "relative_path": candidate.relative_path,
+                })
+            })
+            .collect();
+        return Ok(CallToolResult::error(vec![ContentBlock::text(
+            json!({"error": e.code().as_str(), "input": requested_input.or(input), "candidates": candidates, "detail": error.to_string()}).to_string(),
+        )]));
+    }
     // Every error already carries its SPEC-008 code; collapsing the typed
     // ones into "io" hides the only fact a caller can act on.
     fail(e.code().as_str(), &e)
@@ -218,6 +366,8 @@ impl ConstellationReadServer {
             handles: Arc::new(Mutex::new(HashMap::new())),
             next_handle: Arc::new(AtomicU64::new(1)),
             tool_router: Self::tool_router(),
+            #[cfg(test)]
+            before_live_query: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -227,26 +377,34 @@ impl ConstellationReadServer {
             self.next_handle.fetch_add(1, Ordering::SeqCst)
         )
     }
-}
-
-impl ConstellationReadServer {
-    /// Verify a scope still describes the bytes it was opened on.
-    ///
-    /// Clones the handle out of the table first: the verification awaits, and
-    /// holding the handle mutex across it would serialise every other request
-    /// behind a filesystem read.
-    async fn scope_current(&self, handle: &str) -> Result<(), String> {
-        let scope = {
-            let handles = self.handles.lock().await;
-            match handles.get(handle) {
-                Some(Handle::Scope(scope)) => Some(scope.clone()),
-                _ => None,
-            }
-        };
-        match scope {
-            Some(scope) => scope.ensure_current().await,
-            None => Ok(()),
+    #[cfg(test)]
+    async fn pause_before_live_query(&self) {
+        let pause = self.before_live_query.lock().await.take();
+        if let Some(pause) = pause {
+            let _ = pause.reached.send(());
+            let _ = pause.resume.await;
         }
+    }
+    #[cfg(test)]
+    async fn precheck_scope_for_test(
+        &self,
+        scope: &ScopeHandle,
+        specs: &[federation::SourceSpec],
+    ) -> Result<(), String> {
+        for spec in specs {
+            let Some(index) = scope
+                .specs
+                .iter()
+                .position(|opened| opened.path == spec.path && opened.role == spec.role)
+            else {
+                return Err("source is not in opened scope".to_string());
+            };
+            let current = federation::live_source_version(spec).await.ok();
+            if current != scope.versions[index] {
+                return Err(format!("{} changed before the query", spec.path.display()));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -286,16 +444,19 @@ impl ConstellationReadServer {
         };
         let handle = self.issue("scope");
         let mut versions = Vec::with_capacity(specs.len());
+        let mut source_ids = Vec::with_capacity(specs.len());
         let mut sources: Vec<serde_json::Value> = Vec::with_capacity(specs.len());
         for spec in &specs {
             let version = federation::live_source_version(spec).await.ok();
+            let source_id = federation::spec_source_id(spec);
             sources.push(json!({
                 "path": spec.path.display().to_string(),
-                "source_id": federation::spec_source_id(spec),
+                "source_id": source_id,
                 "role": spec.role.as_str(),
                 "version": version,
             }));
             versions.push(version);
+            source_ids.push(source_id);
         }
         self.handles.lock().await.insert(
             handle.clone(),
@@ -303,6 +464,7 @@ impl ConstellationReadServer {
                 name: name.clone(),
                 specs,
                 versions,
+                source_ids,
             }),
         );
         ok_json(json!({
@@ -408,11 +570,6 @@ impl ConstellationReadServer {
         &self,
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
-        if let Some(handle) = &p.scope_handle
-            && let Err(error) = self.scope_current(handle).await
-        {
-            return fail("snapshot_expired", &error);
-        }
         let limit = p.limit.unwrap_or(10);
         let handles = self.handles.lock().await;
         if let Some(snap_handle) = &p.snapshot_handle {
@@ -438,18 +595,34 @@ impl ConstellationReadServer {
         }
         match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
             Some(Handle::Scope(scope)) => {
+                #[cfg(test)]
+                if let Err(detail) = self.precheck_scope_for_test(scope, &scope.specs).await {
+                    return fail("snapshot_expired", detail);
+                }
+                #[cfg(test)]
+                self.pause_before_live_query().await;
                 match federation::federated_search(&scope.specs, &p.query, limit, mode_of(p.strict))
                     .await
                 {
-                    Ok(outcome) => ok_json(json!({
-                        "scope_handle": p.scope_handle,
-                        "hits": hit_json(&outcome.hits),
-                        "sources": outcome.sources,
-                        "failures": outcome.failures,
-                        "partial": outcome.partial,
-                        "truncated": outcome.truncated,
-                    })),
-                    Err(e) => fail_read(e),
+                    Ok(outcome) => {
+                        if let Err(error) =
+                            scope.verify_read(&scope.specs, &outcome.sources, &outcome.failures)
+                        {
+                            return fail("snapshot_expired", &error);
+                        }
+                        ok_json(json!({
+                            "scope_handle": p.scope_handle,
+                            "hits": hit_json(&outcome.hits),
+                            "sources": outcome.sources,
+                            "failures": outcome.failures,
+                            "partial": outcome.partial,
+                            "truncated": outcome.truncated,
+                        }))
+                    }
+                    Err(e) => match scope.verify_failed_read(&scope.specs, &e).await {
+                        Err(detail) => fail("snapshot_expired", detail),
+                        Ok(()) => fail_read(e),
+                    },
                 }
             }
             Some(Handle::Snapshot(_)) => {
@@ -470,11 +643,6 @@ impl ConstellationReadServer {
         &self,
         Parameters(p): Parameters<GetParams>,
     ) -> Result<CallToolResult, McpError> {
-        if let Some(handle) = &p.scope_handle
-            && let Err(error) = self.scope_current(handle).await
-        {
-            return fail("snapshot_expired", &error);
-        }
         let handles = self.handles.lock().await;
         if let Some(snap_handle) = &p.snapshot_handle {
             return match handles.get(snap_handle) {
@@ -503,19 +671,7 @@ impl ConstellationReadServer {
                                 )
                             }
                         },
-                        Err(e) => {
-                            // The qualifier-miss the live arm reports as
-                            // `no_source` arrives here as a plain Io detail —
-                            // re-map so both arms answer the same envelope.
-                            match &e {
-                                ConstellationError::Io { detail }
-                                    if detail.contains("matches no source") =>
-                                {
-                                    fail("no_source", detail)
-                                }
-                                _ => fail("io", e),
-                            }
-                        }
+                        Err(e) => fail_read_with_input(e, Some(&p.id)),
                     }
                 }
                 Some(Handle::Scope(_)) => {
@@ -544,30 +700,57 @@ impl ConstellationReadServer {
                         );
                     }
                 }
+                #[cfg(test)]
+                if let Err(detail) = self.precheck_scope_for_test(scope, &specs).await {
+                    return fail("snapshot_expired", detail);
+                }
+                #[cfg(test)]
+                self.pause_before_live_query().await;
                 match federation::federated_get(&specs, &bare, mode_of(p.strict)).await {
-                    Ok(FederatedGet::Found(a)) => ok_json(json!({
-                        "result": "found",
-                        "id": bare,
-                        "canonical_key": a.canonical_key,
-                        "display_id": a.display_id,
-                        "title": a.title,
-                        "kind": a.kind,
-                        "status": a.status,
-                        "semantic_state": a.semantic_state,
-                        "body": a.body,
-                        "source": a.source,
-                    })),
-                    Ok(FederatedGet::Ambiguous { sources }) => ok_json(json!({
-                        "result": "ambiguous",
-                        "id": bare,
-                        "claimers": sources,
-                    })),
-                    Ok(FederatedGet::NotFound { failures }) => ok_json(json!({
-                        "result": "not_found",
-                        "id": bare,
-                        "failures": failures,
-                    })),
-                    Err(e) => fail_read(e),
+                    Ok(read) => {
+                        if let Err(error) =
+                            scope.verify_read(&specs, &read.read.sources, &read.read.failures)
+                        {
+                            return fail("snapshot_expired", &error);
+                        }
+                        let mut response = match read.result {
+                            federation::FederatedGetResult::Found(a) => json!({
+                                "result": "found",
+                                "id": bare,
+                                "canonical_key": a.canonical_key,
+                                "display_id": a.display_id,
+                                "title": a.title,
+                                "kind": a.kind,
+                                "status": a.status,
+                                "semantic_state": a.semantic_state,
+                                "body": a.body,
+                                "source": a.source,
+                            }),
+                            federation::FederatedGetResult::Ambiguous { sources } => json!({
+                                "result": "ambiguous",
+                                "id": bare,
+                                "claimers": sources,
+                            }),
+                            federation::FederatedGetResult::NotFound => json!({
+                                "result": "not_found",
+                                "id": bare,
+                            }),
+                            federation::FederatedGetResult::ResolveError(error) => {
+                                return fail_read_with_input(
+                                    ConstellationError::Resolve(error),
+                                    Some(&p.id),
+                                );
+                            }
+                        };
+                        response["sources"] = json!(read.read.sources);
+                        response["failures"] = json!(read.read.failures);
+                        response["partial"] = json!(read.read.partial);
+                        ok_json(response)
+                    }
+                    Err(e) => match scope.verify_failed_read(&specs, &e).await {
+                        Err(detail) => fail("snapshot_expired", detail),
+                        Ok(()) => fail_read_with_input(e, Some(&p.id)),
+                    },
                 }
             }
             Some(Handle::Snapshot(_)) => {
@@ -581,29 +764,56 @@ impl ConstellationReadServer {
     }
 
     #[tool(
-        description = "Build a budgeted ContextPack for a task over the scope's live                        sources or a snapshot's pinned revisions: lexically ranked                        evidence units with roles, named omissions and a spend receipt.",
+        description = "Build a source-qualified lexical ContextPack with declared relation closure, whole evidence units, bounded delivery and continuation.",
         annotations(title = "Constellation Pack", read_only_hint = true)
     )]
     async fn constellation_pack(
         &self,
         Parameters(p): Parameters<PackParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        if let Some(handle) = &p.scope_handle
-            && let Err(error) = self.scope_current(handle).await
-        {
-            return fail("snapshot_expired", &error);
+        if p.scope_handle.is_some() && p.snapshot_handle.is_some() {
+            return fail("invalid_request", "provide exactly one handle");
         }
-        let budget = p.budget.unwrap_or(8000);
+        let modern = context
+            .protocol_version()
+            .as_ref()
+            .is_some_and(|version| version.as_str() >= ProtocolVersion::V_2026_07_28.as_str());
+        let measure = |pack: &context_pack::ContextPack| pack_measure(pack, modern);
+        let options = context_pack::PackOptions {
+            budget_tokens: p.budget.unwrap_or(8000),
+            byte_cap: p.byte_cap.unwrap_or(1_000_000),
+            seeds: p.seeds.unwrap_or_default(),
+            max_depth: p.max_depth.unwrap_or(4),
+            max_nodes: p.max_nodes.unwrap_or(256),
+            max_edges: p.max_edges.unwrap_or(1024),
+            max_millis: p.max_millis.unwrap_or(5000),
+            require_complete: p.require_complete.unwrap_or(false),
+            cursor: p.cursor,
+            presentation: if modern {
+                "mcp-json-2026-07-28"
+            } else {
+                "mcp-json-legacy"
+            }
+            .into(),
+            retrieval_mode: p.retrieval_mode.unwrap_or_else(|| "lexical".into()),
+            request_context: p
+                .snapshot_handle
+                .as_ref()
+                .or(p.scope_handle.as_ref())
+                .cloned()
+                .unwrap_or_default(),
+            mermaid: p.mermaid.unwrap_or(false),
+        };
         let handles = self.handles.lock().await;
         if let Some(snap_handle) = &p.snapshot_handle {
             return match handles.get(snap_handle) {
                 Some(Handle::Snapshot(snap)) => {
-                    match context_pack::pack_snapshot(snap, &p.task, budget) {
-                        Ok(pack) => ok_json(
-                            serde_json::to_value(&pack)
-                                .unwrap_or_else(|_| json!({"error":"serialize"})),
-                        ),
-                        Err(e) => fail("io", e),
+                    match context_pack::pack_snapshot(snap, &p.task, &options, &measure) {
+                        Ok(pack) => {
+                            pack_result(&pack).map_err(|e| McpError::internal_error(e, None))
+                        }
+                        Err(e) => fail_read(e),
                     }
                 }
                 Some(Handle::Scope(_)) => {
@@ -614,24 +824,27 @@ impl ConstellationReadServer {
         }
         match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
             Some(Handle::Scope(scope)) => {
-                match context_pack::pack_live(&scope.specs, &p.task, budget, mode_of(p.strict))
-                    .await
+                match context_pack::pack_live(
+                    &scope.specs,
+                    &p.task,
+                    &options,
+                    mode_of(p.strict),
+                    &measure,
+                )
+                .await
                 {
                     Ok(pack) => {
-                        let payload = serde_json::to_value(&pack)
-                            .unwrap_or_else(|_| json!({"error":"serialize"}));
-                        // The content budget is charged to units; this field
-                        // states what the whole answer costs, so a caller can
-                        // see the envelope separately instead of inferring it.
-                        let payload_bytes = serde_json::to_string(&payload)
-                            .map(|text| text.len())
-                            .unwrap_or(0);
-                        ok_json(json!({
-                            "pack": payload,
-                            "payload_bytes": payload_bytes,
-                        }))
+                        if let Err(error) =
+                            scope.verify_read(&scope.specs, &pack.sources, &pack.failures)
+                        {
+                            return fail("snapshot_expired", error);
+                        }
+                        pack_result(&pack).map_err(|e| McpError::internal_error(e, None))
                     }
-                    Err(e) => fail_read(e),
+                    Err(e) => match scope.verify_failed_read(&scope.specs, &e).await {
+                        Err(detail) => fail("snapshot_expired", detail),
+                        Ok(()) => fail_read(e),
+                    },
                 }
             }
             Some(Handle::Snapshot(_)) => {
@@ -652,11 +865,6 @@ impl ConstellationReadServer {
         &self,
         Parameters(p): Parameters<ImpactParams>,
     ) -> Result<CallToolResult, McpError> {
-        if let Some(handle) = &p.scope_handle
-            && let Err(error) = self.scope_current(handle).await
-        {
-            return fail("snapshot_expired", &error);
-        }
         let bounds = ImpactBounds {
             max_depth: p.depth.unwrap_or(4),
             max_nodes: p.max_nodes.unwrap_or(256),
@@ -670,7 +878,7 @@ impl ConstellationReadServer {
                             serde_json::to_value(&report)
                                 .unwrap_or_else(|_| json!({"error":"serialize"})),
                         ),
-                        Err(e) => fail("io", e),
+                        Err(e) => fail_read_with_input(e, Some(&p.id)),
                     }
                 }
                 Some(Handle::Scope(_)) => {
@@ -681,12 +889,28 @@ impl ConstellationReadServer {
         }
         match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
             Some(Handle::Scope(scope)) => {
+                #[cfg(test)]
+                if let Err(detail) = self.precheck_scope_for_test(scope, &scope.specs).await {
+                    return fail("snapshot_expired", detail);
+                }
+                #[cfg(test)]
+                self.pause_before_live_query().await;
                 match impact::impact_live(&scope.specs, &p.id, bounds, mode_of(p.strict)).await {
-                    Ok(report) => ok_json(
-                        serde_json::to_value(&report)
-                            .unwrap_or_else(|_| json!({"error":"serialize"})),
-                    ),
-                    Err(e) => fail_read(e),
+                    Ok(report) => {
+                        if let Err(error) =
+                            scope.verify_read(&scope.specs, &report.sources, &report.failures)
+                        {
+                            return fail("snapshot_expired", &error);
+                        }
+                        ok_json(
+                            serde_json::to_value(&report)
+                                .unwrap_or_else(|_| json!({"error":"serialize"})),
+                        )
+                    }
+                    Err(e) => match scope.verify_failed_read(&scope.specs, &e).await {
+                        Err(detail) => fail("snapshot_expired", detail),
+                        Ok(()) => fail_read_with_input(e, Some(&p.id)),
+                    },
                 }
             }
             Some(Handle::Snapshot(_)) => {
@@ -707,11 +931,6 @@ impl ConstellationReadServer {
         &self,
         Parameters(p): Parameters<GraphParams>,
     ) -> Result<CallToolResult, McpError> {
-        if let Some(handle) = &p.scope_handle
-            && let Err(error) = self.scope_current(handle).await
-        {
-            return fail("snapshot_expired", &error);
-        }
         let bounds = GraphBounds {
             limit: p.limit.unwrap_or(500),
         };
@@ -733,12 +952,28 @@ impl ConstellationReadServer {
         }
         match p.scope_handle.as_deref().and_then(|h| handles.get(h)) {
             Some(Handle::Scope(scope)) => {
+                #[cfg(test)]
+                if let Err(detail) = self.precheck_scope_for_test(scope, &scope.specs).await {
+                    return fail("snapshot_expired", detail);
+                }
+                #[cfg(test)]
+                self.pause_before_live_query().await;
                 match graph::graph_live(&scope.specs, bounds, mode_of(p.strict)).await {
-                    Ok(outcome) => ok_json(
-                        serde_json::to_value(&outcome)
-                            .unwrap_or_else(|_| json!({"error":"serialize"})),
-                    ),
-                    Err(e) => fail_read(e),
+                    Ok(outcome) => {
+                        if let Err(error) =
+                            scope.verify_read(&scope.specs, &outcome.sources, &outcome.failures)
+                        {
+                            return fail("snapshot_expired", &error);
+                        }
+                        ok_json(
+                            serde_json::to_value(&outcome)
+                                .unwrap_or_else(|_| json!({"error":"serialize"})),
+                        )
+                    }
+                    Err(e) => match scope.verify_failed_read(&scope.specs, &e).await {
+                        Err(detail) => fail("snapshot_expired", detail),
+                        Ok(()) => fail_read(e),
+                    },
                 }
             }
             Some(Handle::Snapshot(_)) => {
@@ -799,8 +1034,8 @@ pub async fn run_read_stdio() -> anyhow::Result<()> {
 }
 
 impl rmcp::ServerHandler for ConstellationReadServer {
-    fn get_info(&self) -> rmcp::model::ServerInfo {
-        rmcp::model::ServerInfo::new(
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        rmcp::model::ServerConfig::new(
             rmcp::model::ServerCapabilities::builder()
                 .enable_tools()
                 .build(),
@@ -822,19 +1057,326 @@ impl rmcp::ServerHandler for ConstellationReadServer {
         _params: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, McpError> {
-        Ok(rmcp::model::ListToolsResult {
-            next_cursor: None,
-            tools: self.tool_router.list_all(),
-            meta: Default::default(),
-        })
+        Ok(rmcp::model::ListToolsResult::with_all_items(
+            self.tool_router.list_all(),
+        ))
     }
 
     async fn call_tool(
         &self,
         params: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<rmcp::model::CallToolResponse, McpError> {
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, params, context);
         self.tool_router.call(tcc).await
+    }
+}
+
+#[cfg(test)]
+mod identity_error_tests {
+    use super::*;
+    use forgeplan_core::artifact::canonical_key::{ArtifactCandidate, ResolveError};
+    use rmcp::model::ContentBlock;
+
+    #[test]
+    fn conflict_is_a_tool_error_with_every_source_qualified_candidate() {
+        let candidates = ["first", "second"].map(|name| ArtifactCandidate {
+            canonical_key: "prd-shared".to_string(),
+            display_id: format!("PRD-{}", if name == "first" { "001" } else { "002" }),
+            title: name.to_string(),
+            relative_path: format!("src:source-a/prds/{name}.md").into(),
+        });
+        let result = fail_read_with_input(
+            ConstellationError::Resolve(ResolveError::ConflictingCanonicalKey {
+                key: "prd-shared".to_string(),
+                candidates: candidates.into(),
+            }),
+            Some("PRD-001"),
+        )
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("expected JSON error");
+        };
+        let value: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+        assert_eq!(value["error"], "conflicting_canonical_key");
+        assert_eq!(value["input"], "PRD-001");
+        assert_eq!(
+            value["candidates"][0]["relative_path"],
+            "src:source-a/prds/first.md"
+        );
+        assert_eq!(value["candidates"][1]["title"], "second");
+    }
+
+    #[test]
+    fn incomplete_snapshot_capture_remains_a_typed_tool_error() {
+        let result = fail_read_with_input(
+            ConstellationError::Resolve(ResolveError::IncompleteCapture {
+                message: "pinned source could not be parsed".to_string(),
+            }),
+            Some("PRD-001"),
+        )
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("expected JSON error");
+        };
+        let value: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+        assert_eq!(value["error"], "incomplete_capture");
+        assert_eq!(value["input"], "PRD-001");
+        assert!(
+            value["detail"]
+                .as_str()
+                .unwrap()
+                .contains("could not be parsed")
+        );
+    }
+}
+
+#[cfg(test)]
+mod live_scope_interleaving_tests {
+    use super::*;
+    use rmcp::ServiceExt;
+    use rmcp::model::{CallToolRequestParams, CallToolResult};
+    use serde_json::Value;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    struct Fixture {
+        client: rmcp::service::RunningService<rmcp::RoleClient, ()>,
+        _server_task: tokio::task::JoinHandle<()>,
+        gate: Arc<Mutex<Option<ReadPause>>>,
+    }
+
+    impl Fixture {
+        async fn new(server: ConstellationReadServer) -> Arc<Self> {
+            let gate = Arc::clone(&server.before_live_query);
+            let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+            let server_task = tokio::spawn(async move {
+                if let Ok(running) = server.serve(server_io).await {
+                    let _ = running.waiting().await;
+                }
+            });
+            let client = ().serve(client_io).await.expect("client handshake");
+            Arc::new(Self {
+                client,
+                _server_task: server_task,
+                gate,
+            })
+        }
+
+        async fn call(&self, name: &'static str, args: Value) -> CallToolResult {
+            let params =
+                CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                self.client.peer().call_tool(params),
+            )
+            .await
+            .expect("tool timeout")
+            .expect("tool RPC")
+        }
+
+        async fn arm(
+            &self,
+        ) -> (
+            tokio::sync::oneshot::Receiver<()>,
+            tokio::sync::oneshot::Sender<()>,
+        ) {
+            let (reached, reached_rx) = tokio::sync::oneshot::channel();
+            let (resume_tx, resume) = tokio::sync::oneshot::channel();
+            *self.gate.lock().await = Some(ReadPause { reached, resume });
+            (reached_rx, resume_tx)
+        }
+    }
+
+    struct TestWorkspace {
+        _temp: TempDir,
+        fp: PathBuf,
+        fixture: Arc<Fixture>,
+    }
+
+    async fn workspace(published: bool) -> TestWorkspace {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let root = temp.path().join("workspace");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::set_var("USERPROFILE", &home);
+            std::env::set_var("XDG_DATA_HOME", &home);
+        }
+        let fp = forgeplan_core::workspace::init_workspace(&root, "interleaving-test")
+            .unwrap()
+            .canonicalize()
+            .unwrap();
+        write_auth(&fp, "Body about auth.");
+        let mut reg = registry::ConstellationRegistry::default();
+        registry::create(&mut reg, "crew").unwrap();
+        registry::add_source(&mut reg, "crew", &fp, registry::SourceRole::Required).unwrap();
+        registry::save(&registry::registry_path(&home), &reg).unwrap();
+        if published {
+            publish(&fp).await;
+        }
+        let fixture = Fixture::new(ConstellationReadServer::new()).await;
+        TestWorkspace {
+            _temp: temp,
+            fp,
+            fixture,
+        }
+    }
+
+    fn write_auth(fp: &std::path::Path, body: &str) {
+        std::fs::write(
+            fp.join("adrs/ADR-001-auth.md"),
+            format!(
+                "---\nid: ADR-001\nkind: adr\nstatus: accepted\ntitle: Auth storage\n---\n\n{body}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    async fn publish(fp: &std::path::Path) {
+        let capability =
+            forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
+                fp.to_path_buf(),
+            );
+        forgeplan_core::constellation::facade::maintain_index(
+            &capability,
+            forgeplan_core::constellation::capture::CaptureLimits::default(),
+            std::time::Instant::now() + Duration::from_secs(120),
+        )
+        .await
+        .unwrap();
+    }
+
+    fn response_json(result: &CallToolResult) -> Value {
+        let rmcp::model::ContentBlock::Text(text) = &result.content[0] else {
+            panic!("expected tool JSON text");
+        };
+        serde_json::from_str(&text.text).unwrap()
+    }
+
+    async fn open(fixture: &Fixture) -> String {
+        let result = fixture.call("constellation_open", json!({})).await;
+        let opened = response_json(&result);
+        opened["scope_handle"].as_str().unwrap().to_string()
+    }
+
+    async fn interleave(
+        fixture: &Arc<Fixture>,
+        name: &'static str,
+        args: Value,
+        mutate: impl FnOnce() + Send + 'static,
+    ) -> Value {
+        let (reached, resume) = fixture.arm().await;
+        let fixture = Arc::clone(fixture);
+        let request = tokio::spawn(async move { fixture.call(name, args).await });
+        reached
+            .await
+            .expect("handler reached the post-precheck gate");
+        mutate();
+        resume.send(()).unwrap();
+        let response = request.await.unwrap();
+        response_json(&response)
+    }
+
+    fn read_args(name: &'static str, scope: &str) -> Value {
+        match name {
+            "constellation_search" => json!({"query": "auth", "scope_handle": scope}),
+            "constellation_get" => json!({"id": "ADR-001", "scope_handle": scope}),
+            "constellation_graph" => json!({"scope_handle": scope}),
+            "constellation_impact" => json!({"id": "ADR-001", "scope_handle": scope}),
+            _ => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(env_home)]
+    async fn post_precheck_markdown_change_expires_every_live_reader() {
+        for name in [
+            "constellation_search",
+            "constellation_get",
+            "constellation_graph",
+            "constellation_impact",
+        ] {
+            let workspace = workspace(false).await;
+            let scope = open(&workspace.fixture).await;
+            let fp = workspace.fp.clone();
+            let response = interleave(
+                &workspace.fixture,
+                name,
+                read_args(name, &scope),
+                move || write_auth(&fp, "Changed body."),
+            )
+            .await;
+            assert_eq!(
+                response["error"], "snapshot_expired",
+                "{name} served a changed corpus after its precheck: {response}"
+            );
+            assert_ne!(response["body"], "Changed body.");
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(env_home)]
+    async fn post_precheck_delete_and_new_ambiguity_expire_get() {
+        let deleted = workspace(false).await;
+        let scope = open(&deleted.fixture).await;
+        let artifact = deleted.fp.join("adrs/ADR-001-auth.md");
+        let response = interleave(
+            &deleted.fixture,
+            "constellation_get",
+            read_args("constellation_get", &scope),
+            move || std::fs::remove_file(artifact).unwrap(),
+        )
+        .await;
+        assert_eq!(response["error"], "snapshot_expired", "{response}");
+        assert_ne!(response["result"], "not_found");
+
+        let ambiguous = workspace(false).await;
+        let scope = open(&ambiguous.fixture).await;
+        let fp = ambiguous.fp.clone();
+        let response = interleave(
+            &ambiguous.fixture,
+            "constellation_get",
+            read_args("constellation_get", &scope),
+            move || {
+                std::fs::write(
+                    fp.join("adrs/ADR-001-copy.md"),
+                    "---\nid: ADR-001\nkind: adr\nstatus: accepted\ntitle: Alternate auth storage\n---\n\nAlternate body.\n",
+                )
+                .unwrap();
+            },
+        )
+        .await;
+        assert_eq!(response["error"], "snapshot_expired", "{response}");
+        assert_ne!(response["result"], "ambiguous");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(env_home)]
+    async fn post_precheck_new_published_generation_expires_get() {
+        let workspace = workspace(true).await;
+        let scope = open(&workspace.fixture).await;
+        let fp = workspace.fp.clone();
+        let fixture = Arc::clone(&workspace.fixture);
+        let (reached, resume) = fixture.arm().await;
+        let args = read_args("constellation_get", &scope);
+        let request_fixture = Arc::clone(&fixture);
+        let request =
+            tokio::spawn(async move { request_fixture.call("constellation_get", args).await });
+        reached
+            .await
+            .expect("handler reached the post-precheck gate");
+        write_auth(&fp, "Published B body.");
+        publish(&fp).await;
+        resume.send(()).unwrap();
+        let response = response_json(&request.await.unwrap());
+        assert_eq!(response["error"], "snapshot_expired", "{response}");
+        assert_ne!(response["body"], "Published B body.");
     }
 }

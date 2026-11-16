@@ -213,10 +213,9 @@ impl From<ValidationResult> for ValidationResultDto {
 // unusable reference / incomplete document set).
 
 use forgeplan_core::artifact::canonical_key::{
-    ArtifactCandidate, ArtifactIdentity, ResolveError, ResolvedArtifact,
-    resolve_artifact as resolve_artifact_shared,
+    ArtifactCandidate, ResolveError, ResolvedArtifact, resolve_artifact as resolve_artifact_shared,
 };
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The outcome of resolving one artifact reference.
 ///
@@ -299,9 +298,7 @@ impl From<Result<Option<ResolvedArtifact>, ResolveError>> for Resolution {
                 Self::Ambiguous { input, candidates }
             }
             Err(ResolveError::InvalidSelector { input }) => Self::InvalidSelector { input },
-            Err(ResolveError::IncompleteCapture { message }) => {
-                Self::IncompleteCapture { message }
-            }
+            Err(ResolveError::IncompleteCapture { message }) => Self::IncompleteCapture { message },
             // A contested canonical key is its own fact: the name is not
             // shared, the IDENTITY is. It keeps its own variant so the
             // caller can name the cause — "two documents claim this key"
@@ -333,9 +330,7 @@ pub fn resolve_reference(input: &str, documents: &[ArtifactCandidate]) -> Resolu
 /// The implementation lives in core — the document set is a workspace
 /// capability, not an MCP one — and is re-exported here so the call sites
 /// read the way they always did.
-pub use forgeplan_core::artifact::documents::{
-    candidates_from_records, candidates_from_summaries,
-};
+pub use forgeplan_core::artifact::documents::{candidates_from_records, candidates_from_summaries};
 
 /// The candidate list of an ambiguity, rendered for a human or an agent.
 ///
@@ -405,71 +400,40 @@ pub async fn resolve_in_workspace_files(workspace: &Path, input: &str) -> Resolu
 
 /// Resolve a reference against a legacy (LanceDB) index.
 ///
-/// The index is the document set on this layout, so the index's own
-/// resolution decides whether the reference names exactly one row. When it
-/// does not, the candidate set is rebuilt from the index's rows to say
-/// WHY: an alias two rows share is an ambiguity, not a miss.
-///
-/// Candidates carry the row's own canonical key — the key the index stores
-/// and addresses rows by — so a candidate names the same document the
-/// index would have written to.
+/// The complete canonical document set is authoritative for both identity
+/// and absence. The index is only a derived lookup by the resolved key; it
+/// must never choose a different row when canonical sources disagree.
 pub async fn resolve_in_legacy_index(
     store: &forgeplan_core::db::store::LanceStore,
+    permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
     workspace: &std::path::Path,
     input: &str,
 ) -> anyhow::Result<Resolution> {
-    let resolved = match store.resolve_canonical_key(input).await {
-        Ok(found) => found,
-        // The index refused: it named no single row. That refusal is
-        // classified below, from the rows themselves, so the surface answers
-        // with the taxonomy's own code instead of a generic error — the CLI
-        // route does the same.
-        Err(error)
-            if error
-                .downcast_ref::<forgeplan_core::artifact::canonical_key::ResolveError>()
-                .is_some() =>
-        {
-            None
+    let documents = match forgeplan_core::artifact::documents::workspace_candidates(workspace).await
+    {
+        Ok(documents) => documents,
+        Err(error) => {
+            return Ok(Resolution::IncompleteCapture {
+                message: error.to_string(),
+            });
         }
-        Err(error) => return Err(error),
     };
-    if let Some(canonical_key) = resolved {
-        let summary = store.get_artifact(&canonical_key).await?;
-        let display_id = summary
-            .as_ref()
-            .map(|summary| summary.id.clone())
-            .unwrap_or_else(|| canonical_key.clone());
-        return Ok(Resolution::Found(ResolvedArtifact {
-            identity: ArtifactIdentity {
-                canonical_key,
-                display_id,
-            },
-            relative_path: PathBuf::new(),
-        }));
+    let resolved = match resolve_reference(input, &documents) {
+        Resolution::Found(found) => found,
+        refusal @ (Resolution::Ambiguous { .. }
+        | Resolution::ConflictingCanonicalKey { .. }
+        | Resolution::InvalidSelector { .. }
+        | Resolution::IncompleteCapture { .. }
+        | Resolution::NotFound) => return Ok(refusal),
+    };
+    if store
+        .get_record_by_canonical_key(permit, &resolved.identity.canonical_key)
+        .await?
+        .is_none()
+    {
+        return Ok(Resolution::NotFound);
     }
-
-    // The index named no single row. Rebuild the candidate set from the
-    // index's own rows and let the shared algorithm classify the refusal.
-    //
-    // The paths come from the workspace's own documents — the SAME scan the
-    // file route reads — so a refusal points at a file an operator can open
-    // without a second walk of the directories.
-    let records = store.list_records(None).await?;
-    let mut candidates = candidates_from_records(&records);
-    if !candidates.is_empty() {
-        let paths = forgeplan_core::artifact::documents::workspace_document_paths(workspace).await?;
-        for candidate in &mut candidates {
-            if let Some(path) = paths.get(&candidate.canonical_key) {
-                candidate.relative_path = path.clone();
-            }
-        }
-    }
-    Ok(match resolve_reference(input, &candidates) {
-        // The index resolved nothing, so a rebuilt set that resolves
-        // something would contradict the index. The index wins.
-        Resolution::Found(_) => Resolution::NotFound,
-        other => other,
-    })
+    Ok(Resolution::Found(resolved))
 }
 
 /// A reference resolved against a document set, for a caller that may
@@ -526,6 +490,7 @@ pub fn resolve_endpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     /// Helper: build a body with the given slug field.
     fn body_with_slug(slug: &str, assigned: Option<u32>) -> String {
@@ -646,7 +611,12 @@ mod tests {
 
     #[test]
     fn a_selector_no_document_carries_is_not_found() {
-        let documents = vec![candidate("prd-alpha-k0123", "PRD-001", "Alpha", "prds/alpha.md")];
+        let documents = vec![candidate(
+            "prd-alpha-k0123",
+            "PRD-001",
+            "Alpha",
+            "prds/alpha.md",
+        )];
         let resolution = resolve_reference("PRD-404", &documents);
         assert_eq!(resolution_code(&resolution), "not_found");
         assert_eq!(resolution.canonical_key(), None);
@@ -654,7 +624,12 @@ mod tests {
 
     #[test]
     fn an_unusable_selector_is_reported_as_such_and_not_as_a_miss() {
-        let documents = vec![candidate("prd-alpha-k0123", "PRD-001", "Alpha", "prds/alpha.md")];
+        let documents = vec![candidate(
+            "prd-alpha-k0123",
+            "PRD-001",
+            "Alpha",
+            "prds/alpha.md",
+        )];
         // A qualified cross-source reference is not a local selector.
         let resolution = resolve_reference("prd-alpha-k0123@other-source", &documents);
         assert_eq!(
@@ -680,9 +655,13 @@ mod tests {
             described[0].contains("prds/alpha.md"),
             "the relative path must be part of the description"
         );
+        let workspace_prefix = std::env::current_dir()
+            .expect("current directory")
+            .to_string_lossy()
+            .into_owned();
         assert!(
-            !described[0].contains('/'),
-            "the description must never carry an absolute path"
+            !described[0].contains(&workspace_prefix),
+            "candidate descriptions must not expose an absolute workspace path"
         );
     }
 
@@ -710,7 +689,12 @@ mod tests {
         // — the identity is — so this is a conflict, not a choice.
         let documents = vec![
             candidate("prd-alpha-k0123", "PRD-001", "Alpha", "prds/alpha.md"),
-            candidate("prd-alpha-k0123", "PRD-002", "Alpha again", "prds/alpha2.md"),
+            candidate(
+                "prd-alpha-k0123",
+                "PRD-002",
+                "Alpha again",
+                "prds/alpha2.md",
+            ),
         ];
         let resolution = resolve_reference("prd-alpha-k0123", &documents);
         assert_eq!(
@@ -752,8 +736,14 @@ mod tests {
 
     #[test]
     fn a_resolved_endpoint_for_a_missing_document_is_a_forward_reference() {
-        let documents = vec![candidate("prd-alpha-k0123", "PRD-001", "Alpha", "prds/alpha.md")];
-        let endpoint = resolve_endpoint("PRD-404", &documents).expect("a miss is a forward reference");
+        let documents = vec![candidate(
+            "prd-alpha-k0123",
+            "PRD-001",
+            "Alpha",
+            "prds/alpha.md",
+        )];
+        let endpoint =
+            resolve_endpoint("PRD-404", &documents).expect("a miss is a forward reference");
         match endpoint {
             Endpoint::Forward(declared) => {
                 assert_eq!(
@@ -804,7 +794,10 @@ mod tests {
         let workspace = tmp.path();
         let prds = workspace.join("prds");
         std::fs::create_dir_all(&prds).expect("mkdir");
-        for (file, slug) in [("PRD-001-alpha.md", "prd-alpha-k0123"), ("PRD-001-beta.md", "prd-beta-k0456")] {
+        for (file, slug) in [
+            ("PRD-001-alpha.md", "prd-alpha-k0123"),
+            ("PRD-001-beta.md", "prd-beta-k0456"),
+        ] {
             std::fs::write(
                 prds.join(file),
                 format!("---\nid: PRD-001\ntitle: T\nslug: {slug}\nkind: prd\nstatus: draft\n---\n\nbody\n"),
@@ -818,5 +811,28 @@ mod tests {
             "ambiguous",
             "two documents sharing one display id must not resolve to a winner"
         );
+    }
+    #[test]
+    fn legacy_resolution_keeps_canonical_identity_when_index_is_stale() {
+        let indexed = vec![candidate("prd-old-k0001", "PRD-001", "Old", "prds/old.md")];
+        let canonical = vec![
+            candidate("prd-old-k0001", "PRD-002", "Old", "prds/old.md"),
+            candidate(
+                "prd-new-k0002",
+                "PRD-001",
+                "Replacement",
+                "prds/replacement.md",
+            ),
+        ];
+
+        let stale_index_resolution = resolve_reference("PRD-001", &indexed);
+        let source_resolution = resolve_reference("PRD-001", &canonical);
+
+        assert_eq!(
+            stale_index_resolution.canonical_key(),
+            Some("prd-old-k0001")
+        );
+        assert_eq!(source_resolution.canonical_key(), Some("prd-new-k0002"));
+        assert_eq!(source_resolution.display_id(), Some("PRD-001"));
     }
 }

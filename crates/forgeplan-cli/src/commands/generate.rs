@@ -16,7 +16,7 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         )
     })?;
 
-    let (workspace, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let (workspace, lock, store) = common::open_store_locked_checked(&[]).await?;
 
     // PRD-071 contract: emit `Fix:` when LLM unavailable so the agent has a
     // deterministic remediation step.
@@ -86,6 +86,7 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
     // PRD-073 file-first: helper writes file FIRST then syncs to LanceDB.
     // PROB-049 H-6: persistent deps now flow through `MutationContext`.
 
+    common::ensure_ordinary_mutation_allowed(&workspace)?;
     let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
         &workspace,
         &lock,
@@ -96,7 +97,8 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         &build,
     )
     .await
-    .with_context(|| format!("Failed to create {} {} (key-file)", template_key, title))?;
+    .with_context(|| format!("Failed to create {} {} (key-file)", template_key, title))
+    .map_err(|e| common::describe_possible_legacy_partial_commit(store.is_some(), e))?;
     let id = created.id;
     let canonical_key = created.canonical_key;
     let filepath = created.filepath;
@@ -106,6 +108,10 @@ pub async fn run(kind_str: &str, description: &str) -> anyhow::Result<()> {
         // storage commit, and a held guard would time the capture out.
         drop(lock);
         common::reconcile_after_file_mutation(&workspace).await;
+    } else {
+        drop(store);
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&workspace).await?;
     }
 
     println!("  Created: {}", filepath.display());

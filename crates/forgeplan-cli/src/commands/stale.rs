@@ -4,9 +4,9 @@ use forgeplan_core::hints::{self, Hint};
 use crate::commands::common;
 
 pub async fn run(json: bool) -> anyhow::Result<()> {
-    let (_, source) = common::open_read_source().await?;
+    let (_, source, _read_guard) = common::open_read_source().await?;
     let stale_records = match &source {
-        common::ReadSource::Legacy(store) => store.find_stale().await?,
+        common::ReadSource::Legacy(store) => store.find_stale(&_read_guard).await?,
         common::ReadSource::Captured(read) => read.find_stale(),
     };
 

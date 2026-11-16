@@ -59,6 +59,8 @@ pub struct DurabilityTrackingStore {
     /// The store prefix Lance passed to `wrap`. Kept so the diagnostic
     /// identity of a wrapper is the store it actually wraps.
     store_prefix: String,
+    #[cfg(windows)]
+    private_stage: Option<(std::path::PathBuf, Arc<dyn super::PlatformDurability>)>,
 }
 
 impl fmt::Debug for DurabilityTrackingStore {
@@ -87,12 +89,68 @@ impl DurabilityTrackingStore {
             inner,
             tracker,
             store_prefix: store_prefix.into(),
+            #[cfg(windows)]
+            private_stage: None,
         }
     }
 
     /// The shared tracker. Both tables reach the same one through this.
     pub fn tracker(&self) -> &Arc<StageTracker> {
         &self.tracker
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn for_private_stage(
+        root: &std::path::Path,
+        tracker: Arc<StageTracker>,
+        platform: Arc<dyn super::PlatformDurability>,
+    ) -> Self {
+        let mut store = Self::new(
+            Arc::new(object_store::local::LocalFileSystem::new()),
+            tracker,
+            "file-object-store",
+        );
+        store.private_stage = Some((root.to_path_buf(), platform));
+        store
+    }
+
+    fn prepare_destination(&self, location: &ObjectPath) -> ObjectStoreResult<()> {
+        #[cfg(windows)]
+        if let Some((root, platform)) = &self.private_stage {
+            let result = (|| {
+                let path = super::tracked_filesystem_path(location.as_ref()).map_err(|error| {
+                    object_store::Error::Generic {
+                        store: "DurabilityTrackingStore",
+                        source: Box::new(std::io::Error::other(error.to_string())),
+                    }
+                })?;
+                if !super::path_is_within(&path, root) {
+                    return Err(object_store::Error::Generic {
+                        store: "DurabilityTrackingStore",
+                        source: Box::new(std::io::Error::other(
+                            "destination is outside private stage",
+                        )),
+                    });
+                }
+                let parent = path.parent().ok_or_else(|| object_store::Error::Generic {
+                    store: "DurabilityTrackingStore",
+                    source: Box::new(std::io::Error::other("destination has no parent")),
+                })?;
+                platform
+                    .ensure_dir(parent)
+                    .map_err(|error| object_store::Error::Generic {
+                        store: "DurabilityTrackingStore",
+                        source: Box::new(std::io::Error::other(error.to_string())),
+                    })
+            })();
+            if let Err(error) = &result {
+                self.tracker
+                    .poison(format!("prepare destination {location}: {error}"));
+            }
+            return result;
+        }
+        let _ = location;
+        Ok(())
     }
 }
 
@@ -106,6 +164,7 @@ impl ObjectStore for DurabilityTrackingStore {
         payload: PutPayload,
         opts: PutOptions,
     ) -> ObjectStoreResult<PutResult> {
+        self.prepare_destination(location)?;
         let key = location.to_string();
         // Intent first: a crash mid-write must leave an unresolved
         // destination behind, never nothing at all.
@@ -128,6 +187,7 @@ impl ObjectStore for DurabilityTrackingStore {
         location: &ObjectPath,
         payload: PutPayload,
     ) -> ObjectStoreResult<PutResult> {
+        self.prepare_destination(location)?;
         let key = location.to_string();
         self.tracker.register_intent(&key);
         match self
@@ -151,6 +211,7 @@ impl ObjectStore for DurabilityTrackingStore {
         &self,
         location: &ObjectPath,
     ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+        self.prepare_destination(location)?;
         let key = location.to_string();
         self.tracker.register_intent(&key);
         match self
@@ -176,6 +237,7 @@ impl ObjectStore for DurabilityTrackingStore {
         location: &ObjectPath,
         opts: PutMultipartOptions,
     ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+        self.prepare_destination(location)?;
         let key = location.to_string();
         self.tracker.register_intent(&key);
         match self.inner.put_multipart_opts(location, opts).await {
@@ -194,6 +256,7 @@ impl ObjectStore for DurabilityTrackingStore {
     }
 
     async fn copy(&self, from: &ObjectPath, to: &ObjectPath) -> ObjectStoreResult<()> {
+        self.prepare_destination(to)?;
         let (from_key, to_key) = (from.to_string(), to.to_string());
         self.tracker.register_intent(&from_key);
         match self.inner.copy(from, to).await {
@@ -214,6 +277,7 @@ impl ObjectStore for DurabilityTrackingStore {
         from: &ObjectPath,
         to: &ObjectPath,
     ) -> ObjectStoreResult<()> {
+        self.prepare_destination(to)?;
         let (from_key, to_key) = (from.to_string(), to.to_string());
         self.tracker.register_intent(&from_key);
         match self.inner.copy_if_not_exists(from, to).await {
@@ -237,6 +301,7 @@ impl ObjectStore for DurabilityTrackingStore {
     /// parents, which the copy-then-delete default would record as two
     /// unrelated mutations.
     async fn rename(&self, from: &ObjectPath, to: &ObjectPath) -> ObjectStoreResult<()> {
+        self.prepare_destination(to)?;
         let (from_key, to_key) = (from.to_string(), to.to_string());
         self.tracker.register_intent(&from_key);
         match self.inner.rename(from, to).await {
@@ -258,6 +323,7 @@ impl ObjectStore for DurabilityTrackingStore {
         from: &ObjectPath,
         to: &ObjectPath,
     ) -> ObjectStoreResult<()> {
+        self.prepare_destination(to)?;
         let (from_key, to_key) = (from.to_string(), to.to_string());
         self.tracker.register_intent(&from_key);
         match self.inner.rename_if_not_exists(from, to).await {
@@ -372,11 +438,15 @@ impl lance_io::object_store::WrappingObjectStore for DurabilityTrackingStore {
     fn wrap(&self, store_prefix: &str, original: Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore> {
         // A fresh wrapper per `wrap`, all pointing at the same tracker: this
         // is what makes one tracker serve both tables.
-        Arc::new(DurabilityTrackingStore::new(
-            original,
-            Arc::clone(&self.tracker),
-            store_prefix,
-        ))
+        let wrapped =
+            DurabilityTrackingStore::new(original, Arc::clone(&self.tracker), store_prefix);
+        #[cfg(windows)]
+        let wrapped = {
+            let mut wrapped = wrapped;
+            wrapped.private_stage = self.private_stage.clone();
+            wrapped
+        };
+        Arc::new(wrapped)
     }
 }
 
@@ -473,6 +543,40 @@ pub(crate) async fn write_multipart_tracked(
 mod tests {
     use super::*;
     use object_store::memory::InMemory;
+
+    #[cfg(windows)]
+    #[test]
+    fn private_stage_prepares_destination_and_rejects_escape() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("stage");
+        std::fs::create_dir(&root).unwrap();
+        let tracker = Arc::new(StageTracker::default());
+        let store = DurabilityTrackingStore::for_private_stage(
+            &root,
+            Arc::clone(&tracker),
+            Arc::new(super::super::WindowsNtfsDurability),
+        );
+        let destination = ObjectPath::from_absolute_path(root.join("nested").join("data")).unwrap();
+        store.prepare_destination(&destination).unwrap();
+        assert!(root.join("nested").is_dir());
+        let outside = ObjectPath::from_absolute_path(tmp.path().join("outside")).unwrap();
+        assert!(store.prepare_destination(&outside).is_err());
+        assert!(tracker.is_poisoned());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn private_stage_rejects_drive_root_without_url_panic() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tracker = Arc::new(StageTracker::default());
+        let store = DurabilityTrackingStore::for_private_stage(
+            tmp.path(),
+            Arc::clone(&tracker),
+            Arc::new(super::super::WindowsNtfsDurability),
+        );
+        assert!(store.prepare_destination(&ObjectPath::from("D:")).is_err());
+        assert!(tracker.is_poisoned());
+    }
 
     fn wrapped() -> (
         Arc<StageTracker>,

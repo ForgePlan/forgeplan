@@ -65,6 +65,16 @@ Fetch one artifact by canonical key or display id. A `key@fragment`             
 </details>
 <!-- forgeplan-runtime:end -->
 
+## Результат чтения текущих данных
+
+Со `scope_handle` результаты `found`, `ambiguous` и `not_found` содержат
+`sources`, `failures` и `partial`. Найденный документ не скрывает отказ
+необязательных источников или обязательных, пропущенных при `strict: false`.
+
+Конфликт канонического ключа — ошибка инструмента (`isError: true`).
+Её JSON содержит `error: "conflicting_canonical_key"` и `candidates`
+с указанием источников. Успех обмена JSON-RPC не означает успех выбора документа.
+
 ## Примеры
 
 - [Настройка MCP и область workspace](/ru/docs/guides/mcp-setup/)

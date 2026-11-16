@@ -294,28 +294,33 @@ pub struct AnomalyScan {
 /// holds a workspace lock to write it.
 pub async fn detect_anomalies(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     workspace: &Path,
     filter: &AnomalyFilter,
 ) -> anyhow::Result<AnomalyReport> {
-    Ok(detect_anomalies_with_journal(store, workspace, filter)
-        .await?
-        .report)
+    Ok(
+        detect_anomalies_with_journal(store, permit, workspace, filter)
+            .await?
+            .report,
+    )
 }
 
 /// [`detect_anomalies`] plus the journal state this scan produced, for a
 /// caller that intends to persist it under its own lock.
 pub async fn detect_anomalies_with_journal(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     workspace: &Path,
     filter: &AnomalyFilter,
 ) -> anyhow::Result<AnomalyScan> {
+    permit.matches_workspace(workspace)?;
     let mut journal = load_anomaly_journal(workspace).await.unwrap_or_default();
 
     // One-time data load — reused by every detector below.
-    let all_records = store.list_records(None).await?;
-    let all_relations = store.get_all_relations().await?;
+    let all_records = store.list_records(permit, None).await?;
+    let all_relations = store.get_all_relations(permit).await?;
     let (health_report, phase_mismatches) =
-        crate::health::health_report_with_phase(store, workspace).await?;
+        crate::health::health_report_with_phase(store, permit, workspace).await?;
 
     let now = Utc::now();
     let now_str = now.to_rfc3339();
@@ -1364,7 +1369,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = LanceStore::init(&ws).await.unwrap();
+        let store = {
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            LanceStore::init_new(&ws, &guard).await.unwrap()
+        };
         (tmp, ws, store)
     }
 
@@ -1378,8 +1388,14 @@ mod tests {
     /// Empty workspace produces an empty report.
     #[tokio::test]
     async fn empty_workspace_zero_anomalies() {
-        let (_tmp, ws, store) = fresh_store().await;
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert_eq!(report.total, 0);
@@ -1390,31 +1406,40 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn orphan_link_detected() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         // Create a real source.
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "PRD-001".into(),
-                id: "PRD-001".into(),
-                kind: "prd".into(),
-                status: "active".into(),
-                title: "Source".into(),
-                body: "## Problem\nbody\n".into(),
-                depth: "tactical".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
+            .create_artifact_for_test(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "PRD-001".into(),
+                    id: "PRD-001".into(),
+                    kind: "prd".into(),
+                    status: "active".into(),
+                    title: "Source".into(),
+                    body: "## Problem\nbody\n".into(),
+                    depth: "tactical".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
             .await
             .unwrap();
         // Add a relation to a non-existent target via the store's test helper.
         store
-            .add_relation_for_test("PRD-001", "EVID-999", "informs")
+            .add_relation_for_test(&guard, "PRD-001", "EVID-999", "informs")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let orphans: Vec<_> = report
@@ -1433,45 +1458,57 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn mistyped_based_on_detected() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "EVID-001".into(),
-                id: "EVID-001".into(),
-                kind: "evidence".into(),
-                status: "active".into(),
-                title: "Evidence".into(),
-                body: "verdict: supports\ncongruence_level: 3\n".into(),
-                depth: "tactical".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
+            .create_artifact_for_test(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "EVID-001".into(),
+                    id: "EVID-001".into(),
+                    kind: "evidence".into(),
+                    status: "active".into(),
+                    title: "Evidence".into(),
+                    body: "verdict: supports\ncongruence_level: 3\n".into(),
+                    depth: "tactical".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
             .await
             .unwrap();
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "PRD-001".into(),
-                id: "PRD-001".into(),
-                kind: "prd".into(),
-                status: "active".into(),
-                title: "PRD".into(),
-                body: "## Problem\nbody\n".into(),
-                depth: "tactical".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
+            .create_artifact_for_test(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "PRD-001".into(),
+                    id: "PRD-001".into(),
+                    kind: "prd".into(),
+                    status: "active".into(),
+                    title: "PRD".into(),
+                    body: "## Problem\nbody\n".into(),
+                    depth: "tactical".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("EVID-001", "PRD-001", "based_on")
+            .add_relation_for_test(&guard, "EVID-001", "PRD-001", "based_on")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let mistyped: Vec<_> = report
@@ -1495,32 +1532,41 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn mistyped_based_on_skips_evidence_to_evidence() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         for id in ["EVID-001", "EVID-002"] {
             store
-                .create_artifact_for_test(&NewArtifact {
-                    canonical_key: id.into(),
-                    id: id.into(),
-                    kind: "evidence".into(),
-                    status: "active".into(),
-                    title: format!("Evidence {id}"),
-                    body: "verdict: supports\ncongruence_level: 3\n".into(),
-                    depth: "tactical".into(),
-                    author: None,
-                    parent_epic: None,
-                    valid_until: None,
-                    tags: Vec::new(),
-                })
+                .create_artifact_for_test(
+                    &guard,
+                    &NewArtifact {
+                        canonical_key: id.into(),
+                        id: id.into(),
+                        kind: "evidence".into(),
+                        status: "active".into(),
+                        title: format!("Evidence {id}"),
+                        body: "verdict: supports\ncongruence_level: 3\n".into(),
+                        depth: "tactical".into(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags: Vec::new(),
+                    },
+                )
                 .await
                 .unwrap();
         }
         // EVID-001 grounds itself in the earlier EVID-002 — legit lineage.
         store
-            .add_relation_for_test("EVID-001", "EVID-002", "based_on")
+            .add_relation_for_test(&guard, "EVID-001", "EVID-002", "based_on")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let mistyped: Vec<_> = report
@@ -1540,54 +1586,66 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn weakest_link_skips_non_decision_source() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         // Evidence source: active, r_eff=0 (default), with an informs parent.
         // Pre-fix this fired weakest_link; post-fix it is skipped.
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "EVID-001".into(),
-                id: "EVID-001".into(),
-                kind: "evidence".into(),
-                status: "active".into(),
-                title: "Evidence".into(),
-                body: "verdict: supports\ncongruence_level: 3\n".into(),
-                depth: "tactical".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
-            .await
-            .unwrap();
-        // Decision source: active PRD (r_eff=0) with a parent EPIC → still flagged.
-        for (id, kind) in [("PRD-001", "prd"), ("EPIC-001", "epic")] {
-            store
-                .create_artifact_for_test(&NewArtifact {
-                    canonical_key: id.into(),
-                    id: id.into(),
-                    kind: kind.into(),
+            .create_artifact_for_test(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "EVID-001".into(),
+                    id: "EVID-001".into(),
+                    kind: "evidence".into(),
                     status: "active".into(),
-                    title: format!("Decision {id}"),
-                    body: "## Problem\nbody\n".into(),
+                    title: "Evidence".into(),
+                    body: "verdict: supports\ncongruence_level: 3\n".into(),
                     depth: "tactical".into(),
                     author: None,
                     parent_epic: None,
                     valid_until: None,
                     tags: Vec::new(),
-                })
+                },
+            )
+            .await
+            .unwrap();
+        // Decision source: active PRD (r_eff=0) with a parent EPIC → still flagged.
+        for (id, kind) in [("PRD-001", "prd"), ("EPIC-001", "epic")] {
+            store
+                .create_artifact_for_test(
+                    &guard,
+                    &NewArtifact {
+                        canonical_key: id.into(),
+                        id: id.into(),
+                        kind: kind.into(),
+                        status: "active".into(),
+                        title: format!("Decision {id}"),
+                        body: "## Problem\nbody\n".into(),
+                        depth: "tactical".into(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags: Vec::new(),
+                    },
+                )
                 .await
                 .unwrap();
         }
         store
-            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .add_relation_for_test(&guard, "EVID-001", "PRD-001", "informs")
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-001", "EPIC-001", "based_on")
+            .add_relation_for_test(&guard, "PRD-001", "EPIC-001", "based_on")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let weak: Vec<&str> = report
@@ -1611,45 +1669,55 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn unbacked_displacement_detected() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .create_artifact_for_test(&new_artifact(
-                "EVID-001",
-                "evidence",
-                "superseded",
-                "verdict: refutes\ncongruence_level: 3\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact(
+                    "EVID-001",
+                    "evidence",
+                    "superseded",
+                    "verdict: refutes\ncongruence_level: 3\n",
+                ),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .add_relation_for_test(&guard, "EVID-001", "PRD-001", "informs")
             .await
             .unwrap();
         // An older predecessor does not replace EVID-001's own testimony.
         store
-            .create_artifact_for_test(&new_artifact(
-                "EVID-000",
-                "evidence",
-                "superseded",
-                "verdict: supports\ncongruence_level: 3\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact(
+                    "EVID-000",
+                    "evidence",
+                    "superseded",
+                    "verdict: supports\ncongruence_level: 3\n",
+                ),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("EVID-000", "EVID-001", "supersedes")
+            .add_relation_for_test(&guard, "EVID-000", "EVID-001", "supersedes")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let hits: Vec<_> = report
@@ -1672,58 +1740,71 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn unbacked_displacement_quiet_on_honest_flows() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         // (a) refutes pack displaced by a real successor.
         store
-            .create_artifact_for_test(&new_artifact(
-                "EVID-001",
-                "evidence",
-                "active",
-                "verdict: refutes\ncongruence_level: 3\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact(
+                    "EVID-001",
+                    "evidence",
+                    "active",
+                    "verdict: refutes\ncongruence_level: 3\n",
+                ),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .add_relation_for_test(&guard, "EVID-001", "PRD-001", "informs")
             .await
             .unwrap();
         store
-            .create_artifact_for_test(&new_artifact(
-                "EVID-002",
-                "evidence",
-                "active",
-                "verdict: supports\ncongruence_level: 3\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact(
+                    "EVID-002",
+                    "evidence",
+                    "active",
+                    "verdict: supports\ncongruence_level: 3\n",
+                ),
+            )
             .await
             .unwrap();
-        crate::lifecycle::supersede(&store, "EVID-001", "EVID-002")
+        crate::lifecycle::supersede(&guard, &store, "EVID-001", "EVID-002")
             .await
             .unwrap();
         // (b) deprecated SUPPORTS duplicate (sanctioned dedup flow).
         store
-            .create_artifact_for_test(&new_artifact(
-                "EVID-003",
-                "evidence",
-                "deprecated",
-                "verdict: supports\ncongruence_level: 3\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact(
+                    "EVID-003",
+                    "evidence",
+                    "deprecated",
+                    "verdict: supports\ncongruence_level: 3\n",
+                ),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("EVID-003", "PRD-001", "informs")
+            .add_relation_for_test(&guard, "EVID-003", "PRD-001", "informs")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let hits: Vec<_> = report
@@ -1741,30 +1822,39 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn filter_by_kind_narrows_result() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "PRD-001".into(),
-                id: "PRD-001".into(),
-                kind: "prd".into(),
-                status: "active".into(),
-                title: "Source".into(),
-                body: "## Problem\nbody\n".into(),
-                depth: "tactical".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
+            .create_artifact_for_test(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "PRD-001".into(),
+                    id: "PRD-001".into(),
+                    kind: "prd".into(),
+                    status: "active".into(),
+                    title: "Source".into(),
+                    body: "## Problem\nbody\n".into(),
+                    depth: "tactical".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-001", "EVID-MISSING", "informs")
+            .add_relation_for_test(&guard, "PRD-001", "EVID-MISSING", "informs")
             .await
             .unwrap();
 
         // No-filter: should see at least the orphan_link.
-        let all = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let all = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert!(
@@ -1776,6 +1866,7 @@ mod tests {
         // Filter by StuckDraft: should be empty.
         let filtered = detect_anomalies(
             &store,
+            &guard,
             &ws,
             &AnomalyFilter {
                 kind: Some(AnomalyKind::StuckDraft),
@@ -1791,33 +1882,42 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn severity_counts_sum_to_total() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "PRD-001".into(),
-                id: "PRD-001".into(),
-                kind: "prd".into(),
-                status: "active".into(),
-                title: "Source".into(),
-                body: "## Problem\nbody\n".into(),
-                depth: "tactical".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
+            .create_artifact_for_test(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "PRD-001".into(),
+                    id: "PRD-001".into(),
+                    kind: "prd".into(),
+                    status: "active".into(),
+                    title: "Source".into(),
+                    body: "## Problem\nbody\n".into(),
+                    depth: "tactical".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-001", "EVID-X", "informs")
+            .add_relation_for_test(&guard, "PRD-001", "EVID-X", "informs")
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-001", "EVID-Y", "informs")
+            .add_relation_for_test(&guard, "PRD-001", "EVID-Y", "informs")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let sum = report.by_severity.low + report.by_severity.medium + report.by_severity.high;
@@ -1827,13 +1927,20 @@ mod tests {
     /// `since` filter excludes anomalies observed before the cutoff.
     #[tokio::test]
     async fn since_filter_excludes_old_anomalies() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         // No artifacts → no anomalies. Filter against a far-future cutoff
         // — the report stays empty (no anomalies exist) but the path is
         // exercised.
         let future = Utc::now() + Duration::days(7);
         let report = detect_anomalies(
             &store,
+            &guard,
             &ws,
             &AnomalyFilter {
                 since: Some(future),
@@ -1883,36 +1990,43 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn stuck_draft_detected_for_complete_aged_evid() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         // Seed PRD + complete EVID; link them; then mutate created_at on
         // the EVID to be > 24h ago via the test helper.
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .create_artifact_for_test(&new_artifact(
-                "EVID-001",
-                "evidence",
-                "draft",
-                "verdict: supports\ncongruence_level: 3\nevidence_type: test\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact(
+                    "EVID-001",
+                    "evidence",
+                    "draft",
+                    "verdict: supports\ncongruence_level: 3\nevidence_type: test\n",
+                ),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .add_relation_for_test(&guard, "EVID-001", "PRD-001", "informs")
             .await
             .unwrap();
         // Make the EVID look old enough to trigger stuck-draft (>24h).
         // We backdate created_at to 48h ago via the dedicated test-helper.
         let old = (Utc::now() - Duration::hours(48)).to_rfc3339();
         store
-            .set_created_at_for_test("EVID-001", &old)
+            .set_created_at_for_test(&guard, "EVID-001", &old)
             .await
             .unwrap();
         // Audit-r3 F1: no longer need to manually bump r_eff_score —
@@ -1920,7 +2034,7 @@ mod tests {
         // (`lifecycle::ready_to_activate` + has_links) fires without
         // synthetic scoring.
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let stuck: Vec<_> = report
@@ -1942,33 +2056,43 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn stuck_draft_not_detected_for_fresh_draft() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .create_artifact_for_test(&new_artifact(
-                "EVID-001",
-                "evidence",
-                "draft",
-                "verdict: supports\ncongruence_level: 3\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact(
+                    "EVID-001",
+                    "evidence",
+                    "draft",
+                    "verdict: supports\ncongruence_level: 3\n",
+                ),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .add_relation_for_test(&guard, "EVID-001", "PRD-001", "informs")
             .await
             .unwrap();
-        store.update_r_eff_score("EVID-001", 1.0).await.unwrap();
+        store
+            .update_r_eff_score(&guard, "EVID-001", 1.0)
+            .await
+            .unwrap();
         // created_at left at the default (now) — too fresh to be stuck.
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert!(
@@ -1987,14 +2111,18 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn expired_evidence_detected_when_linked() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         // Backdate valid_until to yesterday.
@@ -2008,13 +2136,13 @@ mod tests {
             "verdict: supports\ncongruence_level: 3\n",
         );
         evid.valid_until = Some(yesterday.clone());
-        store.create_artifact_for_test(&evid).await.unwrap();
+        store.create_artifact_for_test(&guard, &evid).await.unwrap();
         store
-            .add_relation_for_test("EVID-001", "PRD-001", "informs")
+            .add_relation_for_test(&guard, "EVID-001", "PRD-001", "informs")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let expired: Vec<_> = report
@@ -2044,7 +2172,13 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn expired_evidence_not_detected_when_orphan() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         let yesterday = (Utc::now() - Duration::days(1))
             .format("%Y-%m-%d")
             .to_string();
@@ -2055,10 +2189,10 @@ mod tests {
             "verdict: supports\ncongruence_level: 3\n",
         );
         evid.valid_until = Some(yesterday);
-        store.create_artifact_for_test(&evid).await.unwrap();
+        store.create_artifact_for_test(&guard, &evid).await.unwrap();
         // No links — the detector requires parents to exist.
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert!(
@@ -2076,35 +2210,37 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn circular_dependency_detected_2_node_cycle() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-002",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-002", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-001", "PRD-002", "based_on")
+            .add_relation_for_test(&guard, "PRD-001", "PRD-002", "based_on")
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-002", "PRD-001", "based_on")
+            .add_relation_for_test(&guard, "PRD-002", "PRD-001", "based_on")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let cycles: Vec<_> = report
@@ -2124,31 +2260,33 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn circular_dependency_not_detected_one_way_chain() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-002",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-002", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-002", "PRD-001", "based_on")
+            .add_relation_for_test(&guard, "PRD-002", "PRD-001", "based_on")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert!(
@@ -2168,23 +2306,32 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn weakest_link_walk_identifies_chain_leaf() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         for id in &["PRD-001", "PRD-002", "PRD-003"] {
             store
-                .create_artifact_for_test(&new_artifact(id, "prd", "active", "## Problem\nbody\n"))
+                .create_artifact_for_test(
+                    &guard,
+                    &new_artifact(id, "prd", "active", "## Problem\nbody\n"),
+                )
                 .await
                 .unwrap();
         }
         store
-            .add_relation_for_test("PRD-001", "PRD-002", "informs")
+            .add_relation_for_test(&guard, "PRD-001", "PRD-002", "informs")
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-002", "PRD-003", "informs")
+            .add_relation_for_test(&guard, "PRD-002", "PRD-003", "informs")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let weak: Vec<_> = report
@@ -2223,33 +2370,35 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn weakest_link_walk_handles_self_leaf() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-002",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-002", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         // PRD-001 informs PRD-002 (no further parents). PRD-002 is the
         // self-leaf.
         store
-            .add_relation_for_test("PRD-001", "PRD-002", "informs")
+            .add_relation_for_test(&guard, "PRD-001", "PRD-002", "informs")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let prd001 = report
@@ -2267,34 +2416,36 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn weakest_link_unresolvable_detected() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-002",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-002", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         // Link them via informs — gives PRD-002 an outgoing edge.
         store
-            .add_relation_for_test("PRD-002", "PRD-001", "informs")
+            .add_relation_for_test(&guard, "PRD-002", "PRD-001", "informs")
             .await
             .unwrap();
         // r_eff_score for both defaults to 0 (no evidence linked).
         // PRD-002 satisfies: active + r_eff=0 + has outgoing informs/based_on.
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let weak: Vec<_> = report
@@ -2324,34 +2475,41 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn filter_combination_kind_and_severity_narrows() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         // Seed both a mistyped_based_on (Medium) and an orphan_link
         // (High) so the unfiltered result has two distinct severities.
         store
-            .create_artifact_for_test(&new_artifact(
-                "EVID-001",
-                "evidence",
-                "active",
-                "verdict: supports\ncongruence_level: 3\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact(
+                    "EVID-001",
+                    "evidence",
+                    "active",
+                    "verdict: supports\ncongruence_level: 3\n",
+                ),
+            )
             .await
             .unwrap();
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("EVID-001", "PRD-001", "based_on")
+            .add_relation_for_test(&guard, "EVID-001", "PRD-001", "based_on")
             .await
             .unwrap();
         // Orphan link to a non-existent target.
         store
-            .add_relation_for_test("PRD-001", "RFC-MISSING", "informs")
+            .add_relation_for_test(&guard, "PRD-001", "RFC-MISSING", "informs")
             .await
             .unwrap();
 
@@ -2359,6 +2517,7 @@ mod tests {
         // the mistyped_based_on anomaly, not the orphan_link (High).
         let filtered = detect_anomalies(
             &store,
+            &guard,
             &ws,
             &AnomalyFilter {
                 severity: Some(Severity::Medium),
@@ -2376,6 +2535,7 @@ mod tests {
         // (mistyped is Medium, not High).
         let zero = detect_anomalies(
             &store,
+            &guard,
             &ws,
             &AnomalyFilter {
                 severity: Some(Severity::High),
@@ -2396,42 +2556,47 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn multi_detector_severity_counts_sum_to_total() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         // Orphan link → High.
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-001", "EVID-GONE", "informs")
+            .add_relation_for_test(&guard, "PRD-001", "EVID-GONE", "informs")
             .await
             .unwrap();
         // Mistyped based_on → Medium.
         store
-            .create_artifact_for_test(&new_artifact(
-                "EVID-001",
-                "evidence",
-                "active",
-                "verdict: supports\ncongruence_level: 3\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact(
+                    "EVID-001",
+                    "evidence",
+                    "active",
+                    "verdict: supports\ncongruence_level: 3\n",
+                ),
+            )
             .await
             .unwrap();
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-002",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-002", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("EVID-001", "PRD-002", "based_on")
+            .add_relation_for_test(&guard, "EVID-001", "PRD-002", "based_on")
             .await
             .unwrap();
         // weakest_link_unresolvable → Low (PRD-002 with r_eff=0 + has
@@ -2439,20 +2604,18 @@ mod tests {
         // outgoing edge, so we set up PRD-003 → PRD-002 informs to give
         // PRD-003 an outgoing).
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-003",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-003", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-003", "PRD-002", "informs")
+            .add_relation_for_test(&guard, "PRD-003", "PRD-002", "informs")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         // Total must equal the sum of per-severity counts AND of
@@ -2484,14 +2647,18 @@ mod tests {
     #[cfg(feature = "test-helpers")]
     async fn phase_mismatch_detected_for_active_artifact_in_early_phase() {
         use crate::phase;
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         // Seed phase state at Validate (early-cycle).
@@ -2502,7 +2669,7 @@ mod tests {
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let mismatch: Vec<_> = report
@@ -2530,14 +2697,18 @@ mod tests {
     #[cfg(feature = "test-helpers")]
     async fn phase_mismatch_not_detected_for_late_phase() {
         use crate::phase;
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         phase::store::initialize_phase(&ws, "PRD-001", None)
@@ -2547,7 +2718,7 @@ mod tests {
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert!(
@@ -2569,17 +2740,23 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn duplicate_artifact_detected_for_near_identical_titles() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         // Title token sets: 4-of-5 shared → Jaccard ≈ 4/6 = 0.67… need
         // higher overlap. Use 5-of-5 shared + 1 unique each → 5/7 ≈ 0.71.
         let mut a = new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n");
         a.title = "Authentication subsystem refactor design plan today".to_string();
-        store.create_artifact_for_test(&a).await.unwrap();
+        store.create_artifact_for_test(&guard, &a).await.unwrap();
         let mut b = new_artifact("PRD-002", "prd", "active", "## Problem\nbody\n");
         b.title = "Authentication subsystem refactor design plan tomorrow".to_string();
-        store.create_artifact_for_test(&b).await.unwrap();
+        store.create_artifact_for_test(&guard, &b).await.unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let dups: Vec<_> = report
@@ -2606,15 +2783,21 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn duplicate_artifact_not_detected_across_kinds() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         let mut a = new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n");
         a.title = "Authentication subsystem".to_string();
-        store.create_artifact_for_test(&a).await.unwrap();
+        store.create_artifact_for_test(&guard, &a).await.unwrap();
         let mut b = new_artifact("RFC-001", "rfc", "active", "## Problem\nbody\n");
         b.title = "Authentication subsystem".to_string();
-        store.create_artifact_for_test(&b).await.unwrap();
+        store.create_artifact_for_test(&guard, &b).await.unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert!(
@@ -2637,7 +2820,13 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn missing_must_section_detected_for_active_with_stub_markers() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         // check_stub_detailed requires count >= 3 markers. Stack three
         // canonical English markers in the body so the detector fires.
         let stub_body = "## Problem\n\
@@ -2647,11 +2836,11 @@ mod tests {
                          ## Scope\n\
                          What's in the MVP\n\n";
         store
-            .create_artifact_for_test(&new_artifact("PRD-001", "prd", "active", stub_body))
+            .create_artifact_for_test(&guard, &new_artifact("PRD-001", "prd", "active", stub_body))
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         let stubs: Vec<_> = report
@@ -2677,14 +2866,20 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn missing_must_section_not_detected_for_draft() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         let stub_body = "## Problem\nWhat we are building and why\n\nstill TBD.\n";
         store
-            .create_artifact_for_test(&new_artifact("PRD-001", "prd", "draft", stub_body))
+            .create_artifact_for_test(&guard, &new_artifact("PRD-001", "prd", "draft", stub_body))
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         assert!(
@@ -2704,26 +2899,30 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn since_filter_excludes_pre_existing_anomaly_via_journal() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         // Seed orphan_link so the first scan produces one anomaly.
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-001", "EVID-MISSING", "informs")
+            .add_relation_for_test(&guard, "PRD-001", "EVID-MISSING", "informs")
             .await
             .unwrap();
 
         // Scan 1 — populates the journal with this anomaly's observed_at.
         // The report is pure, so persisting is an explicit, separate step:
         // this is the authorized-caller sequence (read, then write).
-        let scan1 = detect_anomalies_with_journal(&store, &ws, &AnomalyFilter::default())
+        let scan1 = detect_anomalies_with_journal(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         persist_anomaly_journal(&ws, &scan1.journal).await.unwrap();
@@ -2742,6 +2941,7 @@ mod tests {
         // observed_at < cutoff → filtered out.
         let scan2 = detect_anomalies(
             &store,
+            &guard,
             &ws,
             &AnomalyFilter {
                 since: Some(cutoff),
@@ -2767,23 +2967,27 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn since_filter_admits_newly_introduced_anomaly() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         // Seed one orphan in scan 1 → journal records its observed_at.
         store
-            .create_artifact_for_test(&new_artifact(
-                "PRD-001",
-                "prd",
-                "active",
-                "## Problem\nbody\n",
-            ))
+            .create_artifact_for_test(
+                &guard,
+                &new_artifact("PRD-001", "prd", "active", "## Problem\nbody\n"),
+            )
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-001", "EVID-MISSING-A", "informs")
+            .add_relation_for_test(&guard, "PRD-001", "EVID-MISSING-A", "informs")
             .await
             .unwrap();
 
-        let scan1 = detect_anomalies_with_journal(&store, &ws, &AnomalyFilter::default())
+        let scan1 = detect_anomalies_with_journal(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         persist_anomaly_journal(&ws, &scan1.journal).await.unwrap();
@@ -2794,12 +2998,13 @@ mod tests {
 
         // Add a SECOND orphan after the cutoff — this one must pass.
         store
-            .add_relation_for_test("PRD-001", "EVID-MISSING-B", "informs")
+            .add_relation_for_test(&guard, "PRD-001", "EVID-MISSING-B", "informs")
             .await
             .unwrap();
 
         let scan2 = detect_anomalies(
             &store,
+            &guard,
             &ws,
             &AnomalyFilter {
                 since: Some(cutoff),
@@ -2833,28 +3038,37 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "test-helpers")]
     async fn circular_dependency_does_not_detect_3_node_cycle_v1_limitation() {
-        let (_tmp, ws, store) = fresh_store().await;
+        let (_tmp, ws, store, guard) = {
+            let (_tmp, ws, store) = fresh_store().await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            (_tmp, ws, store, guard)
+        };
         for id in &["PRD-001", "PRD-002", "PRD-003"] {
             store
-                .create_artifact_for_test(&new_artifact(id, "prd", "active", "## Problem\nbody\n"))
+                .create_artifact_for_test(
+                    &guard,
+                    &new_artifact(id, "prd", "active", "## Problem\nbody\n"),
+                )
                 .await
                 .unwrap();
         }
         // A → B → C → A (3-node cycle).
         store
-            .add_relation_for_test("PRD-001", "PRD-002", "based_on")
+            .add_relation_for_test(&guard, "PRD-001", "PRD-002", "based_on")
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-002", "PRD-003", "based_on")
+            .add_relation_for_test(&guard, "PRD-002", "PRD-003", "based_on")
             .await
             .unwrap();
         store
-            .add_relation_for_test("PRD-003", "PRD-001", "based_on")
+            .add_relation_for_test(&guard, "PRD-003", "PRD-001", "based_on")
             .await
             .unwrap();
 
-        let report = detect_anomalies(&store, &ws, &AnomalyFilter::default())
+        let report = detect_anomalies(&store, &guard, &ws, &AnomalyFilter::default())
             .await
             .unwrap();
         // v1 limitation: 3-node cycle goes undetected. Documented; do
@@ -3092,7 +3306,35 @@ mod captured_read_tests {
     }
 
     async fn legacy_store_for(read: &WorkspaceRead) -> LanceStore {
-        let store = LanceStore::init(read.workspace()).await.unwrap();
+        let ws = read
+            .workspace()
+            .parent()
+            .unwrap()
+            .join("legacy-projection-fixture");
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+        for name in crate::workspace::ARTIFACT_DIRS
+            .iter()
+            .copied()
+            .chain(["state", "config.yaml"])
+        {
+            let src = read.workspace().join(name);
+            if !src.exists() {
+                continue;
+            }
+            for entry in walkdir::WalkDir::new(&src).follow_links(false) {
+                let entry = entry.unwrap();
+                let dest = ws.join(entry.path().strip_prefix(read.workspace()).unwrap());
+                if entry.file_type().is_dir() {
+                    std::fs::create_dir_all(&dest).unwrap();
+                } else {
+                    std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+                    std::fs::copy(entry.path(), dest).unwrap();
+                }
+            }
+        }
         // Seeded from `read.records()`, NOT from `record_from_parsed`:
         // `from_parts` recomputes `r_eff_score` after conversion, so the
         // conversion output carries 0.0 for every artifact. Inserting that
@@ -3100,29 +3342,33 @@ mod captured_read_tests {
         // captured side and make any parity comparison meaningless.
         for record in read.records() {
             store
-                .create_artifact(&crate::db::store::NewArtifact {
-                    canonical_key: record.canonical_key.clone(),
-                    id: record.id.clone(),
-                    kind: record.kind.clone(),
-                    status: record.status.clone(),
-                    title: record.title.clone(),
-                    body: record.body.clone(),
-                    depth: record.depth.clone(),
-                    author: record.author.clone(),
-                    parent_epic: record.parent_epic.clone(),
-                    valid_until: record.valid_until.clone(),
-                    tags: record.tags.clone(),
-                })
+                .create_artifact(
+                    &guard,
+                    &crate::db::store::NewArtifact {
+                        canonical_key: record.canonical_key.clone(),
+                        id: record.id.clone(),
+                        kind: record.kind.clone(),
+                        status: record.status.clone(),
+                        title: record.title.clone(),
+                        body: record.body.clone(),
+                        depth: record.depth.clone(),
+                        author: record.author.clone(),
+                        parent_epic: record.parent_epic.clone(),
+                        valid_until: record.valid_until.clone(),
+                        tags: record.tags.clone(),
+                    },
+                )
                 .await
                 .unwrap();
-            store.replace_record(record).await.unwrap();
+            store.replace_record(&guard, record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
             store
-                .add_relation(&source, &target, &relation)
+                .add_relation(&guard, &source, &target, &relation)
                 .await
                 .unwrap();
         }
+        drop(guard);
         store
     }
 
@@ -3402,12 +3648,15 @@ mod captured_read_tests {
         let (_tmp, ws) = anomaly_workspace().await;
         let read = open_read(&ws).await;
         let store = legacy_store_for(&read).await;
+        let guard = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path())
+            .await
+            .unwrap();
 
         // INPUT EQUALITY FIRST. Parity over different inputs proves nothing,
         // so assert the two sides really do hold the same records — scores
         // included, because `weakest_link_unresolvable` reads the cached
         // column and would otherwise fire on one layout only.
-        let legacy_records = store.list_records(None).await.unwrap();
+        let legacy_records = store.list_records(&guard, None).await.unwrap();
         assert_eq!(
             legacy_records.len(),
             read.records().len(),
@@ -3427,14 +3676,19 @@ mod captured_read_tests {
             assert_eq!(l.created_at, c.created_at, "id={}", l.id);
         }
         assert_eq!(
-            store.get_all_relations().await.unwrap(),
+            store.get_all_relations(&guard).await.unwrap(),
             read.get_all_relations(),
             "both layouts must see the same edges"
         );
 
-        let legacy = detect_anomalies(&store, &ws, &AnomalyFilter::default())
-            .await
-            .unwrap();
+        let legacy = detect_anomalies(
+            &store,
+            &guard,
+            store.workspace_path(),
+            &AnomalyFilter::default(),
+        )
+        .await
+        .unwrap();
         let captured = detect_anomalies_captured(&read, &ws, &AnomalyFilter::default())
             .await
             .unwrap();

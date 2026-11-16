@@ -321,23 +321,8 @@ pub const CANONICAL_KEY_HEX_LEN: usize = 32;
 /// display prefixes abbreviate them. The kinds SPEC-009 does not name
 /// (memory and the brownfield kinds) keep their slug prefixes.
 const CANONICAL_KEY_KINDS: &[&str] = &[
-    "prd",
-    "spec",
-    "rfc",
-    "adr",
-    "note",
-    "epic",
-    "problem",
-    "solution",
-    "evidence",
-    "refresh",
-    "mem",
-    "uc",
-    "glos",
-    "inv",
-    "scen",
-    "hyp",
-    "dm",
+    "prd", "spec", "rfc", "adr", "note", "epic", "problem", "solution", "evidence", "refresh",
+    "mem", "uc", "glos", "inv", "scen", "hyp", "dm",
 ];
 
 /// Whether `segment` is a kind segment of a canonical key.

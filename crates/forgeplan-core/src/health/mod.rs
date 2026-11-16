@@ -51,10 +51,11 @@
 //!
 //! let workspace = Path::new(".forgeplan");
 //! let store = LanceStore::open(workspace).await?;
+//! let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(workspace).await?;
 //!
 //! // Single-scan, phase-aware report — identical verdict across CLI/MCP.
 //! let (report, phase_mismatches) =
-//!     health_report_with_phase(&store, workspace).await?;
+//!     health_report_with_phase(&store, &permit, workspace).await?;
 //!
 //! match report.verdict {
 //!     Verdict::Empty => println!("Run `forgeplan new` to start."),
@@ -557,11 +558,14 @@ pub struct GitignoreDrift {
 /// not need phase tracking should call this. For phase-aware verdict
 /// folding (CLI/MCP parity per PROB-051 L-H3), use
 /// [`health_report_with_phase`].
-pub async fn health_report(store: &LanceStore) -> anyhow::Result<HealthReport> {
-    let all = store.list_records(None).await?;
-    let all_relations = store.get_all_relations().await?;
-    let evidence_records = evidence_records_from_store(store).await?;
-    let stale_count = stale_count_from_store(store).await;
+pub async fn health_report(
+    store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
+) -> anyhow::Result<HealthReport> {
+    let all = store.list_records(permit, None).await?;
+    let all_relations = store.get_all_relations(permit).await?;
+    let evidence_records = evidence_records_from_store(store, permit).await?;
+    let stale_count = stale_count_from_store(store, permit).await?;
     // The shared builder takes borrowed evidence, so the table's owned rows
     // are borrowed here — the same `&[&ArtifactRecord]` view the captured
     // path hands it, and the one engine behind both.
@@ -605,27 +609,25 @@ fn evidence_records_from_records(records: &[ArtifactRecord]) -> Vec<&ArtifactRec
     records.iter().filter(|r| r.kind == "evidence").collect()
 }
 
-async fn evidence_records_from_store(store: &LanceStore) -> anyhow::Result<Vec<ArtifactRecord>> {
+async fn evidence_records_from_store(
+    store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
+) -> anyhow::Result<Vec<ArtifactRecord>> {
     let evidence_filter = ArtifactFilter {
         kind: Some("evidence".to_string()),
         status: None,
     };
-    store.list_records(Some(&evidence_filter)).await
+    store.list_records(permit, Some(&evidence_filter)).await
 }
 
 /// How many artifacts are past `valid_until`.
 ///
-/// A stale scan failure is a warning, never a silent zero: the legacy path
-/// already degrades this way (a wrong count would mislabel every verdict), and
-/// the captured path reuses the same rule against the capture it holds.
-async fn stale_count_from_store(store: &LanceStore) -> usize {
-    match store.find_stale().await {
-        Ok(stale) => stale.len(),
-        Err(e) => {
-            eprintln!("Warning: Failed to check stale artifacts: {e}");
-            0
-        }
-    }
+/// A failed read cannot be reported as a healthy zero count.
+async fn stale_count_from_store(
+    store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
+) -> anyhow::Result<usize> {
+    Ok(store.find_stale(permit).await?.len())
 }
 
 fn stale_count_from_records(records: &[ArtifactRecord]) -> usize {
@@ -661,12 +663,14 @@ fn stale_count_from_records(records: &[ArtifactRecord]) -> usize {
 /// with the duplicate scan eliminated).
 pub async fn health_report_with_phase(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     workspace: &Path,
 ) -> anyhow::Result<(HealthReport, Vec<PhaseMismatch>)> {
-    let all = store.list_records(None).await?;
-    let all_relations = store.get_all_relations().await?;
-    let evidence_records = evidence_records_from_store(store).await?;
-    let stale_count = stale_count_from_store(store).await;
+    permit.matches_workspace(workspace)?;
+    let all = store.list_records(permit, None).await?;
+    let all_relations = store.get_all_relations(permit).await?;
+    let evidence_records = evidence_records_from_store(store, permit).await?;
+    let stale_count = stale_count_from_store(store, permit).await?;
     let evidence: Vec<&ArtifactRecord> = evidence_records.iter().collect();
     health_report_with_phase_from_records(&all, &evidence, &all_relations, stale_count, workspace)
         .await
@@ -747,12 +751,34 @@ async fn health_report_with_phase_from_records(
                 (r.id.clone(), key, r.title.clone(), r.status.clone())
             })
             .collect();
+        // Resolving every phase separately re-captures every Markdown file for
+        // every active document. Keep one complete capture for this batch,
+        // including the same alias-ownership and conflicting-key checks.
+        let candidates = if active_records.is_empty() {
+            Ok(Vec::new())
+        } else {
+            crate::artifact::documents::workspace_candidates(workspace).await
+        };
+        if let Err(error) = &candidates {
+            let safe_err = crate::projection::sanitize_error_chain(error);
+            tracing::warn!(err = %safe_err, "phase ownership capture failed during health scan");
+        }
         let workspace_owned = workspace.to_path_buf();
         let results: Vec<(Option<PhaseMismatch>, bool)> = futures::stream::iter(active_records)
             .map(|(id, canonical_key, title, status)| {
                 let ws = workspace_owned.clone();
+                let candidates = &candidates;
                 async move {
-                    match crate::phase::store::read_phase(&ws, &canonical_key).await {
+                    let Ok(candidates) = candidates else {
+                        return (None, true);
+                    };
+                    match crate::phase::store::read_phase_from_candidates(
+                        &ws,
+                        &canonical_key,
+                        candidates,
+                    )
+                    .await
+                    {
                         Ok(Some(s)) => {
                             let early = matches!(
                                 s.current_phase,
@@ -937,7 +963,7 @@ fn build_health_report(
     }
 
     // Build relation index
-    let (outgoing, incoming) = build_relation_index(all_relations, &all);
+    let (outgoing, incoming) = build_relation_index(all_relations);
 
     // Non-evidence, non-memory artifacts only.
     // Evidence is tracked separately. Memory artifacts are standalone by design.
@@ -1588,10 +1614,15 @@ pub fn find_duplicate_pairs(records: &[ArtifactRecord], threshold: f64) -> Vec<D
     pairs
 }
 
-fn build_relation_index(
-    relations: &[(String, String, String)],
-    records: &[ArtifactRecord],
-) -> (RelationIndex, RelationIndex) {
+fn record_key(record: &ArtifactRecord) -> &str {
+    if record.canonical_key.is_empty() {
+        &record.id
+    } else {
+        &record.canonical_key
+    }
+}
+
+fn build_relation_index(relations: &[(String, String, String)]) -> (RelationIndex, RelationIndex) {
     let mut outgoing: RelationIndex = BTreeMap::new();
     let mut incoming: RelationIndex = BTreeMap::new();
     for (from, to, rel) in relations {
@@ -1605,21 +1636,6 @@ fn build_relation_index(
             .push((from.clone(), rel.clone()));
     }
 
-    // The relations name their endpoints by the canonical key, and a record's
-    // display id is an alias for the same document. Both names answer "which
-    // edges touch this document", so both are indexed — otherwise a document
-    // that has an edge reads as an orphan and the strict verdict trips.
-    for record in records {
-        if record.canonical_key == record.id {
-            continue;
-        }
-        if let Some(edges) = outgoing.get(&record.canonical_key).cloned() {
-            outgoing.entry(record.id.clone()).or_insert(edges);
-        }
-        if let Some(edges) = incoming.get(&record.canonical_key).cloned() {
-            incoming.entry(record.id.clone()).or_insert(edges);
-        }
-    }
     (outgoing, incoming)
 }
 
@@ -1630,7 +1646,7 @@ fn find_orphans(
 ) -> Vec<String> {
     records
         .iter()
-        .filter(|r| !outgoing.contains_key(&r.id) && !incoming.contains_key(&r.id))
+        .filter(|r| !outgoing.contains_key(record_key(r)) && !incoming.contains_key(record_key(r)))
         .map(|r| r.id.clone())
         .collect()
 }
@@ -1655,7 +1671,7 @@ fn find_blind_spots(
 
         if is_decision_type
             && needs_evidence
-            && !artifact_has_evidence(&record.id, evidence_records, outgoing)
+            && !artifact_has_evidence(record_key(record), evidence_records, outgoing)
         {
             spots.push(BlindSpot {
                 id: record.id.clone(),
@@ -1689,7 +1705,7 @@ fn index_evidence_by_artifact<'ev>(
     let mut evidence_by_id: HashMap<String, &'ev ArtifactRecord> =
         HashMap::with_capacity(evidence_records.len());
     for ev in evidence_records {
-        evidence_by_id.insert(ev.id.to_ascii_lowercase(), *ev);
+        evidence_by_id.insert(record_key(ev).to_ascii_lowercase(), *ev);
     }
 
     let mut links: HashMap<String, Vec<&'ev ArtifactRecord>> = HashMap::new();
@@ -1751,7 +1767,7 @@ fn find_at_risk(
         if is_terminal(&record.status) {
             continue;
         }
-        let key = record.id.to_ascii_lowercase();
+        let key = record_key(record).to_ascii_lowercase();
         let Some(linked) = evidence_index.get(&key) else {
             continue;
         };
@@ -1892,7 +1908,7 @@ fn compute_derived_status_breakdown(
 
     for record in records {
         // Check if artifact has linked evidence and compute R_eff
-        let key = record.id.to_ascii_lowercase();
+        let key = record_key(record).to_ascii_lowercase();
         let ev_items: Vec<_> = evidence_index
             .get(&key)
             .map(|linked| {
@@ -1984,7 +2000,7 @@ fn artifact_has_evidence(
 ) -> bool {
     evidence_records
         .iter()
-        .any(|ev| is_evidence_linked(artifact_id, &ev.id, outgoing))
+        .any(|ev| is_evidence_linked(artifact_id, record_key(ev), outgoing))
 }
 
 /// Check if evidence is linked to an artifact (in either direction).
@@ -2016,6 +2032,47 @@ fn is_evidence_linked(artifact_id: &str, evidence_id: &str, outgoing: &RelationI
 mod tests {
     use super::*;
     use crate::db::store::ArtifactRecord;
+
+    #[test]
+    fn canonical_evidence_does_not_leak_between_shared_display_aliases() {
+        let mut first = make_record("PRD-001", "prd");
+        first.canonical_key = "prd-unproved-decision".into();
+        first.title = "Unproved decision".into();
+        first.status = "active".into();
+        let mut second = make_record("PRD-001", "prd");
+        second.canonical_key = "prd-refuted-decision".into();
+        second.title = "Refuted decision".into();
+        second.status = "active".into();
+        let mut evidence = make_record("EVID-001", "evidence");
+        evidence.canonical_key = "evid-negative-result".into();
+        evidence.status = "active".into();
+        evidence.body =
+            "## Structured Fields\n\nverdict: refutes\ncongruence_level: 3\nevidence_type: test\n"
+                .into();
+        let records = vec![first, second, evidence];
+        let relations = vec![(
+            records[2].canonical_key.clone(),
+            records[1].canonical_key.clone(),
+            "informs".into(),
+        )];
+        let report = build_health_report(&records, &[&records[2]], &relations, 0);
+        assert_eq!(
+            report
+                .blind_spots
+                .iter()
+                .map(|entry| entry.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Unproved decision"],
+        );
+        assert_eq!(
+            report
+                .at_risk
+                .iter()
+                .map(|entry| entry.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Refuted decision"],
+        );
+    }
 
     /// Borrow an owned evidence population for the private helpers.
     ///
@@ -3077,10 +3134,16 @@ mod tests {
         use tempfile::TempDir;
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let (store, guard) = {
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+            (store, guard)
+        };
 
-        let legacy = health_report(&store).await.unwrap();
-        let (with_phase, mismatches) = health_report_with_phase(&store, &ws).await.unwrap();
+        let legacy = health_report(&store, &guard).await.unwrap();
+        let (with_phase, mismatches) = health_report_with_phase(&store, &guard, &ws).await.unwrap();
 
         assert_eq!(
             legacy.verdict, with_phase.verdict,
@@ -3101,9 +3164,15 @@ mod tests {
         use tempfile::TempDir;
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let (store, guard) = {
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+            (store, guard)
+        };
 
-        let report = health_report(&store).await.unwrap();
+        let report = health_report(&store, &guard).await.unwrap();
         assert_eq!(
             report.verdict, report.partial_verdict,
             "PROB-056: legacy health_report has no phase context — verdict must == partial_verdict"
@@ -3119,9 +3188,15 @@ mod tests {
         use tempfile::TempDir;
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let (store, guard) = {
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+            (store, guard)
+        };
 
-        let (report, mismatches) = health_report_with_phase(&store, &ws).await.unwrap();
+        let (report, mismatches) = health_report_with_phase(&store, &guard, &ws).await.unwrap();
         if mismatches.is_empty() {
             assert_eq!(
                 report.verdict, report.partial_verdict,
@@ -3130,7 +3205,7 @@ mod tests {
         }
         // partial_verdict MUST always equal the legacy compute even when
         // verdict диverges due to folded phase context.
-        let legacy = health_report(&store).await.unwrap();
+        let legacy = health_report(&store, &guard).await.unwrap();
         assert_eq!(
             report.partial_verdict, legacy.verdict,
             "PROB-056: partial_verdict on with_phase == verdict on legacy (same input → same partial)"
@@ -3147,28 +3222,37 @@ mod tests {
         use tempfile::TempDir;
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let (store, guard) = {
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+            (store, guard)
+        };
         // Seed a single active PRD with no phase state file → zero
         // mismatches even with tracking enabled.
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "PRD-001".to_string(),
-                id: "PRD-001".to_string(),
-                kind: "prd".to_string(),
-                status: "active".to_string(),
-                title: "Verdict consistency seed".to_string(),
-                body: "## Problem\nReal text.\n\n## Goals\nReal goals.\n".to_string(),
-                depth: "standard".to_string(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
+            .create_artifact_for_test(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "PRD-001".to_string(),
+                    id: "PRD-001".to_string(),
+                    kind: "prd".to_string(),
+                    status: "active".to_string(),
+                    title: "Verdict consistency seed".to_string(),
+                    body: "## Problem\nReal text.\n\n## Goals\nReal goals.\n".to_string(),
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
             .await
             .unwrap();
 
-        let legacy = health_report(&store).await.unwrap();
-        let (with_phase, mismatches) = health_report_with_phase(&store, &ws).await.unwrap();
+        let legacy = health_report(&store, &guard).await.unwrap();
+        let (with_phase, mismatches) = health_report_with_phase(&store, &guard, &ws).await.unwrap();
 
         assert_eq!(
             legacy.verdict, with_phase.verdict,
@@ -3352,10 +3436,18 @@ mod tests {
         // graceful-degradation path.
         let tmp = TempDir::new().unwrap();
         let ws_abs = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws_abs).await.unwrap();
+        let (store, guard) = {
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws_abs)
+                .await
+                .unwrap();
+            let store = LanceStore::init_new(&ws_abs, &guard).await.unwrap();
+            (store, guard)
+        };
 
         // Call with absolute path first as control — must succeed.
-        let (report, _mismatches) = health_report_with_phase(&store, &ws_abs).await.unwrap();
+        let (report, _mismatches) = health_report_with_phase(&store, &guard, &ws_abs)
+            .await
+            .unwrap();
         // No artifacts, no git → no drift entries.
         assert_eq!(report.total, 0);
         // The bug we're guarding against is silently passing `""` to
@@ -3825,32 +3917,66 @@ mod captured_read_tests {
     /// including `r_eff_score`, so any divergence is in the report
     /// computation and not in the inputs.
     async fn legacy_store_for(read: &WorkspaceRead) -> LanceStore {
-        let store = LanceStore::init(read.workspace()).await.unwrap();
+        let (store, guard) = {
+            let ws = read
+                .workspace()
+                .parent()
+                .unwrap()
+                .join("legacy-projection-fixture");
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+            for name in crate::workspace::ARTIFACT_DIRS
+                .iter()
+                .copied()
+                .chain(["state", "config.yaml"])
+            {
+                let src = read.workspace().join(name);
+                if !src.exists() {
+                    continue;
+                }
+                for entry in walkdir::WalkDir::new(&src).follow_links(false) {
+                    let entry = entry.unwrap();
+                    let dest = ws.join(entry.path().strip_prefix(read.workspace()).unwrap());
+                    if entry.file_type().is_dir() {
+                        std::fs::create_dir_all(&dest).unwrap();
+                    } else {
+                        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+                        std::fs::copy(entry.path(), dest).unwrap();
+                    }
+                }
+            }
+            (store, guard)
+        };
         // From `read.records()`, which carries the scores `from_parts`
         // recomputed — `record_from_parsed` output is 0.0 for every record
         // and would be a different input population.
         for record in read.records() {
             store
-                .create_artifact(&NewArtifact {
-                    canonical_key: record.id.clone(),
-                    id: record.id.clone(),
-                    kind: record.kind.clone(),
-                    status: record.status.clone(),
-                    title: record.title.clone(),
-                    body: record.body.clone(),
-                    depth: record.depth.clone(),
-                    author: record.author.clone(),
-                    parent_epic: record.parent_epic.clone(),
-                    valid_until: record.valid_until.clone(),
-                    tags: record.tags.clone(),
-                })
+                .create_artifact(
+                    &guard,
+                    &NewArtifact {
+                        canonical_key: record.id.clone(),
+                        id: record.id.clone(),
+                        kind: record.kind.clone(),
+                        status: record.status.clone(),
+                        title: record.title.clone(),
+                        body: record.body.clone(),
+                        depth: record.depth.clone(),
+                        author: record.author.clone(),
+                        parent_epic: record.parent_epic.clone(),
+                        valid_until: record.valid_until.clone(),
+                        tags: record.tags.clone(),
+                    },
+                )
                 .await
                 .unwrap();
-            store.replace_record(record).await.unwrap();
+            store.replace_record(&guard, record).await.unwrap();
         }
         for (source, target, relation) in read.get_all_relations() {
             store
-                .add_relation(&source, &target, &relation)
+                .add_relation(&guard, &source, &target, &relation)
                 .await
                 .unwrap();
         }
@@ -4115,9 +4241,15 @@ mod captured_read_tests {
     async fn captured_health_matches_the_legacy_projection() {
         let (_tmp, ws) = health_workspace();
         let read = open_read(&ws).await;
-        let store = legacy_store_for(&read).await;
+        let (store, guard) = {
+            let store = legacy_store_for(&read).await;
+            let guard = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path())
+                .await
+                .unwrap();
+            (store, guard)
+        };
 
-        let legacy = health_report(&store).await.unwrap();
+        let legacy = health_report(&store, &guard).await.unwrap();
         let captured = health_report_captured(&read).await.unwrap();
 
         assert_eq!(legacy.total, captured.total);
@@ -4154,10 +4286,18 @@ mod captured_read_tests {
         .unwrap();
 
         let read = open_read(&ws).await;
-        let store = legacy_store_for(&read).await;
+        let (store, guard) = {
+            let store = legacy_store_for(&read).await;
+            let guard = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path())
+                .await
+                .unwrap();
+            (store, guard)
+        };
 
         let (legacy_report, legacy_mismatches) =
-            health_report_with_phase(&store, &ws).await.unwrap();
+            health_report_with_phase(&store, &guard, store.workspace_path())
+                .await
+                .unwrap();
         let (captured_report, captured_mismatches) =
             health_report_with_phase_captured(&read, &ws).await.unwrap();
 

@@ -24,6 +24,13 @@ Options:
       --check-only             Report inconsistencies without modifying files. Default is apply mode (auto-rename + auto-fill `predicted_number`)
       --report-cross-pr        Forward-compat flag for RFC-009 §Phase 2.4 cross-PR ref-drift detection. The current implementation surfaces a no-op marker in the JSON output; cross-PR walking is deferred (see module docs)
       --json                   Emit JSON report to stdout (schema_version 1). Default is a scannable human-readable summary
+      --plan-out <FILE>        Write a version-1 identity-repair plan to this file. Planning is read-only: the workspace is not changed, and only the plan file is written
+      --apply-plan <FILE>      Apply a version-1 identity-repair plan. The plan is re-checked against the workspace under the workspace lock; a stale plan is refused
+      --after-blocked <TXN>    Link a new plan or an explicit rollback recovery to a blocked transaction
+      --recover <TXN>          Recover an identity-repair transaction by its identifier. With `--rollback` the transaction's preimages are restored
+      --publish-prepared       Publish a fully prepared staged journal before explicit recovery
+      --rollback               Roll the recovered transaction back to its preimages
+      --reconcile-index        Retry owner-specific index reconciliation for a pending repair
   -h, --help                   Print help
   -V, --version                Print version
 ```

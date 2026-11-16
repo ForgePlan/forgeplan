@@ -22,7 +22,7 @@
 use forgeplan_mcp::ForgeplanServer;
 use forgeplan_mcp::server::FpfSearchParams;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, RawContent};
+use rmcp::model::{CallToolResult, ContentBlock};
 use tempfile::TempDir;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ fn params_ws(
 fn extract_text(result: &CallToolResult) -> String {
     let mut out = String::new();
     for c in &result.content {
-        if let RawContent::Text(t) = &c.raw {
+        if let ContentBlock::Text(t) = c {
             out.push_str(&t.text);
         }
     }

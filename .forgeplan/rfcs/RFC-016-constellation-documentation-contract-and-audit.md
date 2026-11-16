@@ -1,4 +1,6 @@
 ---
+assigned_number: 16
+created: 2026-10-23
 depth: standard
 id: RFC-016
 kind: rfc
@@ -7,8 +9,12 @@ last_modified_by: documentation-walkthrough/1
 links:
 - target: PRD-088
   relation: based_on
+prd: null
+predicted_number: 16
+slug: rfc-constellation-documentation-contract-and-audit
 status: draft
 title: Constellation documentation contract and audit
+updated: 2026-10-23
 ---
 
 ---
@@ -76,10 +82,10 @@ Option B. Примеры используют изолированный HOME/wo
 - Новые how-to/reference имеют EN/RU пары. Ссылки и sidebar проверяются в собранном сайте.
 - full MCP сохраняет запись; constellation-read — дополнительное чтение handles. Локальный и межпроектный поиски не смешиваются.
 - Авто-embed требует явного config.embedding, cached модели, semantic-search build и живого maintenance.
-- Секции токен-ограничены, ranges body-absolute, layout v2; ContextPack использует отдельную приблизительную оценку chars/4.
+- Секции токен-ограничены, ranges body-absolute, layout v2. Текущий ContextPack считает оценку UTF-8 байты / 4 с округлением вверх по полному выданному представлению; byte cap включает перевод строки CLI либо оболочку результата MCP с экранированием, но не внешнее JSON-RPC framing. Это не точная токенизация модели.
 - Markdown остаётся canonical; registry и индекс — разные сущности. Не выполнять незаметную миграцию боевых workspace.
 - Руководства отделяют v0.38.0 и unreleased 0.39.0; сборка/узкие probes не объявляются S1-G.
-- CLI validate на migrated workspace сейчас даёт named-отказ; full MCP forgeplan_validate на том же PRD прошёл. Это документируется как граница, не обходится старым бинарником и не чинится в Rust в этой задаче.
+- На историческом c852f40c CLI validate на migrated workspace давал named-отказ, а full MCP forgeplan_validate на том же PRD прошёл. Последующие canonical/captured пути восстановили CLI-валидацию; старый отказ не является текущим ограничением. Сам этот документационный RFC не меняет Rust и не подтверждает полную runtime-приёмку.
 
 ## Invariants
 
@@ -138,6 +144,12 @@ Option B. Примеры используют изолированный HOME/wo
 ## Affected Files
 
 README.md и соответствующие RU entrypoints; docs/README*; docs/architecture/constellation.md; docs/operations/CONSTELLATION-PILOT.ru.md; текущие schema/operations страницы с подтверждённым drift; website/src/content/docs/{docs,ru/docs}/{getting-started,guides,reference,cli,mcp}; website/README.md. Генераторы/checks меняются только если это необходимо для подтверждённого документационного контракта.
+
+## Reconciliation — 2026-11-13
+
+Контракт текущего ContextPack описан SPEC-010: целые единицы, квалифицированные источники, граф страницы, раздельная полнота, полный сериализованный бюджет и привязанное к версиям продолжение. EVID-205 подтверждает адресные проверки C7, а не полную приёмку программы. Сравнительная проверка F10 и проверка оптимизированного кандидата выполняются отдельно.
+
+Расширенная работа PRD-089/RFC-017 имеет собственные EVID-197/EVID-198 и пофайловый реестр. Эти исторические результаты не сертифицируют изменённые позднее документы; текущая дельта сверяется отдельно. Формальные G1/G2/G3 не закрываются обновлением текста и не подменяются новой активацией. Исходные датированные наблюдения ниже сохранены как история.
 
 ## Related Artifacts
 

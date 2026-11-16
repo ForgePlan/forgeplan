@@ -356,4 +356,4 @@ draft-план. Проверяйте layout и контракт конкретн
 - [ADR-009 — Forgeplan as orchestrator](../../.forgeplan/adrs/ADR-009-forgeplan-as-orchestrator-playbook-skill-agent-mapping-pack-marketplace-model.md) — hallucination-proof invariant
 - [EVID-088 — Spike-1 c4-to-forge concept validation](../../.forgeplan/evidence/EVID-088-spike-1-c4-to-forge-mapping-concept-validated-on-scoring-module.md) — measurement-based gaidlines (target=note default, table filter, default(value=...))
 - [PLAYBOOK-AUTHORING.ru.md](PLAYBOOK-AUTHORING.ru.md) — как ссылаться на mapping из playbook step
-- [marketplace/mappings/c4-to-forge.yaml](../../marketplace/mappings/c4-to-forge.yaml) — reference-пример с условиями применимости: нужен совместимый source contract для semantic fields; `heading_path` с `*` трактуется буквально. Не готовый исполняемый шаблон для копирования.
+- [marketplace/mappings/c4-to-forge.yaml](../../marketplace/mappings/c4-to-forge.yaml) — reference-пример с условиями применимости: нужен совместимый source contract для semantic fields; завершающий сегмент `*` в `heading_path` выбирает непосредственные дочерние заголовки. Не готовый исполняемый шаблон для копирования.

@@ -31,6 +31,9 @@ struct Fixture {
     project: TempDir,
     ws: PathBuf,
     migrated: bool,
+    note_path: PathBuf,
+    adr_path: PathBuf,
+    evidence_path: PathBuf,
 }
 
 impl Fixture {
@@ -38,10 +41,12 @@ impl Fixture {
         let project = TempDir::new().expect("temporary project");
         let ws = init_workspace(project.path(), "native-playbook-compat").expect("workspace");
         let lock = acquire_workspace_lock(&ws).await.expect("fixture lock");
-        let store = LanceStore::init(&ws).await.expect("legacy fixture tables");
+        let store = LanceStore::init_new(&ws, &lock)
+            .await
+            .expect("legacy fixture tables");
         let ctx = MutationContext::new(&ws, &lock, Some(&store));
-        seed(&ctx, "NOTE-007", "note", "Original note", NOTE_BODY, &[]).await;
-        seed(&ctx, "ADR-003", "adr", "Native decision", ADR_BODY, &[]).await;
+        let note_path = seed(&ctx, "NOTE-007", "note", "Original note", NOTE_BODY, &[]).await;
+        let adr_path = seed(&ctx, "ADR-003", "adr", "Native decision", ADR_BODY, &[]).await;
         seed(
             &ctx,
             "PRD-004",
@@ -51,7 +56,7 @@ impl Fixture {
             &[],
         )
         .await;
-        seed(
+        let evidence_path = seed(
             &ctx,
             "EVID-001",
             "evidence",
@@ -69,6 +74,9 @@ impl Fixture {
             project,
             ws,
             migrated,
+            note_path,
+            adr_path,
+            evidence_path,
         };
         fixture.assert_owner();
         fixture
@@ -106,10 +114,13 @@ impl Fixture {
                 .expect("captured artifact")
                 .clone()
         } else {
+            let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&self.ws)
+                .await
+                .expect("legacy read permit");
             LanceStore::open(&self.ws)
                 .await
                 .expect("legacy read")
-                .get_record(id)
+                .get_record(&permit, id)
                 .await
                 .expect("get record")
                 .expect("legacy artifact")
@@ -145,13 +156,13 @@ async fn seed(
     title: &str,
     body: &str,
     links: &[(&str, &str)],
-) {
+) -> PathBuf {
     let depth = if kind == "note" || kind == "evidence" {
         "tactical"
     } else {
         "standard"
     };
-    projection::create_artifact_with_projection(
+    let path = projection::create_artifact_with_projection(
         ctx,
         &NewArtifact {
             canonical_key: id.to_string(),
@@ -174,6 +185,7 @@ async fn seed(
             .await
             .expect("fixture relation");
     }
+    path
 }
 
 fn step(op: ForgeplanOp, input: Value) -> Step {
@@ -210,10 +222,14 @@ fn files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             if entry.file_type().expect("type").is_dir() {
                 pending.push(path);
             } else {
-                result.insert(
-                    path.strip_prefix(root).expect("relative").to_path_buf(),
-                    std::fs::read(path).expect("bytes"),
-                );
+                let relative = path.strip_prefix(root).expect("relative");
+                let bytes = std::fs::read(&path).expect("bytes");
+                // A refused New may acquire its empty allocator lock before
+                // preflight; this inode carries no canonical or index data.
+                if relative == Path::new(".forgeplan/.id-alloc-note.lock") && bytes.is_empty() {
+                    continue;
+                }
+                result.insert(relative.to_path_buf(), bytes);
             }
         }
     }
@@ -295,7 +311,7 @@ async fn native_new_writes_the_correct_workspace_and_keeps_the_template_body() {
         let record = fixture.record("NOTE-008").await;
         assert_eq!(record.title, "Native generated note");
         if migrated {
-            assert_eq!(record.body, raw);
+            assert_eq!(record.body.trim(), body.trim());
             let read = open_workspace_read(&fixture.ws, None, CaptureLimits::default())
                 .await
                 .expect("read after new");
@@ -328,20 +344,28 @@ async fn native_validation_and_activation_keep_rules_edges_and_real_status() {
         assert_eq!(files(&fixture.ws.join("prds")), before);
         assert_eq!(fixture.record("PRD-004").await.status, "draft");
 
+        let evidence_before = std::fs::read(&fixture.evidence_path).expect("evidence before");
         let activated = dispatch(&fixture, ForgeplanOp::Activate, json!({"id": "ADR-003"})).await;
         assert!(activated.success, "{activated:?}");
         assert_eq!(activated.stderr, None);
         assert_eq!(fixture.record("ADR-003").await.status, "active");
-        let raw = std::fs::read_to_string(fixture.ws.join("adrs/ADR-003-native-decision.md"))
-            .expect("status bytes");
+        let raw = std::fs::read_to_string(&fixture.adr_path).expect("status bytes");
         let (fm, body) = parse_frontmatter(&raw).expect("status frontmatter");
         assert_eq!(fm["status"].as_str(), Some("active"));
         assert_eq!(body.trim(), ADR_BODY.trim());
-        let evidence =
-            std::fs::read_to_string(fixture.ws.join("evidence/EVID-001-native-verification.md"))
-                .expect("evidence bytes");
-        assert!(evidence.contains("target: ADR-003"));
-        assert!(evidence.contains("relation: informs"));
+        assert_eq!(
+            std::fs::read(&fixture.evidence_path).expect("evidence after"),
+            evidence_before,
+        );
+        let read = open_workspace_read(&fixture.ws, None, fixture_capture_limits())
+            .await
+            .expect("activation graph");
+        assert!(read.get_all_relations().contains(&(
+            read.get_record("EVID-001").unwrap().canonical_key.clone(),
+            read.get_record("ADR-003").unwrap().canonical_key.clone(),
+            "informs".to_string(),
+        )));
+        drop(read);
 
         let again = dispatch(&fixture, ForgeplanOp::Activate, json!({"id": "ADR-003"})).await;
         assert!(!again.success, "active -> active must still be rejected");
@@ -445,8 +469,8 @@ async fn native_ingest_dry_run_writes_nothing_and_apply_keeps_body_links_and_ide
             .await
             .expect("read imported state");
         assert!(read.get_all_relations().contains(&(
-            "NOTE-008".to_string(),
-            "ADR-003".to_string(),
+            read.get_record("NOTE-008").unwrap().canonical_key.clone(),
+            read.get_record("ADR-003").unwrap().canonical_key.clone(),
             "based_on".to_string()
         )));
         drop(read);
@@ -545,9 +569,9 @@ async fn invalid_native_inputs_keep_failure_classes_without_writing() {
 #[tokio::test]
 async fn migrated_native_reads_observe_offline_edits_without_publishing() {
     let fixture = Fixture::new(true).await;
-    let path = fixture.ws.join("notes/NOTE-007-original-note.md");
-    let raw = std::fs::read_to_string(&path).expect("note");
-    std::fs::write(&path, raw.replace("needleq72", "offlineq73")).expect("offline edit");
+    let path = &fixture.note_path;
+    let raw = std::fs::read_to_string(path).expect("note");
+    std::fs::write(path, raw.replace("needleq72", "offlineq73")).expect("offline edit");
     let pointer = std::fs::read(fixture.ws.join("lance/CURRENT.json")).expect("pointer");
     let fresh = dispatch(
         &fixture,
@@ -563,9 +587,13 @@ async fn migrated_native_reads_observe_offline_edits_without_publishing() {
         json!({"results": []})
     );
     assert!(
-        dispatch(&fixture, ForgeplanOp::Validate, json!({"id": "note-7"}))
-            .await
-            .success
+        dispatch(
+            &fixture,
+            ForgeplanOp::Validate,
+            json!({"id": fixture.record("NOTE-007").await.canonical_key})
+        )
+        .await
+        .success
     );
     assert_eq!(
         std::fs::read(fixture.ws.join("lance/CURRENT.json")).expect("pointer after reads"),
@@ -579,7 +607,7 @@ async fn incomplete_canonical_capture_refuses_every_native_operation_without_leg
     let fixture = Fixture::new(true).await;
     write_ingest_sources(fixture.project.path());
     std::fs::write(
-        fixture.ws.join("notes/NOTE-007-original-note.md"),
+        &fixture.note_path,
         "---\nid: [unterminated\n---\nInvalid source.\n",
     )
     .expect("damaged source");
@@ -598,10 +626,22 @@ async fn incomplete_canonical_capture_refuses_every_native_operation_without_leg
         ),
     ] {
         let result = fixture.router().dispatch(&step(op, input)).await;
-        assert!(
-            matches!(result, Err(DispatchError::Transport(_))),
-            "{op:?}: {result:?}"
-        );
+        if matches!(op, ForgeplanOp::Activate | ForgeplanOp::Ingest) {
+            let outcome = result.expect("delegate preflight refusal is an outcome");
+            assert!(!outcome.success);
+            assert_eq!(outcome.output_path, None);
+            assert!(
+                outcome
+                    .stderr
+                    .expect("capture diagnostic")
+                    .contains("incomplete_capture")
+            );
+        } else {
+            assert!(
+                matches!(result, Err(DispatchError::Transport(_))),
+                "{op:?}: {result:?}"
+            );
+        }
     }
     assert_eq!(files(fixture.project.path()), before);
     fixture.assert_owner();
@@ -705,7 +745,7 @@ async fn native_new_waits_for_the_workspace_lock_then_releases_it_before_reconci
 }
 
 #[tokio::test]
-async fn native_ingest_reports_link_errors_without_discarding_its_real_write() {
+async fn native_ingest_rejects_invalid_link_before_any_canonical_write() {
     for migrated in [false, true] {
         let fixture = Fixture::new(migrated).await;
         write_ingest_sources(fixture.project.path());
@@ -721,6 +761,11 @@ async fn native_ingest_reports_link_errors_without_discarding_its_real_write() {
                 .replace("if_exists: skip", "if_exists: error"),
         )
         .expect("link error policy");
+        let canonical_before: BTreeMap<_, _> = files(&fixture.ws)
+            .into_iter()
+            .filter(|(path, _)| path.extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        let index_before = files(&fixture.ws.join("lance"));
         let result = dispatch(
             &fixture,
             ForgeplanOp::Ingest,
@@ -729,24 +774,22 @@ async fn native_ingest_reports_link_errors_without_discarding_its_real_write() {
         .await;
         assert!(!result.success);
         assert!(
-            result
-                .stderr
-                .expect("link error")
-                .contains("invalid artifact id")
+            result.output_path.is_none(),
+            "a rejected batch must not report a created artifact"
         );
-        let path = result.output_path.expect("the canonical draft was created");
-        assert!(path.exists());
+        let canonical_after: BTreeMap<_, _> = files(&fixture.ws)
+            .into_iter()
+            .filter(|(path, _)| path.extension().is_some_and(|ext| ext == "md"))
+            .collect();
         assert_eq!(
-            fixture.record("NOTE-008").await.title,
-            "Imported native note"
+            canonical_after, canonical_before,
+            "preflight must not change canonical files"
         );
-        if migrated {
-            let read = open_workspace_read(&fixture.ws, None, CaptureLimits::default())
-                .await
-                .expect("read the completed part of the failed operation");
-            assert!(read.is_persisted());
-            assert!(read.get_relations("NOTE-008").is_empty());
-        }
+        assert_eq!(
+            files(&fixture.ws.join("lance")),
+            index_before,
+            "preflight must not change the index"
+        );
         assert!(!fixture.project.path().join("escaped").exists());
         fixture.assert_owner();
     }
@@ -759,9 +802,11 @@ async fn unmarked_title_collision_does_not_mask_the_imported_artifact() {
         let lock = acquire_workspace_lock(&fixture.ws)
             .await
             .expect("fixture lock");
-        let store = LanceStore::open(&fixture.ws).await.expect("fixture store");
+        let store = LanceStore::open_for_write(&fixture.ws, &lock)
+            .await
+            .expect("fixture store");
         let ctx = MutationContext::new(&fixture.ws, &lock, Some(&store));
-        seed(
+        let unrelated = seed(
             &ctx,
             "NOTE-001",
             "note",
@@ -776,7 +821,6 @@ async fn unmarked_title_collision_does_not_mask_the_imported_artifact() {
             publish(&fixture.ws).await;
             fixture.migrated = true;
         }
-        let unrelated = fixture.ws.join("notes/NOTE-001-imported-native-note.md");
         let unrelated_bytes = std::fs::read(&unrelated).expect("unmarked collision");
         write_ingest_sources(fixture.project.path());
         let mut expected_notes = files(&fixture.ws.join("notes"));

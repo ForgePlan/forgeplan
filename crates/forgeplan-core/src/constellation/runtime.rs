@@ -938,7 +938,7 @@ mod imp {
         /// An engine that cannot be built is returned as
         /// [`ConstellationError::ModelUnavailable`].
         pub fn spawn() -> Result<Self, ConstellationError> {
-            Self::spawn_with(|| Embedder::new())
+            Self::spawn_with(Embedder::new)
         }
 
         /// Spawn a worker that will **never** download.
@@ -1247,15 +1247,14 @@ mod imp {
 
         /// A worker whose "engine" is a closure under test.
         ///
-        /// Gated on **both** `semantic-search` and `test-helpers`, so no
-        /// production binary carries it. It is a second constructor, not a flag
-        /// threaded through [`Self::spawn`]: a `bool` would be a production
-        /// affordance pretending to be a test one.
+        /// Available to unit tests or an explicit `test-helpers` build, never
+        /// to an ordinary production binary. This is a second constructor, not
+        /// a flag threaded through [`Self::spawn`].
         ///
         /// The bounds are enforced by the signature alone — `FnMut` because a
         /// real engine mutates during inference, `Send + 'static` because the
         /// closure moves onto the worker thread.
-        #[cfg(feature = "test-helpers")]
+        #[cfg(any(test, feature = "test-helpers"))]
         pub fn spawn_with_engine<F>(engine: F) -> Result<Self, ConstellationError>
         where
             F: FnMut(&str) -> Result<Vec<f32>, String> + Send + 'static,
@@ -1948,6 +1947,7 @@ impl MaintenanceSupervisor {
             return Ok((0, 0, Vec::new()));
         };
         let manifest = super::storage::read_manifest(&index_root, &descriptor)?;
+        manifest.require_addressable()?;
         if manifest.pending_jobs.is_empty() {
             return Ok((0, 0, Vec::new()));
         }
@@ -2228,21 +2228,6 @@ fn worker_reuse_key(resolved: &super::jobs::ResolvedProfile) -> String {
         resolved.snapshot_id,
         resolved.profile.profile_id()
     )
-}
-
-/// The admission generation a stored job's `captured_input_ref` names.
-///
-/// A recovered job is re-minted against the **manifest's** generation, not
-/// against the fresh capture's timestamp: the recovered job's whole point is
-/// to be traceable to the admission that promised the work, and a ref naming a
-/// generation nobody ever published names nothing. Returns the stored prefix
-/// as-is when the ref does not have the canonical shape, so a hand-edited ref
-/// degrades to "whatever was recorded" rather than to a guess.
-fn admission_generation_for(job: &super::jobs::EmbeddingJob) -> &str {
-    match job.captured_input_ref.rsplit_once(':') {
-        Some((generation, key)) if key == job.canonical_key => generation,
-        _ => job.captured_input_ref.as_str(),
-    }
 }
 
 #[cfg(test)]
@@ -2748,11 +2733,8 @@ pub enum RecoveryGap {
     /// and a new variant would encode a conclusion the data cannot support —
     /// nothing here distinguishes a tombstone from a rename.
     NoCaptureEntry { code: DiagnosticCode },
-    /// The capture entry exists but its eligibility cannot be decided —
-    /// a required binding field is absent or unreadable.
-    ///
-    /// Admitting it would guess. Not admitting it silently would report a
-    /// complete recovery over a source that was not fully readable.
+    /// The input cannot be rebuilt, or the captured binding no longer
+    /// matches the durable job. Changed work needs a fresh admission.
     Unjudgeable { reason: String },
 }
 
@@ -2776,8 +2758,8 @@ pub enum RecoveryGap {
 ///
 /// - `Current` — already published. **Not admitted**; admitting would
 ///   resurrect a vector over newer content.
-/// - `Eligible` — needs computing. **Admitted.** This is the killed-in-flight
-///   case.
+/// - `Eligible` with an identical binding — admitted with its original job,
+///   subject to retry delay. A changed binding is reported as a gap.
 /// - `CannotJudge` — **not admitted**, reported as [`RecoveryGap::Unjudgeable`].
 pub fn recover_pending(
     manifest: &super::manifest::GenerationManifest,
@@ -2787,156 +2769,204 @@ pub fn recover_pending(
     let mut admitted = Vec::new();
     let mut gaps = Vec::new();
 
-    for (key, job) in &manifest.pending_jobs {
-        // A pending job may name an artifact key or a section key
-        // (`"{parent}#s{ordinal}"`). Resolve the captured input text and the
-        // binding's parent entry accordingly — a section borrows its parent's
-        // durable binding, so the entry lookup is always on the parent key.
-        let (input_text, parent_key) = if let Some(artifact) = capture.artifact(key) {
-            // `ParsedArtifact::embedding_input` (`capture.rs:179`) — the
-            // accessor the facade and every other reader already use. Not
-            // `embedding_input_text` called with the same fields: two call
-            // sites that look identical are two places for the text to
-            // drift, and a vector computed over a different string than the
-            // one it will be bound to is a stale vector the binding cannot
-            // detect.
-            (artifact.embedding_input(body_prefix_chars), key.as_str())
-        } else if let Some(section) = capture.section(key) {
-            // The shared builder, under this capture's own layout. No prefix
-            // argument: re-clipping a token window by characters is the second
-            // budget this contract removes, and a capture/recovery pair that
-            // disagreed about it would publish a vector for bytes the row's
-            // `input_digest` never described.
-            match capture.section_input(section) {
-                Ok(text) => (text, section.parent_key.as_str()),
-                // A section whose input cannot be built under this layout has
-                // no bindable work. It is reported as a gap rather than
-                // skipped silently, because a silently dropped section is a
-                // permanently unsearchable tail.
-                Err(error) => {
+    if let Err(error) = manifest.validate_pending_jobs() {
+        let reason = format!("the pending artifact groups are malformed: {error}");
+        for (parent_key, group) in &manifest.pending_jobs {
+            if group.inputs.is_empty() {
+                gaps.push((
+                    parent_key.clone(),
+                    RecoveryGap::Unjudgeable {
+                        reason: reason.clone(),
+                    },
+                ));
+            } else {
+                for key in group.inputs.keys() {
                     gaps.push((
                         key.clone(),
                         RecoveryGap::Unjudgeable {
+                            reason: reason.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+        return (admitted, gaps);
+    }
+
+    for (parent_key, group) in &manifest.pending_jobs {
+        let parent_key = parent_key.as_str();
+        for (input_key, job) in &group.inputs {
+            let key = input_key.as_str();
+            let input_text = if key == parent_key {
+                let Some(artifact) = capture.artifact(key) else {
+                    gaps.push((
+                        key.to_string(),
+                        RecoveryGap::NoCaptureEntry {
+                            code: DiagnosticCode::SourceChanged,
+                        },
+                    ));
+                    continue;
+                };
+                // `ParsedArtifact::embedding_input` (`capture.rs:179`) — the
+                // accessor the facade and every other reader already use.
+                artifact.embedding_input(body_prefix_chars)
+            } else {
+                let Some(section) = capture.section(key) else {
+                    gaps.push((
+                        key.to_string(),
+                        RecoveryGap::NoCaptureEntry {
+                            code: DiagnosticCode::SourceChanged,
+                        },
+                    ));
+                    continue;
+                };
+                if section.parent_key != parent_key {
+                    gaps.push((
+                        key.to_string(),
+                        RecoveryGap::Unjudgeable {
                             reason: format!(
-                                "the section input cannot be built under layout {}: {error}",
-                                capture.layout.fingerprint()
+                                "captured section `{key}` belongs to `{}`, not `{parent_key}`",
+                                section.parent_key
                             ),
                         },
                     ));
                     continue;
                 }
-            }
-        } else {
-            gaps.push((
-                key.clone(),
-                RecoveryGap::NoCaptureEntry {
-                    code: DiagnosticCode::SourceChanged,
-                },
-            ));
-            continue;
-        };
+                // The shared builder uses this capture's layout; a section
+                // input is never re-clipped by the artifact prefix budget.
+                match capture.section_input(section) {
+                    Ok(text) => text,
+                    Err(error) => {
+                        gaps.push((
+                            key.to_string(),
+                            RecoveryGap::Unjudgeable {
+                                reason: format!(
+                                    "the section input cannot be built under layout {}: {error}",
+                                    capture.layout.fingerprint()
+                                ),
+                            },
+                        ));
+                        continue;
+                    }
+                }
+            };
 
-        // The binding is rebuilt from the **fresh capture**, by the same
-        // function the publisher uses, with the profile the job was created
-        // under. It is never read from the manifest: a binding from a previous
-        // generation would decide eligibility against itself and always say
-        // `Current`.
-        let Some(entry) = capture
-            .entries
-            .iter()
-            .find(|e| e.canonical_key == parent_key)
-        else {
-            gaps.push((
-                key.clone(),
-                RecoveryGap::NoCaptureEntry {
-                    code: DiagnosticCode::SourceChanged,
-                },
-            ));
-            continue;
-        };
+            // The binding is rebuilt from the fresh capture and the parent
+            // recorded by the group. It is never read from the manifest.
+            let Some(entry) = capture
+                .entries
+                .iter()
+                .find(|entry| entry.canonical_key == parent_key)
+            else {
+                gaps.push((
+                    key.to_string(),
+                    RecoveryGap::NoCaptureEntry {
+                        code: DiagnosticCode::SourceChanged,
+                    },
+                ));
+                continue;
+            };
 
-        let captured_binding = if let Some(section) = capture.section(key) {
-            match super::publisher::binding_for_section(section, entry, &job.profile_id) {
-                Ok(binding) => binding,
-                Err(_) => {
+            let captured_binding = if key != parent_key {
+                let Some(section) = capture.section(key) else {
                     gaps.push((
-                        key.clone(),
+                        key.to_string(),
+                        RecoveryGap::NoCaptureEntry {
+                            code: DiagnosticCode::SourceChanged,
+                        },
+                    ));
+                    continue;
+                };
+                if section.parent_key != parent_key {
+                    gaps.push((
+                        key.to_string(),
                         RecoveryGap::Unjudgeable {
                             reason: format!(
-                                "the captured section `{key}` produced no binding, so \
-                                 eligibility cannot be judged"
+                                "captured section `{key}` belongs to `{}`, not `{parent_key}`",
+                                section.parent_key
                             ),
                         },
                     ));
                     continue;
                 }
-            }
-        } else {
-            match super::publisher::binding_for(entry, &job.profile_id) {
-                Ok(binding) => binding,
-                Err(_) => {
-                    gaps.push((
-                        key.clone(),
-                        RecoveryGap::Unjudgeable {
-                            reason: format!(
-                                "the captured row for `{key}` carries no input digest, so no \
-                                 binding can be built and eligibility cannot be judged"
-                            ),
-                        },
-                    ));
-                    continue;
+                match super::publisher::binding_for_section(section, entry, &job.profile_id) {
+                    Ok(binding) => binding,
+                    Err(_) => {
+                        gaps.push((
+                            key.to_string(),
+                            RecoveryGap::Unjudgeable {
+                                reason: format!(
+                                    "the captured section `{key}` produced no binding, so \
+                                     eligibility cannot be judged"
+                                ),
+                            },
+                        ));
+                        continue;
+                    }
                 }
-            }
-        };
-
-        // The stored side is the job's own recorded binding — that is the
-        // state the previous process was working against.
-        let stored = super::jobs::StoredBinding {
-            index_epoch: Some(job.index_epoch),
-            checkout_id: Some(job.checkout_id.clone()),
-            incarnation: Some(job.incarnation),
-            row_revision: Some(job.row_revision),
-            source_digest: Some(job.source_digest.clone()),
-            input_digest: Some(job.input_digest.clone()),
-            profile_id: Some(job.profile_id.clone()),
-            semantic_state: Some(entry.semantic_state.as_str().to_string()),
-        };
-
-        match super::jobs::eligibility_for(&stored, &captured_binding) {
-            super::jobs::Eligibility::Eligible => {
-                // A key still inside its recorded retry delay is not re-queued
-                // on restart. Without this a crash-restart is the one path
-                // that ignores the delay, and a permanently failing model is
-                // re-attempted the moment the process comes back.
-                if !job.retry_is_due(chrono::Utc::now()) {
-                    continue;
+            } else {
+                match super::publisher::binding_for(entry, &job.profile_id) {
+                    Ok(binding) => binding,
+                    Err(_) => {
+                        gaps.push((
+                            key.to_string(),
+                            RecoveryGap::Unjudgeable {
+                                reason: format!(
+                                    "the captured row for `{key}` carries no input digest, so no \
+                                     binding can be built and eligibility cannot be judged"
+                                ),
+                            },
+                        ));
+                        continue;
+                    }
                 }
-                // The admitted job is rebuilt from the **fresh capture's**
-                // binding, carrying over the attempt counter the previous
-                // process had reached. It is never the manifest's job reused:
-                // that one names the bytes the previous process was working
-                // against, and only the fresh binding can be published onto.
-                let mut recovered = super::jobs::EmbeddingJob::for_binding(
-                    &captured_binding,
-                    admission_generation_for(job),
-                )
-                .unwrap_or_else(|_| job.clone());
-                recovered.attempt = job.attempt;
-                recovered.retry_after = job.retry_after.clone();
-                admitted.push(InferenceJob {
-                    job: recovered,
-                    // Built above, once, beside the binding that will check
-                    // it — artifact input or section input, never a text the
-                    // digest did not cover.
-                    input_text,
-                });
-            }
-            super::jobs::Eligibility::Current => {
-                // Published. Not work. Silently dropping it is correct: there
-                // is nothing to report, the row is current.
-            }
-            super::jobs::Eligibility::CannotJudge { reason } => {
-                gaps.push((key.clone(), RecoveryGap::Unjudgeable { reason }));
+            };
+
+            // The stored side is the job's own recorded binding — that is the
+            // state the previous process was working against.
+            let stored = super::jobs::StoredBinding {
+                index_epoch: Some(job.index_epoch),
+                checkout_id: Some(job.checkout_id.clone()),
+                incarnation: Some(job.incarnation),
+                row_revision: Some(job.row_revision),
+                source_digest: Some(job.source_digest.clone()),
+                input_digest: Some(job.input_digest.clone()),
+                profile_id: Some(job.profile_id.clone()),
+                semantic_state: Some(entry.semantic_state.as_str().to_string()),
+            };
+
+            if job.describes(&captured_binding)
+                && super::sha256_hex(input_text.as_bytes()) == job.input_digest
+            {
+                match super::jobs::eligibility_for(&stored, &captured_binding) {
+                    super::jobs::Eligibility::Eligible => {
+                        // A key still inside its retry delay is not re-queued on
+                        // restart; a crash must not bypass the recorded backoff.
+                        if !job.retry_is_due(chrono::Utc::now()) {
+                            continue;
+                        }
+                        // Recovery preserves the exact durable admission token.
+                        admitted.push(InferenceJob {
+                            job: job.clone(),
+                            input_text,
+                        });
+                    }
+                    super::jobs::Eligibility::Current => {
+                        // Published. Not work.
+                    }
+                    super::jobs::Eligibility::CannotJudge { reason } => {
+                        gaps.push((key.to_string(), RecoveryGap::Unjudgeable { reason }));
+                    }
+                }
+            } else {
+                gaps.push((
+                    key.to_string(),
+                    RecoveryGap::Unjudgeable {
+                        reason: format!(
+                            "captured binding for `{key}` differs from the durable admission"
+                        ),
+                    },
+                ));
             }
         }
     }
@@ -3115,103 +3145,43 @@ mod tests {
         }
     }
 
-    /// TEST 3 — a submitted job is never silently dropped.
-    ///
-    /// This does **not** mock the absent cache: it calls the real `spawn` and
-    /// the real `Embedder::new`. On this machine the cache is gone, so the
-    /// honest outcome is a described failure; on a machine with the model, the
-    /// honest outcome is a vector. Both are acceptable; a job that produces
-    /// *neither* is the defect this test exists to catch.
-    ///
-    /// Fails if the worker panics, and fails if after the job is accounted for
-    /// both channels stay `Empty` with the thread still alive — the silent
-    /// drop that existed before the `failures` channel.
+    /// Closing the result channel does not consume a queued failure.
+    /// A consumer must still be able to account for the accepted job.
     #[cfg(feature = "semantic-search")]
     #[test]
-    fn a_submitted_job_is_either_answered_or_reported_never_dropped() {
-        let worker = InferenceWorker::spawn().expect("the worker thread must spawn");
-
-        let submitted = worker.submit(InferenceJob {
-            job: crate::constellation::jobs::EmbeddingJob {
-                index_epoch: 1,
-                checkout_id: "local-x".to_string(),
-                canonical_key: "PRD-001".to_string(),
-                incarnation: 1,
-                row_revision: 1,
-                source_digest: "sd".to_string(),
-                input_digest: "id".to_string(),
-                profile_id: "pid".to_string(),
-                captured_input_ref: "gen-1:PRD-001".to_string(),
-                attempt: 0,
-                retry_after: None,
-            },
-            input_text: "some text to embed".to_string(),
-        });
-        assert_eq!(
-            submitted,
-            SubmitOutcome::Queued,
-            "a job handed to a live worker must be reported as queued, so that a rejected \
-                 submission cannot pass for an accepted one"
-        );
-
-        // Bounded block: a `semantic-search` build loads real weights, which
-        // can take tens of seconds on a cold disk — two instant try-polls
-        // would report a healthy worker as a silent drop. The deadline is a
-        // wall-clock bound, not a sleep: a dropped job still fails, just after
-        // the budget rather than after a fixed two polls.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
-        let mut answered = false;
-        let mut reported = false;
-        while std::time::Instant::now() < deadline {
+    fn a_worker_failure_remains_observable_after_results_disconnect() {
+        let worker = InferenceWorker::spawn_with_engine(|_text| {
+            Err("deterministic engine failure".to_string())
+        })
+        .expect("worker thread");
+        assert_eq!(worker.submit(test_job("PRD-001")), SubmitOutcome::Queued);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
             match worker.try_result() {
-                Poll::Ready(r) => {
-                    assert_eq!(
-                        r.canonical_key(),
-                        "PRD-001",
-                        "a result must carry the key it was submitted for"
-                    );
-                    assert_eq!(
-                        r.job.captured_input_ref, "gen-1:PRD-001",
-                        "a result must carry the job it was submitted for, \
-                         unchanged — a result re-pointed at another job is the \
-                         rebinding this protocol removed"
-                    );
-                    assert!(!r.vector.is_empty(), "a ready vector must not be empty");
-                    answered = true;
-                }
                 Poll::Disconnected => break,
-                Poll::Empty => {}
-            }
-            match worker.try_failure() {
-                Poll::Ready(detail) => {
+                Poll::Ready(_) => panic!("the failed computation must not publish a vector"),
+                Poll::Empty => {
                     assert!(
-                        !detail.is_empty(),
-                        "a reported failure must describe itself"
+                        std::time::Instant::now() < deadline,
+                        "the failed computation did not close its result channel"
                     );
-                    assert!(
-                        detail.contains("PRD-001"),
-                        "an inference failure must name the key it failed on: {detail}"
-                    );
-                    reported = true;
+                    std::thread::yield_now();
                 }
-                Poll::Disconnected => break,
-                Poll::Empty => {}
             }
-            if answered || reported {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
         }
-
+        let Poll::Ready(detail) = worker.try_failure() else {
+            panic!("a disconnected result channel must not hide the accepted job's failure");
+        };
         assert!(
-            answered || reported,
-            "the submitted job produced neither a vector nor a reported failure — \
-             it was silently dropped"
+            detail.contains("PRD-001"),
+            "failure lost its job identity: {detail}"
         );
-
-        worker
-            .shutdown()
-            .expect("shutdown must join cleanly after a settled job");
+        assert!(
+            detail.contains("deterministic engine failure"),
+            "failure lost the engine cause: {detail}"
+        );
+        assert!(matches!(worker.try_failure(), Poll::Disconnected));
+        assert_eq!(worker.shutdown().unwrap(), ShutdownOutcome::Joined);
     }
 
     /// A worker whose engine closure is a barrier this test controls.
@@ -3339,7 +3309,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "semantic-search", feature = "test-helpers"))]
+    #[cfg(feature = "semantic-search")]
     fn test_job(key: &str) -> InferenceJob {
         InferenceJob {
             job: crate::constellation::jobs::EmbeddingJob {
@@ -3554,10 +3524,10 @@ mod tests {
         let engine_release = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
         let worker = InferenceWorker::spawn_with_engine(move |text: &str| {
             let _ = entered_tx.send(text.to_string());
-            if engine_gate.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                if let Ok(gate) = engine_release.lock() {
-                    let _ = gate.recv_timeout(std::time::Duration::from_secs(30));
-                }
+            if engine_gate.swap(false, std::sync::atomic::Ordering::SeqCst)
+                && let Ok(gate) = engine_release.lock()
+            {
+                let _ = gate.recv_timeout(std::time::Duration::from_secs(30));
             }
             Ok(vector_for(text))
         })
@@ -3704,10 +3674,10 @@ mod tests {
             let _ = entered_tx.send(text.to_string());
             // Only the FIRST call blocks; later calls proceed, so the test
             // still observes the worker draining after the batch moved on.
-            if text == "text for PRD-FIRST" {
-                if let Ok(gate) = engine_release.lock() {
-                    let _ = gate.recv_timeout(std::time::Duration::from_secs(30));
-                }
+            if text == "text for PRD-FIRST"
+                && let Ok(gate) = engine_release.lock()
+            {
+                let _ = gate.recv_timeout(std::time::Duration::from_secs(30));
             }
             Ok(vector_for(text))
         })
@@ -3955,13 +3925,10 @@ mod tests {
         worker.shutdown().expect("the worker must stop");
     }
 
-    /// A pending job may name a **section** key (`"{parent}#s{ordinal}"`).
-    /// It must recover against the section's own input digest and input text
-    /// while borrowing its parent's durable binding — a vector published
-    /// under the parent's digest would be bound to bytes it was never
-    /// computed from.
+    /// A pending section job recovers only while its exact durable binding
+    /// remains current; changed section inputs are gaps, not rebound jobs.
     #[test]
-    fn a_pending_section_job_recovers_with_its_own_input_and_binding() {
+    fn section_recovery_preserves_exact_jobs_and_gaps_changed_bindings() {
         use super::super::capture::{
             CapturedSection, CapturedSourceView, SourceEntry, UnusableSource,
         };
@@ -4005,10 +3972,7 @@ mod tests {
             source_digest: "sd".to_string(),
             input_digest: Some("parent-input-digest".to_string()),
             profile_id: None,
-            // `ready` — the job-recovery path judges the recorded binding
-            // against this state, and `unavailable` would make a matching
-            // binding read as `Eligible` instead of `Current`.
-            semantic_state: super::super::jobs::SemanticState::Ready,
+            semantic_state: super::super::jobs::SemanticState::Pending,
             diagnostic_codes: Vec::new(),
             observed_at: "2026-10-17T00:00:00.000Z".to_string(),
         };
@@ -4024,6 +3988,7 @@ mod tests {
             tokenizer: Some(std::sync::Arc::clone(&tokenizer)),
             body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
+            conflict_artifacts: Vec::new(),
             sections: vec![section.clone()],
             entries: vec![entry],
             unusable: Vec::<UnusableSource>::new(),
@@ -4043,52 +4008,41 @@ mod tests {
 
         let mut manifest =
             GenerationManifest::from_capture(&capture, "gen-1", TableVersions::new(1, 1, 1));
-        // The job records the binding the previous process was working
-        // against: everything matches the fresh capture *except* the
-        // recorded `input_digest`, which is what makes it work rather than
-        // done.
-        manifest.pending_jobs.insert(
-            "PRD-001#s1".to_string(),
-            EmbeddingJob {
-                index_epoch: 1,
-                checkout_id: "local-x".to_string(),
-                canonical_key: "PRD-001#s1".to_string(),
-                incarnation: 1,
-                row_revision: 3,
-                source_digest: "sd".to_string(),
-                input_digest: "older-section-input".to_string(),
-                profile_id: "pid".to_string(),
-                captured_input_ref: "prds/PRD-001.md".to_string(),
-                attempt: 0,
-                retry_after: None,
-            },
-        );
+        let durable_job = EmbeddingJob {
+            index_epoch: 1,
+            checkout_id: "local-x".to_string(),
+            canonical_key: "PRD-001#s1".to_string(),
+            incarnation: 1,
+            row_revision: 3,
+            source_digest: "sd".to_string(),
+            input_digest: section.input_digest.clone(),
+            profile_id: "pid".to_string(),
+            captured_input_ref: "generation-7:PRD-001#s1".to_string(),
+            attempt: 0,
+            retry_after: None,
+        };
+        manifest
+            .pending_jobs
+            .entry("PRD-001".to_string())
+            .or_default()
+            .inputs
+            .insert("PRD-001#s1".to_string(), durable_job.clone());
 
         let (admitted, gaps) = recover_pending(&manifest, &capture, DEFAULT_BODY_PREFIX_CHARS);
         assert!(gaps.is_empty(), "a resolvable section job is not a gap");
         assert_eq!(admitted.len(), 1);
+        assert_eq!(admitted[0].job, durable_job, "recovery retains exact token");
         assert_eq!(admitted[0].canonical_key(), "PRD-001#s1");
         assert_eq!(
-            admitted[0].job.input_digest, section.input_digest,
-            "the recovered job must be rebuilt from the fresh capture's binding, \
-             not reused from the manifest — a manifest job names the bytes the \
-             previous process was working against"
-        );
-        assert_eq!(
             admitted[0].input_text,
-            capture.section_input(&section).unwrap(),
-            "the recovered input is the section input, not the artifact prefix"
+            capture.section_input(&section).unwrap()
         );
 
         // Same binding recorded as completed → `Current`, not re-admitted.
-        manifest.pending_jobs.insert(
-            "PRD-001#s1".to_string(),
-            EmbeddingJob {
-                input_digest: section.input_digest.clone(),
-                ..manifest.pending_jobs["PRD-001#s1"].clone()
-            },
-        );
-        let (admitted, gaps) = recover_pending(&manifest, &capture, DEFAULT_BODY_PREFIX_CHARS);
+        let mut ready_capture = capture.clone();
+        ready_capture.entries[0].semantic_state = super::super::jobs::SemanticState::Ready;
+        let (admitted, gaps) =
+            recover_pending(&manifest, &ready_capture, DEFAULT_BODY_PREFIX_CHARS);
         assert!(admitted.is_empty(), "a current section job is not work");
         assert!(gaps.is_empty());
 
@@ -4096,15 +4050,20 @@ mod tests {
         // restart — otherwise a crash-restart is the one path that ignores
         // the delay and a permanently failing model is re-attempted the
         // moment the process comes back.
-        manifest.pending_jobs.insert(
-            "PRD-001#s1".to_string(),
-            EmbeddingJob {
-                input_digest: "older-section-input".to_string(),
-                attempt: 2,
-                retry_after: Some(super::super::jobs::retry_after_at(2, chrono::Utc::now())),
-                ..manifest.pending_jobs["PRD-001#s1"].clone()
-            },
-        );
+        let current_job = manifest.pending_jobs["PRD-001"].inputs["PRD-001#s1"].clone();
+        manifest
+            .pending_jobs
+            .get_mut("PRD-001")
+            .unwrap()
+            .inputs
+            .insert(
+                "PRD-001#s1".to_string(),
+                EmbeddingJob {
+                    attempt: 2,
+                    retry_after: Some(super::super::jobs::retry_after_at(2, chrono::Utc::now())),
+                    ..current_job
+                },
+            );
         let (admitted, gaps) = recover_pending(&manifest, &capture, DEFAULT_BODY_PREFIX_CHARS);
         assert!(
             admitted.is_empty(),
@@ -4112,37 +4071,83 @@ mod tests {
         );
         assert!(gaps.is_empty(), "a delayed key is not a gap, it is waiting");
 
-        // Once the delay has passed it is work again, with its attempt count
-        // carried over rather than reset.
-        manifest.pending_jobs.insert(
-            "PRD-001#s1".to_string(),
-            EmbeddingJob {
-                attempt: 2,
-                retry_after: Some("2020-01-01T00:00:00.000Z".to_string()),
-                ..manifest.pending_jobs["PRD-001#s1"].clone()
-            },
-        );
+        // Once the delay has passed, recovery returns the exact persisted job.
+        let current_job = manifest.pending_jobs["PRD-001"].inputs["PRD-001#s1"].clone();
+        manifest
+            .pending_jobs
+            .get_mut("PRD-001")
+            .unwrap()
+            .inputs
+            .insert(
+                "PRD-001#s1".to_string(),
+                EmbeddingJob {
+                    attempt: 2,
+                    retry_after: Some("2020-01-01T00:00:00.000Z".to_string()),
+                    ..current_job
+                },
+            );
+        let durable_due_job = manifest.pending_jobs["PRD-001"].inputs["PRD-001#s1"].clone();
         let (admitted, gaps) = recover_pending(&manifest, &capture, DEFAULT_BODY_PREFIX_CHARS);
         assert_eq!(admitted.len(), 1, "a due key is work again");
-        assert_eq!(
-            admitted[0].job.attempt, 2,
-            "recovery must carry the attempt counter forward, not reset it"
-        );
+        assert_eq!(admitted[0].job, durable_due_job);
         assert!(gaps.is_empty());
+
+        // A different captured input is a gap rather than a token rebind.
+        let mut changed_capture = capture.clone();
+        changed_capture.sections[0] = CapturedSection {
+            input_digest: "changed-section-digest".to_string(),
+            content: std::sync::Arc::from("changed section body"),
+            ..section.clone()
+        };
+        let (admitted, gaps) =
+            recover_pending(&manifest, &changed_capture, DEFAULT_BODY_PREFIX_CHARS);
+        assert!(admitted.is_empty());
+        assert!(gaps.iter().any(|(key, _)| key == "PRD-001#s1"));
 
         // A section job whose parent entry vanished is a named gap, never
         // silently dropped.
-        manifest.pending_jobs.insert(
-            "GHOST#s0".to_string(),
-            EmbeddingJob {
-                canonical_key: "GHOST#s0".to_string(),
-                ..manifest.pending_jobs["PRD-001#s1"].clone()
-            },
-        );
+        manifest
+            .section_bindings
+            .push(super::super::manifest::SectionBinding {
+                section_key: "GHOST#s0".to_string(),
+                parent_key: "GHOST".to_string(),
+                ordinal: 0,
+                byte_start: 0,
+                byte_end: 0,
+                section_input_digest: "ghost-input".to_string(),
+                parent_input_digest: "ghost-parent-input".to_string(),
+                layout_fingerprint: capture.layout.fingerprint(),
+                profile_id: None,
+                semantic_state: super::super::jobs::SemanticState::Unavailable,
+            });
+        manifest
+            .section_bindings
+            .sort_by(|left, right| left.section_key.cmp(&right.section_key));
+        let ghost_job = EmbeddingJob {
+            canonical_key: "GHOST#s0".to_string(),
+            ..manifest.pending_jobs["PRD-001"].inputs["PRD-001#s1"].clone()
+        };
+        manifest
+            .pending_jobs
+            .entry("GHOST".to_string())
+            .or_default()
+            .inputs
+            .insert("GHOST#s0".to_string(), ghost_job);
         let (_admitted, gaps) = recover_pending(&manifest, &capture, DEFAULT_BODY_PREFIX_CHARS);
         assert!(
             gaps.iter().any(|(key, _)| key == "GHOST#s0"),
             "an unresolvable section job must be reported"
+        );
+        let mut malformed = manifest.clone();
+        malformed.pending_jobs.insert(
+            "EMPTY".to_string(),
+            super::super::manifest::PendingArtifactJobs::default(),
+        );
+        let (_admitted, malformed_gaps) =
+            recover_pending(&malformed, &capture, DEFAULT_BODY_PREFIX_CHARS);
+        assert!(
+            malformed_gaps.iter().any(|(key, _)| key == "EMPTY"),
+            "an empty parent group must produce a named recovery gap"
         );
     }
 

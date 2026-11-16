@@ -32,8 +32,23 @@ use forgeplan_core::constellation::{ConstellationError, FORMAT_VERSION};
 use forgeplan_core::workspace::ARTIFACT_DIRS;
 use tempfile::TempDir;
 
+use std::future::Future;
 fn deadline() -> std::time::Instant {
     std::time::Instant::now() + std::time::Duration::from_secs(120)
+}
+
+#[cfg(feature = "test-helpers")]
+async fn with_section_metadata<F: Future>(future: F) -> F::Output {
+    use forgeplan_core::embed::tokenizer::{testing, with_test_layout_cache};
+
+    let cache = TempDir::new().unwrap();
+    let repo = cache.path().join("models--BAAI--bge-m3");
+    let snapshot = repo.join("snapshots/fixture");
+    std::fs::create_dir_all(&snapshot).unwrap();
+    std::fs::create_dir_all(repo.join("refs")).unwrap();
+    std::fs::write(repo.join("refs/main"), "fixture").unwrap();
+    testing::write_snapshot(&snapshot, 512).unwrap();
+    with_test_layout_cache(cache.path().to_path_buf(), future).await
 }
 
 const NO_FILTER: PinnedFilter = PinnedFilter {
@@ -164,62 +179,68 @@ fn query_vector(fill: f32) -> Vec<f32> {
 /// rows asked for 2 reported `eligible_rows == 2`, which a client reads as
 /// "the corpus is embedded" — leaving 6 rows permanently unembedded while the
 /// answer claims completeness.
+#[cfg(feature = "test-helpers")]
 #[tokio::test]
 async fn coverage_is_counted_before_the_semantic_limit() {
-    resume_admission();
-    let tmp = mixed_workspace(4, 4);
-    let capability = capability_for(&tmp);
-    let index_root = capability.index_root().to_path_buf();
-    maintain_index(&capability, CaptureLimits::default(), deadline())
-        .await
-        .unwrap();
+    with_section_metadata(async {
+        resume_admission();
+        let tmp = mixed_workspace(4, 4);
+        let capability = capability_for(&tmp);
+        let index_root = capability.index_root().to_path_buf();
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
 
-    let profile = profile();
-    let embedded = embed_everything(&capability, &profile, 0.25).await;
-    assert!(
-        embedded >= 8,
-        "the whole corpus must be embedded: {embedded}"
-    );
+        let profile = profile();
+        let embedded = embed_everything(&capability, &profile, 0.25).await;
+        assert!(
+            embedded >= 8,
+            "the whole corpus must be embedded: {embedded}"
+        );
 
-    let query = query_vector(0.25);
+        let query = query_vector(0.25);
 
-    // The narrow ask and the wide ask rank the same rows; only how many come
-    // back differs.
-    let narrow = search_pinned_semantic(&index_root, &query, &profile.profile_id(), 2, &NO_FILTER)
-        .await
-        .unwrap();
-    let wide = search_pinned_semantic(&index_root, &query, &profile.profile_id(), 100, &NO_FILTER)
-        .await
-        .unwrap();
+        // The narrow ask and the wide ask rank the same rows; only how many come
+        // back differs.
+        let narrow =
+            search_pinned_semantic(&index_root, &query, &profile.profile_id(), 2, &NO_FILTER)
+                .await
+                .unwrap();
+        let wide =
+            search_pinned_semantic(&index_root, &query, &profile.profile_id(), 100, &NO_FILTER)
+                .await
+                .unwrap();
 
-    assert_eq!(
-        narrow.hits.len(),
-        2,
-        "a limit of 2 must return 2 hits, whatever coverage is"
-    );
-    assert_eq!(
-        narrow.eligible_rows, wide.eligible_rows,
-        "eligible_rows must not depend on the limit: it is coverage, not a page size"
-    );
-    assert!(
-        narrow.eligible_rows > narrow.hits.len(),
-        "the corpus holds more embedded rows than the limit returned, so coverage must say so \
+        assert_eq!(
+            narrow.hits.len(),
+            2,
+            "a limit of 2 must return 2 hits, whatever coverage is"
+        );
+        assert_eq!(
+            narrow.eligible_rows, wide.eligible_rows,
+            "eligible_rows must not depend on the limit: it is coverage, not a page size"
+        );
+        assert!(
+            narrow.eligible_rows > narrow.hits.len(),
+            "the corpus holds more embedded rows than the limit returned, so coverage must say so \
          (got eligible_rows={}, hits={})",
-        narrow.eligible_rows,
-        narrow.hits.len()
-    );
-    assert_eq!(
-        narrow.eligible_rows, embedded,
-        "every embedded row is eligible to rank — artifacts and their sections both count"
-    );
+            narrow.eligible_rows,
+            narrow.hits.len()
+        );
+        assert_eq!(
+            narrow.eligible_rows, embedded,
+            "every embedded row is eligible to rank — artifacts and their sections both count"
+        );
 
-    // And the reported coverage really is the whole ready corpus, not an
-    // artifact-only subset: sections are vectors too.
-    assert!(
-        narrow.eligible_rows > 8,
-        "sections carry ready vectors and must be counted: {}",
-        narrow.eligible_rows
-    );
+        // And the reported coverage really is the whole ready corpus, not an
+        // artifact-only subset: sections are vectors too.
+        assert!(
+            narrow.eligible_rows > 8,
+            "sections carry ready vectors and must be counted: {}",
+            narrow.eligible_rows
+        );
+    })
+    .await;
 }
 
 /// `--kind` narrows the ranking, it does not filter an already-cut page.
@@ -228,105 +249,110 @@ async fn coverage_is_counted_before_the_semantic_limit() {
 /// asked for 10, and the caller filtered the 10 returned rows afterwards. All
 /// ten were ADRs, so all ten were discarded and the command printed "no
 /// results" — for a corpus that contains matching PRDs.
+#[cfg(feature = "test-helpers")]
 #[tokio::test]
 async fn a_kind_filter_is_applied_before_the_limit_not_after() {
-    resume_admission();
-    // More ADRs than the limit, fewer PRDs than the limit: a post-limit filter
-    // can only ever return an empty list here.
-    let tmp = mixed_workspace(12, 3);
-    let capability = capability_for(&tmp);
-    let index_root = capability.index_root().to_path_buf();
-    maintain_index(&capability, CaptureLimits::default(), deadline())
-        .await
-        .unwrap();
+    with_section_metadata(async {
+        resume_admission();
+        // More ADRs than the limit, fewer PRDs than the limit: a post-limit filter
+        // can only ever return an empty list here.
+        let tmp = mixed_workspace(12, 3);
+        let capability = capability_for(&tmp);
+        let index_root = capability.index_root().to_path_buf();
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
 
-    let limit = 10usize;
+        let limit = 10usize;
 
-    // Lexical: `shared` matches every document's title and body.
-    let prds = PinnedFilter {
-        kind: Some("prd".to_string()),
-        status: None,
-    };
-    let lexical = search_pinned_lexical(&index_root, "shared", limit, &prds)
-        .await
-        .unwrap();
-    assert_eq!(
-        lexical.hits.len(),
-        3,
-        "every PRD matches and none was cut by the limit: {:?}",
-        lexical.hits
-    );
-    assert!(
-        lexical
-            .hits
-            .iter()
-            .all(|hit| hit.kind.as_deref() == Some("prd")),
-        "a filtered search returns only what passed: {:?}",
-        lexical.hits
-    );
-
-    // Unfiltered, the limit really is smaller than the corpus — so the test
-    // above could not have passed by having everything fit anyway.
-    let unfiltered = search_pinned_lexical(&index_root, "shared", limit, &NO_FILTER)
-        .await
-        .unwrap();
-    assert_eq!(
-        unfiltered.hits.len(),
-        limit,
-        "the unfiltered search must hit the limit, or this test proves nothing: {:?}",
-        unfiltered.hits
-    );
-
-    // The same rule on the semantic channel, where the filter has to reach a
-    // **section** row through its parent — a section row stores no kind of its
-    // own, so a filter applied after ranking could not have excluded it.
-    let profile = profile();
-    embed_everything(&capability, &profile, 0.25).await;
-    let query = query_vector(0.25);
-    let semantic = search_pinned_semantic(&index_root, &query, &profile.profile_id(), limit, &prds)
-        .await
-        .unwrap();
-    assert!(
-        !semantic.hits.is_empty(),
-        "the filtered semantic search must return the PRDs that match"
-    );
-    assert!(
-        semantic.hits.len() <= limit,
-        "a filter cannot add rows past the limit: {}",
-        semantic.hits.len()
-    );
-
-    // Every hit is a PRD document — including section hits, which resolve to
-    // their parent.
-    let prd_keys: std::collections::BTreeSet<String> = ["PRD-000", "PRD-001", "PRD-002"]
-        .iter()
-        .map(|key| key.to_string())
-        .collect();
-    for hit in &semantic.hits {
-        let document = hit.parent_key.as_deref().unwrap_or(&hit.canonical_key);
-        assert!(
-            prd_keys.contains(document),
-            "a filtered semantic search returned a non-PRD document: {document}"
+        // Lexical: `shared` matches every document's title and body.
+        let prds = PinnedFilter {
+            kind: Some("prd".to_string()),
+            status: None,
+        };
+        let lexical = search_pinned_lexical(&index_root, "shared", limit, &prds)
+            .await
+            .unwrap();
+        assert_eq!(
+            lexical.hits.len(),
+            3,
+            "every PRD matches and none was cut by the limit: {:?}",
+            lexical.hits
         );
-    }
+        assert!(
+            lexical
+                .hits
+                .iter()
+                .all(|hit| hit.kind.as_deref() == Some("prd")),
+            "a filtered search returns only what passed: {:?}",
+            lexical.hits
+        );
 
-    // Coverage under a filter describes the filtered set, so it must be
-    // smaller than the unfiltered coverage rather than the same number.
-    let semantic_unfiltered = search_pinned_semantic(
-        &index_root,
-        &query,
-        &profile.profile_id(),
-        limit,
-        &NO_FILTER,
-    )
-    .await
-    .unwrap();
-    assert!(
-        semantic.eligible_rows < semantic_unfiltered.eligible_rows,
-        "a kind filter must narrow the eligible set it counts ({} vs {})",
-        semantic.eligible_rows,
-        semantic_unfiltered.eligible_rows
-    );
+        // Unfiltered, the limit really is smaller than the corpus — so the test
+        // above could not have passed by having everything fit anyway.
+        let unfiltered = search_pinned_lexical(&index_root, "shared", limit, &NO_FILTER)
+            .await
+            .unwrap();
+        assert_eq!(
+            unfiltered.hits.len(),
+            limit,
+            "the unfiltered search must hit the limit, or this test proves nothing: {:?}",
+            unfiltered.hits
+        );
+
+        // The same rule on the semantic channel, where the filter has to reach a
+        // **section** row through its parent — a section row stores no kind of its
+        // own, so a filter applied after ranking could not have excluded it.
+        let profile = profile();
+        embed_everything(&capability, &profile, 0.25).await;
+        let query = query_vector(0.25);
+        let semantic =
+            search_pinned_semantic(&index_root, &query, &profile.profile_id(), limit, &prds)
+                .await
+                .unwrap();
+        assert!(
+            !semantic.hits.is_empty(),
+            "the filtered semantic search must return the PRDs that match"
+        );
+        assert!(
+            semantic.hits.len() <= limit,
+            "a filter cannot add rows past the limit: {}",
+            semantic.hits.len()
+        );
+
+        // Every hit is a PRD document — including section hits, which resolve to
+        // their parent.
+        let prd_keys: std::collections::BTreeSet<String> = ["PRD-000", "PRD-001", "PRD-002"]
+            .iter()
+            .map(|key| key.to_string())
+            .collect();
+        for hit in &semantic.hits {
+            let document = hit.parent_key.as_deref().unwrap_or(&hit.canonical_key);
+            assert!(
+                prd_keys.contains(document),
+                "a filtered semantic search returned a non-PRD document: {document}"
+            );
+        }
+
+        // Coverage under a filter describes the filtered set, so it must be
+        // smaller than the unfiltered coverage rather than the same number.
+        let semantic_unfiltered = search_pinned_semantic(
+            &index_root,
+            &query,
+            &profile.profile_id(),
+            limit,
+            &NO_FILTER,
+        )
+        .await
+        .unwrap();
+        assert!(
+            semantic.eligible_rows < semantic_unfiltered.eligible_rows,
+            "a kind filter must narrow the eligible set it counts ({} vs {})",
+            semantic.eligible_rows,
+            semantic_unfiltered.eligible_rows
+        );
+    })
+    .await;
 }
 
 /// A filter that admits nothing yields an empty result, not an error and not

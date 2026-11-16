@@ -348,7 +348,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("forgeplan-snapshot-lookup-test");
         let snap = tmp.join("models--BAAI--bge-m3/snapshots/abc123");
         std::fs::create_dir_all(&snap).unwrap();
-        std::fs::write(snap.join("tokenizer.json"), "{}").unwrap();
+        crate::embed::tokenizer::testing::write_whitespace_snapshot(&snap, 8192).unwrap();
 
         let found = find_snapshot(&tmp, "BAAI/bge-m3");
         assert_eq!(found.as_deref(), Some(snap.as_path()));

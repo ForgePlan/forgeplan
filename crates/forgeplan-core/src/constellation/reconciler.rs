@@ -344,6 +344,7 @@ mod tests {
             tokenizer: None,
             body_prefix_chars: super::super::jobs::DEFAULT_BODY_PREFIX_CHARS,
             artifacts: Vec::new(),
+            conflict_artifacts: Vec::new(),
             sections: Vec::new(),
             coverage: Coverage {
                 expected: enumerated_paths.len(),

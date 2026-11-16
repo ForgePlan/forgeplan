@@ -176,3 +176,79 @@ fn get_at_a_snapshot_honours_the_source_qualifier() {
     .failure()
     .stderr(predicate::str::contains("matches no source"));
 }
+
+#[test]
+fn live_and_snapshot_get_name_all_canonical_claimants_in_json_and_text() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    let root = tmp.path().join("source");
+    std::fs::create_dir_all(&home).unwrap();
+    snapshot_source(&root, &home, "Unrelated decision");
+    let fp = root.join(".forgeplan");
+    for (file, id, title) in [
+        ("ADR-101-first.md", "ADR-101", "First claimant"),
+        ("ADR-102-second.md", "ADR-102", "Second claimant"),
+    ] {
+        std::fs::write(
+            fp.join("adrs").join(file),
+            format!(
+                "---\nid: {id}\nslug: adr-shared\nkind: adr\nstatus: active\ntitle: {title}\n---\n\n{title} body.\n"
+            ),
+        )
+        .unwrap();
+    }
+    for args in [
+        vec!["add", "-A"],
+        vec!["commit", "-qm", "collision fixture"],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    constellation(&home, &["create", "demo"]).success();
+    constellation(&home, &["add", fp.to_str().unwrap()]).success();
+    let snapshot = constellation(&home, &["snapshot"]).success();
+    let stdout = String::from_utf8_lossy(&snapshot.get_output().stdout);
+    let snapshot_id = stdout.split_whitespace().nth(1).unwrap();
+    for snapshot in [None, Some(snapshot_id)] {
+        let mut args = vec!["get", "adr-shared"];
+        if let Some(id) = snapshot {
+            args.extend(["--snapshot", id]);
+        }
+        let human = constellation(&home, &args).code(4);
+        let stderr = String::from_utf8_lossy(&human.get_output().stderr);
+        for claimant in [
+            "First claimant",
+            "Second claimant",
+            "adrs/ADR-101-first.md",
+            "adrs/ADR-102-second.md",
+        ] {
+            assert!(stderr.contains(claimant), "{stderr}");
+        }
+        args.push("--json");
+        let json = constellation(&home, &args).code(4);
+        let response: serde_json::Value =
+            serde_json::from_slice(&json.get_output().stdout).unwrap();
+        assert_eq!(response["error"], "conflicting_canonical_key");
+        assert_eq!(response["input"], "adr-shared");
+        let candidates = response["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 2);
+        for (id, title, path) in [
+            ("ADR-101", "First claimant", "adrs/ADR-101-first.md"),
+            ("ADR-102", "Second claimant", "adrs/ADR-102-second.md"),
+        ] {
+            assert!(candidates.iter().any(|candidate| {
+                candidate["canonical_key"] == "adr-shared"
+                    && candidate["display_id"] == id
+                    && candidate["title"] == title
+                    && candidate["relative_path"]
+                        .as_str()
+                        .is_some_and(|value| value != path && value.ends_with(path))
+            }));
+        }
+    }
+}

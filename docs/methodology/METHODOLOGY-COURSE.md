@@ -250,9 +250,9 @@ Author all three fields below. The parser requires declared verdict plus CL/sour
 ```markdown
 ## Structured Fields
 
-verdict: supports          # supports / weakens / refutes
-congruence_level: 3        # 0-3 (3=best)
-evidence_type: test        # test / benchmark / measurement / audit
+verdict: supports
+congruence_level: 3
+evidence_type: test
 ```
 
 | Field | What it means | Values |

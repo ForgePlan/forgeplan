@@ -61,13 +61,14 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
     // Serialize the phase store's read-modify-write without opening an
     // artifact index merely to find the workspace.
     let (ws, _lock) = common::open_workspace_locked().await?;
-    let (_, source) = common::open_read_source().await?;
+    let source = common::read_source_for(&ws, &_lock).await?;
 
     // Phase 2.5 (PROB-060) — accept slug or display id form. Phase state
     // file named by canonical id; without resolver slug input creates
     // a NEW state file at .forgeplan/state/<slug>.yaml instead of updating
     // existing canonical one — silent state divergence.
     let (canonical, display) = common::resolve_required_identity(&source, &ws, id).await?;
+    common::ensure_ordinary_mutation_allowed(&ws)?;
     // A state file written before the key existed carries the display id in
     // its name. The name resolved to exactly one document, so the file moves
     // to the key's name.

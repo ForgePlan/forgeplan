@@ -50,6 +50,8 @@
 //! field: [`SectionLayout::unavailable`] carries its own fingerprint, so a
 //! capture without a tokenizer can never hash equal to a capture with one.
 
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -760,6 +762,10 @@ mod test_layout_cache {
 
     static OVERRIDE: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(|| Mutex::new(None));
 
+    tokio::task_local! {
+        static TASK_OVERRIDE: Option<PathBuf>;
+    }
+
     /// A poisoned mutex means some earlier test panicked while holding it. The
     /// value is a plain `Option<PathBuf>`, so recovering is safe and refusing
     /// would only cascade one failure into every later test.
@@ -770,23 +776,37 @@ mod test_layout_cache {
     }
 
     pub fn get() -> Option<PathBuf> {
-        lock().clone()
+        TASK_OVERRIDE
+            .try_with(Clone::clone)
+            .ok()
+            .flatten()
+            .or_else(|| lock().clone())
     }
 
-    pub fn set(dir: Option<PathBuf>) {
-        *lock() = dir;
+    pub fn set(dir: Option<PathBuf>) -> Option<PathBuf> {
+        std::mem::replace(&mut *lock(), dir)
     }
+
+    pub async fn scope<F: Future>(dir: PathBuf, future: F) -> F::Output {
+        TASK_OVERRIDE.scope(Some(dir), future).await
+    }
+}
+
+/// Resolve a test-supplied tokenizer cache only for this async task and its
+/// awaited future. Unlike [`set_test_layout_cache`], this does not change the
+/// process-wide override or require cross-test serialization.
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+pub async fn with_test_layout_cache<F: Future>(dir: std::path::PathBuf, future: F) -> F::Output {
+    test_layout_cache::scope(dir, future).await
 }
 
 /// Point [`resolve_layout`] at `dir` until [`clear_test_layout_cache`].
 ///
-/// Returns the previous value so a caller can restore it. Tests must hold
-/// whatever lock serialises them, because this is process-global.
+/// Returns the previous value so tests that use this process-global override
+/// can restore it. Prefer [`with_test_layout_cache`] for asynchronous tests.
 #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
 pub fn set_test_layout_cache(dir: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
-    let previous = test_layout_cache::get();
-    test_layout_cache::set(dir);
-    previous
+    test_layout_cache::set(dir)
 }
 
 /// Forget any directory installed by [`set_test_layout_cache`].
@@ -1518,5 +1538,50 @@ mod tests {
             restored.fingerprint(),
             "a second clear must be a no-op, not a reset of ambient state"
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_task_scoped_layout_overrides_are_isolated() {
+        const REPO: &str = crate::constellation::jobs::DEFAULT_MODEL_REPO;
+
+        fn fixture(limit: usize, repo: &str) -> (tempfile::TempDir, PathBuf, String) {
+            let cache = tempfile::TempDir::new().unwrap();
+            let snapshot = cache
+                .path()
+                .join(format!("models--{}", repo.replace('/', "--")))
+                .join(format!("snapshots/rev-{limit}"));
+            std::fs::create_dir_all(&snapshot).unwrap();
+            testing::write_snapshot(&snapshot, limit).unwrap();
+            let cache_path = cache.path().to_path_buf();
+            let fingerprint = resolve_layout_in(&cache_path, repo).fingerprint();
+            (cache, cache_path, fingerprint)
+        }
+
+        let (first_cache, first_path, first_fingerprint) = fixture(MAX_TOKENS_CEILING - 1, REPO);
+        let (second_cache, second_path, second_fingerprint) = fixture(MAX_TOKENS_CEILING, REPO);
+        assert_ne!(first_fingerprint, second_fingerprint);
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let first_barrier = std::sync::Arc::clone(&barrier);
+
+        let first = tokio::spawn(async move {
+            let _cache = first_cache;
+            with_test_layout_cache(first_path, async {
+                first_barrier.wait().await;
+                resolve_layout(REPO).fingerprint()
+            })
+            .await
+        });
+        let second = tokio::spawn(async move {
+            let _cache = second_cache;
+            with_test_layout_cache(second_path, async {
+                barrier.wait().await;
+                resolve_layout(REPO).fingerprint()
+            })
+            .await
+        });
+
+        assert_eq!(first.await.unwrap(), first_fingerprint);
+        assert_eq!(second.await.unwrap(), second_fingerprint);
     }
 }

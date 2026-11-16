@@ -161,3 +161,8 @@ log_*.md
 # Python bytecode from the eval harness.
 __pycache__/
 *.pyc
+
+# Local git worktrees used by identity consolidation
+.worktrees/
+# Live constellation owner advisory locks (auto-expire)
+.forgeplan/.constellation-owner-*.lock

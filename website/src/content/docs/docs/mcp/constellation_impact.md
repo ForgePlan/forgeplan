@@ -85,6 +85,25 @@ Explainable impact: who depends on the artifact, by which                       
 </details>
 <!-- forgeplan-runtime:end -->
 
+## Cross-source impact
+
+An `id` such as `ADR-001@shared` selects the changed document in the admitted
+Shared source. It does not remove Hub from the graph: Hub's declared
+`based_on` dependency is returned with a source-qualified explanatory path.
+Structural dependencies propagate; informational links stop at the direct
+neighbor. Depth and node limits apply to the combined walk.
+
+Working-scope reads verify every consumed source, including projects that
+only declare incoming dependencies. Reopen an expired scope before reading
+new data. A Git snapshot instead follows its committed dependency set after
+working files change.
+
+An ambiguous selector returns a tool error (`isError: true`) with typed
+`error: "ambiguous"` and candidate identities, titles and qualified paths.
+It is not an empty successful impact report. Source witnesses are checked
+before those candidates are exposed.
+
+
 ## Examples
 
 - [MCP setup and workspace scope](/docs/guides/mcp-setup/)

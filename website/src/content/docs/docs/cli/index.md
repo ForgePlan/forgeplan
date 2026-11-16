@@ -122,7 +122,7 @@ This is an inventory of CLI help, not a full runtime acceptance claim. New-layou
 | [`forgeplan plugins doctor`](/docs/cli/plugins-doctor/) | Health check across known plugins — reports missing, outdated, OK |
 | [`forgeplan plugins info`](/docs/cli/plugins-info/) | Show details for a specific plugin (path, version, description) |
 | [`forgeplan constellation create`](/docs/cli/constellation-create/) | Create a named constellation. The first one created becomes active |
-| [`forgeplan constellation add`](/docs/cli/constellation-add/) | Add a `.forgeplan` directory as a source. Validates the path at registration time — a symlink or a non-workspace fails here, not at every later read |
+| [`forgeplan constellation add`](/docs/cli/constellation-add/) | Add a `.forgeplan` directory as a source. Rejects symlinks and non-workspaces at registration. Live reads recheck the registered source boundary |
 | [`forgeplan constellation remove`](/docs/cli/constellation-remove/) | Remove a source from a constellation |
 | [`forgeplan constellation rebind`](/docs/cli/constellation-rebind/) | Rebind a source after its checkout moved. Source identity is path-derived, so a moved checkout is a new source: this rewrites the registry path and, by default, the index's path-bound marker so `forgeplan index` answers at the new location. References qualified by the old `src:` id stop resolving — that is the contract |
 | [`forgeplan constellation list`](/docs/cli/constellation-list/) | List all constellations and which is active |

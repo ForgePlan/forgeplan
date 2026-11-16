@@ -114,6 +114,11 @@ Two related traps, same family:
   for anything that writes. A concurrent commit from a second session has
   already cost a lost commit-message file and half an hour of misdiagnosis in
   this repo.
+- **Назначенное дерево не меняет cwd инструментов.** Пишущий агент обязан
+  указывать полный абсолютный путь своего дерева в файловых операциях и в
+  заголовке `Edit`, а для Bash — явно задавать `cwd`. Относительный `Edit`
+  уже изменил исходный репозиторий вместо выделенного дерева; эту правку
+  пришлось восстанавливать по сохранённому снимку.
 - **The exit code you print through a pipe is the wrong one.** `cmd | tail` and
   `echo $?` reports `tail`. `${PIPESTATUS[0]}` is a bashism and expands to the
   empty string in this repo's zsh, so the guard prints `exit=` and reads as

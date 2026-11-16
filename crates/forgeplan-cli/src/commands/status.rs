@@ -8,14 +8,14 @@ use forgeplan_core::workspace::load_config;
 use crate::commands::common;
 
 pub async fn run() -> Result<()> {
-    let (workspace, source) = common::open_read_source().await?;
+    let (workspace, source, _read_guard) = common::open_read_source().await?;
 
     let config = load_config(&workspace)?;
     // Counting is over artifact summaries, which the capture produces with the
     // same `to_summary` projection the store path used — same dashboard, no
     // retired table opened on a migrated workspace.
     let artifacts = match &source {
-        common::ReadSource::Legacy(store) => store.list_artifacts(None).await?,
+        common::ReadSource::Legacy(store) => store.list_artifacts(&_read_guard, None).await?,
         common::ReadSource::Captured(read) => read.list_artifacts(None),
     };
 

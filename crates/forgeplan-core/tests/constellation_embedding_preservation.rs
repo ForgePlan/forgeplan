@@ -627,11 +627,15 @@ async fn canonical_key_change_at_same_path_must_not_leak_old_relations() {
         get_pinned_artifact(&index_root, "prd-alpha")
             .await
             .unwrap()
+            .result
+            .unwrap()
             .is_none()
     );
     assert!(
         get_pinned_artifact(&index_root, "prd-alpha-v2")
             .await
+            .unwrap()
+            .result
             .unwrap()
             .is_some()
     );
@@ -1501,7 +1505,11 @@ async fn pending_jobs(
     index_root: &Path,
 ) -> BTreeMap<String, forgeplan_core::constellation::jobs::EmbeddingJob> {
     let (_descriptor, manifest) = pinned_descriptor_and_manifest(index_root).await;
-    manifest.pending_jobs
+    manifest
+        .pending_jobs
+        .into_values()
+        .flat_map(|group| group.inputs)
+        .collect()
 }
 
 /// Admission must reach compute without first marking the whole corpus
@@ -1777,6 +1785,132 @@ async fn a_failed_attempt_is_recorded_with_a_retry_delay_and_an_advanced_attempt
         "a delayed key keeps its place in the durable work list"
     );
 }
+/// Completing or failing one child must not retire its artifact's siblings.
+///
+/// The failure advances only that input's retry history; a subsequent
+/// admission may hand out its due siblings but must leave the failed child
+/// delayed. Completing the artifact-prefix child then leaves the group alive
+/// with the section failure and its exact backoff.
+#[tokio::test]
+async fn one_child_failure_and_completion_preserve_sibling_jobs() {
+    resume_admission();
+    let tmp = linked_workspace();
+    let capability = capability_for(&tmp);
+    let index_root = capability.index_root().to_path_buf();
+    maintain_index(&capability, CaptureLimits::default(), deadline())
+        .await
+        .unwrap();
+
+    let profile = profile_a();
+    let prepared = prepare_embedding_batch(&capability, &profile, deadline())
+        .await
+        .unwrap();
+    let (_, manifest) = pinned_descriptor_and_manifest(&index_root).await;
+    let initial_inputs = manifest
+        .pending_jobs
+        .get("ADR-002")
+        .expect("ADR-002 must have a pending parent group")
+        .inputs
+        .clone();
+    assert!(
+        initial_inputs.contains_key("ADR-002")
+            && initial_inputs
+                .keys()
+                .any(|key| key.starts_with("ADR-002#s")),
+        "the group must contain its artifact input and section siblings: {initial_inputs:?}"
+    );
+    let target_key = initial_inputs
+        .keys()
+        .find(|key| key.starts_with("ADR-002#s"))
+        .expect("ADR-002 must have a pending section input")
+        .clone();
+    let target_job = initial_inputs[&target_key].clone();
+
+    let failure = fail_embedding_batch(
+        &capability,
+        &prepared,
+        std::slice::from_ref(&target_job),
+        "one section input failed",
+        deadline(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(failure.failed, vec![target_key.clone()]);
+    let (_, after_failure) = pinned_descriptor_and_manifest(&index_root).await;
+    let failed_group = &after_failure.pending_jobs["ADR-002"].inputs;
+    assert_eq!(
+        failed_group.len(),
+        initial_inputs.len(),
+        "failing one child must not retire any sibling"
+    );
+    let failed_job = &failed_group[&target_key];
+    let mut expected_failed_job = target_job.clone();
+    expected_failed_job.attempt += 1;
+    expected_failed_job.retry_after = failure.retry_after.clone();
+    assert_eq!(
+        failed_job, &expected_failed_job,
+        "failure must preserve the child's exact admission binding while advancing retry state"
+    );
+    for (key, original) in &initial_inputs {
+        if key != &target_key {
+            assert_eq!(
+                &failed_group[key], original,
+                "failure of `{target_key}` must leave sibling `{key}` byte-for-byte unchanged"
+            );
+        }
+    }
+
+    let retry_batch = prepare_embedding_batch(&capability, &profile, deadline())
+        .await
+        .unwrap();
+    assert!(
+        retry_batch
+            .inputs
+            .iter()
+            .all(|input| input.job.canonical_key != target_key),
+        "the failed child must remain inside its retry delay"
+    );
+    for (key, original) in &initial_inputs {
+        if key != &target_key {
+            let admitted = retry_batch
+                .inputs
+                .iter()
+                .find(|input| input.job.canonical_key == *key)
+                .unwrap_or_else(|| panic!("eligible sibling `{key}` was not recovered"));
+            assert_eq!(&admitted.job, original);
+        }
+    }
+
+    let artifact_input = retry_batch
+        .inputs
+        .iter()
+        .find(|input| input.job.canonical_key == "ADR-002")
+        .expect("the artifact input remains an independent sibling");
+    let result = forgeplan_core::constellation::jobs::ComputedEmbedding {
+        job: artifact_input.job.clone(),
+        vector: vec![0.25; forgeplan_core::db::schema::EMBEDDING_DIM as usize],
+    };
+    let completion = complete_embedding_batch(&capability, &retry_batch, &[result], deadline())
+        .await
+        .unwrap();
+    assert!(completion.published.contains(&"ADR-002".to_string()));
+
+    let (_, after_completion) = pinned_descriptor_and_manifest(&index_root).await;
+    let remaining = &after_completion.pending_jobs["ADR-002"].inputs;
+    assert!(
+        !remaining.contains_key("ADR-002"),
+        "completion retires only its own child"
+    );
+    assert_eq!(
+        &remaining[&target_key], failed_job,
+        "the section failure and its backoff survive its sibling's completion"
+    );
+    for (key, original) in &initial_inputs {
+        if key != &target_key && key != "ADR-002" {
+            assert_eq!(&remaining[key], original);
+        }
+    }
+}
 
 /// A failure record must never mark a row `ready` or resurrect a vector.
 #[tokio::test]
@@ -1898,6 +2032,97 @@ async fn a_pending_job_for_a_deleted_document_is_retired() {
     );
 }
 
+/// A section that disappeared at a published reconcile cannot reuse its old
+/// admission token when identical tokenizer metadata later returns.
+#[cfg(all(feature = "test-helpers", debug_assertions))]
+#[tokio::test]
+async fn restored_section_does_not_revive_a_retired_admission() {
+    use forgeplan_core::embed::tokenizer::{testing, with_test_layout_cache};
+
+    let cache = TempDir::new().unwrap();
+    let repo = cache.path().join("models--BAAI--bge-m3");
+    let snapshot = repo.join("snapshots/fixture");
+    std::fs::create_dir_all(&snapshot).unwrap();
+    std::fs::create_dir_all(repo.join("refs")).unwrap();
+    std::fs::write(repo.join("refs/main"), "fixture").unwrap();
+    testing::write_snapshot(&snapshot, 512).unwrap();
+    let tokenizer_path = snapshot.join("tokenizer.json");
+    let tokenizer_bytes = std::fs::read(&tokenizer_path).unwrap();
+
+    with_test_layout_cache(cache.path().to_path_buf(), async {
+        resume_admission();
+        let tmp = linked_workspace();
+        let capability = capability_for(&tmp);
+        let root = capability.index_root().to_path_buf();
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let profile = profile_a();
+        let first = prepare_embedding_batch(&capability, &profile, deadline())
+            .await
+            .unwrap();
+        let old_section = first
+            .inputs
+            .iter()
+            .find(|input| input.job.canonical_key.starts_with("prd-alpha#s"))
+            .expect("the fixture must produce a section")
+            .job
+            .clone();
+        let old_prefix = first.job_for("prd-alpha").unwrap().clone();
+        let old_results: Vec<_> = vectors_for(&first, 0.25)
+            .into_iter()
+            .filter(|result| result.job.canonical_key == old_section.canonical_key)
+            .collect();
+
+        std::fs::remove_file(&tokenizer_path).unwrap();
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let after_removal = pending_jobs(&root).await;
+        assert!(!after_removal.contains_key(&old_section.canonical_key));
+        assert_eq!(after_removal.get("prd-alpha"), Some(&old_prefix));
+
+        std::fs::write(&tokenizer_path, &tokenizer_bytes).unwrap();
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        std::fs::write(
+            tmp.path().join("notes/NOTE-777-new.md"),
+            "---\nid: NOTE-777\nkind: note\nstatus: draft\ntitle: New\n---\n\nNew body.\n",
+        )
+        .unwrap();
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let second = prepare_embedding_batch(&capability, &profile, deadline())
+            .await
+            .unwrap();
+        let replacement = second
+            .job_for(&old_section.canonical_key)
+            .expect("the restored section must be admitted")
+            .clone();
+        assert_ne!(
+            replacement.captured_input_ref,
+            old_section.captured_input_ref
+        );
+        assert_eq!(second.job_for("prd-alpha"), Some(&old_prefix));
+        assert!(second.job_for("NOTE-777").is_some());
+
+        let outcome = complete_embedding_batch(&capability, &first, &old_results, deadline())
+            .await
+            .unwrap();
+        assert!(outcome.published.is_empty(), "{outcome:?}");
+        assert!(outcome.stale.contains(&old_section.canonical_key));
+        let remaining = pending_jobs(&root).await;
+        assert_eq!(
+            remaining.get(&old_section.canonical_key),
+            Some(&replacement)
+        );
+        assert_eq!(remaining.get("prd-alpha"), Some(&old_prefix));
+    })
+    .await;
+}
+
 /// A mixed batch completes the live keys and reports the superseded one.
 ///
 /// One document is edited while a batch is outstanding, so the next admission
@@ -1937,6 +2162,35 @@ async fn a_mixed_batch_completes_the_live_keys_and_reports_the_superseded_one() 
         "---\nid: SPEC-009\nkind: spec\nstatus: draft\ntitle: View\nlinks:\n  - target: prd-alpha\n    relation: based_on\n---\n\nView body, edited.\n",
     )
     .unwrap();
+    let (_, durable) = pinned_descriptor_and_manifest(&index_root).await;
+    let changed = forgeplan_core::constellation::capture::capture_source(
+        &forgeplan_core::constellation::capture::CaptureRequest::new(tmp.path())
+            .with_published_manifest(std::sync::Arc::new(durable.clone())),
+        CaptureLimits::default(),
+    )
+    .await
+    .unwrap();
+    let (recovered, gaps) = forgeplan_core::constellation::runtime::recover_pending(
+        &durable,
+        &changed,
+        DEFAULT_BODY_PREFIX_CHARS,
+    );
+    assert!(gaps.iter().any(|(key, _)| key == "SPEC-009"));
+    assert!(
+        !recovered
+            .iter()
+            .any(|input| input.job.canonical_key == "SPEC-009")
+    );
+    for input in &recovered {
+        assert_eq!(
+            durable
+                .pending_jobs
+                .values()
+                .find_map(|group| group.inputs.get(&input.job.canonical_key)),
+            Some(&input.job),
+            "recovery must return exact durable jobs"
+        );
+    }
     maintain_index(&capability, CaptureLimits::default(), deadline())
         .await
         .unwrap();

@@ -43,7 +43,7 @@ for reversing a recorded accidental operation.
 | **superseded** | Replaced by newer artifact | *(terminal)* |
 | **deprecated** | No longer relevant | *(terminal)* |
 
-Every artifact starts as **draft**. It stays there until you explicitly validate and activate it. This is intentional -- there is no automatic promotion. You have to earn the "active" status by passing validation gates.
+An artifact starts as **draft** by default. Activation must pass normal lifecycle gates and usually requires an explicit `activate` call. Full MCP linking has an opt-in exception: `auto_activate_source_if_complete` can activate a complete Evidence artifact on the link's source side. It does not activate the linked target decision or bypass validation.
 
 ## Lifecycle Commands
 
@@ -63,7 +63,7 @@ forgeplan activate PRD-001
 
 # Supersede (active -> superseded)
 forgeplan supersede PRD-001 --by PRD-002
-# -> Creates link: PRD-002 supersedes PRD-001
+# -> Stored relation: source=PRD-001, target=PRD-002, type=supersedes
 
 # Deprecate (active/stale -> deprecated)
 forgeplan deprecate PRD-001 --reason "No longer needed"

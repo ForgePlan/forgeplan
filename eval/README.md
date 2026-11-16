@@ -1,103 +1,94 @@
-# F10 acceptance harness — local / federated / ContextPack
+# F10 evaluation — local, federated and ContextPack
 
-F10 (`.local/planning/constellation-minimax/ACCEPTANCE.md`) is designed to
-compare 30 reference tasks over the same corpus in three modes — `local`
-(single workspace `search`/`get`), `federated` (`constellation search`/`get`
-over both workspaces), and `pack` (`constellation pack` under an estimated
-token budget). It records must_include recall, wrong refs/omissions, payload
-bytes, latency p50/p95 and first useful rank. The intended violation count is
-zero. The implemented snapshot and scoring checks have the limits below;
-this README is not a record of a passing run.
-
-## Layout
-
-```
-eval/
-  corpus/
-    ws-a/.forgeplan/…    drain-queue reliability workspace (12 artifacts)
-    ws-b/.forgeplan/…    billing-service workspace (12 artifacts)
-    tasks.yaml           the 30 tasks
-  run_eval.py            the runner (Python 3 stdlib only)
-  results/               gitignored — results-*.jsonl + report-*.md per run
-```
-
-ws-a and ws-b are real git checkouts with real forgeplan workspaces. Their
-`.git/`, `.forgeplan/lance/` and other runtime state are generated on first
-run and gitignored — only markdown artifacts + `config.yaml` are committed.
+The fixed thirty tasks in `corpus/tasks.yaml` compare local CLI reads,
+federated reads and ContextPack. The runner measures required-content recall,
+reference noise, source attribution, payload bytes, latency p50/p95 and the
+first useful source. A runner or a successful build is not a passing evaluation.
 
 ## Run
 
-The runner uses `target/debug/forgeplan`; provide a compatible built binary,
-Python 3.9+ and a complete BGE-M3 cache before running it. It initializes and
-indexes the dedicated corpus workspaces and writes run state under a temporary
-HOME. Check inherited workspace bindings first; this is not a read-only check.
+Use Python 3.9+, PyYAML and a built Forgeplan binary. Local semantic comparisons
+also require `semantic-search` and a complete existing BGE-M3 cache; downloads
+are disabled. `--mode pack` and `--mode federated` use Git objects without
+building indexes or loading embeddings.
 
 ```bash
-python3 eval/run_eval.py                 # all three modes
-python3 eval/run_eval.py --mode local    # one mode only
-python3 eval/run_eval.py --out /tmp/res  # alternate output dir
+python3 -m unittest discover -s eval -p test_run_eval.py -v
+python3 eval/run_eval.py --binary /absolute/path/to/forgeplan --out /tmp/f10-results
+python3 eval/run_eval.py --mode pack --binary /absolute/path/to/forgeplan --out /tmp/f10-pack
 ```
 
-On first setup the runner initializes each corpus git repository if needed,
-runs `forgeplan index` when `CURRENT.json` is absent or invalid JSON, and
-attempts `forgeplan embed` when the published pointer lacks
-`embedding_artifacts_head` or `profile_id`. A nonzero embed exit is logged as
-a warning; the pointer alone is not proof of complete semantic readiness.
-No fixed model-load time is guaranteed.
+`--mode local|federated|pack|all` selects modes. `--repeats` accepts 2–10
+passes, default 2. The first pass and repeats use fresh CLI processes; the OS
+page cache is not purged. These are not controlled cold-cache measurements.
+The task definitions and their original budgets are not rewritten to fit a
+particular implementation.
 
-The runner redirects `HOME`, `USERPROFILE` and `XDG_DATA_HOME` to a temporary
-directory and sets `FORGEPLAN_MODEL_CACHE` to the real user's model cache.
-It otherwise inherits the environment, including any workspace-binding
-variables; this is registry isolation, not a fully hermetic environment.
+Use `--keep-fixture` to retain the private temporary Git repositories, indexes
+and HOME after the run. The metadata records `fixture_root` and whether it was
+retained, so a reviewer can inspect the exact snapshot without rebuilding its
+embeddings. The default still removes temporary fixtures; no original project
+or global registry is reused. Retention does not make a failed run successful.
 
-## What a row in results-*.jsonl means
+`first_useful_ms` sums CLI subprocess runtimes through the response containing
+the first useful source. It excludes later pages and evaluator overhead; it is
+not a streaming first-token measurement. Aggregates also report the number of
+tasks for which that timing is available.
 
-| field | meaning |
-|---|---|
-| `result` | `found` / `not_found` / `ambiguous` / `hits` / `error` |
-| `hits` | `{key, source_ws, source_id}` per returned hit/unit |
-| `must_include_found` / `_missing` | which required substrings surfaced |
-| `constraint_recall` | fraction of `must_include` found (null if none required) |
-| `first_useful_rank` | 1-based position of the first hit carrying expected content |
-| `wrong_ref_count` | hits outside `expected_artifacts` (precision noise) |
-| `wrong_source_hits` | federated/pack hits from a ws not in `expected_sources` |
-| `latency_ms` | wall clock of the invocation(s); local fan-out sums its legs |
-| `payload_bytes` | stdout bytes |
-| `source_boundary_violation` | hit attributed to a ws that does not contain that key (local leak or federated misattribution) |
-| `version_substitution` | federated get/search compare source `version_key` with setup `generation_id`; pack compares it with setup `source_set_digest`; local get compares `generation_id` only when returned; local search has no version comparison |
-| `incomplete_negative` | expected content → empty / not-found / error |
-| `negative_fabrication` | no-answer task → hits or a found artifact |
-| `omissions_reported` | pack listed entries in `omitted` |
+## Isolation and version checks
 
-Exit code is non-zero when any violation flag is non-zero.
+The runner copies only canonical Markdown and configuration into temporary
+workspaces. Local mode also initializes their indexes. All modes use a private
+HOME/registry and remove inherited `FORGEPLAN_*` bindings; local mode supplies
+the existing model cache. Original corpus checkouts and project data are not
+modified. A failed index or embedding command stops setup rather than becoming
+a warning followed by an acceptance claim.
 
-A zero exit means these implemented flags stayed clear, not that every
-read was proven snapshot-pinned or every required substring was found.
-Missing `must_include` strings are reported in recall metrics; the violation
-rules are narrower. Search scoring uses returned keys/titles (plus local
-sections), not a full-body fetch for each hit.
+Federated and pack requests explicitly name one recorded Git snapshot. Setup
+compares every local fixture Markdown file against its pinned Git object.
+Canonical fixture hashes are checked before and after each task invocation;
+local mode reads those same unchanged bytes. Returned federated source ids and
+revision keys must match the snapshot lockfile, not merely a generation receipt.
+This does not imply an atomic snapshot across independent projects.
 
-## Adding a task
+## What is measured
 
-Append an item to `corpus/tasks.yaml` (restricted YAML subset — see header
-comment). `expected_sources` decides where local mode runs; `must_include`
-strings must be verbatim substrings of corpus artifact bodies/ids. For a
-negative task set `expect_found: false`; for the duplicate-id case use
-`expect_found: ambiguous`. `budget` only affects pack mode (estimated tokens,
-chars/4).
+Each JSONL row includes raw stdout/stderr, arguments, cwd, exit code and latency
+for every CLI invocation. The summary records binary and task SHA-256 hashes,
+fixture hashes, the snapshot lockfile and aggregate measurements.
 
-Two query-grammar caveats the fields encode:
+- Only returned evidence counts toward `must_include` and `must_not_include`.
+  An echoed question, an omission entry or a missing-target diagnostic is not
+  evidence that a requirement was retrieved.
+- Search scoring uses actual returned keys/titles and local sections. It does
+  not silently fetch full bodies to improve recall. A federated ambiguity
+  response counts its returned artifact key as identity evidence, not as body
+  content. Full-body context remains a separate cost from a search result.
+- Wrong references and wrong-source hits measure relevance noise against the
+  frozen task expectations. Declared contextual links can legitimately add
+  material beyond that narrow expected set; inspect those rows rather than
+  relabeling every extra reference as a boundary violation.
+- A source-boundary violation includes an unattributed hit or a key attributed
+  to a workspace that does not contain it. Version substitutions are separate.
+- ContextPack follows `next_cursor` with unchanged inputs, checks progress and
+  repeated unit ids, and measures each actual emitted UTF-8 response against
+  `receipt.measured_bytes` and `receipt.byte_cap`. Quotes and source digests
+  are checked against the frozen fixture files. Focused Core tests additionally
+  verify exact source spans and declared obligation traversal.
+- Source, traversal and page completeness remain separate. A typed
+  `insufficient_budget` refusal is honest, but is not successful context
+  delivery. The original small task budgets may therefore produce explicit
+  refusals; they must not be made green by excluding response metadata.
 
-- `constellation search` is a **literal substring** match, not term ranking —
-  natural-language `question`s legitimately return empty. Give search tasks a
-  `fed_query`: a verbatim corpus substring expressing the same information
-  need (`"dead-letter"`, `"1s, 5s, 30s"`).
-- `constellation pack` ranks by **term overlap** — a task in a language the
-  corpus doesn't speak (e.g. the Russian semantic tasks) yields an honestly
-  empty pack. Give those a `pack_query` with corpus-language terms.
+The runner exits nonzero on a detected violation, a budget refusal or missing
+required content. Reports retain those categories separately. Passing these
+thirty tasks does not establish every adversarial scenario, external adapter
+round-trip equivalence (F11), release-binary compatibility or release readiness.
 
-After adding or changing corpus artifacts, refresh the dedicated corpus with
-`forgeplan index` and, when semantic evaluation is required, `forgeplan embed`
-before the next run. Do not delete `CURRENT.json`: it is the publication
-pointer, not a disposable cache marker. The runner's existence check does not
-detect every corpus change or rebuild an already-published snapshot.
+## Corpus
+
+`corpus/ws-a` describes drain-queue reliability; `corpus/ws-b` describes billing.
+Only their canonical fixture files are tracked. Runtime stores and Git state are
+temporary. `fed_query` and `pack_query` are existing frozen task-specific query
+forms for the literal federated search and lexical pack respectively; they do
+not represent semantic retrieval support in ContextPack.

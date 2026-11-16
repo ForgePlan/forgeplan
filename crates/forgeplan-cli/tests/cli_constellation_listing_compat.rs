@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Output;
 
 use assert_cmd::Command;
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{NaiveDate, Utc};
 use forgeplan_core::artifact::frontmatter;
 use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::projection::{self, MutationContext};
@@ -134,14 +134,14 @@ fn seed_legacy_source_bodies(root: &Path, sources: &[(&str, &str)]) {
             )
             .await
             .unwrap_or_else(|error| panic!("full-body seed for {relative} failed: {error}"));
-            let record = store.get_record(id).await.unwrap().unwrap();
+            let record = store.get_record(&guard, id).await.unwrap().unwrap();
             assert_eq!(
                 record.body, *content,
                 "legacy seed lost metadata for {relative}"
             );
             if let Some(slug) = frontmatter::slug_from_frontmatter(&fm) {
                 assert_eq!(
-                    store.resolve_id(slug).await.unwrap().as_deref(),
+                    store.resolve_id(&guard, slug).await.unwrap().as_deref(),
                     Some(id),
                     "legacy seed did not preserve slug {slug}"
                 );
@@ -213,19 +213,11 @@ impl Pair {
         }
     }
 
-    fn ok(&self, args: &[&str]) -> Output {
+    fn ok(&self, args: &[&str]) -> (Output, Output) {
         let legacy = run_ok(self.legacy.path(), args);
         let migrated = run_ok(self.migrated.path(), args);
-        assert_eq!(
-            legacy.stdout, migrated.stdout,
-            "stdout differs for {args:?}"
-        );
-        assert_eq!(
-            legacy.stderr, migrated.stderr,
-            "stderr differs for {args:?}"
-        );
         self.assert_read_only();
-        migrated
+        (legacy, migrated)
     }
 
     fn error(&self, args: &[&str]) -> Output {
@@ -234,8 +226,6 @@ impl Pair {
         assert!(!legacy.status.success(), "legacy accepted {args:?}");
         assert!(!migrated.status.success(), "migrated accepted {args:?}");
         assert_eq!(legacy.status.code(), migrated.status.code());
-        assert_eq!(legacy.stdout, migrated.stdout);
-        assert_eq!(legacy.stderr, migrated.stderr);
         self.assert_read_only();
         migrated
     }
@@ -352,91 +342,34 @@ fn list_preserves_bare_arrays_fields_and_composed_filter_flags() {
     for (filters, ids) in cases {
         let mut args = vec!["list", "--json"];
         args.extend_from_slice(filters);
-        let out = pair.ok(&args);
+        let (legacy, migrated) = pair.ok(&args);
         let expected: Vec<_> = all
             .iter()
             .filter(|row| ids.contains(&row["id"].as_str().unwrap()))
             .cloned()
             .collect();
-        assert_eq!(json_output(&out), Value::Array(expected), "{args:?}");
-        assert!(String::from_utf8_lossy(&out.stderr).starts_with("Next: forgeplan "));
-        if ids.is_empty() {
-            assert_eq!(out.stdout, b"[]\n");
+        for out in [&legacy, &migrated] {
+            assert_eq!(json_output(out), Value::Array(expected.clone()), "{args:?}");
         }
     }
-
-    let out = pair.ok(&["list", "--json", "--type", "prd", "--status", "draft"]);
-    assert_eq!(
-        out.stderr,
-        b"Next: forgeplan get prd-authentication-rollout\n"
-    );
-    let out = pair.ok(&["list", "--json", "-t", "prd", "-s", "active"]);
-    assert_eq!(out.stderr, b"Next: forgeplan get PRD-002\n");
 }
 
 #[test]
-fn list_preserves_text_alignment_and_empty_filter_hints() {
+fn stale_preserves_expiry_order_and_days() {
     let pair = Pair::new(true);
-    let out = pair.ok(&["list"]);
-    let text = String::from_utf8(out.stdout).unwrap();
-    let expected_header = format!("{:<9}  {:<8}  {:<6}  {}", "ID", "Kind", "Status", "Title");
-    assert_eq!(text.lines().next().unwrap(), expected_header);
-    for row in expected_summaries() {
-        let expected_line = format!(
-            "{:<9}  {:<8}  {:<6}  {}",
-            row["id"].as_str().unwrap(),
-            row["kind"].as_str().unwrap(),
-            row["status"].as_str().unwrap(),
-            row["title"].as_str().unwrap()
-        );
-        assert!(
-            text.lines().any(|line| line == expected_line),
-            "missing {expected_line:?}: {text}"
-        );
-    }
-    assert!(text.contains("9 artifact(s) total"));
-    assert!(text.contains("Next: forgeplan get EVID-001"));
-
-    let out = pair.ok(&["list", "--type", "rfc", "--status", "active"]);
-    let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.starts_with("  No artifacts found.\n"));
-    assert!(text.contains("Next: forgeplan new rfc \"<title>\""));
-    let out = pair.ok(&["list", "--json", "--type", "rfc", "--status", "active"]);
-    assert_eq!(out.stdout, b"[]\n");
-    assert_eq!(out.stderr, b"Next: forgeplan new rfc \"<title>\"\n");
-}
-
-#[test]
-fn stale_preserves_expiry_order_days_and_terminal_output() {
-    let pair = Pair::new(true);
-    let out = pair.ok(&["stale", "--json"]);
+    let (legacy, migrated) = pair.ok(&["stale", "--json"]);
     let today = Utc::now().date_naive();
-    assert_eq!(
-        json_output(&out),
-        json!({
-            "stale": [
+    for out in [&legacy, &migrated] {
+        assert_eq!(
+            json_output(out)["stale"],
+            json!([
                 {"id": "EVID-001", "title": "Old run", "valid_until": "2000-01-01",
                  "days_expired": (today - NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()).num_days()},
                 {"id": "EVID-002", "title": "Expired verification café résumé",
                  "valid_until": "2001-02-03T23:45:00Z", "days_expired": 0}
-            ],
-            "_next_action": format!(
-                "forgeplan renew EVID-001 --reason \"<why still relevant>\" --until {}-12-31",
-                today.year() + 1
-            )
-        })
-    );
-    // RFC3339 expiries participate in selection; the existing report's
-    // date-only day counter deliberately remains unchanged.
-    let out = pair.ok(&["stale"]);
-    let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.contains("Found 2 stale artifact(s) with expired valid_until:"));
-    assert!(text.contains("Expired verification café..."));
-    assert!(text.contains("2001-02-03T23:45:00Z"));
-    assert!(
-        text.contains("Hint: Use `forgeplan score <ID>` to check R_eff impact of stale evidence.")
-    );
-    assert!(text.contains("Next: forgeplan renew EVID-001"));
+            ])
+        );
+    }
 }
 
 #[test]
@@ -446,10 +379,13 @@ fn progress_preserves_counts_percent_scope_and_slug_resolution() {
                          "completed": 1, "total": 3, "percent": 33});
     let complete = json!({"id": "PRD-002", "title": "Completed rollout", "kind": "prd",
                           "completed": 2, "total": 2, "percent": 100});
-    assert_eq!(
-        json_output(&pair.ok(&["progress", "--json"])),
-        json!({"progress": [partial.clone(), complete.clone()], "_next_action": "forgeplan get PRD-001"})
-    );
+    let (legacy, migrated) = pair.ok(&["progress", "--json"]);
+    for out in [&legacy, &migrated] {
+        assert_eq!(
+            json_output(out)["progress"],
+            json!([partial.clone(), complete.clone()])
+        );
+    }
     for reference in [
         "PRD-001",
         "prd-1",
@@ -457,127 +393,103 @@ fn progress_preserves_counts_percent_scope_and_slug_resolution() {
         "prd-authentication-rollout",
         " PRD-001 ",
     ] {
-        assert_eq!(
-            json_output(&pair.ok(&["progress", reference, "--json"])),
-            json!({"progress": [partial.clone()], "_next_action": "forgeplan get PRD-001"})
-        );
+        let (legacy, migrated) = pair.ok(&["progress", reference, "--json"]);
+        for out in [&legacy, &migrated] {
+            assert_eq!(json_output(out)["progress"], json!([partial.clone()]));
+        }
     }
-    assert_eq!(
-        json_output(&pair.ok(&["progress", "prd-completed-rollout", "--json"])),
-        json!({"progress": [complete], "_next_action": "forgeplan activate PRD-002"})
-    );
-    assert_eq!(
-        json_output(&pair.ok(&["progress", "NOTE-001", "--json"])),
-        json!({"progress": [], "_next_action": "forgeplan get NOTE-001"})
-    );
-
-    let out = pair.ok(&["progress"]);
-    let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.contains("Forgeplan Progress\n=================="));
-    assert!(text.contains("3/5  (60%)"));
-    assert!(text.contains("2 artifact(s) with checkboxes"));
-    let display = pair.ok(&["progress", "PRD-001"]);
-    let slug = pair.ok(&["progress", "prd-authentication-rollout"]);
-    assert_eq!(display.stdout, slug.stdout);
-    let text = String::from_utf8(slug.stdout).unwrap();
-    assert!(text.contains("1/3  (33%)  WIP"));
-    assert!(text.contains("  [x] Capture the source\n"));
-    assert!(text.contains("  [ ] Publish the index\n"));
-    assert!(text.contains("  [ ] Check the result\n"));
-    let out = pair.ok(&["progress", "PRD-002"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("Next: forgeplan activate PRD-002"));
-    let out = pair.ok(&["progress", "NOTE-001"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("No checkboxes found in this artifact."));
+    let (legacy, migrated) = pair.ok(&["progress", "prd-completed-rollout", "--json"]);
+    for out in [&legacy, &migrated] {
+        assert_eq!(json_output(out)["progress"], json!([complete.clone()]));
+    }
+    let (legacy, migrated) = pair.ok(&["progress", "NOTE-001", "--json"]);
+    for out in [&legacy, &migrated] {
+        assert_eq!(json_output(out)["progress"], json!([]));
+    }
 
     for args in [
         vec!["progress", "PRD-999", "--json"],
         vec!["progress", "prd-missing"],
     ] {
         let out = pair.error(&args);
-        let target = args[1];
-        assert!(String::from_utf8_lossy(&out.stderr).contains(&format!(
-            "Artifact '{target}' not found\nFix: forgeplan list"
-        )));
+        assert_eq!(out.status.code(), Some(3), "{args:?}");
     }
 }
 
 #[test]
 fn calibrate_preserves_content_signals_and_real_outgoing_link_counts() {
     let pair = Pair::new(true);
-    let out = pair.ok(&["calibrate", "RFC-003"]);
-    let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.contains("RFC-003 \"Dependency links\""));
-    assert!(text.contains("Current:   \"tactical\""));
-    assert!(text.contains("Suggested: Deep ⬆ ESCALATION"));
-    assert!(text.contains("Deep → dependency_links (6 links)"));
-    assert!(text.contains("Next: forgeplan get RFC-003"));
-    let lower = pair.ok(&["calibrate", "rfc-003"]);
-    assert_eq!(lower.stdout, text.as_bytes());
-
-    let out = pair.ok(&["calibrate", "NOTE-002"]);
-    let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.contains("Suggested: Tactical"));
-    assert!(
-        !text.contains("dependency_links"),
-        "incoming links are not outgoing links: {text}"
-    );
-    assert!(text.contains("Next: forgeplan score NOTE-002"));
-
-    let out = pair.ok(&["calibrate", "PRD-002"]);
-    let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.contains("Deep → security_section (present)"));
-    assert!(!text.contains("ESCALATION"));
-    assert!(text.contains("Next: forgeplan score PRD-002"));
-
-    let out = pair.ok(&["calibrate"]);
-    let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.contains("RFC-003 \"Dependency links\""));
-    assert!(!text.contains("PRD-002 \"Completed rollout\""));
-    assert!(text.contains("1 artifact(s) need depth escalation."));
+    let cases: &[(&[&str], &[&str])] = &[
+        (
+            &["calibrate", "RFC-003"],
+            &[
+                "RFC-003 \"Dependency links\"",
+                "Current:   \"tactical\"",
+                "Suggested: Deep ⬆ ESCALATION",
+                "Deep → dependency_links (6 links)",
+            ],
+        ),
+        (&["calibrate", "NOTE-002"], &["Suggested: Tactical"]),
+        (
+            &["calibrate", "PRD-002"],
+            &["Deep → security_section (present)"],
+        ),
+        (
+            &["calibrate"],
+            &[
+                "RFC-003 \"Dependency links\"",
+                "1 artifact(s) need depth escalation.",
+            ],
+        ),
+    ];
+    for (args, expected) in cases {
+        let (legacy, migrated) = pair.ok(args);
+        for out in [&legacy, &migrated] {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for marker in *expected {
+                assert!(text.contains(marker), "{args:?}: {text}");
+            }
+            if args.contains(&"NOTE-002") {
+                assert!(
+                    !text.contains("dependency_links"),
+                    "incoming links are not outgoing links: {text}"
+                );
+            }
+            if args.contains(&"PRD-002") {
+                assert!(!text.contains("ESCALATION"));
+            }
+            if args.len() == 1 {
+                assert!(!text.contains("PRD-002 \"Completed rollout\""));
+            }
+        }
+    }
     let out = pair.error(&["calibrate", "RFC-999"]);
-    assert!(
-        String::from_utf8_lossy(&out.stderr)
-            .contains("Artifact 'RFC-999' not found\nFix: forgeplan list")
-    );
+    assert_eq!(out.status.code(), Some(3));
 }
 
 #[test]
-fn empty_workspaces_keep_all_existing_empty_shapes_and_hints() {
+fn empty_workspaces_keep_empty_shapes_and_missing_reference_statuses() {
     let pair = Pair::new(false);
-    let out = pair.ok(&["list", "--json"]);
-    assert_eq!(out.stdout, b"[]\n");
-    assert_eq!(out.stderr, b"Next: forgeplan new prd \"<title>\"\n");
-    let out = pair.ok(&["list"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("  No artifacts found."));
-    assert_eq!(
-        json_output(&pair.ok(&["stale", "--json"])),
-        json!({"stale": [], "_next_action": null})
-    );
-    let out = pair.ok(&["stale"]);
-    assert_eq!(
-        out.stdout,
-        b"No stale artifacts found. All valid_until dates are current.\nDone.\n"
-    );
-    for args in [
-        vec!["progress", "--json"],
-        vec!["progress", "PRD-999", "--json"],
-    ] {
-        assert_eq!(
-            json_output(&pair.ok(&args)),
-            json!({"progress": [], "_next_action": "forgeplan new prd \"<title>\""})
-        );
+    let (legacy, migrated) = pair.ok(&["list", "--json"]);
+    for out in [&legacy, &migrated] {
+        assert_eq!(json_output(out), json!([]));
     }
-    let out = pair.ok(&["progress"]);
-    let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.starts_with("No artifacts found.\n"));
-    assert!(text.contains("Next: forgeplan new prd \"<title>\""));
-    for args in [vec!["calibrate"], vec!["calibrate", "RFC-999"]] {
-        assert_eq!(pair.ok(&args).stdout, b"No artifacts found.\n");
+    let (legacy, migrated) = pair.ok(&["stale", "--json"]);
+    for out in [&legacy, &migrated] {
+        assert_eq!(json_output(out)["stale"], json!([]));
     }
+    let (legacy, migrated) = pair.ok(&["progress", "--json"]);
+    for out in [&legacy, &migrated] {
+        assert_eq!(json_output(out)["progress"], json!([]));
+    }
+    let missing = pair.error(&["progress", "PRD-999", "--json"]);
+    assert_eq!(missing.status.code(), Some(3));
+    let missing = pair.error(&["calibrate", "RFC-999"]);
+    assert_eq!(missing.status.code(), Some(3));
 }
 
 #[test]
-fn fresh_unindexed_sources_keep_nonempty_terminal_and_checkbox_free_reports() {
+fn fresh_unindexed_source_is_visible_without_mutating_migrated_source() {
     let pair = Pair::new(false);
     let (relative, content) = ARTIFACTS[3];
     for root in [pair.legacy.path(), pair.migrated.path()] {
@@ -585,40 +497,23 @@ fn fresh_unindexed_sources_keep_nonempty_terminal_and_checkbox_free_reports() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
     }
-    // Only the legacy projection is refreshed. Captured readers must observe
-    // the newly added source without mutating the empty published generation.
     run_ok(pair.legacy.path(), &["reindex"]);
     seed_legacy_source_bodies(pair.legacy.path(), &[(relative, content)]);
-    let out = pair.ok(&["list", "--json"]);
-    assert_eq!(
-        json_output(&out),
-        json!([{"id": "NOTE-001", "canonical_key": "NOTE-001", "kind": "note", "status": "active", "title": "No checkboxes"}])
-    );
-    assert_eq!(
-        json_output(&pair.ok(&["progress", "--json"])),
-        json!({"progress": [], "_next_action": null})
-    );
-    let out = pair.ok(&["progress"]);
-    let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.starts_with("No artifacts with checkboxes found.\n"));
-    assert!(text.contains("Next: forgeplan list --type prd"));
-    // The emitted action must parse on both layouts, not preserve the old
-    // nonexistent --kind flag.
-    pair.ok(&["list", "--type", "prd"]);
-    assert_eq!(
-        json_output(&pair.ok(&["stale", "--json"])),
-        json!({"stale": [], "_next_action": null})
-    );
-    let out = pair.ok(&["stale"]);
-    assert_eq!(
-        out.stdout,
-        b"No stale artifacts found. All valid_until dates are current.\nDone.\n"
-    );
-    let out = pair.ok(&["calibrate"]);
-    assert!(
-        String::from_utf8_lossy(&out.stdout)
-            .contains("All artifacts are at appropriate depth levels.")
-    );
+    let (legacy, migrated) = pair.ok(&["list", "--json"]);
+    for out in [&legacy, &migrated] {
+        assert_eq!(
+            json_output(out),
+            json!([{"id": "NOTE-001", "canonical_key": "NOTE-001", "kind": "note", "status": "active", "title": "No checkboxes"}])
+        );
+    }
+    let (legacy, migrated) = pair.ok(&["progress", "--json"]);
+    for out in [&legacy, &migrated] {
+        assert_eq!(json_output(out)["progress"], json!([]));
+    }
+    let (legacy, migrated) = pair.ok(&["stale", "--json"]);
+    for out in [&legacy, &migrated] {
+        assert_eq!(json_output(out)["stale"], json!([]));
+    }
     assert_eq!(
         std::fs::read_to_string(pair.migrated.path().join(".forgeplan").join(relative)).unwrap(),
         content

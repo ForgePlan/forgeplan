@@ -23,6 +23,9 @@ use super::federation::{
 };
 use super::jobs::DEFAULT_BODY_PREFIX_CHARS;
 use super::{ConstellationError, sha256_hex};
+use crate::artifact::canonical_key::{
+    ArtifactCandidate, ResolveError, resolve_artifact, resolve_borrowed,
+};
 
 /// `formatVersion` of the snapshot lockfile.
 pub const SNAPSHOT_FORMAT_VERSION: u32 = 1;
@@ -147,7 +150,7 @@ fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>, ConstellationError> 
             detail: format!("cannot spawn git: {e}"),
         })?;
     if !output.status.success() {
-        return Err(ConstellationError::Io {
+        return Err(ConstellationError::RevisionUnavailable {
             detail: format!(
                 "pinned object unavailable locally: git {} failed in {}: {}",
                 args.join(" "),
@@ -333,6 +336,7 @@ fn source_ref_for(entry: &SnapshotSourceEntry) -> SourceRef {
             "{}:{}:{}",
             entry.git_oid, entry.tree_oid, entry.bytes_digest
         ),
+        source_set_digest: None,
     }
 }
 
@@ -363,9 +367,11 @@ pub fn snapshot_search(
         })
         .collect();
     let mut hits = Vec::new();
+    let candidate_limit = limit.saturating_add(1);
     for entry in &snapshot.sources {
         let repo = PathBuf::from(&entry.checkout_root);
-        match search_one_source(&repo, entry, &needle, limit.saturating_sub(hits.len())) {
+        let remaining = candidate_limit.saturating_sub(hits.len());
+        match search_one_source(&repo, entry, &needle, remaining) {
             Ok(source_hits) => {
                 let source = source_ref_for(entry);
                 sources.push(source.clone());
@@ -373,9 +379,6 @@ pub fn snapshot_search(
                     source: source.clone(),
                     ..h
                 }));
-                if hits.len() >= limit {
-                    break;
-                }
             }
             Err(e) => failures.push(SourceFailure {
                 path: entry.source_path.clone(),
@@ -400,9 +403,6 @@ fn search_one_source(
     needle: &str,
     remaining: usize,
 ) -> Result<Vec<FederatedHit>, ConstellationError> {
-    if remaining == 0 {
-        return Ok(Vec::new());
-    }
     let names = list_files_at(repo, &entry.git_oid)?;
     let mut hits = Vec::new();
     for rel in names {
@@ -412,10 +412,11 @@ fn search_one_source(
                 Ok(p) => p,
                 Err(_) => continue, // unusable at this revision — not a match, not a failure
             };
-        if parsed.canonical_key.to_lowercase().contains(needle)
+        if (parsed.canonical_key.to_lowercase().contains(needle)
             || parsed.display_id.to_lowercase().contains(needle)
             || parsed.title.to_lowercase().contains(needle)
-            || parsed.body.to_lowercase().contains(needle)
+            || parsed.body.to_lowercase().contains(needle))
+            && hits.len() < remaining
         {
             hits.push(FederatedHit {
                 source: source_ref_for(entry),
@@ -426,9 +427,6 @@ fn search_one_source(
                 status: Some(parsed.status.clone()),
                 semantic_state: None,
             });
-            if hits.len() >= remaining {
-                break;
-            }
         }
     }
     Ok(hits)
@@ -439,7 +437,7 @@ fn search_one_source(
 /// fragment of the entry's stored path, or an exact/prefix match of its
 /// `src:` id (which here hashes `checkout_root@git_oid`, so a qualifier
 /// minted against a live `src:` id never collides with a pinned one).
-fn entry_matches_qualifier(entry: &SnapshotSourceEntry, qualifier: &str) -> bool {
+pub(super) fn entry_matches_qualifier(entry: &SnapshotSourceEntry, qualifier: &str) -> bool {
     let source_id = source_ref_for(entry).source_id;
     entry.source_path.contains(qualifier)
         || source_id == qualifier
@@ -448,24 +446,38 @@ fn entry_matches_qualifier(entry: &SnapshotSourceEntry, qualifier: &str) -> bool
 
 /// Fetch one artifact at the pinned revision — `(relative_path, bytes)`.
 ///
-/// `qualifier` is the `@…` half the caller split off `key_or_id`; `None`
-/// reads every pinned entry. A qualifier that names no pinned entry is an
-/// error — never a silent widening back to the whole source set.
+/// Qualifiers narrow the source set before any pinned bytes are read.
+/// Missing qualifiers are errors rather than a silent widening.
+/// The complete selected source is parsed before using the shared resolver.
+/// Parse failures and identity conflicts remain typed errors.
+/// The complete pinned artifact set for every selected source is parsed before
+/// resolution. This keeps ambiguity, duplicate canonical keys, numeric
+/// normalization and incomplete-capture handling identical to the other
+/// identity-aware read paths.
 pub fn snapshot_get(
     snapshot: &ConstellationSnapshot,
     key_or_id: &str,
     qualifier: Option<&str>,
 ) -> Result<Vec<(SourceRef, String, Vec<u8>)>, ConstellationError> {
+    if let Err(error) = resolve_artifact(key_or_id, &[]) {
+        return Err(ConstellationError::Resolve(error));
+    }
     if let Some(q) = qualifier
         && !snapshot
             .sources
             .iter()
-            .any(|e| entry_matches_qualifier(e, q))
+            .any(|entry| entry_matches_qualifier(entry, q))
     {
         let pinned: Vec<String> = snapshot
             .sources
             .iter()
-            .map(|e| format!("{} ({})", e.source_path, source_ref_for(e).source_id))
+            .map(|entry| {
+                format!(
+                    "{} ({})",
+                    entry.source_path,
+                    source_ref_for(entry).source_id
+                )
+            })
             .collect();
         return Err(ConstellationError::Io {
             detail: format!(
@@ -475,39 +487,88 @@ pub fn snapshot_get(
             ),
         });
     }
+
     let mut found = Vec::new();
+    let mut found_candidates = Vec::new();
+    let mut resolve_errors = Vec::new();
     for entry in &snapshot.sources {
-        if let Some(q) = qualifier
-            && !entry_matches_qualifier(entry, q)
-        {
+        if qualifier.is_some_and(|q| !entry_matches_qualifier(entry, q)) {
             continue;
         }
+
         let repo = PathBuf::from(&entry.checkout_root);
-        let names = match list_files_at(&repo, &entry.git_oid) {
-            Ok(n) => n,
-            Err(e) => {
-                return Err(ConstellationError::Io {
-                    detail: format!(
-                        "source {} unread at pinned revision: {e}",
-                        entry.source_path
+        let names = list_files_at(&repo, &entry.git_oid)?;
+        let source = source_ref_for(entry);
+        let mut documents = Vec::with_capacity(names.len());
+        let mut bytes_by_path = Vec::with_capacity(names.len());
+        for relative_path in names {
+            let bytes = read_file_at(&repo, &entry.git_oid, &relative_path)?;
+            let parsed = parse_artifact_file(
+                &relative_path,
+                Arc::from(&bytes[..]),
+                DEFAULT_BODY_PREFIX_CHARS,
+            )
+            .map_err(|error| {
+                ConstellationError::Resolve(ResolveError::IncompleteCapture {
+                    message: format!(
+                        "pinned source {} ({}) could not parse {}: {error}",
+                        entry.source_path, source.source_id, relative_path
                     ),
-                });
+                })
+            })?;
+            if !parsed.diagnostics.is_empty() {
+                return Err(ConstellationError::Resolve(
+                    ResolveError::IncompleteCapture {
+                        message: format!(
+                            "pinned source {} ({}) has artifact diagnostics for {}: {:?}",
+                            entry.source_path, source.source_id, relative_path, parsed.diagnostics
+                        ),
+                    },
+                ));
+            }
+            documents.push(ArtifactCandidate {
+                canonical_key: parsed.canonical_key,
+                display_id: parsed.display_id,
+                title: parsed.title,
+                relative_path: relative_path.clone().into(),
+            });
+            bytes_by_path.push((relative_path, bytes));
+        }
+
+        let resolved = match resolve_borrowed(key_or_id, documents.iter(), false) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                resolve_errors.push(super::federation::qualify_resolve_candidates(
+                    error,
+                    &source.source_id,
+                ));
+                continue;
             }
         };
-        for rel in names {
-            let bytes = read_file_at(&repo, &entry.git_oid, &rel)?;
-            let parsed =
-                match parse_artifact_file(&rel, Arc::from(&bytes[..]), DEFAULT_BODY_PREFIX_CHARS) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-            if parsed.canonical_key.eq_ignore_ascii_case(key_or_id)
-                || parsed.display_id.eq_ignore_ascii_case(key_or_id)
-            {
-                found.push((source_ref_for(entry), rel, bytes));
-                break;
+        if let Some(resolved) = resolved {
+            let relative_path = resolved.relative_path.to_string_lossy();
+            let index = bytes_by_path
+                .iter()
+                .position(|(path, _)| path.as_str() == relative_path.as_ref());
+            if let Some(index) = index {
+                found_candidates.push(documents.swap_remove(index));
+                let (path, bytes) = bytes_by_path.swap_remove(index);
+                found.push((source, path, bytes));
             }
         }
+    }
+    if let Some(error) = super::federation::merge_get_resolve_errors(
+        resolve_errors,
+        found_candidates
+            .into_iter()
+            .zip(&found)
+            .map(|(mut candidate, (source, _, _))| {
+                candidate.relative_path =
+                    PathBuf::from(&source.source_id).join(candidate.relative_path);
+                candidate
+            }),
+    ) {
+        return Err(ConstellationError::Resolve(error));
     }
     Ok(found)
 }
@@ -693,16 +754,54 @@ mod tests {
         // Same pinned revision, read through the clone that lacks the blobs.
         snapshot.sources[0].checkout_root = partial.display().to_string();
         let err = snapshot_get(&snapshot, "ADR-009", None).unwrap_err();
-        let detail = err.to_string();
-        assert!(
-            detail.contains("pinned object unavailable locally"),
-            "expected the named unavailable-revision error, got: {detail}"
+        assert_eq!(
+            err.code(),
+            super::super::DiagnosticCode::RevisionUnavailable
         );
+        assert_eq!(err.code().as_str(), "revision_unavailable");
+        assert!(matches!(
+            err,
+            ConstellationError::RevisionUnavailable { .. }
+        ));
         assert_eq!(
             object_file_count(&partial),
             objects_before,
             "a pinned read fetched objects from the promisor remote"
         );
+
+        // Give HEAD a readable old blob so a fallback would return the wrong
+        // document instead of coincidentally failing on the same missing blob.
+        let artifact_path = fp.join("adrs/ADR-009-a.md");
+        git_in(
+            &partial,
+            &["hash-object", "-w", artifact_path.to_str().unwrap()],
+        );
+        let head_before = git_in(&partial, &["rev-parse", "HEAD"]);
+        std::fs::write(&artifact_path, artifact("ADR-009", "new pinned bytes")).unwrap();
+        git_in(src.path(), &["add", "-A"]);
+        git_in(src.path(), &["commit", "-qm", "new pinned revision"]);
+        let mut missing =
+            capture_snapshot(&[super::super::federation::SourceSpec::new(&fp)], None).unwrap();
+        let oid = missing.sources[0].git_oid.clone();
+        assert_ne!(oid, head_before);
+        missing.sources[0].checkout_root = partial.display().to_string();
+
+        for missing_tree in [false, true] {
+            if missing_tree {
+                // Admit only the commit object: its new tree is still absent.
+                let object = PathBuf::from(".git/objects")
+                    .join(&oid[..2])
+                    .join(&oid[2..]);
+                let destination = partial.join(&object);
+                std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                std::fs::copy(src.path().join(object), destination).unwrap();
+            }
+            let objects_before = object_file_count(&partial);
+            let error = snapshot_get(&missing, "ADR-009", None).unwrap_err();
+            assert_eq!(error.code().as_str(), "revision_unavailable");
+            assert_eq!(object_file_count(&partial), objects_before);
+            assert_eq!(git_in(&partial, &["rev-parse", "HEAD"]), head_before);
+        }
     }
 
     #[test]
@@ -721,5 +820,138 @@ mod tests {
         let outcome = snapshot_search(&snapshot, "x", 10).unwrap();
         assert!(outcome.partial);
         assert_eq!(outcome.failures.len(), 1);
+    }
+    #[test]
+    fn snapshot_get_uses_the_shared_resolver_and_keeps_candidates_source_qualified() {
+        let repo = repo_with(&[
+            (
+                "adrs/alpha.md",
+                "---\nid: ADR-001\nslug: adr-alpha\nkind: adr\nstatus: active\ntitle: Alpha\n---\n\nalpha\n",
+            ),
+            (
+                "adrs/beta.md",
+                "---\nid: ADR-001\nslug: adr-beta\nkind: adr\nstatus: active\ntitle: Beta\n---\n\nbeta\n",
+            ),
+        ]);
+        let fp = repo.path().join(".forgeplan");
+        let snapshot =
+            capture_snapshot(&[super::super::federation::SourceSpec::new(&fp)], None).unwrap();
+
+        match snapshot_get(&snapshot, "ADR-001", None).unwrap_err() {
+            ConstellationError::Resolve(ResolveError::Ambiguous { candidates, .. }) => {
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates.iter().any(|candidate| {
+                    candidate.canonical_key == "adr-alpha"
+                        && candidate
+                            .relative_path
+                            .to_string_lossy()
+                            .starts_with("src:")
+                        && candidate.relative_path.ends_with("adrs/alpha.md")
+                }));
+                assert!(candidates.iter().any(|candidate| {
+                    candidate.canonical_key == "adr-beta"
+                        && candidate.relative_path.ends_with("adrs/beta.md")
+                }));
+            }
+            other => panic!("expected typed alias ambiguity, got {other:?}"),
+        }
+
+        let normalized = snapshot_get(&snapshot, "adr-1", None).unwrap_err();
+        assert!(matches!(
+            normalized,
+            ConstellationError::Resolve(ResolveError::Ambiguous { .. })
+        ));
+    }
+
+    #[test]
+    fn snapshot_get_rejects_duplicate_keys_and_incomplete_pinned_sources() {
+        let duplicate = repo_with(&[
+            (
+                "adrs/first.md",
+                "---\nid: ADR-001\nslug: adr-shared\nkind: adr\nstatus: active\ntitle: First\n---\n\nfirst\n",
+            ),
+            (
+                "adrs/second.md",
+                "---\nid: ADR-002\nslug: adr-shared\nkind: adr\nstatus: active\ntitle: Second\n---\n\nsecond\n",
+            ),
+        ]);
+        let fp = duplicate.path().join(".forgeplan");
+        let snapshot =
+            capture_snapshot(&[super::super::federation::SourceSpec::new(&fp)], None).unwrap();
+        match snapshot_get(&snapshot, "adr-shared", None).unwrap_err() {
+            ConstellationError::Resolve(ResolveError::ConflictingCanonicalKey {
+                candidates,
+                ..
+            }) => assert_eq!(candidates.len(), 2),
+            other => panic!("expected duplicate-key conflict, got {other:?}"),
+        }
+
+        let malformed = repo_with(&[("adrs/broken.md", "---\nid: [\nkind: adr\n---\n")]);
+        let malformed_fp = malformed.path().join(".forgeplan");
+        let malformed_snapshot = capture_snapshot(
+            &[super::super::federation::SourceSpec::new(&malformed_fp)],
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            snapshot_get(&malformed_snapshot, "ADR-001", None),
+            Err(ConstellationError::Resolve(
+                ResolveError::IncompleteCapture { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn snapshot_get_normalizes_display_ids_before_matching() {
+        let repo = repo_with(&[("adrs/ADR-001-a.md", &artifact("ADR-001", "normalized"))]);
+        let fp = repo.path().join(".forgeplan");
+        let snapshot =
+            capture_snapshot(&[super::super::federation::SourceSpec::new(&fp)], None).unwrap();
+        let found = snapshot_get(&snapshot, "adr-1", None).unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(String::from_utf8_lossy(&found[0].2).contains("normalized"));
+    }
+    #[test]
+    fn snapshot_search_marks_truncation_when_it_finds_an_extra_pinned_match() {
+        let repo = repo_with(&[
+            ("adrs/ADR-001-a.md", &artifact("ADR-001", "needle first")),
+            ("adrs/ADR-002-b.md", &artifact("ADR-002", "needle second")),
+        ]);
+        let fp = repo.path().join(".forgeplan");
+        let snapshot =
+            capture_snapshot(&[super::super::federation::SourceSpec::new(&fp)], None).unwrap();
+
+        let outcome = snapshot_search(&snapshot, "needle", 1).unwrap();
+
+        assert_eq!(outcome.hits.len(), 1);
+        assert!(outcome.truncated);
+        assert!(!outcome.partial);
+        assert_eq!(outcome.hits[0].source.channel, SourceChannel::PinnedGit);
+    }
+
+    #[test]
+    fn snapshot_search_reports_late_source_failure_after_reaching_the_limit() {
+        let first = repo_with(&[("adrs/ADR-001-a.md", &artifact("ADR-001", "needle first"))]);
+        let second = repo_with(&[("adrs/ADR-002-b.md", &artifact("ADR-002", "unrelated"))]);
+        let first_fp = first.path().join(".forgeplan");
+        let second_fp = second.path().join(".forgeplan");
+        let mut snapshot = capture_snapshot(
+            &[
+                super::super::federation::SourceSpec::new(&first_fp),
+                super::super::federation::SourceSpec::new(&second_fp),
+            ],
+            None,
+        )
+        .unwrap();
+        snapshot.sources[1].checkout_root =
+            second.path().join("missing-checkout").display().to_string();
+
+        let outcome = snapshot_search(&snapshot, "needle", 1).unwrap();
+
+        assert_eq!(outcome.hits.len(), 1);
+        assert!(outcome.partial);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.failures[0].path, snapshot.sources[1].source_path);
+        assert_eq!(outcome.hits[0].source.channel, SourceChannel::PinnedGit);
     }
 }

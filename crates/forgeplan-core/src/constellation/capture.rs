@@ -49,7 +49,9 @@ use super::jobs::{
     DEFAULT_BODY_PREFIX_CHARS, SemanticState, embedding_input_digest, embedding_input_text,
     section_input_digest, section_input_text, section_key,
 };
-use super::manifest::{GenerationManifest, TableVersions, Tombstone};
+#[cfg(test)]
+use super::manifest::Tombstone;
+use super::manifest::{GenerationManifest, TableVersions};
 use super::owner::{IndexIdentity, IndexLocation};
 use super::{
     ConstellationError, DiagnosticCode, DigestBuilder, SNAPSHOT_DOMAIN, SOURCE_SET_DOMAIN,
@@ -621,6 +623,7 @@ pub struct UnusableSource {
 /// `expected` counts every enumerated artifact path; the other four partition
 /// it, so `read + invalid + unavailable + excluded == expected`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Coverage {
     pub expected: usize,
     pub read: usize,
@@ -680,6 +683,8 @@ pub struct CapturedSourceView {
     /// Parsed artifacts, sorted by canonical key, sharing their bytes by
     /// `Arc`.
     pub artifacts: Vec<Arc<ParsedArtifact>>,
+    /// All claimants of collided keys, sorted by path. They are never rows.
+    pub conflict_artifacts: Vec<Arc<ParsedArtifact>>,
     /// Deterministic section rows derived from `artifacts` — parent key
     /// sorted, then ordinal. One row per section per captured artifact,
     /// always at least one per artifact; this is the sections table's
@@ -812,6 +817,75 @@ impl CapturedSourceView {
         self.coverage.is_complete()
     }
 
+    /// A collision-only census proves every enumerated path was observed.
+    pub fn diagnostic_inventory(&self) -> Option<Vec<super::manifest::ConflictSource>> {
+        use std::collections::{BTreeMap, BTreeSet};
+        if !self.confirmed
+            || self.coverage.invalid != 0
+            || self.coverage.unavailable != 0
+            || self.coverage.excluded == 0
+            || self.coverage.read != self.entries.len()
+            || self.artifacts.len() != self.entries.len()
+            || self.coverage.excluded != self.conflict_artifacts.len()
+            || self.unusable.len() != self.conflict_artifacts.len()
+            || self
+                .unusable
+                .iter()
+                .any(|u| u.code != DiagnosticCode::IdentityCollision)
+        {
+            return None;
+        }
+        let mut paths = BTreeSet::new();
+        let mut keys = BTreeMap::<&str, usize>::new();
+        let mut unique_keys = BTreeSet::new();
+        for entry in &self.entries {
+            if !paths.insert(entry.relative_path.as_str())
+                || !unique_keys.insert(entry.canonical_key.as_str())
+                || !self.artifacts.iter().any(|artifact| {
+                    artifact.relative_path == entry.relative_path
+                        && artifact.canonical_key == entry.canonical_key
+                        && artifact.source_digest == entry.source_digest
+                })
+            {
+                return None;
+            }
+        }
+        let mut inventory = Vec::with_capacity(self.conflict_artifacts.len());
+        for artifact in &self.conflict_artifacts {
+            if !paths.insert(artifact.relative_path.as_str())
+                || !self.unusable.iter().any(|u| {
+                    u.relative_path == artifact.relative_path
+                        && u.canonical_key.as_deref() == Some(artifact.canonical_key.as_str())
+                })
+                || self
+                    .entries
+                    .iter()
+                    .any(|e| e.canonical_key == artifact.canonical_key)
+            {
+                return None;
+            }
+            *keys.entry(&artifact.canonical_key).or_default() += 1;
+            inventory.push(super::manifest::ConflictSource {
+                relative_path: artifact.relative_path.clone(),
+                canonical_key: artifact.canonical_key.clone(),
+                display_id: artifact.display_id.clone(),
+                title: artifact.title.clone(),
+                source_digest: artifact.source_digest.clone(),
+                declared_outgoing: artifact.outgoing.iter().cloned().collect(),
+            });
+        }
+        let enumerated: BTreeSet<_> = self.enumerated_paths.iter().map(String::as_str).collect();
+        if keys.values().any(|count| *count < 2)
+            || enumerated.len() != self.enumerated_paths.len()
+            || enumerated != paths
+            || paths.len() != self.coverage.expected
+        {
+            return None;
+        }
+        inventory.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        Some(inventory)
+    }
+
     /// Build the generation manifest this capture would publish, given the
     /// table versions its commits produced.
     ///
@@ -863,14 +937,16 @@ impl PreviousObservation {
     /// manifest is where that verdict is durable. Empty for a view, by
     /// construction rather than by a default nobody set.
     pub fn retired(&self) -> impl Iterator<Item = (&str, u64)> {
-        const NONE: &[Tombstone] = &[];
-        let tombstones = match self {
-            Self::Capture(_) => NONE,
-            Self::Manifest(manifest) => manifest.tombstones.as_slice(),
+        let manifest = match self {
+            Self::Capture(_) => None,
+            Self::Manifest(manifest) => Some(manifest.as_ref()),
         };
-        tombstones
-            .iter()
-            .map(|tombstone| (tombstone.canonical_key.as_str(), tombstone.incarnation))
+        manifest.into_iter().flat_map(|m| {
+            m.tombstones
+                .iter()
+                .map(|t| (t.canonical_key.as_str(), t.incarnation))
+                .chain(m.identity_retirements.iter().map(|(k, v)| (k.as_str(), *v)))
+        })
     }
 }
 
@@ -993,7 +1069,7 @@ pub fn parse_artifact_file(
     let title = string_field(&fm, "title").unwrap_or_default();
     let status = string_field(&fm, "status").unwrap_or_default();
     let depth = string_field(&fm, "depth");
-    let author = string_field(&fm, "author");
+    let author = frontmatter::author_from_frontmatter(&fm);
     let parent_epic = string_field(&fm, "parent_epic");
     let valid_until = string_field(&fm, "valid_until");
     // Old templates use `created` / `updated`, sometimes with date precision
@@ -1020,9 +1096,8 @@ pub fn parse_artifact_file(
     tags.sort();
     tags.dedup();
 
-    // A `links:` block that is not a sequence cannot be read as an edge set.
-    // The source is refused here, so it is excluded from the current set and
-    // leaves the capture incomplete - never published as "no relations".
+    // A malformed `links:` block or entry cannot yield an exact edge set.
+    // Refuse the source so an incomplete capture cannot publish partial edges.
     let (outgoing, link_diagnostics) = extract_outgoing(&fm, relative_path)?;
     diagnostics.extend(link_diagnostics);
 
@@ -1067,16 +1142,9 @@ fn string_field(fm: &Frontmatter, key: &str) -> Option<String> {
 
 /// Extract the exact outgoing set from a `links:` block.
 ///
-/// A malformed entry produces a diagnostic and is **not** silently dropped:
-/// the edges around it are kept and the source is reported, so a lost edge is
-/// never dressed up as "this artifact has no relations".
-///
-/// A `links:` block that is not a sequence is a different failure. There is
-/// no edge set to read at all, so there is nothing to keep: reporting an
-/// empty outgoing set would publish the artifact as if it had no relations
-/// and drop every relation the author wrote. That is an invalid source, not a
-/// warning, and it is refused here so the caller reports it instead of
-/// publishing a silent empty set.
+/// Malformed entries make the whole source unusable: a partial edge set must
+/// never be published. Duplicate valid edges collapse into the set and retain
+/// a diagnostic without making the source incomplete.
 fn extract_outgoing(
     fm: &Frontmatter,
     relative_path: &str,
@@ -1097,12 +1165,11 @@ fn extract_outgoing(
 
     for (index, item) in seq.iter().enumerate() {
         let serde_yaml::Value::Mapping(map) = item else {
-            diagnostics.push(SourceDiagnostic::for_source(
+            return Err(SourceDiagnostic::for_source(
                 DiagnosticCode::InvalidLinks,
                 relative_path,
                 format!("links[{index}] is not a mapping"),
             ));
-            continue;
         };
         let target = map
             .get(serde_yaml::Value::String("target".to_string()))
@@ -1130,7 +1197,7 @@ fn extract_outgoing(
                 } else {
                     "relation"
                 };
-                diagnostics.push(SourceDiagnostic::for_source(
+                return Err(SourceDiagnostic::for_source(
                     DiagnosticCode::InvalidLinks,
                     relative_path,
                     format!("links[{index}] is missing `{missing}`"),
@@ -1224,19 +1291,61 @@ pub async fn capture_source(
     request: &CaptureRequest,
     limits: CaptureLimits,
 ) -> Result<CapturedSourceView, ConstellationError> {
+    capture_with_mode(request, limits, CaptureMode::Semantic).await
+}
+
+/// Observe canonical identities and diagnostics without deriving token windows.
+///
+/// Canonical-only admission and reads need identities, bodies and diagnostics,
+/// not token windows. Do not publish this view as an index generation.
+pub(super) async fn capture_canonical_census(
+    request: &CaptureRequest,
+    limits: CaptureLimits,
+) -> Result<CapturedSourceView, ConstellationError> {
+    capture_with_mode(request, limits, CaptureMode::CanonicalRead).await
+}
+
+/// Admission needs canonical completeness, not a model-dependent read version.
+/// This private observation must never enter readers or the publisher.
+pub(super) async fn capture_mutation_census(
+    request: &CaptureRequest,
+    limits: CaptureLimits,
+) -> Result<CapturedSourceView, ConstellationError> {
+    capture_with_mode(request, limits, CaptureMode::MutationAdmission).await
+}
+
+#[derive(Clone, Copy)]
+enum CaptureMode {
+    Semantic,
+    CanonicalRead,
+    MutationAdmission,
+}
+
+async fn capture_with_mode(
+    request: &CaptureRequest,
+    limits: CaptureLimits,
+    mode: CaptureMode,
+) -> Result<CapturedSourceView, ConstellationError> {
     let started = Instant::now();
     let workspace = request.workspace.as_path();
-
+    let resolve_layout = !matches!(mode, CaptureMode::MutationAdmission);
     for attempt in 1..=limits.max_attempts {
-        let first = run_pass(workspace, true).await?;
+        let first = run_pass(workspace, true, resolve_layout).await?;
         if started.elapsed() >= limits.budget {
             return Err(busy(attempt, started));
         }
         // Control pass: re-enumerate, re-read bytes and config. Bytes are
         // re-parsed for diagnostics, but the parsed artifact is not kept.
-        let second = run_pass(workspace, false).await?;
+        let second = run_pass(workspace, false, resolve_layout).await?;
         if first.agrees_with(&second) {
-            return build_view(workspace, request, first, attempt);
+            return build_view(
+                workspace,
+                request,
+                first,
+                attempt,
+                matches!(mode, CaptureMode::Semantic),
+            )
+            .await;
         }
         if started.elapsed() >= limits.budget {
             return Err(busy(attempt, started));
@@ -1257,7 +1366,11 @@ fn busy(attempts: u32, started: Instant) -> ConstellationError {
 ///
 /// `parse` is false for the control pass: it re-reads bytes and digests and
 /// still parses for diagnostics, but drops the parsed artifact.
-async fn run_pass(workspace: &Path, parse: bool) -> Result<Pass, ConstellationError> {
+async fn run_pass(
+    workspace: &Path,
+    parse: bool,
+    resolve_layout: bool,
+) -> Result<Pass, ConstellationError> {
     // Confinement starts at the root: a symlinked workspace would carry every
     // read outside it. Read paths take no `WorkspaceLock`, so this
     // `symlink_metadata` is the only boundary check on that route.
@@ -1280,7 +1393,8 @@ async fn run_pass(workspace: &Path, parse: bool) -> Result<Pass, ConstellationEr
         });
     }
 
-    let (config_digest, body_prefix_chars, layout_probe) = read_config(workspace).await?;
+    let (config_digest, body_prefix_chars, layout_probe) =
+        read_config(workspace, resolve_layout).await?;
 
     let mut files: Vec<PassFile> = Vec::new();
     for dir_name in ARTIFACT_DIRS {
@@ -1464,6 +1578,7 @@ async fn run_pass(workspace: &Path, parse: bool) -> Result<Pass, ConstellationEr
 /// quietly agreeing on different layouts.
 async fn read_config(
     workspace: &Path,
+    resolve_layout: bool,
 ) -> Result<(String, usize, SectionLayoutProbe), ConstellationError> {
     let config_path = workspace.join("config.yaml");
     let bytes = match tokio::fs::read(&config_path).await {
@@ -1476,7 +1591,11 @@ async fn read_config(
         }
     };
 
-    let probe = SectionLayoutProbe::resolve();
+    let probe = if resolve_layout {
+        SectionLayoutProbe::resolve()
+    } else {
+        SectionLayoutProbe::not_requested()
+    };
     let layout_fingerprint = probe.layout.fingerprint();
 
     let mut digest = DigestBuilder::new(SOURCE_SET_DOMAIN);
@@ -1514,6 +1633,23 @@ struct SectionLayoutProbe {
 }
 
 impl SectionLayoutProbe {
+    /// A distinct, non-semantic digest domain used only by mutation admission.
+    /// It says nothing about the actual model cache's availability or validity.
+    fn not_requested() -> Self {
+        Self {
+            layout: crate::embed::tokenizer::SectionLayout {
+                algorithm: "canonical-mutation-admission-v1".to_string(),
+                tokenizer_checksum: "not_requested".to_string(),
+                tokenizer_config_checksum: "not_requested".to_string(),
+                config_checksum: "not_requested".to_string(),
+                max_tokens: 0,
+                header_context_tokens: 0,
+                special_tokens: 0,
+            },
+            tokenizer: None,
+        }
+    }
+
     /// Resolve the layout from the local model cache. Never downloads.
     fn resolve() -> Self {
         let resolution =
@@ -1537,11 +1673,12 @@ impl SectionLayoutProbe {
 }
 
 /// Assemble the confirmed capture from the first pass.
-fn build_view(
+async fn build_view(
     workspace: &Path,
     request: &CaptureRequest,
     pass: Pass,
     attempts: u32,
+    include_sections: bool,
 ) -> Result<CapturedSourceView, ConstellationError> {
     let evaluated_at = rfc3339_now();
 
@@ -1575,14 +1712,20 @@ fn build_view(
     // published manifest is the baseline — a capture view cannot record a
     // confirmed absence, because absence is a verdict two published sets
     // produce, not one scan.
-    let retired: BTreeMap<&str, u64> = match &request.previous {
-        Some(prev) => prev.retired().collect(),
-        None => BTreeMap::new(),
-    };
+    let mut retired: BTreeMap<&str, u64> = BTreeMap::new();
+    if let Some(prev) = &request.previous {
+        for (key, incarnation) in prev.retired() {
+            retired
+                .entry(key)
+                .and_modify(|floor| *floor = (*floor).max(incarnation))
+                .or_insert(incarnation);
+        }
+    }
 
     let mut diagnostics: Vec<SourceDiagnostic> = Vec::new();
     let mut unusable: Vec<UnusableSource> = pass.unusable.clone();
     let mut artifacts: Vec<Arc<ParsedArtifact>> = Vec::new();
+    let mut conflict_artifacts: Vec<Arc<ParsedArtifact>> = Vec::new();
     let mut entries: Vec<SourceEntry> = Vec::new();
 
     for file in &pass.files {
@@ -1601,6 +1744,7 @@ fn build_view(
                     paths.join(", ")
                 ),
             });
+            conflict_artifacts.push(Arc::new(parsed));
             continue;
         }
 
@@ -1682,7 +1826,7 @@ fn build_view(
     // vectors may remain as inert cache rows; nothing here makes them current.
     let mut sections = Vec::new();
     let tokenizer = pass.layout_probe.tokenizer.clone();
-    if let Some(tokenizer) = tokenizer.as_deref() {
+    if let Some(tokenizer) = tokenizer.as_deref().filter(|_| include_sections) {
         let budgets = pass.layout_probe.budgets()?;
         for artifact in &artifacts {
             let mut rows = sections_for(artifact, tokenizer, &budgets)?;
@@ -1695,6 +1839,7 @@ fn build_view(
         verify_bodies_are_fully_covered(&artifacts, &sections)?;
     }
     entries.sort_by(|a, b| a.relative_path.as_bytes().cmp(b.relative_path.as_bytes()));
+    conflict_artifacts.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     unusable.sort_by(|a, b| a.relative_path.as_bytes().cmp(b.relative_path.as_bytes()));
     diagnostics.extend(
         unusable.iter().map(|u| {
@@ -1740,7 +1885,7 @@ fn build_view(
         diagnostics.push(diagnostic);
     }
 
-    let identity = IndexIdentity::derive(&IndexLocation::new(&index_root));
+    let identity = IndexIdentity::derive(&IndexLocation::new(&index_root)).await;
     for entry in &mut entries {
         entry.checkout_id = identity.checkout_id().to_string();
         entry.index_epoch = identity.index_epoch();
@@ -1765,6 +1910,7 @@ fn build_view(
         tokenizer,
         body_prefix_chars: pass.body_prefix_chars,
         artifacts,
+        conflict_artifacts,
         sections,
         entries,
         unusable,
@@ -1998,6 +2144,118 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn admission_ignores_model_metadata_but_preserves_public_read_fingerprints() {
+        let layout = fixture_layout(crate::embed::tokenizer::MAX_TOKENS_CEILING);
+        let tmp = workspace();
+        write_artifact(tmp.path(), "prds", "PRD-001-auth.md", PRD);
+        let request = CaptureRequest::new(tmp.path());
+        let full = capture_source(&request, CaptureLimits::default())
+            .await
+            .unwrap();
+        let canonical = capture_canonical_census(&request, CaptureLimits::default())
+            .await
+            .unwrap();
+        let admission = capture_mutation_census(&request, CaptureLimits::default())
+            .await
+            .unwrap();
+        assert!(
+            !full.sections.is_empty(),
+            "the fixture must back real token windows"
+        );
+        assert_eq!(canonical.source_set_digest, full.source_set_digest);
+        assert_ne!(admission.source_set_digest, full.source_set_digest);
+        assert!(admission.is_complete());
+        assert!(admission.tokenizer.is_none());
+        assert_eq!(
+            admission.artifact("PRD-001").unwrap().body.as_ref(),
+            "Body A.\n"
+        );
+
+        let metadata = layout
+            ._cache
+            .path()
+            .join(format!(
+                "models--{}",
+                super::super::jobs::DEFAULT_MODEL_REPO.replace('/', "--")
+            ))
+            .join("snapshots/rev-fixture/tokenizer.json");
+        std::fs::write(metadata, b"{broken tokenizer").unwrap();
+        let unreadable = capture_source(&request, CaptureLimits::default())
+            .await
+            .unwrap();
+        let canonical_after = capture_canonical_census(&request, CaptureLimits::default())
+            .await
+            .unwrap();
+        let admitted_after = capture_mutation_census(&request, CaptureLimits::default())
+            .await
+            .unwrap();
+        assert!(!unreadable.layout.is_available());
+        assert!(unreadable.sections.is_empty());
+        assert_ne!(unreadable.source_set_digest, full.source_set_digest);
+        assert_eq!(
+            canonical_after.source_set_digest,
+            unreadable.source_set_digest
+        );
+        assert_eq!(
+            admitted_after.source_set_digest,
+            admission.source_set_digest
+        );
+        assert!(admitted_after.is_complete());
+    }
+
+    #[tokio::test]
+    async fn ordinary_mutation_is_independent_of_semantic_token_budget() {
+        let _layout = fixture_layout(1);
+        let tmp = workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        write_artifact(&root, "prds", "PRD-001-auth.md", PRD);
+        let _guard = crate::workspace::acquire_workspace_lock(&root)
+            .await
+            .unwrap();
+
+        let admitted = super::super::facade::ensure_ordinary_mutation_allowed(&root);
+        assert!(
+            admitted.is_ok(),
+            "ordinary authoring does not need an embedding token budget: {admitted:?}"
+        );
+
+        let sources = [super::super::federation::SourceSpec::new(&root)];
+        let found = super::super::federation::federated_search(
+            &sources,
+            "Body A.",
+            10,
+            super::super::federation::QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            found
+                .hits
+                .iter()
+                .map(|hit| hit.canonical_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["PRD-001"]
+        );
+        assert!(!found.partial);
+
+        write_artifact(&root, "prds", "PRD-002-broken.md", "not frontmatter");
+        assert!(matches!(
+            super::super::facade::ensure_ordinary_mutation_allowed(&root),
+            Err(ConstellationError::SourceUnavailable { .. })
+        ));
+        assert!(matches!(
+            super::super::federation::federated_search(
+                &sources,
+                "Body A.",
+                10,
+                super::super::federation::QueryMode::Strict,
+            )
+            .await,
+            Err(ConstellationError::SourceUnavailable { .. })
+        ));
+    }
+
     /// The generation manifest a capture of this workspace would publish.
     ///
     /// This is the shape production capture continues from, so tests that
@@ -2104,9 +2362,13 @@ mod tests {
     #[tokio::test]
     async fn outgoing_set_is_exact_sorted_and_case_sensitive() {
         let tmp = workspace();
-        let content = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\nlinks:\n  - target: RFC-002\n    relation: informs\n  - target: prd-001\n    relation: refines\n  - target: RFC-002\n    relation: informs\n  - target: ADR-003\n---\n\nBody.\n";
+        let content = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\nlinks:\n  - target: RFC-002\n    relation: informs\n  - target: prd-001\n    relation: refines\n  - target: RFC-002\n    relation: informs\n---\n\nBody.\n";
         write_artifact(tmp.path(), "prds", "PRD-001-auth.md", content);
         let view = capture(tmp.path()).await;
+        assert!(
+            view.is_complete(),
+            "valid duplicate edges do not make the census incomplete"
+        );
         let artifact = view.artifact("PRD-001").unwrap();
 
         let edges: Vec<(&str, &str)> = artifact
@@ -2117,15 +2379,81 @@ mod tests {
         assert_eq!(
             edges,
             vec![("RFC-002", "informs"), ("prd-001", "refines")],
-            "the duplicate collapses, case is preserved verbatim, and the \
-             relation-less edge is diagnosed instead of stored"
+            "the duplicate collapses and case is preserved verbatim"
         );
         assert!(
             artifact
                 .diagnostics
                 .iter()
                 .any(|d| d.code == DiagnosticCode::InvalidLinks),
-            "a malformed edge must be diagnosed rather than silently dropped"
+            "a duplicate valid edge retains its diagnostic"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_link_entries_make_the_source_incomplete() {
+        for entry in [
+            "  - scalar\n",
+            "  - relation: informs\n",
+            "  - target: RFC-002\n",
+            "  - target: ''\n    relation: informs\n",
+            "  - target: RFC-002\n    relation: 42\n",
+        ] {
+            let tmp = workspace();
+            let content = format!(
+                "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\nlinks:\n  - target: RFC-002\n    relation: informs\n{entry}---\n\nBody.\n"
+            );
+            write_artifact(tmp.path(), "prds", "PRD-001-auth.md", &content);
+            let view = capture(tmp.path()).await;
+            assert!(!view.is_complete(), "accepted malformed entry: {entry}");
+            assert_eq!(view.coverage.invalid, 1);
+            assert!(view.artifact("PRD-001").is_none());
+            assert!(view.diagnostics.iter().any(|d| {
+                d.code == DiagnosticCode::InvalidLinks
+                    && d.source.as_deref() == Some("prds/PRD-001-auth.md")
+            }));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn malformed_link_blocks_mutation_and_preserves_current() {
+        use crate::constellation::facade::{
+            MaintainCapability, ensure_ordinary_mutation_allowed, maintain_index, resume_admission,
+        };
+        use crate::constellation::storage::CURRENT_FILE_NAME;
+
+        resume_admission();
+        let tmp = workspace();
+        let root = tmp.path().canonicalize().unwrap();
+        let source = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\nlinks:\n  - target: RFC-002\n    relation: informs\n---\n\nBody.\n";
+        write_artifact(&root, "prds", "PRD-001-auth.md", source);
+        let capability = MaintainCapability::for_strict_maintenance(root.clone());
+        let deadline = || Instant::now() + Duration::from_secs(120);
+        maintain_index(&capability, CaptureLimits::default(), deadline())
+            .await
+            .unwrap();
+        let current_path = capability.index_root().join(CURRENT_FILE_NAME);
+        let current = std::fs::read(&current_path).unwrap();
+        let broken = source.replace("    relation: informs\n", "");
+        write_artifact(&root, "prds", "PRD-001-auth.md", &broken);
+
+        let guard = crate::workspace::acquire_workspace_lock(&root)
+            .await
+            .unwrap();
+        assert!(matches!(
+            ensure_ordinary_mutation_allowed(&root),
+            Err(ConstellationError::SourceUnavailable { .. })
+        ));
+        drop(guard);
+        assert!(matches!(
+            maintain_index(&capability, CaptureLimits::default(), deadline()).await,
+            Err(ConstellationError::SourceUnavailable { .. })
+        ));
+        assert_eq!(std::fs::read(&current_path).unwrap(), current);
+        assert_eq!(
+            std::fs::read_to_string(root.join("prds/PRD-001-auth.md")).unwrap(),
+            broken
         );
     }
 

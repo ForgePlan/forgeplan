@@ -338,6 +338,53 @@ async fn a_migrated_write_reports_the_index_it_published_into() {
 }
 
 #[tokio::test]
+async fn migrated_update_reports_pending_semantic_work_after_canonical_commit() {
+    for runtime_registered in [false, true] {
+        let tmp = TempDir::new().expect("tempdir");
+        let ws = publish_workspace(tmp.path(), "auth-rewrite-marker").await;
+        let mut config =
+            forgeplan_core::workspace::load_config(&ws).expect("load workspace config");
+        config.embedding = Some(forgeplan_core::config::types::EmbeddingConfig {
+            model: "unsupported-mcp-test-model".to_string(),
+            chunk_size: 2000,
+        });
+        std::fs::write(
+            ws.join("config.yaml"),
+            serde_yaml::to_string(&config).expect("serialize workspace config"),
+        )
+        .expect("write test embedding config");
+        let _supervisor = runtime_registered
+            .then(|| forgeplan_core::constellation::runtime::MaintenanceSupervisor::register(&ws));
+
+        let server = server_at(tmp.path()).await;
+        let updated = server
+            .call_tool_json(
+                "forgeplan_update",
+                json!({ "id": "PRD-001", "title": "Canonical update before drain failure" }),
+            )
+            .await;
+        let payload = updated.assert_ok();
+
+        assert_eq!(payload["message"], "Updated successfully");
+        assert_eq!(payload["title"], "Canonical update before drain failure");
+        assert_eq!(payload["index_pending"], true);
+        assert!(
+            payload["index_pending_reason"].is_string(),
+            "pending semantic work must carry a reason: {}",
+            updated.raw_text
+        );
+        assert!(
+            workspace_bytes(&ws).contains("Canonical update before drain failure"),
+            "canonical file-first update must remain committed when semantic work is pending"
+        );
+        assert!(
+            legacy_tables(&ws).is_empty(),
+            "semantic drain failure must not create legacy tables"
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_explicit_workspace_param_writes_that_workspace_not_the_default() {
     let default_tmp = TempDir::new().expect("tempdir for default");
     let target_tmp = TempDir::new().expect("tempdir for target");
@@ -599,23 +646,29 @@ async fn a_legacy_workspace_still_writes_its_projection_row() {
 
     // A legacy workspace is one the store still owns — and, unlike a migrated
     // one, its `artifacts.lance` genuinely exists.
-    let store = forgeplan_core::db::store::LanceStore::init(&ws)
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws)
+        .await
+        .unwrap();
+    let store = forgeplan_core::db::store::LanceStore::init_new(&ws, &lock)
         .await
         .expect("init legacy store");
     store
-        .create_artifact_for_test(&forgeplan_core::db::store::NewArtifact {
-            canonical_key: "PRD-001".into(),
-            id: "PRD-001".into(),
-            kind: "prd".into(),
-            status: "draft".into(),
-            title: "Legacy artifact".into(),
-            body: "## Summary\n\nLegacy body.\n".into(),
-            depth: "standard".into(),
-            author: None,
-            parent_epic: None,
-            valid_until: None,
-            tags: Vec::new(),
-        })
+        .create_artifact_for_test(
+            &lock,
+            &forgeplan_core::db::store::NewArtifact {
+                canonical_key: "PRD-001".into(),
+                id: "PRD-001".into(),
+                kind: "prd".into(),
+                status: "draft".into(),
+                title: "Legacy artifact".into(),
+                body: "## Summary\n\nLegacy body.\n".into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            },
+        )
         .await
         .expect("seed legacy row");
     std::fs::write(
@@ -624,6 +677,7 @@ async fn a_legacy_workspace_still_writes_its_projection_row() {
     )
     .expect("seed the canonical file a real legacy workspace would hold");
     drop(store);
+    drop(lock);
 
     assert!(
         !forgeplan_core::constellation::facade::workspace_is_migrated(&ws),
@@ -655,8 +709,11 @@ async fn a_legacy_workspace_still_writes_its_projection_row() {
     let reopened = forgeplan_core::db::store::LanceStore::open(&ws)
         .await
         .expect("reopen the legacy store");
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws)
+        .await
+        .unwrap();
     let row = reopened
-        .get_record("PRD-001")
+        .get_record(&permit, "PRD-001")
         .await
         .expect("read the legacy row")
         .expect("the row must still exist");

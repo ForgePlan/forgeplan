@@ -1,5 +1,6 @@
 //! History is auxiliary state on both workspace layouts, not an artifact index.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -38,6 +39,19 @@ async fn connect(workspace: &Path) -> lancedb::Connection {
         .unwrap()
 }
 
+async fn seed_legacy_core_tables(db: &lancedb::Connection) {
+    for (name, core_schema) in [
+        ("artifacts", schema::artifacts_schema()),
+        ("relations", schema::relations_schema()),
+        ("evidence", schema::evidence_schema()),
+    ] {
+        db.create_table(name, vec![RecordBatch::new_empty(core_schema)])
+            .execute()
+            .await
+            .unwrap();
+    }
+}
+
 async fn table_names(workspace: &Path) -> Vec<String> {
     let db = connect(workspace).await;
     let mut names = db.table_names().execute().await.unwrap();
@@ -60,8 +74,11 @@ fn assert_no_other_history_tables(workspace: &Path) {
 /// Seed the old on-disk format directly, without using either history writer.
 async fn seed_old_rows(workspace: &Path, entries: &[ChangeLogEntry]) {
     let db = connect(workspace).await;
+    let historical_schema = Arc::new(Schema::new(
+        schema::change_log_schema().fields()[..8].to_vec(),
+    ));
     let batch = RecordBatch::try_new(
-        schema::change_log_schema(),
+        historical_schema,
         vec![
             Arc::new(StringArray::from(
                 entries
@@ -160,7 +177,9 @@ async fn existing_database_without_history_is_not_initialized_by_a_read() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = temp.path().join(".forgeplan");
     let lock = acquire_workspace_lock(&workspace).await.unwrap();
-    let fpf = AuxiliaryStore::open_or_create(&workspace).await.unwrap();
+    let fpf = AuxiliaryStore::open_or_create(&workspace, &lock)
+        .await
+        .unwrap();
     drop(fpf);
     drop(lock);
     let before = table_names(&workspace).await;
@@ -215,10 +234,254 @@ async fn history_writer_creates_only_change_log_under_the_callers_lock() {
 }
 
 #[tokio::test]
+async fn legacy_fixture_initializes_historical_tables_without_inventing_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join(".forgeplan");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let lock = acquire_workspace_lock(&workspace).await.unwrap();
+    let legacy = LanceStore::init_legacy_for_test(&workspace, &lock)
+        .await
+        .unwrap();
+    drop(legacy);
+    drop(lock);
+
+    let db = connect(&workspace).await;
+    let history_table = db.open_table("change_log").execute().await.unwrap();
+    assert_eq!(history_table.schema().await.unwrap().fields().len(), 8);
+    assert_eq!(
+        table_names(&workspace).await,
+        ["artifacts", "change_log", "evidence", "relations"]
+    );
+
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace)
+        .await
+        .unwrap();
+    let legacy = LanceStore::open(&workspace).await.unwrap();
+    let historical = legacy
+        .get_change_log(&permit, None, None, 10)
+        .await
+        .unwrap();
+    let expected = entry("2020-01-01T00:00:00Z", "PRD-001", "update", "cli")
+        .with_field("status")
+        .with_values(Some("draft"), Some("active"))
+        .with_commit("abcdef0");
+    assert_eq!(rows(&historical), rows(&[expected]));
+    assert_eq!(historical[0].canonical_key, None);
+    assert!(
+        legacy
+            .get_change_log(&permit, Some("PRD-001"), None, 10)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn legacy_fixture_refuses_existing_markdown_and_managed_ownership() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join(".forgeplan");
+    std::fs::create_dir_all(workspace.join("notes")).unwrap();
+    std::fs::write(
+        workspace.join("notes/NOTE-001-existing.md"),
+        "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Existing\ndepth: tactical\n---\n\nExisting body.\n",
+    )
+    .unwrap();
+    let lock = acquire_workspace_lock(&workspace).await.unwrap();
+    assert!(
+        LanceStore::init_legacy_for_test(&workspace, &lock)
+            .await
+            .is_err()
+    );
+    assert!(!workspace.join("lance").exists());
+    drop(lock);
+
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join(".forgeplan");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let lock = acquire_workspace_lock(&workspace).await.unwrap();
+    LanceStore::init_new(&workspace, &lock).await.unwrap();
+    let before = table_names(&workspace).await;
+    assert!(
+        LanceStore::init_legacy_for_test(&workspace, &lock)
+            .await
+            .is_err()
+    );
+    assert!(workspace.join("lance/IDENTITY_V5.json").is_file());
+    assert_eq!(table_names(&workspace).await, before);
+}
+
+#[tokio::test]
+async fn identity_source_reconcile_tracks_keys_and_preserves_historical_receipts() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join(".forgeplan");
+    std::fs::create_dir_all(workspace.join("notes")).unwrap();
+    let lock = acquire_workspace_lock(&workspace).await.unwrap();
+    let legacy = LanceStore::init_legacy_for_test(&workspace, &lock)
+        .await
+        .unwrap();
+    drop(legacy);
+    std::fs::write(
+        workspace.join("config.yaml"),
+        "project_name: history_reconcile\n",
+    )
+    .unwrap();
+    let document = |slug: &str, title: &str, body: &str| {
+        format!(
+            "---\nid: NOTE-001\nslug: {slug}\nkind: note\nstatus: draft\ntitle: {title}\ndepth: standard\n---\n\n{body}\n"
+        )
+    };
+    std::fs::write(
+        workspace.join("notes/NOTE-001-alpha.md"),
+        document("note-alpha", "Alpha", "Original alpha"),
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("notes/NOTE-001-beta.md"),
+        document("note-beta", "Beta", "Original beta"),
+    )
+    .unwrap();
+
+    let migrated = LanceStore::open_for_write(&workspace, &lock).await.unwrap();
+    let initial = migrated.list_records(&lock, None).await.unwrap();
+    assert_eq!(
+        initial
+            .iter()
+            .map(|record| (record.canonical_key.as_str(), record.id.as_str()))
+            .collect::<BTreeMap<_, _>>(),
+        BTreeMap::from([("note-alpha", "NOTE-001"), ("note-beta", "NOTE-001")])
+    );
+    let old_history = migrated
+        .get_change_log(&lock, None, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(old_history.len(), 1);
+    assert_eq!(old_history[0].canonical_key, None);
+    drop(migrated);
+    drop(lock);
+
+    std::fs::write(
+        workspace.join("notes/NOTE-001-alpha.md"),
+        document("note-alpha", "Alpha", "Edited alpha"),
+    )
+    .unwrap();
+    std::fs::remove_file(workspace.join("notes/NOTE-001-beta.md")).unwrap();
+    std::fs::write(
+        workspace.join("notes/NOTE-001-gamma.md"),
+        document("note-gamma", "Gamma", "New gamma"),
+    )
+    .unwrap();
+
+    let changes = LanceStore::reconcile_identity_v5_source(&workspace)
+        .await
+        .unwrap();
+    let actual = changes
+        .iter()
+        .map(|change| (change.canonical_key.clone(), change.action.to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        actual,
+        BTreeMap::from([
+            ("note-alpha".to_owned(), "update".to_owned()),
+            ("note-beta".to_owned(), "delete".to_owned()),
+            ("note-gamma".to_owned(), "create".to_owned()),
+        ])
+    );
+    assert!(
+        LanceStore::reconcile_identity_v5_source(&workspace)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let read_lock = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace)
+        .await
+        .unwrap();
+    let reconciled = LanceStore::open(&workspace).await.unwrap();
+    let alpha = reconciled
+        .get_record(&read_lock, "note-alpha")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(alpha.body.trim(), "Edited alpha");
+    assert!(
+        reconciled
+            .get_record(&read_lock, "note-beta")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let gamma = reconciled
+        .get_record(&read_lock, "note-gamma")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(gamma.body.trim(), "New gamma");
+    let history = reconciled
+        .get_change_log(&read_lock, None, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].artifact_id, "PRD-001");
+    assert_eq!(history[0].canonical_key, None);
+    drop(reconciled);
+    drop(read_lock);
+
+    let keys_before_refusals = ["note-alpha", "note-gamma"];
+    std::fs::write(
+        workspace.join("notes/broken.md"),
+        "---\nid: NOTE-002\nkind: note\n",
+    )
+    .unwrap();
+    assert!(
+        LanceStore::reconcile_identity_v5_source(&workspace)
+            .await
+            .is_err()
+    );
+    std::fs::remove_file(workspace.join("notes/broken.md")).unwrap();
+    std::fs::write(
+        workspace.join("notes/NOTE-001-duplicate.md"),
+        document("note-alpha", "Duplicate", "Conflicting canonical key"),
+    )
+    .unwrap();
+    assert!(
+        LanceStore::reconcile_identity_v5_source(&workspace)
+            .await
+            .is_err()
+    );
+    std::fs::remove_file(workspace.join("notes/NOTE-001-duplicate.md")).unwrap();
+
+    let read_lock = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace)
+        .await
+        .unwrap();
+    let unchanged = LanceStore::open(&workspace).await.unwrap();
+    let actual_keys = unchanged
+        .list_records(&read_lock, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|record| record.canonical_key)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        actual_keys,
+        keys_before_refusals
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    );
+    assert_eq!(
+        unchanged
+            .get_change_log(&read_lock, None, None, 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn old_eight_column_rows_survive_append_filters_sort_limit_and_reopen() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = temp.path().join(".forgeplan");
-    let id = "deleted' OR artifact_id != 'none";
+    let id = "PRD-001";
     let source = "git'sync";
     let oldest = entry("2020-01-01T00:00:00Z", id, "create", source);
     let middle = entry("2021-01-01T00:00:00Z", id, "update", "cli")
@@ -256,7 +519,7 @@ async fn old_eight_column_rows_survive_append_filters_sort_limit_and_reopen() {
                 .unwrap()
         ),
         rows(&[newest.clone(), oldest.clone()]),
-        "both apostrophe-containing filters are literal and AND-combined"
+        "apostrophe-containing source filters remain literal and AND-combined"
     );
     assert_eq!(
         rows(&history.get_change_log(Some(id), None, 10).await.unwrap()),
@@ -316,9 +579,14 @@ async fn legacy_and_auxiliary_handles_share_history_without_duplicate_events() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = temp.path().join(".forgeplan");
     let lock = acquire_workspace_lock(&workspace).await.unwrap();
-    let legacy = LanceStore::init(&workspace).await.unwrap();
+    std::fs::write(
+        workspace.join("config.yaml"),
+        "project_name: history_compat\n",
+    )
+    .unwrap();
+    let legacy = LanceStore::init_new(&workspace, &lock).await.unwrap();
     let first = entry("2026-01-01T00:00:00Z", "PRD-001", "create", "cli");
-    legacy.log_change(&first).await.unwrap();
+    legacy.log_change(&lock, &first).await.unwrap();
     let baseline = table_names(&workspace).await;
     let history = AuxiliaryStore::open_history_or_create(&workspace)
         .await
@@ -332,23 +600,56 @@ async fn legacy_and_auxiliary_handles_share_history_without_duplicate_events() {
     drop(legacy);
     drop(lock);
 
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace)
+        .await
+        .unwrap();
     let legacy = LanceStore::open(&workspace).await.unwrap();
     let history = AuxiliaryStore::open_history_existing(&workspace)
         .await
         .unwrap();
     for (id, source, limit) in [
         (None, None, 10),
-        (Some("PRD-001"), None, 1),
         (None, Some("git_sync"), 10),
-        (Some("PRD-001"), Some("cli"), 10),
-        (Some("DELETED-001"), None, 10),
         (None, None, 0),
     ] {
         assert_eq!(
-            rows(&legacy.get_change_log(id, source, limit).await.unwrap()),
+            rows(
+                &legacy
+                    .get_change_log(&permit, id, source, limit)
+                    .await
+                    .unwrap()
+            ),
             rows(&history.get_change_log(id, source, limit).await.unwrap())
         );
     }
+    // The identity-aware handle refuses to attribute unkeyed rows; the
+    // auxiliary handle is a literal reader without an artifact index.
+    let error = legacy
+        .get_change_log(&permit, Some("PRD-001"), None, 10)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("history identity is indeterminate")
+    );
+    let missing = legacy
+        .get_change_log(&permit, Some("PRD-999"), None, 10)
+        .await
+        .unwrap_err();
+    assert!(
+        missing
+            .to_string()
+            .contains("history identity is indeterminate")
+    );
+    assert_eq!(
+        history
+            .get_change_log(Some("PRD-001"), None, 10)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
     assert_eq!(
         rows(&history.get_change_log(None, None, 10).await.unwrap()),
         rows(&[second, first])
@@ -445,9 +746,18 @@ async fn malformed_history_schema_is_not_reported_as_empty_or_migrated() {
         assert_eq!(table.schema().await.unwrap().fields(), schema.fields());
         assert_eq!(table_names(&workspace).await, ["change_log"]);
         assert_no_other_history_tables(&workspace);
-        let legacy = LanceStore::init(&workspace).await.unwrap();
+        // Add a legacy core index only after the auxiliary-only isolation checks.
+        // The malformed history remains untouched and the legacy read must
+        // reject its schema rather than return an empty history.
+        let lock = acquire_workspace_lock(&workspace).await.unwrap();
+        seed_legacy_core_tables(&db).await;
+        drop(lock);
+        let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace)
+            .await
+            .unwrap();
+        let legacy = LanceStore::open(&workspace).await.unwrap();
         let message = legacy
-            .get_change_log(None, None, 10)
+            .get_change_log(&permit, None, None, 10)
             .await
             .unwrap_err()
             .to_string();
@@ -657,14 +967,15 @@ async fn nullable_required_history_schema_and_malformed_rows_are_errors_for_both
             // A real legacy owner reaches the same shared schema/query guard.
             // Its explicit initialization is fixture setup, not an auxiliary
             // history side effect.
-            let legacy = LanceStore::init(&workspace).await.unwrap();
+            seed_legacy_core_tables(&db).await;
+            let legacy = LanceStore::open(&workspace).await.unwrap();
             for (id, source, limit) in [
                 (None, None, 100),
                 (Some("PRD-001"), Some("cli"), 1),
                 (None, None, 0),
             ] {
                 let message = legacy
-                    .get_change_log(id, source, limit)
+                    .get_change_log(&lock, id, source, limit)
                     .await
                     .unwrap_err()
                     .to_string();

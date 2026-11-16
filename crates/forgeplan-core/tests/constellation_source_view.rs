@@ -276,7 +276,7 @@ async fn l03_a_target_keeps_its_exact_case_and_is_not_required_to_exist() {
 }
 
 #[tokio::test]
-async fn l03_a_malformed_edge_is_diagnosed_and_never_silently_dropped() {
+async fn l03_a_malformed_edge_invalidates_the_source_without_partial_relations() {
     let tmp = workspace();
     let links = "links:\n  - target: RFC-010\n    relation: informs\n  - target: ADR-011\n";
     write(
@@ -287,24 +287,25 @@ async fn l03_a_malformed_edge_is_diagnosed_and_never_silently_dropped() {
     );
     let view = capture(tmp.path()).await;
 
-    let artifact = view.artifact("PRD-001").expect("still current");
-    assert_eq!(
-        edges(&view, "PRD-001"),
-        vec![("RFC-010".to_string(), "informs".to_string())],
-        "the valid edge survives"
+    assert!(
+        !view.is_complete(),
+        "malformed links make coverage incomplete"
     );
     assert!(
-        artifact
-            .diagnostics
-            .iter()
-            .any(|d| d.code == DiagnosticCode::InvalidLinks),
-        "the malformed edge must be reported, not silently discarded"
+        view.artifact("PRD-001").is_none(),
+        "invalid source is excluded"
     );
+    let diagnostic = view
+        .diagnostics
+        .iter()
+        .find(|entry| entry.code == DiagnosticCode::InvalidLinks)
+        .expect("the malformed edge must be reported");
+    assert_eq!(diagnostic.source.as_deref(), Some("prds/PRD-001-auth.md"));
+    assert!(view.is_unusable("prds/PRD-001-auth.md"));
+    assert_eq!(view.coverage.invalid, 1);
     assert!(
-        view.entries[0]
-            .diagnostic_codes
-            .contains(&"invalid_links".to_string()),
-        "the diagnostic must reach the durable source entry"
+        !plan_reconcile(&view, None).publishable,
+        "an invalid source must not be published as a complete empty capture"
     );
 }
 

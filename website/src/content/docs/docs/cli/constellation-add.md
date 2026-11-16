@@ -1,6 +1,6 @@
 ---
 title: "forgeplan constellation add"
-description: "Add a `.forgeplan` directory as a source. Validates the path at registration time — a symlink or a non-workspace fails here, not at every later read"
+description: "Add a .forgeplan directory as a source. Registration and live reads reject invalid or symlinked workspace roots."
 ---
 
 ## Usage
@@ -13,7 +13,7 @@ The exact signature and options of the selected build appear below. Registration
 Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan constellation add --help`.
 
 ```text
-Add a `.forgeplan` directory as a source. Validates the path at registration time — a symlink or a non-workspace fails here, not at every later read
+Add a `.forgeplan` directory as a source. Rejects symlinks and non-workspaces at registration. Live reads recheck the registered source boundary
 
 Usage: forgeplan constellation add [OPTIONS] <PATH>
 

@@ -10,6 +10,9 @@
 //! markdown" — is the reconcile pass `forgeplan index` owns, so the
 //! command routes there instead.
 
+#[path = "common/historical_lance.rs"]
+mod historical_lance;
+
 use std::path::Path;
 
 use assert_cmd::Command;
@@ -38,10 +41,7 @@ fn reindex_on_a_migrated_workspace_routes_to_reconcile() {
     std::fs::create_dir_all(&ws).unwrap();
     let lance = ws.join(".forgeplan").join("lance");
 
-    home_env(forgeplan().args(["init", "-y"]), &home)
-        .current_dir(&ws)
-        .assert()
-        .success();
+    historical_lance::init_legacy_workspace(&ws, "Reindex migration fixture");
     home_env(forgeplan().args(["new", "prd", "Migration guard"]), &home)
         .current_dir(&ws)
         .assert()
@@ -89,16 +89,10 @@ fn reindex_on_a_migrated_workspace_routes_to_reconcile() {
         .stdout(predicate::str::contains("Migration guard"));
 }
 
-/// The missed window a CURRENT.json-only check left open: a bootstrap that
-/// died between `backup_legacy_tables` and the marker write leaves
-/// `*.legacy-backup.lance` dirs with no CURRENT.json and no PROTOCOL.json.
-/// `LanceStore::init` there would recreate `artifacts.lance` beside the
-/// backups — `backup_legacy_tables` can then never finish the rename (the
-/// destination exists) and the resurrected table shadows the real index
-/// forever. The widened routing sends the reconcile pass in to finish the
-/// interrupted bootstrap instead.
+/// Backups without a durable ownership marker cannot prove a safe bootstrap.
+/// Refuse instead of resurrecting legacy tables or publishing an empty index.
 #[test]
-fn reindex_on_an_interrupted_migration_does_not_resurrect_legacy() {
+fn reindex_on_unowned_legacy_backups_fails_without_resurrecting_tables() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
     let ws = tmp.path().join("ws");
@@ -106,10 +100,7 @@ fn reindex_on_an_interrupted_migration_does_not_resurrect_legacy() {
     std::fs::create_dir_all(&ws).unwrap();
     let lance = ws.join(".forgeplan").join("lance");
 
-    home_env(forgeplan().args(["init", "-y"]), &home)
-        .current_dir(&ws)
-        .assert()
-        .success();
+    historical_lance::init_legacy_workspace(&ws, "Interrupted migration fixture");
     home_env(
         forgeplan().args(["new", "prd", "Interrupted migration"]),
         &home,
@@ -119,8 +110,7 @@ fn reindex_on_an_interrupted_migration_does_not_resurrect_legacy() {
     .success();
     assert!(lance.join("artifacts.lance").exists());
 
-    // The crash window: legacy tables renamed aside, marker never written,
-    // CURRENT.json never published.
+    // This state omits the ownership announcement required before any archive.
     for table in ["artifacts", "relations"] {
         let live = lance.join(format!("{table}.lance"));
         if live.exists() {
@@ -131,13 +121,11 @@ fn reindex_on_an_interrupted_migration_does_not_resurrect_legacy() {
     assert!(!lance.join("CURRENT.json").exists());
     assert!(!lance.join("constellation").join("PROTOCOL.json").exists());
 
-    // Reconcile owns this layout: it finishes the interrupted bootstrap —
-    // a successful pass, not a second legacy index beside the backups.
     home_env(forgeplan().args(["reindex"]), &home)
         .current_dir(&ws)
         .assert()
-        .success()
-        .stdout(predicate::str::contains("reconciled into generation"));
+        .failure()
+        .stderr(predicate::str::contains("index_generation_unavailable"));
 
     assert!(
         !lance.join("artifacts.lance").exists(),
@@ -148,7 +136,7 @@ fn reindex_on_an_interrupted_migration_does_not_resurrect_legacy() {
         "reindex resurrected relations.lance beside its backup"
     );
     assert!(lance.join("artifacts.legacy-backup.lance").exists());
-    assert!(lance.join("CURRENT.json").exists());
+    assert!(!lance.join("CURRENT.json").exists());
 }
 
 /// The other interrupted witness: `constellation/PROTOCOL.json` present
@@ -165,10 +153,7 @@ fn reindex_with_only_a_protocol_marker_errors_without_resurrecting_legacy() {
     std::fs::create_dir_all(&ws).unwrap();
     let lance = ws.join(".forgeplan").join("lance");
 
-    home_env(forgeplan().args(["init", "-y"]), &home)
-        .current_dir(&ws)
-        .assert()
-        .success();
+    historical_lance::init_legacy_workspace(&ws, "Lost pointer fixture");
     home_env(forgeplan().args(["new", "prd", "Lost pointer"]), &home)
         .current_dir(&ws)
         .assert()

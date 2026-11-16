@@ -49,7 +49,7 @@ use forgeplan_core::constellation::facade::{
 };
 use forgeplan_core::constellation::manifest::CurrentDescriptor;
 use forgeplan_core::constellation::storage::{read_current, read_manifest};
-use rmcp::model::{CallToolRequestParams, RawContent};
+use rmcp::model::{CallToolRequestParams, ContentBlock};
 use rmcp::service::{QuitReason, RunningService, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::{TokioChildProcess, Transport};
 use rmcp::{RoleClient, ServiceExt};
@@ -386,8 +386,8 @@ impl McpProcess {
         let texts: Vec<&str> = result
             .content
             .iter()
-            .filter_map(|content| match &content.raw {
-                RawContent::Text(text) => Some(text.text.as_str()),
+            .filter_map(|content| match content {
+                ContentBlock::Text(text) => Some(text.text.as_str()),
                 _ => None,
             })
             .collect();
@@ -425,11 +425,13 @@ impl McpProcess {
         let payload = self.call("forgeplan_get", arguments).await;
         let raw =
             std::fs::read_to_string(artifact).expect("read canonical bytes after the response");
+        let (_, expected_body) = forgeplan_core::artifact::frontmatter::parse_frontmatter(&raw)
+            .expect("parse the canonical document body");
         assert_eq!(payload["id"], ARTIFACT_ID);
         assert_eq!(
             payload["body"].as_str(),
-            Some(raw.as_str()),
-            "the real MCP get must return the exact canonical document, not an older \
+            Some(expected_body.as_str()),
+            "the real MCP get must return the canonical body, not an older \
              projection; payload={payload}; stderr={}",
             stderr_text(&self.stderr)
         );
@@ -784,8 +786,13 @@ async fn migrated_host_outlives_startup_publishes_editor_saves_and_reconciles_af
         .call("forgeplan_get", json!({ "id": "NOTE-902" }))
         .await;
     let note_raw = std::fs::read_to_string(&note).expect("new note canonical bytes");
+    let (_, note_body) = parse_frontmatter(&note_raw).expect("parse the note canonical body");
     assert_eq!(note_got["id"], "NOTE-902");
-    assert_eq!(note_got["body"].as_str(), Some(note_raw.as_str()));
+    assert_eq!(
+        note_got["body"].as_str(),
+        Some(note_body.as_str()),
+        "the real MCP get must return the canonical note body, not an older projection; payload={note_got}"
+    );
 
     // The child has its own empty model cache. A smart read must still return
     // the fresh lexical hit and state explicitly that semantics did not run.
@@ -860,11 +867,15 @@ async fn environment_workspace_routes_requests_and_maintenance_to_the_same_sourc
     let x_root = x_root.canonicalize().unwrap();
     let x_workspace =
         forgeplan_core::workspace::init_workspace(&x_root, "legacy-launch-X").unwrap();
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&x_workspace)
+        .await
+        .unwrap();
     drop(
-        forgeplan_core::db::store::LanceStore::init(&x_workspace)
+        forgeplan_core::db::store::LanceStore::init_new(&x_workspace, &lock)
             .await
             .unwrap(),
     );
+    drop(lock);
     let x = MigratedWorkspace {
         artifact: x_workspace.join(ARTIFACT_PATH),
         root: x_root,
@@ -905,6 +916,5 @@ async fn environment_workspace_routes_requests_and_maintenance_to_the_same_sourc
         !change_log.exists(),
         "startup must not open or migrate the legacy store in X"
     );
-    assert!(x.workspace.join("lance/artifacts.lance").exists());
     assert_no_legacy_tables(&y.workspace);
 }

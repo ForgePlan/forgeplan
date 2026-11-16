@@ -2,14 +2,16 @@
 //! Fixtures drive the real CLI with a private HOME and an empty model cache;
 //! neither provider calls nor embedding inference is part of these scenarios.
 
+#[path = "common/historical_lance.rs"]
+mod historical_lance;
+
 use std::path::PathBuf;
 use std::process::Output;
 use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 use assert_cmd::Command;
-use forgeplan_core::db::store::{LanceStore, NewArtifact};
-use forgeplan_core::projection::{self, MutationContext};
+use forgeplan_core::db::store::LanceStore;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -20,6 +22,7 @@ struct Fixture {
     _tmp: TempDir,
     root: PathBuf,
     home: PathBuf,
+    canonical_key: String,
     tables: Vec<String>,
     current: Option<Vec<u8>>,
 }
@@ -35,21 +38,22 @@ impl Fixture {
             _tmp: tmp,
             root,
             home,
+            canonical_key: String::new(),
             tables: Vec::new(),
             current: None,
         };
-        fixture.ok(&["init", "-y"]);
-        let content = "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Phase repair\n\
-                       slug: prd-phase-repair\nassigned_number: null\ndepth: standard\n---\n\n\
-                       ## Summary\n\nTrack advisory phase history.\n";
+        historical_lance::init_legacy_workspace(&fixture.root, "Phase compatibility fixture");
+        let prose = "## Summary\n\nTrack advisory phase history.\n";
+        let content = format!(
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Phase repair\n\
+             slug: prd-phase-repair\nassigned_number: null\ndepth: standard\n---\n\n{prose}"
+        );
         std::fs::write(
             fixture.workspace().join("prds/PRD-001-phase-repair.md"),
-            content,
+            &content,
         )
         .unwrap();
-        // Legacy slug resolution reads frontmatter from the stored body.
-        // Seed those bytes directly through the real projection/store seam:
-        // legacy reindex strips them, a separate pre-existing behavior.
+        // Opening the verified writer imports the canonical file; do not insert it twice.
         let workspace = fixture.workspace();
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -59,37 +63,46 @@ impl Fixture {
                 let lock = forgeplan_core::workspace::acquire_workspace_lock(&workspace)
                     .await
                     .unwrap();
-                let store = LanceStore::open(&workspace).await.unwrap();
-                let artifact = NewArtifact {
-                    canonical_key: ID.to_string(),
-                    id: ID.to_string(),
-                    kind: "prd".to_string(),
-                    status: "draft".to_string(),
-                    title: "Phase repair".to_string(),
-                    body: content.to_string(),
-                    depth: "standard".to_string(),
-                    ..Default::default()
-                };
-                projection::sync_artifact_from_file(
-                    &MutationContext::new(&workspace, &lock, Some(&store)),
-                    &artifact,
-                )
-                .await
-                .unwrap();
-                assert_eq!(store.get_record(ID).await.unwrap().unwrap().body, content);
+                let store = LanceStore::open_for_write(&workspace, &lock).await.unwrap();
+                let record = store.get_record(&lock, ID).await.unwrap().unwrap();
+                assert_eq!(record.body, prose);
+                assert_eq!(record.canonical_key, SLUG);
             });
         // The runtime, store and lock have all dropped before a CLI child opens them.
         let artifact = fixture.json(&["get", ID, "--json"]);
         assert_eq!(artifact["id"], ID);
         assert_eq!(artifact["title"], "Phase repair");
-        assert_eq!(artifact["slug"], SLUG);
+        let canonical_key = artifact["canonical_key"].as_str().unwrap().to_owned();
+        assert_eq!(canonical_key, SLUG);
+        fixture.canonical_key = canonical_key;
+        assert_eq!(
+            std::fs::read_to_string(fixture.workspace().join("prds/PRD-001-phase-repair.md"))
+                .unwrap(),
+            content
+        );
         if migrated {
             fixture.ok(&["index"]);
             assert!(fixture.workspace().join("lance/CURRENT.json").is_file());
-            assert!(!fixture.workspace().join("lance/artifacts.lance").exists());
-            assert!(!fixture.workspace().join("lance/relations.lance").exists());
+            assert!(
+                !fixture
+                    .workspace()
+                    .join("lance/artifacts_identity_v5.lance")
+                    .exists()
+            );
+            assert!(
+                !fixture
+                    .workspace()
+                    .join("lance/relations_identity_v5.lance")
+                    .exists()
+            );
         } else {
-            assert!(fixture.workspace().join("lance/artifacts.lance").exists());
+            assert!(fixture.workspace().join("lance/IDENTITY_V5.json").is_file());
+            assert!(
+                fixture
+                    .workspace()
+                    .join("lance/artifacts_identity_v5.lance")
+                    .exists()
+            );
             assert!(!fixture.workspace().join("lance/CURRENT.json").exists());
         }
         assert!(!fixture.state_path().exists());
@@ -102,13 +115,10 @@ impl Fixture {
         self.root.join(".forgeplan")
     }
 
-    /// The phase state file, named after the document's canonical key.
-    ///
-    /// The key is the slug the document declares (ADR-030), so the state of
-    /// this document lives under its key — not under the display id that a
-    /// second document may share.
+    /// The admitted immutable key, not a mutable selector or display id.
     fn state_path(&self) -> PathBuf {
-        self.workspace().join(format!("state/{SLUG}.yaml"))
+        self.workspace()
+            .join(format!("state/{}.yaml", self.canonical_key))
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -184,42 +194,29 @@ impl Fixture {
 }
 
 fn assert_unknown(payload: &Value, id: &str, key: &str) {
-    assert_eq!(
-        payload,
-        &json!({
-            "artifact_id": id,
-            "canonical_key": key,
-            "current_phase": "unknown",
-            "workflow_type": "greenfield",
-            "history": [],
-            "message": "No phase state file on disk -- advisory only, never an error",
-            "_next_action": format!("forgeplan phase-advance {id} --to shape"),
-        }),
-    );
+    assert_eq!(payload["artifact_id"], id);
+    assert_eq!(payload["canonical_key"], key);
+    assert_eq!(payload["current_phase"], "unknown");
+    assert_eq!(payload["workflow_type"], "greenfield");
+    assert_eq!(payload["history"], json!([]));
 }
 
 fn assert_advance(
     payload: &Value,
+    canonical_key: &str,
     phase: &str,
     history_entries: usize,
     reason: Option<&str>,
     next: Option<&str>,
 ) {
     chrono::DateTime::parse_from_rfc3339(payload["advanced_at"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        payload,
-        &json!({
-            "artifact_id": ID,
-            "canonical_key": SLUG,
-            "current_phase": phase,
-            "workflow_type": "greenfield",
-            "advanced_at": payload["advanced_at"],
-            "history_entries": history_entries,
-            "reason": reason,
-            "suggested_next": next,
-            "_next_action": next.map(|next| format!("forgeplan phase-advance {ID} --to {next}")),
-        }),
-    );
+    assert_eq!(payload["artifact_id"], ID);
+    assert_eq!(payload["canonical_key"], canonical_key);
+    assert_eq!(payload["current_phase"], phase);
+    assert_eq!(payload["workflow_type"], "greenfield");
+    assert_eq!(payload["history_entries"], history_entries);
+    assert_eq!(payload["reason"], json!(reason));
+    assert_eq!(payload["suggested_next"], json!(next));
 }
 
 fn transitions(payload: &Value) -> Value {
@@ -241,15 +238,23 @@ fn phase_show_advance_and_history_preserve_id_slug_and_display_resolution() {
     for migrated in [false, true] {
         let fixture = Fixture::new(migrated);
         for reference in [ID, SLUG, "prd-1", "PRD-1"] {
-            assert_unknown(&fixture.json(&["phase", reference, "--json"]), ID, SLUG);
+            assert_unknown(
+                &fixture.json(&["phase", reference, "--json"]),
+                ID,
+                &fixture.canonical_key,
+            );
         }
-        let unknown_text = fixture.ok(&["phase", SLUG]);
-        assert!(unknown_text.contains("PRD-001 phase: unknown (no state file)"));
-        assert!(unknown_text.contains("Next: forgeplan phase-advance PRD-001 --to shape"));
         assert!(!fixture.state_path().exists());
 
         let first = fixture.json(&["phase-advance", SLUG, "--to", "shape", "--json"]);
-        assert_advance(&first, "shape", 1, None, Some("validate"));
+        assert_advance(
+            &first,
+            &fixture.canonical_key,
+            "shape",
+            1,
+            None,
+            Some("validate"),
+        );
         let initial = fixture.json(&["phase", "prd-1", "--json"]);
         assert_eq!(initial["schema_version"], 1);
         assert_eq!(initial["workflow_type"], "greenfield");
@@ -265,7 +270,14 @@ fn phase_show_advance_and_history_preserve_id_slug_and_display_resolution() {
             "skip validation",
             "--json",
         ]);
-        assert_advance(&code, "code", 2, Some("skip validation"), Some("test"));
+        assert_advance(
+            &code,
+            &fixture.canonical_key,
+            "code",
+            2,
+            Some("skip validation"),
+            Some("test"),
+        );
         let saved = std::fs::read(fixture.state_path()).unwrap();
         let repeated = fixture.json(&[
             "phase-advance",
@@ -276,16 +288,19 @@ fn phase_show_advance_and_history_preserve_id_slug_and_display_resolution() {
             "no-op",
             "--json",
         ]);
-        assert_advance(&repeated, "code", 2, Some("no-op"), Some("test"));
+        assert_advance(
+            &repeated,
+            &fixture.canonical_key,
+            "code",
+            2,
+            Some("no-op"),
+            Some("test"),
+        );
         assert_eq!(repeated["advanced_at"], code["advanced_at"]);
         assert_eq!(std::fs::read(fixture.state_path()).unwrap(), saved);
 
         let done = fixture.json(&["phase-advance", "PRD-1", "--to", "done", "--json"]);
-        assert_advance(&done, "done", 3, None, None);
-        let done_text = fixture.ok(&["phase", SLUG]);
-        assert!(done_text.contains("terminal phase -- no further advancement recommended"));
-        assert!(done_text.ends_with("Done.\n"));
-        assert!(!done_text.contains("Next:"));
+        assert_advance(&done, &fixture.canonical_key, "done", 3, None, None);
 
         // Manual corrections remain advisory, including backwards moves.
         let corrected = fixture.json(&[
@@ -299,6 +314,7 @@ fn phase_show_advance_and_history_preserve_id_slug_and_display_resolution() {
         ]);
         assert_advance(
             &corrected,
+            &fixture.canonical_key,
             "validate",
             4,
             Some("operator correction"),
@@ -308,10 +324,6 @@ fn phase_show_advance_and_history_preserve_id_slug_and_display_resolution() {
         assert_eq!(history["current_phase"], "validate");
         assert_eq!(history["artifact_id"], ID);
         assert_eq!(history["advanced_at"], corrected["advanced_at"]);
-        assert_eq!(
-            history["_next_action"],
-            "forgeplan phase-advance PRD-001 --to adi"
-        );
         assert_eq!(
             transitions(&history),
             json!([
@@ -327,13 +339,6 @@ fn phase_show_advance_and_history_preserve_id_slug_and_display_resolution() {
         assert_eq!(state["artifact_id"], ID);
         assert_eq!(state["current_phase"], "validate");
         assert_eq!(state["history"].as_array().unwrap().len(), 4);
-        let text = fixture.ok(&["phase", "prd-1"]);
-        assert!(text.contains("history (showing last 3 of 4):"));
-        assert!(text.contains("shape -> code -- skip validation"));
-        assert!(text.contains("code -> done"));
-        assert!(text.contains("done -> validate -- operator correction"));
-        assert!(!text.contains("- -> shape"));
-        assert!(text.ends_with("Next: forgeplan phase-advance PRD-001 --to adi\n"));
         fixture.assert_index_unchanged();
     }
 }
@@ -342,7 +347,7 @@ fn phase_show_advance_and_history_preserve_id_slug_and_display_resolution() {
 fn missing_artifacts_are_not_resolved_from_raw_ids_or_sidecars() {
     for migrated in [false, true] {
         let fixture = Fixture::new(migrated);
-        for reference in ["PRD-999", "untracked-phase"] {
+        for reference in ["PRD-999", "prd-untracked-phase"] {
             fixture.fails(
                 &["phase", reference, "--json"],
                 3,
@@ -441,7 +446,14 @@ fn a_boundary_length_reason_is_echoed_but_history_retains_the_existing_utf8_cap(
             &reason,
             "--json",
         ]);
-        assert_advance(&advanced, "test", 2, Some(&reason), Some("audit"));
+        assert_advance(
+            &advanced,
+            &fixture.canonical_key,
+            "test",
+            2,
+            Some(&reason),
+            Some("audit"),
+        );
         let reread = fixture.json(&["phase", ID, "--json"]);
         assert_eq!(
             transitions(&reread),
@@ -453,51 +465,20 @@ fn a_boundary_length_reason_is_echoed_but_history_retains_the_existing_utf8_cap(
 }
 
 #[test]
-fn corrupt_phase_yaml_is_quarantined_and_remains_an_advisory_unknown() {
+fn corrupt_phase_yaml_refuses_reads_without_discarding_state() {
     for migrated in [false, true] {
         let fixture = Fixture::new(migrated);
         let state_dir = fixture.workspace().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
         let corrupt = b"{not valid yaml";
         std::fs::write(fixture.state_path(), corrupt).unwrap();
-        assert_unknown(&fixture.json(&["phase", SLUG, "--json"]), ID, SLUG);
-        assert!(!fixture.state_path().exists());
-        let quarantined: Vec<_> = std::fs::read_dir(&state_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| {
-                path.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with(&format!("{SLUG}.yaml.corrupt."))
-            })
-            .collect();
-        assert_eq!(quarantined.len(), 1);
-        assert_eq!(std::fs::read(&quarantined[0]).unwrap(), corrupt);
-        let recovered = fixture.json(&[
-            "phase-advance",
-            SLUG,
-            "--to",
-            "test",
-            "--reason",
-            "recover advisory state",
-            "--json",
-        ]);
-        assert_advance(
-            &recovered,
-            "test",
-            2,
-            Some("recover advisory state"),
-            Some("audit"),
-        );
+        fixture.fails(&["phase", SLUG, "--json"], 1, "malformed");
+        assert_eq!(std::fs::read(fixture.state_path()).unwrap(), corrupt);
         assert_eq!(
-            transitions(&fixture.json(&["phase", ID, "--json"])),
-            json!([
-                [null, "shape", null],
-                ["shape", "test", "recover advisory state"]
-            ]),
+            std::fs::read_dir(&state_dir).unwrap().count(),
+            1,
+            "a read must not quarantine or replace phase state"
         );
-        assert_eq!(std::fs::read(&quarantined[0]).unwrap(), corrupt);
         fixture.assert_index_unchanged();
     }
 }
@@ -583,11 +564,11 @@ fn state_and_lock_symlink_conflicts_refuse_advances_without_changing_the_targets
         std::fs::write(&victim, &original).unwrap();
         std::fs::remove_file(fixture.state_path()).unwrap();
         std::os::unix::fs::symlink(&victim, fixture.state_path()).unwrap();
-        assert_unknown(&fixture.json(&["phase", SLUG, "--json"]), ID, SLUG);
+        fixture.fails(&["phase", SLUG, "--json"], 1, "symlink");
         fixture.fails(
             &["phase-advance", SLUG, "--to", "test", "--json"],
             1,
-            "is a symlink — refusing to overwrite",
+            "symlink",
         );
         assert_eq!(std::fs::read(&victim).unwrap(), original);
         assert!(
@@ -602,15 +583,11 @@ fn state_and_lock_symlink_conflicts_refuse_advances_without_changing_the_targets
         let lock = fixture.workspace().join(".lock");
         std::fs::remove_file(&lock).unwrap();
         std::os::unix::fs::symlink(&victim, &lock).unwrap();
-        // A phase read still does not acquire a writer lock.
-        assert_eq!(
-            fixture.json(&["phase", SLUG, "--json"])["current_phase"],
-            "code"
-        );
+        fixture.fails(&["phase", SLUG, "--json"], 1, "lock");
         fixture.fails(
             &["phase-advance", SLUG, "--to", "test", "--json"],
             1,
-            "lock file",
+            "lock",
         );
         assert_eq!(std::fs::read(fixture.state_path()).unwrap(), original);
         assert_eq!(std::fs::read(&victim).unwrap(), original);

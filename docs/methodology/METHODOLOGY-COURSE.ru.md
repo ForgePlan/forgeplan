@@ -475,18 +475,15 @@ forgeplan coverage --backfill   # Добавить секцию "Affected Files"
 
 Без этой секции `coverage` не знает какие модули покрыты решениями.
 
-### Batch score — Обновление cached R_eff
+### Score — отчёт о R_eff
 
-`forgeplan tree` показывает **сохранённый** R_eff, не вычисленный на лету. Чтобы обновить:
+После миграции workspace `forgeplan tree` вычисляет R_eff по текущему захваченному состоянию без рекурсивного обхода зависимостей. `forgeplan score` строит отдельный рекурсивный отчёт и не сохраняет его как кэш `tree`.
 
 ```bash
-forgeplan score PRD-001     # Пересчитать и сохранить R_eff для одного
+forgeplan score PRD-001     # Посмотреть рекурсивный отчёт
 ```
 
-После массовых изменений (новые evidence, новые links) — прогоните score для всех:
-```bash
-for id in $(forgeplan list --json | jq -r '.[].id'); do forgeplan score "$id" > /dev/null; done
-```
+Массовый запуск `score` не обновляет оценку `tree`. Это контракт нового индекса; старый индекс может читать сохранённые значения.
 
 ### R_eff и зависимости
 

@@ -151,38 +151,98 @@ pub(crate) struct IndexIdentity {
 use super::manifest::ProtocolMarker;
 
 impl IndexIdentity {
-    /// Read the durable marker when one exists, otherwise derive a fresh
-    /// identity for this workspace.
-    ///
-    /// Deriving the checkout id from the canonical root rather than from the
-    /// branch name is deliberate: two worktrees can be on the same branch,
-    /// and a branch-derived id would silently merge their indexes.
-    pub(crate) fn derive(location: &IndexLocation) -> Self {
+    /// Read the durable marker when one exists. If a crash lost that marker
+    /// after publication, recover the identity only from the exact generation
+    /// the path-bound CURRENT descriptor verifies.
+    pub(crate) async fn derive(location: &IndexLocation) -> Self {
+        let expected_checkout = Self::path_bound_checkout_id(location);
         let marker_path = location.root().join(PROTOCOL_FILE);
-        if let Ok(text) = std::fs::read_to_string(&marker_path)
-            && let Ok(marker) = serde_json::from_str::<ProtocolMarker>(&text)
-            && !marker.checkout_id.is_empty()
-        {
-            return Self {
-                checkout_id: marker.checkout_id,
-                index_epoch: marker.index_epoch,
-            };
+        match std::fs::read(&marker_path) {
+            Ok(bytes) => {
+                if let Ok(marker) = serde_json::from_slice::<ProtocolMarker>(&bytes)
+                    && marker.validate().is_ok()
+                    && marker.checkout_id == expected_checkout
+                {
+                    return Self {
+                        checkout_id: marker.checkout_id,
+                        index_epoch: marker.index_epoch,
+                    };
+                }
+                return Self {
+                    checkout_id: expected_checkout,
+                    index_epoch: UNINITIALIZED_EPOCH,
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                return Self {
+                    checkout_id: expected_checkout,
+                    index_epoch: UNINITIALIZED_EPOCH,
+                };
+            }
         }
 
-        Self {
-            checkout_id: Self::path_bound_checkout_id(location),
-            index_epoch: UNINITIALIZED_EPOCH,
-        }
+        let Some(identity) = Self::recover_published_identity(location, &expected_checkout).await
+        else {
+            return Self {
+                checkout_id: expected_checkout,
+                index_epoch: UNINITIALIZED_EPOCH,
+            };
+        };
+        identity
     }
 
-    /// The checkout id this location would produce with **no** marker — the
-    /// identity bound to the path alone.
-    ///
-    /// [`Self::derive`] adopts the marker's `checkout_id` when one exists,
-    /// which makes `marker.check_identity(identity.checkout_id())` compare
-    /// the marker with itself and `IndexIdentityMismatch` unreachable. The
-    /// honest comparison is marker-vs-path: a foreign index copied under
-    /// this root carries a different path hash and is refused.
+    async fn recover_published_identity(
+        location: &IndexLocation,
+        expected_checkout: &str,
+    ) -> Option<Self> {
+        let index_root = location.root();
+        let descriptor = super::storage::read_current(index_root).ok().flatten()?;
+        if descriptor.checkout_id != expected_checkout || descriptor.index_epoch == 0 {
+            return None;
+        }
+        let manifest = super::storage::read_manifest(index_root, &descriptor).ok()?;
+        if manifest.checkout_id != expected_checkout
+            || manifest.checkout_id != descriptor.checkout_id
+            || manifest.index_epoch != descriptor.index_epoch
+            || manifest.generation_id != descriptor.generation_id
+            || !manifest.table_versions.is_publishable()
+            || manifest.validate_section_membership().is_err()
+        {
+            return None;
+        }
+        let pin = super::storage::pin_generation_read(index_root, &descriptor).ok()?;
+        let marker = ProtocolMarker {
+            protocol_version: super::FORMAT_VERSION,
+            state: super::manifest::BootstrapState::Active,
+            index_epoch: manifest.index_epoch,
+            checkout_id: manifest.checkout_id.clone(),
+            table_names: ProtocolMarker::active_table_names(),
+            storage_scheme: super::manifest::STORAGE_SCHEME_FILE_OBJECT_STORE.to_string(),
+            bootstrap_attempt: 1,
+        };
+        for (role, version) in [
+            ("artifacts", manifest.table_versions.artifacts),
+            ("relations", manifest.table_versions.relations),
+            ("sections", manifest.table_versions.sections),
+        ] {
+            let table =
+                super::lance_tables::open_table_at_version(index_root, &marker, role, version)
+                    .await
+                    .ok()?;
+            let schema = table.schema().await.ok()?;
+            let expected_schema = super::lance_tables::schema_for_role(role).ok()?;
+            if schema.fields() != expected_schema.fields() {
+                return None;
+            }
+        }
+        drop(pin);
+        Some(Self {
+            checkout_id: expected_checkout.to_string(),
+            index_epoch: manifest.index_epoch,
+        })
+    }
+    /// The checkout id this location would produce with no durable marker.
     pub(crate) fn path_bound_checkout_id(location: &IndexLocation) -> String {
         format!(
             "local-{}",
@@ -457,22 +517,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn uninitialized_identity_uses_the_reserved_zero_epoch() {
+    #[tokio::test]
+    async fn uninitialized_identity_uses_the_reserved_zero_epoch() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join(".forgeplan").join("lance");
         std::fs::create_dir_all(&root).unwrap();
-        let identity = IndexIdentity::derive(&IndexLocation::new(&root));
+        let identity = IndexIdentity::derive(&IndexLocation::new(&root)).await;
         assert_eq!(identity.index_epoch(), UNINITIALIZED_EPOCH);
         assert!(identity.checkout_id().starts_with("local-"));
         assert_eq!(identity.checkout_id().len(), "local-".len() + 16);
     }
 
-    #[test]
-    fn durable_marker_overrides_the_derived_identity() {
+    #[tokio::test]
+    async fn durable_marker_preserves_a_path_bound_identity() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join(".forgeplan").join("lance");
         std::fs::create_dir_all(root.join("constellation")).unwrap();
+        let expected_checkout = IndexIdentity::path_bound_checkout_id(&IndexLocation::new(&root));
         // The fixture names the CURRENT format and all three active tables,
         // built from the same constants production writes from.
         //
@@ -489,7 +550,7 @@ mod tests {
             "protocol_version": super::super::FORMAT_VERSION,
             "state": "active",
             "index_epoch": 9,
-            "checkout_id": "checkout-from-marker",
+            "checkout_id": expected_checkout,
             "table_names": super::super::manifest::ProtocolMarker::active_table_names(),
             "storage_scheme": "file-object-store",
             "bootstrap_attempt": 1,
@@ -509,31 +570,31 @@ mod tests {
             "the fixture marker must be valid for this build, or it is testing a legacy format"
         );
 
-        let identity = IndexIdentity::derive(&IndexLocation::new(&root));
-        assert_eq!(identity.checkout_id(), "checkout-from-marker");
+        let identity = IndexIdentity::derive(&IndexLocation::new(&root)).await;
+        assert_eq!(identity.checkout_id(), expected_checkout);
         assert_eq!(identity.index_epoch(), 9);
     }
 
-    #[test]
-    fn corrupt_marker_falls_back_to_a_derived_identity_instead_of_failing() {
+    #[tokio::test]
+    async fn corrupt_marker_falls_back_to_a_derived_identity_instead_of_failing() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join(".forgeplan").join("lance");
         std::fs::create_dir_all(root.join("constellation")).unwrap();
         std::fs::write(root.join(PROTOCOL_FILE), "{not json").unwrap();
-        let identity = IndexIdentity::derive(&IndexLocation::new(&root));
+        let identity = IndexIdentity::derive(&IndexLocation::new(&root)).await;
         assert!(identity.checkout_id().starts_with("local-"));
         assert_eq!(identity.index_epoch(), UNINITIALIZED_EPOCH);
     }
 
-    #[test]
-    fn two_worktrees_get_distinct_checkout_ids() {
+    #[tokio::test]
+    async fn two_worktrees_get_distinct_checkout_ids() {
         let tmp = TempDir::new().unwrap();
         let a = tmp.path().join("wt-a").join(".forgeplan").join("lance");
         let b = tmp.path().join("wt-b").join(".forgeplan").join("lance");
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
-        let ia = IndexIdentity::derive(&IndexLocation::new(&a));
-        let ib = IndexIdentity::derive(&IndexLocation::new(&b));
+        let ia = IndexIdentity::derive(&IndexLocation::new(&a)).await;
+        let ib = IndexIdentity::derive(&IndexLocation::new(&b)).await;
         assert_ne!(ia.checkout_id(), ib.checkout_id());
     }
 

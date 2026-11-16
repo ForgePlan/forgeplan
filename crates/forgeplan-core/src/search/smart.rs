@@ -55,9 +55,15 @@ pub struct SmartSearchResult {
 ///
 /// Case-insensitive matching.
 pub fn keyword_score(record: &ArtifactRecord, query: &str) -> f64 {
-    let q = query.to_lowercase();
-    if q.trim().is_empty() {
+    let trimmed_query = query.trim();
+    let q = trimmed_query.to_lowercase();
+    if q.is_empty() {
         return 0.0;
+    }
+    if trimmed_query.eq_ignore_ascii_case(&record.canonical_key)
+        || trimmed_query.eq_ignore_ascii_case(&record.id)
+    {
+        return 1.0;
     }
     let title_lower = record.title.to_lowercase();
 
@@ -351,6 +357,51 @@ mod tests {
             [
                 "prd-alpha-k11111111111111111111111111111111".to_string(),
                 "prd-beta-k22222222222222222222222222222222".to_string(),
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn smart_search_finds_exact_identity_after_text_changes_without_merging_aliases() {
+        let mut first = make_record("PRD-074", "Old title", "old unique body", "active", 0.0);
+        first.title = "Changed title".into();
+        first.body = "new body".into();
+        first.canonical_key = "prd-original-k11111111111111111111111111111111".into();
+        let mut second = make_record("PRD-074", "Other title", "other body", "active", 0.0);
+        second.canonical_key = "prd-other-k22222222222222222222222222222222".into();
+        let records = [first, second];
+
+        assert!(
+            smart_search(&records, "old unique", None, None, None, 10).is_empty(),
+            "the edited body must replace the old text in lexical search"
+        );
+
+        let key_hits = smart_search(
+            &records,
+            "prd-original-k11111111111111111111111111111111",
+            None,
+            None,
+            None,
+            10,
+        );
+        assert_eq!(key_hits.len(), 1);
+        assert_eq!(
+            key_hits[0].canonical_key,
+            "prd-original-k11111111111111111111111111111111"
+        );
+
+        let alias_hits = smart_search(&records, "prd-074", None, None, None, 10);
+        let keys: std::collections::BTreeSet<_> = alias_hits
+            .into_iter()
+            .map(|hit| hit.canonical_key)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "prd-original-k11111111111111111111111111111111".to_string(),
+                "prd-other-k22222222222222222222222222222222".to_string(),
             ]
             .into_iter()
             .collect()

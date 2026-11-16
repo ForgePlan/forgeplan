@@ -90,6 +90,54 @@ fn workspace_with_two_prds_sharing_one_display_id() -> TempDir {
     tmp
 }
 
+#[test]
+fn smart_search_display_alias_returns_each_matching_canonical_key() {
+    let tmp = workspace_with_two_prds_sharing_one_display_id();
+    let output = forgeplan()
+        .args(["search", "PRD-001", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("run smart search");
+    assert!(
+        output.status.success(),
+        "smart search failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("smart search returns JSON");
+    let results = payload["results"]
+        .as_array()
+        .expect("smart search results array");
+    let mut found: Vec<_> = results
+        .iter()
+        .map(|result| {
+            (
+                result["id"].as_str().unwrap().to_string(),
+                result["canonical_key"].as_str().unwrap().to_string(),
+                result["title"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    found.sort();
+
+    assert_eq!(
+        found,
+        [
+            (
+                "PRD-001".to_string(),
+                "prd-alpha".to_string(),
+                "Alpha".to_string()
+            ),
+            (
+                "PRD-001".to_string(),
+                "prd-beta".to_string(),
+                "Beta".to_string()
+            ),
+        ],
+        "the user-facing alias must survive smart scoring and each key must remain distinct"
+    );
+}
+
 /// The CLI and the MCP server decide over the same document set — so they
 /// name the same document, or they report the same failure.
 ///
@@ -178,8 +226,7 @@ async fn the_refusal_names_every_candidate_by_key_title_and_relative_path() {
         .await
         .expect("the workspace scan reads every document");
     let outcome = forgeplan::commands::common::resolve_in_document_set("PRD-001", &documents);
-    let failure =
-        forgeplan::commands::common::resolution_failure(&outcome, "PRD-001", &documents);
+    let failure = forgeplan::commands::common::resolution_failure(&outcome, "PRD-001", &documents);
 
     assert_eq!(failure.code, "ambiguous");
     let lines = failure.candidate_lines();
@@ -188,12 +235,14 @@ async fn the_refusal_names_every_candidate_by_key_title_and_relative_path() {
         (&lines[0], "prd-alpha", "Alpha"),
         (&lines[1], "prd-beta", "Beta"),
     ] {
-        assert!(line.contains(key), "the canonical key must be named: {line}");
+        assert!(
+            line.contains(key),
+            "the canonical key must be named: {line}"
+        );
         assert!(line.contains(title), "the title must be named: {line}");
     }
     assert!(
-        lines[0].contains("prds/PRD-001-alpha.md")
-            && lines[1].contains("prds/PRD-001-beta.md"),
+        lines[0].contains("prds/PRD-001-alpha.md") && lines[1].contains("prds/PRD-001-beta.md"),
         "the workspace-relative path must be named: {lines:?}"
     );
     for line in &lines {
@@ -339,8 +388,7 @@ fn the_refused_candidates_are_the_candidates_of_the_one_document_set() {
         document("prd-beta", "PRD-001", "Beta", "prds/PRD-001-beta.md"),
     ];
     let outcome = forgeplan::commands::common::resolve_in_document_set("PRD-001", &documents);
-    let failure =
-        forgeplan::commands::common::resolution_failure(&outcome, "PRD-001", &documents);
+    let failure = forgeplan::commands::common::resolution_failure(&outcome, "PRD-001", &documents);
 
     let named: Vec<String> = failure
         .candidates
@@ -353,10 +401,7 @@ fn the_refused_candidates_are_the_candidates_of_the_one_document_set() {
         "the refusal names every claimant of the one document set"
     );
     assert_eq!(failure.code, "ambiguous");
-    assert_ne!(
-        failure.code, "not_found",
-        "an ambiguity is not a miss"
-    );
+    assert_ne!(failure.code, "not_found", "an ambiguity is not a miss");
 }
 /// Ordinary CLI creation publishes each artifact under the key minted for
 /// that document, even when the display id and title repeat.
@@ -403,7 +448,12 @@ async fn cli_new_publishes_distinct_canonical_key_files_for_duplicate_titles() {
     );
     for document in &documents {
         assert_eq!(
-            document.relative_path.file_name().unwrap().to_str().unwrap(),
+            document
+                .relative_path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
             format!("{}.md", document.canonical_key),
             "ordinary creation writes the document to its key-named file"
         );
@@ -413,9 +463,7 @@ async fn cli_new_publishes_distinct_canonical_key_files_for_duplicate_titles() {
         // The document contract stores its identity in `slug`; that is the
         // field the renderer writes and the field every reader looks for.
         assert_eq!(
-            frontmatter
-                .get("slug")
-                .and_then(serde_yaml::Value::as_str),
+            frontmatter.get("slug").and_then(serde_yaml::Value::as_str),
             Some(document.canonical_key.as_str()),
             "the stored document carries its minted key in `slug`"
         );

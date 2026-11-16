@@ -148,6 +148,72 @@ pub struct WorkspaceRead {
     candidates: Vec<ArtifactCandidate>,
 }
 
+/// A single resolved document from one capture. This deliberately exposes no
+/// corpus-wide list or search operation when the capture contains collisions.
+pub struct SelectedWorkspaceRead {
+    read: WorkspaceRead,
+    canonical_key: String,
+}
+
+impl SelectedWorkspaceRead {
+    pub(crate) fn new(read: WorkspaceRead, canonical_key: String) -> Self {
+        Self {
+            read,
+            canonical_key,
+        }
+    }
+
+    pub fn canonical_key(&self) -> &str {
+        &self.canonical_key
+    }
+
+    pub fn record(&self) -> &ArtifactRecord {
+        self.read
+            .get_record_by_key(&self.canonical_key)
+            .expect("resolved unique artifact is present in the same capture")
+    }
+
+    /// Validation projection for the selected artifact, from the same capture.
+    pub fn frontmatter_map_with_links(&self) -> BTreeMap<String, serde_yaml::Value> {
+        self.read.frontmatter_map_with_links(self.record())
+    }
+
+    /// Whether this capture is a complete ordinary corpus, not diagnostic-only.
+    pub fn is_complete_capture(&self) -> bool {
+        self.read.captured().confirmed && self.read.captured().is_complete()
+    }
+
+    pub fn relations(&self) -> Vec<(String, String)> {
+        self.read.get_relations_by_key(&self.canonical_key)
+    }
+
+    pub fn incoming_relations(&self) -> Vec<(String, String)> {
+        self.read.get_incoming_relations(&self.canonical_key)
+    }
+
+    pub fn display_for_key(&self, key: &str) -> Option<&str> {
+        self.read
+            .get_record_by_key(key)
+            .map(|record| record.id.as_str())
+    }
+
+    pub fn snapshot_id(&self) -> &str {
+        self.read.snapshot_id()
+    }
+    pub fn source_set_digest(&self) -> &str {
+        self.read.source_set_digest()
+    }
+    pub fn is_persisted(&self) -> bool {
+        self.read.is_persisted()
+    }
+    pub fn generation_id(&self) -> Option<&str> {
+        self.read
+            .view()
+            .descriptor()
+            .map(|descriptor| descriptor.generation_id.as_str())
+    }
+}
+
 impl WorkspaceRead {
     /// Build the adapter from a capture and the view derived from it.
     pub fn from_parts(
@@ -189,8 +255,19 @@ impl WorkspaceRead {
                 .cmp(&right.id)
                 .then_with(|| left.canonical_key.cmp(&right.canonical_key))
         });
-        let (mut records, candidates): (Vec<ArtifactRecord>, Vec<ArtifactCandidate>) =
+        let (mut records, mut candidates): (Vec<ArtifactRecord>, Vec<ArtifactCandidate>) =
             entries.into_iter().unzip();
+        candidates.extend(
+            captured
+                .conflict_artifacts
+                .iter()
+                .map(|artifact| ArtifactCandidate {
+                    canonical_key: artifact.canonical_key.clone(),
+                    display_id: artifact.display_id.clone(),
+                    title: artifact.title.clone(),
+                    relative_path: PathBuf::from(&artifact.relative_path),
+                }),
+        );
 
         // Canonical key → the record claiming it, and display alias → every
         // record carrying it. The alias map is a multimap: a name that two
@@ -321,7 +398,9 @@ impl WorkspaceRead {
     /// The key is the identity, so this lookup is exact: one key, one
     /// document, no ambiguity to report.
     pub fn get_record_by_key(&self, canonical_key: &str) -> Option<&ArtifactRecord> {
-        self.by_key.get(canonical_key).map(|&index| &self.records[index])
+        self.by_key
+            .get(canonical_key)
+            .map(|&index| &self.records[index])
     }
 
     /// Every document carrying this display alias, in record order.
@@ -411,32 +490,7 @@ impl WorkspaceRead {
     /// A partial document set answers nothing: a read that could not see every
     /// document cannot say which of them a name belongs to.
     pub fn resolve_artifact(&self, input: &str) -> Result<Option<ResolvedArtifact>, ResolveError> {
-        let contested: Vec<_> = self
-            .captured
-            .unusable
-            .iter()
-            .filter(|source| {
-                source.code == crate::constellation::DiagnosticCode::IdentityCollision
-                    && source
-                        .canonical_key
-                        .as_deref()
-                        .is_some_and(|key| key.eq_ignore_ascii_case(input.trim()))
-            })
-            .collect();
-        if contested.len() > 1 {
-            let key = input.trim().to_string();
-            let candidates = contested
-                .into_iter()
-                .map(|source| ArtifactCandidate {
-                    canonical_key: source.canonical_key.clone().unwrap_or_default(),
-                    display_id: String::new(),
-                    title: String::new(),
-                    relative_path: PathBuf::from(&source.relative_path),
-                })
-                .collect();
-            return Err(ResolveError::ConflictingCanonicalKey { key, candidates });
-        }
-        if !self.captured.is_complete() {
+        if !self.captured.is_complete() && self.captured.diagnostic_inventory().is_none() {
             return Err(ResolveError::IncompleteCapture {
                 message: self.incomplete_capture_message(),
             });
@@ -520,9 +574,14 @@ impl WorkspaceRead {
             return Vec::new();
         }
         match self.resolve_key(id) {
-            Some(key) => self.incoming.get(&key).cloned().unwrap_or_default(),
+            Some(key) => self.get_incoming_relations_by_key(&key),
             None => Vec::new(),
         }
+    }
+
+    /// Incoming edges addressed by an already-resolved canonical key.
+    pub(crate) fn get_incoming_relations_by_key(&self, key: &str) -> Vec<(String, String)> {
+        self.incoming.get(key).cloned().unwrap_or_default()
     }
 
     /// Every edge as `(source key, target, relation)`, sorted by source.
@@ -663,12 +722,10 @@ fn resolve_edge_target(candidates: &[ArtifactCandidate], declared: &str) -> Edge
 /// This is the single conversion point, deliberately: a second one is how a read
 /// path starts disagreeing with itself about what a body is.
 ///
-/// The body keeps its **frontmatter**. The store's `body` column holds the
-/// whole markdown file, and the documented consumers parse frontmatter out of it
-/// (`refs_form_from_body`, the identity triple). Returning only the
-/// post-frontmatter body would silently drop every slug and identity field.
+/// The record body is the post-frontmatter Markdown body. Canonical source bytes
+/// remain available on the captured artifact and on disk for identity auditing.
 pub fn record_from_parsed(artifact: &ParsedArtifact) -> ArtifactRecord {
-    let body = String::from_utf8_lossy(&artifact.raw_bytes).into_owned();
+    let body = artifact.body.to_string();
     let body_hash = Some(compute_content_hash(&artifact.title, &body));
     ArtifactRecord {
         canonical_key: artifact.canonical_key.clone(),
@@ -713,7 +770,12 @@ fn compute_r_eff_scores(
         .iter()
         .filter(|record| record.kind.eq_ignore_ascii_case("evidence"))
         .collect();
-    let pack_of = |key: &str| evidence.iter().copied().find(|pack| pack.canonical_key == key);
+    let pack_of = |key: &str| {
+        evidence
+            .iter()
+            .copied()
+            .find(|pack| pack.canonical_key == key)
+    };
 
     let mut scores = BTreeMap::new();
     for record in records {
@@ -747,6 +809,12 @@ mod tests {
     use crate::constellation::capture::{CaptureLimits, CaptureRequest, capture_source};
     use crate::workspace::ARTIFACT_DIRS;
     use tempfile::TempDir;
+    fn test_capture_limits() -> CaptureLimits {
+        CaptureLimits {
+            budget: std::time::Duration::from_secs(60),
+            ..CaptureLimits::default()
+        }
+    }
 
     /// A workspace with one linked PRD → Evidence pair and an unrelated RFC.
     ///
@@ -823,7 +891,7 @@ mod tests {
 
     async fn read_of(root: &Path) -> WorkspaceRead {
         let captured = Arc::new(
-            capture_source(&CaptureRequest::new(root), CaptureLimits::default())
+            capture_source(&CaptureRequest::new(root), test_capture_limits())
                 .await
                 .unwrap(),
         );
@@ -844,12 +912,16 @@ mod tests {
         assert_eq!(record.status, "draft");
         assert_eq!(record.tags, vec!["security".to_string()]);
         assert_eq!(record.depth, "standard");
-        // The body keeps its frontmatter: consumers parse slug and refs out of
-        // it, so a post-frontmatter-only body would silently drop both.
+        assert_eq!(record.body.trim(), "## Summary\n\nAuth rewrite.");
         assert!(
-            record.body.starts_with("---") && record.body.contains("slug: prd-auth-system"),
-            "body must retain frontmatter, got {:?}",
-            record.body
+            read.captured().artifacts.iter().any(|artifact| {
+                artifact.canonical_key == "prd-auth-system"
+                    && artifact
+                        .raw_bytes
+                        .as_ref()
+                        .starts_with(b"---\nid: PRD-001\n")
+            }),
+            "the complete canonical document remains captured byte-for-byte"
         );
         assert!(
             record.embedding.is_none(),
@@ -1134,7 +1206,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["prd-alpha", "prd-beta"]
         );
-        assert_eq!(read.records().iter().filter(|r| r.id == "PRD-001").count(), 2);
+        assert_eq!(
+            read.records().iter().filter(|r| r.id == "PRD-001").count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn incoming_edges_remain_separate_when_display_ids_repeat() {
+        let tmp = workspace_with_duplicate_display_id();
+        std::fs::write(
+            tmp.path().join("rfcs").join("RFC-001-source.md"),
+            "---\nid: RFC-001\nkind: rfc\nstatus: draft\ntitle: Source\nslug: rfc-source\nlinks:\n  - target: prd-alpha\n    relation: based_on\n---\n\nSource.\n",
+        )
+        .unwrap();
+        let read = read_of(tmp.path()).await;
+        assert_eq!(
+            read.get_incoming_relations_by_key("prd-alpha"),
+            vec![("rfc-source".to_string(), "based_on".to_string())]
+        );
+        assert!(read.get_incoming_relations_by_key("prd-beta").is_empty());
+        assert!(read.get_incoming_relations("PRD-001").is_empty());
     }
 
     /// A duplicate alias is an ambiguity with both candidates named — never a
@@ -1188,14 +1280,195 @@ mod tests {
         let absent = read
             .resolve_artifact("PRD-999")
             .expect("a missing reference is not an error");
-        assert!(
-            absent.is_none(),
-            "no document answers a missing reference"
-        );
+        assert!(absent.is_none(), "no document answers a missing reference");
         assert!(
             read.resolve_artifact("PRD-001").is_err(),
             "a shared alias is an error, not an absence"
         );
+    }
+
+    #[tokio::test]
+    async fn selector_read_uses_collision_inventory_without_publishing_it() {
+        use crate::constellation::ConstellationError;
+        use crate::constellation::facade::{
+            open_workspace_read, open_workspace_selector_with_limits,
+        };
+        let tmp = workspace();
+        std::fs::write(tmp.path().join(".lock"), b"").unwrap();
+        let first = tmp.path().join("prds/PRD-001-auth.md");
+        std::fs::write(&first, "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-shared\n---\nAlpha\n").unwrap();
+        std::fs::write(tmp.path().join("prds/PRD-002-beta.md"), "---\nid: PRD-002\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-shared\n---\nBeta\n").unwrap();
+        let permit = crate::workspace::lock::acquire_workspace_read_lock(tmp.path())
+            .await
+            .unwrap();
+        for input in ["prd-shared", "PRD-001", "PRD-002"] {
+            match open_workspace_selector_with_limits(
+                tmp.path(),
+                &permit,
+                input,
+                test_capture_limits(),
+            )
+            .await
+            {
+                Err(ConstellationError::Resolve(ResolveError::ConflictingCanonicalKey {
+                    candidates,
+                    ..
+                })) => {
+                    assert_eq!(candidates.len(), 2);
+                    assert!(
+                        candidates
+                            .iter()
+                            .any(|candidate| candidate.title == "Alpha")
+                    );
+                    assert!(candidates.iter().any(|candidate| candidate.title == "Beta"));
+                }
+                _ => panic!("expected both collision claimants for {input}"),
+            }
+        }
+        assert!(matches!(
+            crate::constellation::facade::open_workspace_selector_with_limits(
+                tmp.path(),
+                &permit,
+                "RFC-002",
+                CaptureLimits {
+                    max_attempts: 0,
+                    ..CaptureLimits::default()
+                },
+            )
+            .await,
+            Err(ConstellationError::Resolve(
+                ResolveError::IncompleteCapture { .. }
+            ))
+        ));
+        #[cfg(unix)]
+        {
+            let path = tmp.path().join("prds/unreadable.md");
+            std::os::unix::fs::symlink("missing", &path).unwrap();
+            assert!(matches!(
+                open_workspace_selector_with_limits(
+                    tmp.path(),
+                    &permit,
+                    "RFC-002",
+                    test_capture_limits(),
+                )
+                .await,
+                Err(ConstellationError::Resolve(
+                    ResolveError::IncompleteCapture { .. }
+                ))
+            ));
+            std::fs::remove_file(path).unwrap();
+        }
+        assert!(
+            open_workspace_read(tmp.path(), None, test_capture_limits())
+                .await
+                .is_err()
+        );
+        let selected = open_workspace_selector_with_limits(
+            tmp.path(),
+            &permit,
+            "RFC-002",
+            test_capture_limits(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let old_body = selected.record().body.clone();
+        std::fs::write(
+            tmp.path().join("rfcs/RFC-002-wire.md"),
+            "changed after capture",
+        )
+        .unwrap();
+        assert!(old_body.contains("Unrelated."));
+        assert_eq!(selected.record().body, old_body);
+        assert!(matches!(
+            open_workspace_selector_with_limits(
+                tmp.path(),
+                &permit,
+                "RFC-002",
+                test_capture_limits(),
+            )
+            .await,
+            Err(ConstellationError::Resolve(
+                ResolveError::IncompleteCapture { .. }
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn collision_inventory_preserves_claimants_and_aliases_cannot_bypass_it() {
+        let tmp = TempDir::new().unwrap();
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        std::fs::write(tmp.path().join("prds/PRD-001-alpha.md"),
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-shared\nlinks:\n  - target: RFC-002\n    relation: informs\n---\nAlpha\n").unwrap();
+        std::fs::write(tmp.path().join("prds/PRD-002-beta.md"),
+            "---\nid: PRD-002\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-shared\n---\nBeta\n").unwrap();
+        let read = read_of(tmp.path()).await;
+        let inventory = read.captured().diagnostic_inventory().unwrap();
+        assert!(!read.captured().coverage.is_complete());
+        assert_eq!(inventory.len(), 2);
+        assert_eq!(
+            (
+                &inventory[0].display_id,
+                &inventory[0].title,
+                &inventory[0].relative_path
+            ),
+            (
+                &"PRD-001".to_string(),
+                &"Alpha".to_string(),
+                &"prds/PRD-001-alpha.md".to_string()
+            )
+        );
+        assert_eq!(inventory[0].declared_outgoing.len(), 1);
+        assert_eq!(inventory[0].declared_outgoing[0].target, "RFC-002");
+        assert_eq!(inventory[1].title, "Beta");
+        for selector in ["prd-shared", "PRD-001", "PRD-002"] {
+            match read.resolve_artifact(selector).unwrap_err() {
+                ResolveError::ConflictingCanonicalKey { candidates, .. } => {
+                    assert_eq!(candidates.len(), 2);
+                    assert!(candidates.iter().any(|c| c.title == "Alpha"
+                        && c.relative_path == Path::new("prds/PRD-001-alpha.md")));
+                    assert!(candidates.iter().any(|c| c.title == "Beta"
+                        && c.relative_path == Path::new("prds/PRD-002-beta.md")));
+                }
+                other => panic!("expected collision for {selector}: {other:?}"),
+            }
+        }
+        let manifest = read.captured().to_generation_draft(
+            "collision",
+            super::super::manifest::TableVersions::new(1, 1, 1),
+        );
+        assert!(manifest.validate_for_publication().is_ok());
+        let value = serde_json::to_value(&manifest).unwrap();
+        assert!(
+            serde_json::from_value::<crate::constellation::capture::Coverage>(
+                value["coverage"].clone()
+            )
+            .is_err()
+        );
+        let restored: super::super::manifest::GenerationManifest =
+            serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(restored.conflict_inventory, inventory);
+        assert!(restored.require_addressable().is_err());
+        let mut malformed = value;
+        malformed["coverage"]["inventory"][1]["relative_path"] =
+            malformed["coverage"]["inventory"][0]["relative_path"].clone();
+        assert!(
+            serde_json::from_value::<super::super::manifest::GenerationManifest>(malformed)
+                .is_err()
+        );
+        std::fs::write(
+            tmp.path().join("prds/PRD-003-invalid.md"),
+            "---\nid: [broken\n",
+        )
+        .unwrap();
+        let incomplete = read_of(tmp.path()).await;
+        assert!(incomplete.captured().diagnostic_inventory().is_none());
+        assert!(matches!(
+            incomplete.resolve_artifact("PRD-001"),
+            Err(ResolveError::IncompleteCapture { .. })
+        ));
     }
 
     /// A partial document set answers nothing: the capture could not see every

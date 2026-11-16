@@ -469,7 +469,9 @@ fn node_identities(
     }
     ids.into_iter()
         .filter_map(|id| {
-            let document = documents.iter().find(|document| document.canonical_key == id)?;
+            let document = documents
+                .iter()
+                .find(|document| document.canonical_key == id)?;
             Some((
                 id,
                 NodeIdentity {
@@ -486,10 +488,7 @@ fn node_identities(
 /// The node id stays the canonical key — the graph's identity — and the
 /// label carries the display id and the title. A node without an identity
 /// (a forward reference) keeps its bare text.
-fn label_mermaid_nodes(
-    mermaid: &str,
-    identities: &BTreeMap<String, NodeIdentity>,
-) -> String {
+fn label_mermaid_nodes(mermaid: &str, identities: &BTreeMap<String, NodeIdentity>) -> String {
     if identities.is_empty() {
         return mermaid.to_string();
     }
@@ -502,7 +501,10 @@ fn label_mermaid_nodes(
         if !mermaid.contains(id.as_str()) {
             continue;
         }
-        declarations.push(format!("    {id}[\"{}\"]", escape_identity_label(&identity.label())));
+        declarations.push(format!(
+            "    {id}[\"{}\"]",
+            escape_identity_label(&identity.label())
+        ));
     }
     let mut lines: Vec<String> = mermaid.lines().map(|line| line.to_string()).collect();
     // The declarations go right after the `graph LR` header, so a reader

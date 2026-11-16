@@ -65,6 +65,16 @@ Fetch one artifact by canonical key or display id. A `key@fragment`             
 </details>
 <!-- forgeplan-runtime:end -->
 
+## Live result
+
+With `scope_handle`, `found`, `ambiguous` and `not_found` results include
+`sources`, `failures` and `partial`. A readable match does not hide unavailable
+optional sources or required sources tolerated by `strict: false`.
+
+A canonical-key collision is a tool error (`isError: true`) whose JSON contains
+`error: "conflicting_canonical_key"` and source-qualified `candidates`.
+Do not treat a successful JSON-RPC exchange as successful artifact selection.
+
 ## Examples
 
 - [MCP setup and workspace scope](/docs/guides/mcp-setup/)

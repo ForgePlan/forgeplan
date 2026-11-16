@@ -944,18 +944,18 @@ pub fn open_cached_query_engine_in(
     )?;
     let profile_id = resolved.profile.profile_id();
 
-    if let Some(expected) = expected_profile_id {
-        if expected != profile_id {
-            return Err(super::ConstellationError::ModelUnavailable {
-                detail: format!(
-                    "the index pinned profile `{expected}` but the cached snapshot resolves to \
-                     `{profile_id}`. Vectors from two revisions are both unit-length float \
-                     vectors, so querying across them returns plausible nonsense. Fix: point \
-                     FORGEPLAN_MODEL_CACHE at the snapshot the index was built from, or re-embed \
-                     under the cached one."
-                ),
-            });
-        }
+    if let Some(expected) = expected_profile_id
+        && expected != profile_id
+    {
+        return Err(super::ConstellationError::ModelUnavailable {
+            detail: format!(
+                "the index pinned profile `{expected}` but the cached snapshot resolves to \
+                 `{profile_id}`. Vectors from two revisions are both unit-length float \
+                 vectors, so querying across them returns plausible nonsense. Fix: point \
+                 FORGEPLAN_MODEL_CACHE at the snapshot the index was built from, or re-embed \
+                 under the cached one."
+            ),
+        });
     }
 
     let embedder = crate::embed::Embedder::from_snapshot(&resolved.snapshot_root, model_name)
@@ -1694,13 +1694,8 @@ mod profile_tests {
         std::fs::write(repo_dir.join("refs").join("main"), "rev1\n").unwrap();
         let snapshot = repo_dir.join("snapshots").join("rev1");
         std::fs::create_dir_all(snapshot.join("onnx")).unwrap();
-        for relative in [
-            "config.json",
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "onnx/model.onnx",
-            "onnx/model.onnx_data",
-        ] {
+        crate::embed::tokenizer::testing::write_whitespace_snapshot(&snapshot, 8192).unwrap();
+        for relative in ["onnx/model.onnx", "onnx/model.onnx_data"] {
             std::fs::write(snapshot.join(relative), format!("fixture:{relative}")).unwrap();
         }
         root.to_path_buf()

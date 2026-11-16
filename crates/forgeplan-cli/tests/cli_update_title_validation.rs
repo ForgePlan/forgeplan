@@ -47,7 +47,11 @@ fn first_id_with_prefix(ws: &std::path::Path, subdir: &str, prefix: &str) -> Str
             let Some(value) = line.strip_prefix("id: ") else {
                 continue;
             };
-            let id = value.trim().trim_matches('"').trim_matches('\'').to_string();
+            let id = value
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string();
             if id.starts_with(prefix) {
                 ids.push(id);
             }

@@ -38,13 +38,16 @@ Do not compare every `body` to the same byte string.
 
 | Operation | Selection | Body and version |
 |---|---|---|
-| CLI `forgeplan get ID --json` | Current workspace | Whole captured Markdown file, including frontmatter; freshness metadata distinguishes ephemeral from persisted. |
-| Full MCP `forgeplan_get` | `id`, optional `workspace` | Canonical/captured read; `body` includes the full Markdown. Do not assume the pinned-get envelope. |
+| CLI `forgeplan get ID --json` | Current workspace | On migrated workspaces, captured Markdown after the outer frontmatter; legacy reads use the stored body. `persisted` reports publication freshness, not body encoding. |
+| Full MCP `forgeplan_get` | `id`, optional `workspace` | Same ordinary-read body contract. Do not assume the pinned-get envelope or full-file bytes. |
 | Full MCP `forgeplan_constellation_get` | `key`, optional `workspace` | Published row in `artifact`; `artifact.body` is the parsed body after the outer frontmatter. Returns generation identity and `source_digest`. |
-| Federation get / read MCP with `scope_handle` | `id`, optionally source-qualified | Inspect `source.channel`. A published `pinned` row has parsed body, not the full-file contract of ordinary CLI get. |
+| Federation get / read MCP with `scope_handle` | `id`, optionally source-qualified | Inspect `source.channel`. A published `pinned` row has parsed body, not a full-file guarantee. |
 | Read MCP with `snapshot_handle` | `id` within that snapshot | `pinned_git` content is the complete committed Git file, including frontmatter. It is not the current working-tree edit. |
 
 A parsed body may itself contain YAML or Markdown separators; “parsed body” does not mean every frontmatter-looking block has been removed. Use the documented channel and operation, not a text-trimming heuristic.
+
+For a full-file comparison, read the canonical working-tree source or the
+complete committed file returned by Git snapshot get, as appropriate.
 
 ### Identity and ambiguity
 
@@ -86,13 +89,27 @@ See [MCP setup](/docs/guides/mcp-setup/), [the profile catalogs](/docs/mcp/) and
 | `constellation_get` | `id` and exactly one scope/snapshot handle. |
 | `constellation_graph` | Handle, optional `limit`. An empty graph does not establish impact correctness. |
 | `constellation_impact` | Handle and changed `id`, optional `depth`/`max_nodes`. |
-| `constellation_pack` | Handle, `task`, optional estimated `budget`. |
+| `constellation_pack` | Handle, `task`, optional `seeds`, `budget`, `byte_cap`, traversal limits and `cursor`. |
 | `constellation_snapshot` | `handle` of an open scope; returns `snapshot_handle`, `pinned` and `skipped`. |
 | `constellation_close` | `handle`; close scopes and snapshots separately. |
 
 Use `scope_handle` **or** `snapshot_handle` on read operations, not both. The `handle` parameter belongs to sources/snapshot/close. The complete nullable/default/schema details are on the [individual tool pages](/docs/mcp/).
 
 Handles belong to one live server process, not a saved client configuration. A closed, unknown or invalidated handle is not a request to read latest. On `snapshot_expired`, obtain a new scope or deliberately select a new snapshot. A scope's source-version checks and a Git snapshot's committed revision are different contracts.
+
+A working scope binds each source's opening content digest. A newer capture,
+or a source becoming readable after an unavailable opening, requires a new
+scope, including for ContextPack. Qualified get verifies the matching admitted
+sources. For impact, the qualifier selects the changed artifact, not the
+traversal: incoming dependencies may come from any admitted source, and their
+read versions are verified too. A new published generation with the same source
+content does not by itself expire the scope.
+
+Graph edges pair the resolved canonical key in `resolved` with
+`resolved_source_id`. Each impact path step likewise carries its dependent's
+`source_id`; repeated display IDs in different projects remain different nodes.
+Identity ambiguity names the candidates instead of reporting a present
+artifact as absent.
 
 MCP returns JSON text inside a tool result. Decode it and inspect domain fields such as `error`, `result`, `failures` and `partial`; a successful transport exchange is not automatically a successful read.
 
@@ -101,6 +118,12 @@ MCP returns JSON text inside a tool result. Decode it and inspect domain fields 
 A required source's outage must not be silently interpreted as “no matching artifact”. Strict operations refuse unavailable required sources. Register `--optional` only when an absent source is acceptable; inspect named failures even when a response is allowed.
 
 CLI `--allow-partial` and read MCP `strict: false` permit partial answers where supported. They do not make an expired immutable handle valid again. Snapshot source membership is fixed by the lockfile; do not assume `strict` changes that set.
+
+Live get reports `sources`, `failures` and `partial` for `found`, `ambiguous`
+and `not_found` results. Finding a document in a partial source set does not
+establish its uniqueness across unavailable sources. A canonical-key collision
+within one source is a typed `conflicting_canonical_key` diagnostic with all
+claimants, not an arbitrary winner.
 
 Always inspect `failures`, `partial`, `truncated`, expected source identities, and the snapshot's `skipped` list. `doctor` being healthy is not proof that every file was ingested or that all vectors are usable. Incomplete-read and compatibility limits remain tracked in [#538](https://github.com/ForgePlan/forgeplan/issues/538).
 
@@ -139,9 +162,20 @@ The tokenizer budget is bounded by `min(model_max_length, 512)`, including servi
 
 ## ContextPack and advanced reads
 
-ContextPack selects ranked units with roles, omissions and a receipt. `receipt.token_kind: "estimated_chars_div_4"` describes an estimate for selected units, **not** a strict model-token limit for the entire serialized JSON. Inspect `payload_bytes` where the API returns it; wrappers differ between CLI, live and snapshot surfaces.
+ContextPack uses lexical seeds and declared relation closure. Its whole-body
+units carry exact UTF-8 body spans and source digests. Use repeatable `--seed`
+selectors, `--byte-cap`, traversal limits and `--cursor` on the CLI. The
+estimated `--budget` covers the complete emitted representation, rounded up
+from UTF-8 bytes divided by four. `receipt.measured_bytes` is the exact owned
+output size, including the CLI newline or MCP tool-result envelope.
 
-Graph/impact accept qualified references in the implementation. That is not a claim that every cross-project dependency walk or fault scenario has passed acceptance. Export availability likewise does not prove an external adapter round-trip. Use the open acceptance record [#538](https://github.com/ForgePlan/forgeplan/issues/538), not a tool's presence, to judge those broader claims.
+Check `source_complete`, `traversal_complete`, `delivery_complete`, and
+`next_cursor` separately. `--require-complete` refuses partial sources,
+unfinished obligations or multi-page delivery; `--allow-partial` changes only
+the required-source policy. See the [pack reference](/docs/mcp/constellation_pack/)
+for defaults and maximum limits.
+
+Impact narrows `KEY@source-fragment` to matching admitted sources. This does not establish acceptance of every cross-project dependency walk or fault scenario. Export availability likewise does not prove an external adapter round-trip. Use the open acceptance record [#538](https://github.com/ForgePlan/forgeplan/issues/538), not a tool's presence, to judge those broader claims.
 
 ## Diagnostics and supported recovery
 
@@ -152,6 +186,7 @@ Graph/impact accept qualified references in the implementation. That is not a cl
 | No embedding profile / zero eligible rows | Check active config, build feature, cache/profile compatibility and worker stderr. Starting the server alone is not a readiness check. |
 | Queue skipped / failed | Preserve the error and source state. Do not delete the model cache or canonical workspace as a speculative fix. |
 | `ambiguous` / `no_source` | Select an identity from the same live/snapshot response. Do not guess a project from the display ID. |
+| `revision_unavailable` | The pinned Git commit, tree or blob is absent locally. The read refuses rather than fetching or substituting HEAD; select an available revision or explicitly prepare its objects outside the read. |
 | `snapshot_expired` | Reopen deliberately. Do not silently substitute newer content. |
 
 Rebuild the derived index with the appropriate `index`/`reindex` path, preserving Markdown and config. `scan-import` is not the index-rebuild recipe. A rollback must retain new canonical changes and restore a compatible binary, index and configuration together; swapping only the executable is insufficient.

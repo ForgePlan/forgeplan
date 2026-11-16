@@ -34,27 +34,67 @@
 
 use std::time::{Duration, Instant};
 
-use forgeplan_core::db::store::{LanceStore, NewArtifact};
-use forgeplan_core::health::health_report_with_phase;
+use forgeplan_core::constellation::capture::CaptureLimits;
+use forgeplan_core::constellation::facade::{MaintainCapability, maintain_index};
+use forgeplan_core::health::health_report_with_phase_captured;
 use forgeplan_core::phase::{Phase, store as phase_store};
 use tempfile::TempDir;
 
 const KINDS: &[&str] = &[
-    "prd", "rfc", "adr", "epic", "spec", "problem", "solution", "note", "evidence", "refresh",
+    "prd", "rfc", "adr", "epic", "spec", "problem", "solution", "note", "evidence",
 ];
 
-/// Seed `total` artifacts into a fresh workspace. The first `active_with_phase`
-/// of them get `status=active` plus phase-state metadata so the parallel
-/// `read_phase` path is exercised.
+fn benchmark_id(kind: &str, index: usize) -> String {
+    let prefix = match kind {
+        "prd" => "PRD",
+        "rfc" => "RFC",
+        "adr" => "ADR",
+        "epic" => "EPIC",
+        "spec" => "SPEC",
+        "problem" => "PROB",
+        "solution" => "SOL",
+        "note" => "NOTE",
+        "evidence" => "EVID",
+        _ => unreachable!("benchmark kind has a valid display prefix"),
+    };
+    format!("{prefix}-{:05}", index + 1)
+}
+
+// Corpus preparation is not the measured health scan. Keep the existing
+// publication deadline; leave both latency assertions below unchanged.
+fn fixture_capture_limits() -> CaptureLimits {
+    CaptureLimits {
+        budget: Duration::from_secs(120),
+        ..CaptureLimits::default()
+    }
+}
+
+/// Seed `total` canonical Markdown artifacts in bulk, then publish once. The
+/// first `active_with_phase` of them get `status=active` plus phase-state
+/// metadata so the parallel `read_phase` path is exercised.
 async fn seed_workspace(
     workspace: &std::path::Path,
     total: usize,
     active_with_phase: usize,
-) -> LanceStore {
-    let store = LanceStore::init(workspace).await.expect("init store");
+) -> forgeplan_core::constellation::workspace_read::WorkspaceRead {
+    for dir_name in forgeplan_core::workspace::ARTIFACT_DIRS {
+        std::fs::create_dir_all(workspace.join(dir_name)).expect("artifact directory");
+    }
     for i in 0..total {
         let kind = KINDS[i % KINDS.len()];
-        let id = format!("{}-BENCH-{i:05}", kind.to_uppercase());
+        let dir = match kind {
+            "prd" => "prds",
+            "rfc" => "rfcs",
+            "adr" => "adrs",
+            "epic" => "epics",
+            "spec" => "specs",
+            "problem" => "problems",
+            "solution" => "solutions",
+            "note" => "notes",
+            "evidence" => "evidence",
+            _ => unreachable!("benchmark kind has a fixture directory"),
+        };
+        let id = benchmark_id(kind, i);
         let status = if i < active_with_phase {
             "active"
         } else if i < active_with_phase * 2 {
@@ -62,27 +102,32 @@ async fn seed_workspace(
         } else {
             "active"
         };
-        store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: id.clone(),
-                id: id.clone(),
-                kind: kind.to_string(),
-                status: status.to_string(),
-                title: format!("Bench {kind} {i}"),
-                body: format!(
-                    "## Problem\nBench body {i}\n\n## Goals\nReal goals.\n\
-                     \n\
-                     verdict: supports\ncongruence_level: 3\nevidence_type: measurement\n"
-                ),
-                depth: "standard".to_string(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
-            .await
-            .expect("seed");
+        let title = format!("Bench {kind} {i}");
+        let path = workspace
+            .join(dir)
+            .join(format!("{id}-bench-{kind}-{i}.md"));
+        std::fs::write(
+            path,
+            format!(
+                "---\nid: {id}\nkind: {kind}\nslug: {kind}-bench-{i}-k{i:032x}\n\
+                 status: {status}\ntitle: {title}\ndepth: standard\n---\n\n\
+                 ## Problem\nBench body {i}\n\n## Goals\nReal goals.\n\n\
+                 verdict: supports\ncongruence_level: 3\nevidence_type: measurement\n"
+            ),
+        )
+        .expect("write benchmark artifact");
     }
+
+    let capability = MaintainCapability::for_strict_maintenance(
+        workspace.canonicalize().expect("workspace path"),
+    );
+    maintain_index(
+        &capability,
+        fixture_capture_limits(),
+        Instant::now() + Duration::from_secs(120),
+    )
+    .await
+    .expect("publish benchmark corpus");
 
     let phases = [
         Phase::Shape,
@@ -93,7 +138,7 @@ async fn seed_workspace(
     ];
     for i in 0..active_with_phase {
         let kind = KINDS[i % KINDS.len()];
-        let id = format!("{}-BENCH-{i:05}", kind.to_uppercase());
+        let id = benchmark_id(kind, i);
         phase_store::initialize_phase(workspace, &id, Some("bench seed".into()))
             .await
             .expect("init phase");
@@ -105,7 +150,13 @@ async fn seed_workspace(
         }
     }
 
-    store
+    forgeplan_core::constellation::facade::open_workspace_read(
+        workspace,
+        None,
+        fixture_capture_limits(),
+    )
+    .await
+    .expect("open benchmark source capture")
 }
 
 /// Run cold + 3 warm scans against a workspace of the given size; return
@@ -114,9 +165,14 @@ async fn measure_one(total: usize, active_with_phase: usize) -> (Duration, Durat
     let tempdir = TempDir::new().expect("tempdir");
     let workspace = tempdir.path().join(".forgeplan");
     std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::write(
+        workspace.join("config.yaml"),
+        "project_name: health_bench\n",
+    )
+    .unwrap();
 
     let seed_start = Instant::now();
-    let store = seed_workspace(&workspace, total, active_with_phase).await;
+    let view = seed_workspace(&workspace, total, active_with_phase).await;
     eprintln!(
         "[bench] N={total} seed: {} artifacts in {:?}",
         total,
@@ -124,7 +180,7 @@ async fn measure_one(total: usize, active_with_phase: usize) -> (Duration, Durat
     );
 
     let cold_start = Instant::now();
-    let (_report, _mismatches) = health_report_with_phase(&store, &workspace)
+    let (_report, _mismatches) = health_report_with_phase_captured(&view, &workspace)
         .await
         .expect("health_report_with_phase cold");
     let cold = cold_start.elapsed();
@@ -133,7 +189,7 @@ async fn measure_one(total: usize, active_with_phase: usize) -> (Duration, Durat
     let warm_runs = 3;
     for _ in 0..warm_runs {
         let start = Instant::now();
-        let (_r, _m) = health_report_with_phase(&store, &workspace)
+        let (_r, _m) = health_report_with_phase_captured(&view, &workspace)
             .await
             .expect("health_report_with_phase warm");
         warm_total += start.elapsed();

@@ -25,7 +25,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use super::capture::{CaptureLimits, CaptureRequest, capture_source, parse_artifact_file};
+use super::capture::{
+    CaptureLimits, CaptureRequest, capture_canonical_census, parse_artifact_file,
+};
 use super::federation::{
     QueryMode, SourceChannel, SourceFailure, SourceRef, SourceSpec, failure_is_fatal,
     source_id_for, source_unavailable,
@@ -175,6 +177,12 @@ async fn collect_live(spec: &SourceSpec) -> Result<(SourceRef, Vec<ExportRow>), 
                 }
             })?;
         let manifest = pinned.manifest();
+        manifest
+            .require_addressable()
+            .map_err(|error| SourceFailure {
+                path: spec.path.display().to_string(),
+                reason: error.to_string(),
+            })?;
         // The pinned read honours the descriptor's embedding head: the
         // manifest's version predates any drain that landed vectors, and
         // exporting it would ship `unavailable` rows that are already ready.
@@ -195,20 +203,43 @@ async fn collect_live(spec: &SourceSpec) -> Result<(SourceRef, Vec<ExportRow>), 
             path: canonical.display().to_string(),
             channel: SourceChannel::Pinned,
             version_key: manifest.generation_id.clone(),
+            source_set_digest: Some(manifest.source_set_digest.clone()),
         };
         return Ok((source, docs));
     }
-    let captured = capture_source(&CaptureRequest::new(&canonical), CaptureLimits::default())
-        .await
-        .map_err(|e| SourceFailure {
+    let captured =
+        capture_canonical_census(&CaptureRequest::new(&canonical), CaptureLimits::default())
+            .await
+            .map_err(|e| SourceFailure {
+                path: spec.path.display().to_string(),
+                reason: format!("{e}"),
+            })?;
+    if !captured.is_complete() {
+        let problems = captured
+            .unusable
+            .iter()
+            .map(|source| format!("{} ({})", source.relative_path, source.code.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(SourceFailure {
             path: spec.path.display().to_string(),
-            reason: format!("{e}"),
-        })?;
+            reason: format!(
+                "incomplete_capture: {} of {} sources indexed ({} invalid, {} unavailable, {} excluded); {}",
+                captured.coverage.read,
+                captured.coverage.expected,
+                captured.coverage.invalid,
+                captured.coverage.unavailable,
+                captured.coverage.excluded,
+                problems,
+            ),
+        });
+    }
     let source = SourceRef {
         source_id,
         path: canonical.display().to_string(),
         channel: SourceChannel::Markdown,
         version_key: captured.source_set_digest.clone(),
+        source_set_digest: Some(captured.source_set_digest.clone()),
     };
     Ok((
         source,
@@ -351,6 +382,7 @@ fn collect_snapshot(
             "{}:{}:{}",
             entry.git_oid, entry.tree_oid, entry.bytes_digest
         ),
+        source_set_digest: None,
     };
     Ok((source, docs))
 }
@@ -711,6 +743,73 @@ mod tests {
         std::fs::write(root.join("adrs/ADR-001.md"), DOC).unwrap();
         std::fs::write(root.join("prds/PRD-001.md"), DOC2).unwrap();
         tmp
+    }
+
+    async fn assert_incomplete_source_refused(bad: &TempDir, code: &str, paths: &[&str]) {
+        let good = ws();
+        let good_path = good.path().join(".forgeplan");
+        let bad_path = bad.path().join(".forgeplan");
+        let specs = vec![SourceSpec::new(&good_path), SourceSpec::new(&bad_path)];
+        let error = export_live(&specs, "demo", QueryMode::Strict)
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(matches!(
+            error,
+            ConstellationError::SourceUnavailable { .. }
+        ));
+        assert!(message.contains("incomplete_capture"), "{message}");
+        assert!(message.contains(code), "{message}");
+        for path in paths {
+            assert!(message.contains(path), "{message}");
+        }
+
+        let (_, jsonl, partial) = export_live(&specs, "demo", QueryMode::AllowPartial)
+            .await
+            .unwrap();
+        assert_eq!(partial.failures.len(), 1);
+        assert_eq!(partial.sources.len(), 1);
+        assert_eq!(partial.documents.len(), 2);
+        assert_eq!(partial.edges.len(), 1);
+        assert!(partial.failures[0].reason.contains(code));
+        assert!(jsonl.contains("incomplete_capture"));
+        assert_eq!(parse_export(&jsonl).unwrap().documents.len(), 2);
+
+        let optional = vec![
+            SourceSpec::new(&good_path),
+            SourceSpec::new_optional(&bad_path),
+        ];
+        let (_, _, strict_optional) = export_live(&optional, "demo", QueryMode::Strict)
+            .await
+            .unwrap();
+        assert_eq!(strict_optional.failures.len(), 1);
+        assert_eq!(strict_optional.sources.len(), 1);
+        assert_eq!(strict_optional.documents.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn duplicate_canonical_keys_never_produce_partial_source_export() {
+        let bad = ws();
+        let prds = bad.path().join(".forgeplan/prds");
+        std::fs::write(prds.join("PRD-001-copy.md"), DOC2).unwrap();
+        assert_incomplete_source_refused(
+            &bad,
+            "identity_collision",
+            &["prds/PRD-001.md", "prds/PRD-001-copy.md"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn unreadable_document_never_produces_partial_source_export() {
+        let bad = ws();
+        std::fs::write(
+            bad.path().join(".forgeplan/prds/PRD-002-broken.md"),
+            b"\xff\xfe",
+        )
+        .unwrap();
+        assert_incomplete_source_refused(&bad, "unreadable_source", &["prds/PRD-002-broken.md"])
+            .await;
     }
 
     #[tokio::test]

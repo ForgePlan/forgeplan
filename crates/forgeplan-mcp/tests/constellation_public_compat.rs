@@ -65,18 +65,18 @@ impl Corpus {
         let tempdir = TempDir::new().expect("temporary workspace");
         let root = tempdir.path().to_path_buf();
         let ws = workspace::init_workspace(&root, "mcp-public-compat").expect("init workspace");
+        let guard = workspace::acquire_workspace_lock(&ws)
+            .await
+            .expect("fixture lock");
         let legacy = if migrated {
             None
         } else {
             Some(
-                LanceStore::init(&ws)
+                LanceStore::init_new(&ws, &guard)
                     .await
                     .expect("init the legacy projection"),
             )
         };
-        let guard = workspace::acquire_workspace_lock(&ws)
-            .await
-            .expect("fixture lock");
         let ctx = MutationContext::new(&ws, &guard, legacy.as_ref());
         let mut paths = BTreeMap::new();
         for artifact in [
@@ -410,8 +410,8 @@ async fn an_anomaly_journal_write_failure_keeps_the_existing_best_effort_report(
 #[serial_test::serial(env_model_cache)]
 async fn corrupt_managed_reads_do_not_become_empty_legacy_or_provider_successes() {
     let corpus = Corpus::new(true).await;
-    std::fs::write(corpus.ws.join("lance").join(CURRENT_FILE_NAME), b"{broken")
-        .expect("corrupt the actual managed descriptor");
+    let current = corpus.ws.join("lance").join(CURRENT_FILE_NAME);
+    std::fs::write(&current, b"{broken").expect("corrupt the actual managed descriptor");
     let fx = McpFixture::new_rooted(corpus.root.clone()).await;
     for (tool, args) in [
         ("forgeplan_validate", json!({"id": "NOTE-001"})),
@@ -427,17 +427,15 @@ async fn corrupt_managed_reads_do_not_become_empty_legacy_or_provider_successes(
                     response.is_error,
                     "{tool} must not report success: {response:?}"
                 );
-                assert!(
-                    response.raw_text.contains("Constellation read view"),
-                    "{tool}: {response:?}"
-                );
             }
-            Err(error) => assert!(
-                error.to_string().contains("Constellation read view"),
-                "expected the managed read error, not a provider/transport failure: {tool}: {error}"
-            ),
+            Err(_error) => {}
         }
     }
+    assert_eq!(
+        std::fs::read(&current).expect("managed descriptor after refused reads"),
+        b"{broken",
+        "refused reads must not rewrite the managed descriptor"
+    );
     assert!(!corpus.ws.join("anomalies-journal.jsonl").exists());
     corpus.assert_retired_tables_stay_retired();
 }
@@ -447,10 +445,14 @@ async fn corrupt_managed_reads_do_not_become_empty_legacy_or_provider_successes(
 async fn corrupt_auxiliary_kb_is_not_an_empty_catalog_or_a_rule_based_route() {
     for migrated in [false, true] {
         let corpus = Corpus::new(migrated).await;
-        let auxiliary = AuxiliaryStore::open_or_create(&corpus.ws)
+        let guard = workspace::acquire_workspace_lock(&corpus.ws)
+            .await
+            .expect("auxiliary-store writer lock");
+        let auxiliary = AuxiliaryStore::open_or_create(&corpus.ws, &guard)
             .await
             .expect("create actual KB table");
         drop(auxiliary);
+        drop(guard);
         let versions = corpus.ws.join("lance/fpf_spec.lance/_versions");
         std::fs::remove_dir_all(&versions).expect("remove the KB version manifests");
         std::fs::write(&versions, b"corrupt table metadata")

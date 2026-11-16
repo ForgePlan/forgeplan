@@ -33,8 +33,14 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
+use crate::artifact::canonical_key::{
+    ArtifactCandidate, ResolveError, normalize_display_id, resolve_borrowed,
+};
+
 use super::ConstellationError;
-use super::capture::{CaptureLimits, CaptureRequest, capture_source, parse_artifact_file};
+use super::capture::{
+    CaptureLimits, CaptureRequest, capture_canonical_census, parse_artifact_file,
+};
 use super::federation::{
     QueryMode, SourceChannel, SourceFailure, SourceRef, SourceSpec, failure_is_fatal,
     source_id_for, source_unavailable,
@@ -77,6 +83,8 @@ pub enum ImpactSeverity {
 pub struct PathStep {
     /// The key that points at the previous step — the edge we walked back.
     pub dependent: String,
+    /// Source containing the dependent artifact.
+    pub source_id: String,
     /// The relation that dependent declared toward the previous step.
     pub relation: String,
 }
@@ -142,36 +150,49 @@ pub struct ImpactBoundsSerde {
 /// `pub(crate)` so [`super::graph`] can emit the raw node/edge set without
 /// rebuilding the per-source projection a second time.
 pub(crate) struct Node {
-    pub(crate) canonical_key: String,
-    pub(crate) display_id: Option<String>,
-    pub(crate) title: String,
+    pub(crate) candidate: ArtifactCandidate,
+    pub(crate) has_display: bool,
+    pub(crate) has_path: bool,
     pub(crate) kind: String,
-    /// The file inside the source that declares this node, when the
-    /// channel knows it (the pinned relations table does not record one).
-    pub(crate) relative_path: Option<String>,
 }
 
 /// The per-source graph: nodes keyed canonically, edges as written.
 pub(crate) struct SourceGraph {
     pub(crate) source: SourceRef,
+    /// Identity used by live-qualified links when this graph is pinned.
+    live_id: Option<String>,
     /// canonical_key → node
     pub(crate) nodes: HashMap<String, Node>,
-    /// display_id (lowered) → canonical_key, for resolving `target` refs.
-    pub(crate) by_display: HashMap<String, String>,
+    /// Exact literal or normalized numeric alias → every canonical claimant.
+    pub(crate) by_display: HashMap<String, Vec<String>>,
     /// (from canonical_key, target-as-written, relation)
     pub(crate) edges: Vec<(String, String, String)>,
 }
 
 impl SourceGraph {
-    /// Resolve a `target` string as written — an exact canonical key, else
-    /// a case-insensitive display id — to the canonical key it names in
-    /// this source. Nothing outside the source is consulted: `ADR-001` in
-    /// two checkouts stays two nodes.
-    pub(crate) fn resolve(&self, target: &str) -> Option<String> {
-        if self.nodes.contains_key(target) {
-            return Some(target.to_string());
-        }
-        self.by_display.get(&target.to_lowercase()).cloned()
+    /// Resolve the complete indexed closure of canonical and alias claims.
+    fn resolve(
+        &self,
+        target: &str,
+        structural: bool,
+    ) -> Result<Option<&ArtifactCandidate>, ResolveError> {
+        let selector = if structural { target } else { target.trim() };
+        let alias = normalize_display_id(selector)
+            .map(std::borrow::Cow::Owned)
+            .unwrap_or(std::borrow::Cow::Borrowed(selector));
+        let exact = self.nodes.get(selector);
+        let aliases = self
+            .by_display
+            .get(alias.as_ref())
+            .into_iter()
+            .flatten()
+            .filter(move |key| key.as_str() != selector)
+            .map(|key| &self.nodes[key].candidate);
+        resolve_borrowed(
+            target,
+            exact.into_iter().map(|node| &node.candidate).chain(aliases),
+            structural,
+        )
     }
 }
 
@@ -181,29 +202,37 @@ fn build_graph(source: SourceRef, artifacts: Vec<GraphArtifact>) -> SourceGraph 
     let mut edges = Vec::new();
     for a in artifacts {
         if let Some(d) = &a.display_id {
-            // First claim wins; a second artifact claiming the same
-            // display id leaves the first resolvable — the dangle is in
-            // the source data, not ours to adjudicate.
+            let alias = normalize_display_id(d).unwrap_or_else(|| d.clone());
             by_display
-                .entry(d.to_lowercase())
-                .or_insert_with(|| a.canonical_key.clone());
+                .entry(alias)
+                .or_insert_with(Vec::new)
+                .push(a.canonical_key.clone());
         }
         for (target, relation) in &a.edges {
             edges.push((a.canonical_key.clone(), target.clone(), relation.clone()));
         }
+        let has_display = a.display_id.is_some();
+        let has_path = a.relative_path.is_some();
         nodes.insert(
             a.canonical_key.clone(),
             Node {
-                canonical_key: a.canonical_key,
-                display_id: a.display_id,
-                title: a.title,
+                candidate: ArtifactCandidate {
+                    canonical_key: a.canonical_key,
+                    display_id: a.display_id.unwrap_or_default(),
+                    title: a.title,
+                    relative_path: a.relative_path.unwrap_or_default().into(),
+                },
+                has_display,
+                has_path,
                 kind: a.kind,
-                relative_path: a.relative_path,
             },
         );
     }
+    let live_id = (source.channel == SourceChannel::PinnedGit)
+        .then(|| source_id_for(std::path::Path::new(&source.path)));
     SourceGraph {
         source,
+        live_id,
         nodes,
         by_display,
         edges,
@@ -225,15 +254,13 @@ struct GraphArtifact {
 /// parsed frontmatter links otherwise. `pub(crate)` for
 /// [`super::graph`], which emits the raw set instead of walking it.
 pub(crate) async fn source_graph_live(spec: &SourceSpec) -> Result<SourceGraph, SourceFailure> {
-    let canonical = spec.path.canonicalize().map_err(|e| SourceFailure {
-        path: spec.path.display().to_string(),
-        reason: format!("cannot canonicalize: {e}"),
-    })?;
+    let canonical = super::federation::resolve_source(spec)?;
     let source = SourceRef {
         source_id: source_id_for(&canonical),
         path: canonical.display().to_string(),
         channel: SourceChannel::Markdown,
         version_key: String::new(),
+        source_set_digest: None,
     };
     // A published source answers from its pinned graph — the same rule
     // federation reads obey: a broken index is a failure, not a downgrade.
@@ -249,6 +276,7 @@ pub(crate) async fn source_graph_live(spec: &SourceSpec) -> Result<SourceGraph, 
         let mut s = source;
         s.channel = SourceChannel::Pinned;
         s.version_key = graph.generation_id;
+        s.source_set_digest = Some(graph.source_set_digest);
         let artifacts = graph
             .nodes
             .into_iter()
@@ -265,14 +293,25 @@ pub(crate) async fn source_graph_live(spec: &SourceSpec) -> Result<SourceGraph, 
         g.edges = graph.edges;
         return Ok(g);
     }
-    let captured = capture_source(&CaptureRequest::new(&canonical), CaptureLimits::default())
-        .await
-        .map_err(|e| SourceFailure {
+    let captured =
+        capture_canonical_census(&CaptureRequest::new(&canonical), CaptureLimits::default())
+            .await
+            .map_err(|e| SourceFailure {
+                path: spec.path.display().to_string(),
+                reason: format!("{e}"),
+            })?;
+    if !captured.is_complete() {
+        return Err(SourceFailure {
             path: spec.path.display().to_string(),
-            reason: format!("{e}"),
-        })?;
+            reason: format!(
+                "canonical source capture is incomplete: {:?}",
+                captured.diagnostics
+            ),
+        });
+    }
     let mut s = source;
     s.version_key = captured.source_set_digest.clone();
+    s.source_set_digest = Some(captured.source_set_digest.clone());
     let artifacts = captured
         .artifacts
         .iter()
@@ -299,27 +338,34 @@ pub(crate) fn source_graph_snapshot(entry: &SnapshotSourceEntry) -> Result<Sourc
     let names =
         super::snapshot::list_files_at(&repo, &entry.git_oid).map_err(|e| format!("{e}"))?;
     let mut artifacts = Vec::new();
+    let mut canonical_keys = HashSet::new();
     for rel in &names {
         let bytes = super::snapshot::read_file_at(&repo, &entry.git_oid, rel)
             .map_err(|e| format!("{e}"))?;
-        if let Ok(p) = parse_artifact_file(
+        let p = parse_artifact_file(
             rel,
             Arc::from(&bytes[..]),
             super::jobs::DEFAULT_BODY_PREFIX_CHARS,
-        ) {
-            artifacts.push(GraphArtifact {
-                canonical_key: p.canonical_key.clone(),
-                display_id: Some(p.display_id.clone()),
-                title: p.title.clone(),
-                kind: p.kind.clone(),
-                relative_path: Some(p.relative_path.clone()),
-                edges: p
-                    .outgoing
-                    .iter()
-                    .map(|e| (e.target.clone(), e.relation.clone()))
-                    .collect(),
-            });
+        )
+        .map_err(|error| format!("artifact {rel} could not be parsed: {error}"))?;
+        if !canonical_keys.insert(p.canonical_key.clone()) {
+            return Err(format!(
+                "snapshot contains conflicting canonical key `{}`",
+                p.canonical_key
+            ));
         }
+        artifacts.push(GraphArtifact {
+            canonical_key: p.canonical_key.clone(),
+            display_id: Some(p.display_id.clone()),
+            title: p.title.clone(),
+            kind: p.kind.clone(),
+            relative_path: Some(p.relative_path.clone()),
+            edges: p
+                .outgoing
+                .iter()
+                .map(|e| (e.target.clone(), e.relation.clone()))
+                .collect(),
+        });
     }
     let source = SourceRef {
         source_id: format!(
@@ -333,6 +379,7 @@ pub(crate) fn source_graph_snapshot(entry: &SnapshotSourceEntry) -> Result<Sourc
             "{}:{}:{}",
             entry.git_oid, entry.tree_oid, entry.bytes_digest
         ),
+        source_set_digest: None,
     };
     Ok(build_graph(source, artifacts))
 }
@@ -342,165 +389,237 @@ fn propagates(relation: &str) -> bool {
     crate::graph::topological::is_structural_relation(relation)
 }
 
-/// The walk itself, over one source's graph.
-fn walk(graph: &SourceGraph, changed: &str, bounds: ImpactBounds, report: &mut ImpactReport) {
-    // Reverse adjacency: target_key → [(dependent_key, relation)].
-    let mut dependents: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    for (from, target, relation) in &graph.edges {
-        match graph.resolve(target) {
-            Some(to) => dependents
-                .entry(to)
-                .or_default()
-                .push((from.clone(), relation.clone())),
-            None => report.unresolved.push(UnresolvedEdge {
-                source_id: graph.source.source_id.clone(),
-                from: from.clone(),
-                target: target.clone(),
-                relation: relation.clone(),
-            }),
-        }
-    }
-    let start = match graph.resolve(changed) {
-        Some(k) => k,
-        None => {
-            report.absent_in.push(graph.source.source_id.clone());
-            return;
-        }
+/// Resolve an edge using only the captured, admitted graphs.
+pub(super) fn resolve_edge<'a>(
+    graphs: &'a [SourceGraph],
+    from: usize,
+    target: &str,
+) -> Option<(usize, &'a str)> {
+    let (bare, qualifier) = super::federation::parse_qualified_ref(target);
+    let Some(qualifier) = qualifier else {
+        return graphs[from]
+            .resolve(target, true)
+            .ok()
+            .flatten()
+            .map(|candidate| (from, candidate.canonical_key.as_str()));
     };
-    // BFS over structural edges; informational dependents are noted in
-    // place and never enqueued. `reached` maps a node to the rank+depth of
-    // its currently-recorded explanation; a stronger path (higher rank,
-    // or same rank shallower) replaces a weaker one — first visit is not
-    // privileged when a better explanation arrives.
-    fn rank(s: ImpactSeverity) -> u8 {
-        match s {
-            ImpactSeverity::Direct => 3,
-            ImpactSeverity::Transitive => 2,
-            ImpactSeverity::Noted => 1,
+    let mut found = None;
+    for (i, graph) in graphs.iter().enumerate() {
+        let matches_source = graph.source.path.contains(qualifier)
+            || graph.source.source_id.starts_with(qualifier)
+            || graph
+                .live_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with(qualifier));
+        if !matches_source {
+            continue;
+        }
+        match graph.resolve(bare, true) {
+            Ok(Some(candidate)) if found.is_none() => {
+                found = Some((i, candidate.canonical_key.as_str()))
+            }
+            Ok(Some(_)) | Err(_) => return None,
+            Ok(None) => {}
         }
     }
-    let mut reached: HashMap<String, (u8, usize)> = HashMap::new();
-    let mut index_of: HashMap<String, usize> = HashMap::new();
-    let mut enqueued: HashSet<String> = HashSet::new();
-    enqueued.insert(start.clone());
-    let mut queue: VecDeque<(String, usize, Vec<PathStep>)> = VecDeque::new();
-    queue.push_back((start, 0, Vec::new()));
-    let mut truncated = false;
-    while let Some((key, depth, path)) = queue.pop_front() {
-        let mut outgoing = dependents.get(&key).cloned().unwrap_or_default();
-        // Structural paths first: the structural explanation of a node
-        // beats an informational one discovered at the same depth.
-        outgoing.sort_by_key(|(_, r)| !propagates(r));
-        for (dependent, relation) in outgoing {
-            let next_depth = depth + 1;
-            let mut next_path = path.clone();
-            next_path.push(PathStep {
-                dependent: dependent.clone(),
-                relation: relation.clone(),
-            });
-            if propagates(&relation) {
-                let severity = if next_depth == 1 {
-                    ImpactSeverity::Direct
-                } else {
-                    ImpactSeverity::Transitive
-                };
-                let better = match reached.get(&dependent) {
-                    None => true,
-                    Some(&(r, d)) => rank(severity) > r || (rank(severity) == r && next_depth < d),
-                };
-                if better {
-                    if report.impacted.len() >= bounds.max_nodes
-                        && !index_of.contains_key(&dependent)
-                    {
-                        report.stops.push(ImpactStop {
-                            at: dependent.clone(),
-                            source_id: graph.source.source_id.clone(),
-                            reason: "node_limit".into(),
-                        });
-                        truncated = true;
-                        continue;
-                    }
-                    let node = &graph.nodes[&dependent];
-                    let unit = ImpactedNode {
-                        source: graph.source.clone(),
-                        canonical_key: node.canonical_key.clone(),
-                        display_id: node.display_id.clone(),
-                        title: node.title.clone(),
-                        kind: node.kind.clone(),
-                        severity,
-                        depth: next_depth,
-                        path: next_path.clone(),
-                    };
-                    match index_of.get(&dependent) {
-                        Some(&i) => report.impacted[i] = unit,
-                        None => {
-                            index_of.insert(dependent.clone(), report.impacted.len());
-                            report.impacted.push(unit);
-                        }
-                    }
-                    reached.insert(dependent.clone(), (rank(severity), next_depth));
-                }
-                if next_depth < bounds.max_depth && enqueued.insert(dependent.clone()) {
-                    queue.push_back((dependent, next_depth, next_path));
-                } else if next_depth >= bounds.max_depth && dependents.contains_key(&dependent) {
-                    report.stops.push(ImpactStop {
-                        at: dependent,
-                        source_id: graph.source.source_id.clone(),
-                        reason: "depth_limit".into(),
-                    });
-                }
+    found
+}
+
+/// Walk the combined graph; identities include the declaring source.
+fn walk(
+    graphs: &[SourceGraph],
+    seeds: Vec<(usize, String)>,
+    bounds: ImpactBounds,
+    report: &mut ImpactReport,
+) {
+    type Key<'a> = (usize, &'a str);
+    let mut dependents: HashMap<Key<'_>, Vec<(Key<'_>, &str)>> = HashMap::new();
+    for (i, graph) in graphs.iter().enumerate() {
+        for (from, target, relation) in &graph.edges {
+            if let Some(to) = resolve_edge(graphs, i, target) {
+                dependents
+                    .entry(to)
+                    .or_default()
+                    .push(((i, from.as_str()), relation));
             } else {
-                // Informational: note the dependent; the walk stops here.
-                let better = match reached.get(&dependent) {
-                    None => true,
-                    Some(&(r, d)) => 1 > r || (r == 1 && next_depth < d),
-                };
-                if better {
-                    if report.impacted.len() >= bounds.max_nodes
-                        && !index_of.contains_key(&dependent)
-                    {
-                        report.stops.push(ImpactStop {
-                            at: dependent.clone(),
-                            source_id: graph.source.source_id.clone(),
-                            reason: "node_limit".into(),
-                        });
-                        truncated = true;
-                        continue;
-                    }
-                    let node = &graph.nodes[&dependent];
-                    let unit = ImpactedNode {
-                        source: graph.source.clone(),
-                        canonical_key: node.canonical_key.clone(),
-                        display_id: node.display_id.clone(),
-                        title: node.title.clone(),
-                        kind: node.kind.clone(),
-                        severity: ImpactSeverity::Noted,
-                        depth: next_depth,
-                        path: next_path,
-                    };
-                    match index_of.get(&dependent) {
-                        Some(&i) if report.impacted[i].severity == ImpactSeverity::Noted => {
-                            report.impacted[i] = unit;
-                        }
-                        Some(_) => {}
-                        None => {
-                            index_of.insert(dependent.clone(), report.impacted.len());
-                            report.impacted.push(unit);
-                        }
-                    }
-                    reached.insert(dependent.clone(), (1, next_depth));
-                }
-                report.stops.push(ImpactStop {
-                    at: dependent,
+                report.unresolved.push(UnresolvedEdge {
                     source_id: graph.source.source_id.clone(),
-                    reason: "informational_edge".into(),
+                    from: from.clone(),
+                    target: target.clone(),
+                    relation: relation.clone(),
                 });
             }
         }
-        if truncated {
-            break;
+    }
+    for outgoing in dependents.values_mut() {
+        outgoing.sort_by_key(|(_, relation)| !propagates(relation));
+    }
+    let mut reached: HashMap<Key<'_>, (u8, usize)> = HashMap::new();
+    let mut index_of: HashMap<Key<'_>, usize> = HashMap::new();
+    let mut enqueued: HashSet<Key<'_>> = seeds
+        .iter()
+        .map(|(source, key)| (*source, key.as_str()))
+        .collect();
+    let mut queue: VecDeque<(Key<'_>, usize, Vec<PathStep>, Key<'_>)> = seeds
+        .iter()
+        .map(|(source, key)| {
+            let key = (*source, key.as_str());
+            (key, 0, Vec::new(), key)
+        })
+        .collect();
+    while let Some((key, depth, path, root)) = queue.pop_front() {
+        let Some(outgoing) = dependents.get(&key) else {
+            continue;
+        };
+        for (dependent, relation) in outgoing {
+            let graph = &graphs[dependent.0];
+            let next_depth = depth + 1;
+            let structural = propagates(relation);
+            let severity = if !structural {
+                ImpactSeverity::Noted
+            } else if next_depth == 1 {
+                ImpactSeverity::Direct
+            } else {
+                ImpactSeverity::Transitive
+            };
+            let rank = match severity {
+                ImpactSeverity::Direct => 3,
+                ImpactSeverity::Transitive => 2,
+                ImpactSeverity::Noted => 1,
+            };
+            let better = reached
+                .get(dependent)
+                .is_none_or(|&(r, d)| rank > r || (rank == r && next_depth < d));
+            if better
+                && report.impacted.len() >= bounds.max_nodes
+                && !index_of.contains_key(dependent)
+            {
+                report.stops.push(ImpactStop {
+                    at: dependent.1.to_owned(),
+                    source_id: graph.source.source_id.clone(),
+                    reason: "node_limit".into(),
+                });
+                return;
+            }
+            let mut next_path = path.clone();
+            next_path.push(PathStep {
+                dependent: dependent.1.to_owned(),
+                source_id: graph.source.source_id.clone(),
+                relation: (*relation).to_string(),
+            });
+            if better {
+                let node = &graph.nodes[dependent.1];
+                let unit = ImpactedNode {
+                    source: graph.source.clone(),
+                    canonical_key: node.candidate.canonical_key.clone(),
+                    display_id: node.has_display.then(|| node.candidate.display_id.clone()),
+                    title: node.candidate.title.clone(),
+                    kind: node.kind.clone(),
+                    severity,
+                    depth: next_depth,
+                    path: next_path.clone(),
+                };
+                if let Some(&index) = index_of.get(dependent) {
+                    report.impacted[index] = unit;
+                } else {
+                    index_of.insert(*dependent, report.impacted.len());
+                    report.impacted.push(unit);
+                }
+                reached.insert(*dependent, (rank, next_depth));
+            }
+            if !structural {
+                report.stops.push(ImpactStop {
+                    at: dependent.1.to_owned(),
+                    source_id: graph.source.source_id.clone(),
+                    reason: "informational_edge".into(),
+                });
+            } else if next_depth >= bounds.max_depth && dependents.contains_key(dependent) {
+                report.stops.push(ImpactStop {
+                    at: dependent.1.to_owned(),
+                    source_id: graph.source.source_id.clone(),
+                    reason: "depth_limit".into(),
+                });
+            } else if next_depth < bounds.max_depth {
+                if enqueued.insert(*dependent) {
+                    queue.push_back((*dependent, next_depth, next_path, root));
+                } else if path.iter().any(|step| {
+                    step.source_id == graph.source.source_id && step.dependent == dependent.1
+                }) || dependent == &root
+                {
+                    report.stops.push(ImpactStop {
+                        at: dependent.1.to_owned(),
+                        source_id: graph.source.source_id.clone(),
+                        reason: "cycle".into(),
+                    });
+                }
+            }
         }
     }
+}
+fn resolve_seeds(
+    graphs: &[SourceGraph],
+    selected: &[bool],
+    bare: &str,
+    report: &mut ImpactReport,
+) -> Result<Vec<(usize, String)>, ConstellationError> {
+    let mut seeds = Vec::new();
+    let mut error: Option<ResolveError> = None;
+    let mut valid = false;
+    for (i, graph) in graphs.iter().enumerate() {
+        if !selected[i] {
+            continue;
+        }
+        match graph.resolve(bare, false) {
+            Ok(Some(candidate)) => {
+                valid = true;
+                seeds.push((i, candidate.canonical_key.clone()));
+            }
+            Ok(None) => {
+                valid = true;
+                report.absent_in.push(graph.source.source_id.clone());
+            }
+            Err(ResolveError::InvalidSelector { .. }) => {}
+            Err(next) => {
+                valid = true;
+                let next =
+                    super::federation::qualify_resolve_candidates(next, &graph.source.source_id);
+                match (&mut error, next) {
+                    (
+                        Some(ResolveError::Ambiguous { candidates, .. }),
+                        ResolveError::Ambiguous {
+                            candidates: extra, ..
+                        },
+                    ) => candidates.extend(extra),
+                    (slot @ None, next) => *slot = Some(next),
+                    _ => {}
+                }
+            }
+        }
+    }
+    if !valid && let Err(invalid) = resolve_borrowed(bare, std::iter::empty(), false) {
+        error = Some(invalid);
+    }
+    if let Some(mut error) = error {
+        if let ResolveError::Ambiguous { candidates, .. } = &mut error {
+            for (i, key) in &seeds {
+                let mut candidate = graphs[*i].nodes[key].candidate.clone();
+                candidate.relative_path =
+                    PathBuf::from(&graphs[*i].source.source_id).join(candidate.relative_path);
+                candidates.push(candidate);
+            }
+            candidates.sort_by(|a, b| {
+                a.canonical_key
+                    .cmp(&b.canonical_key)
+                    .then_with(|| a.relative_path.cmp(&b.relative_path))
+            });
+        }
+        return Err(ConstellationError::ResolveRead {
+            error,
+            sources: std::mem::take(&mut report.sources),
+            failures: std::mem::take(&mut report.failures),
+        });
+    }
+    Ok(seeds)
 }
 
 /// Impact over live scope sources.
@@ -515,26 +634,16 @@ pub async fn impact_live(
     bounds: ImpactBounds,
     mode: QueryMode,
 ) -> Result<ImpactReport, ConstellationError> {
-    // `KEY@qualifier` narrows the walk to the source the caller named, the
-    // same rule `constellation get` follows. Without this, a cross-project
-    // reference could never be answered: the bare key exists in several
-    // sources and there is no basis to pick one.
     let (bare, qualifier) = super::federation::parse_qualified_ref(changed);
-    let selected: Vec<SourceSpec> = match qualifier {
-        Some(qualifier) => {
-            let matched: Vec<SourceSpec> = super::federation::specs_matching(specs, qualifier)
-                .into_iter()
-                .cloned()
-                .collect();
-            if matched.is_empty() {
-                return Err(ConstellationError::SourceUnavailable {
-                    detail: format!("qualifier @{qualifier} matches no source in this scope"),
-                });
-            }
-            matched
-        }
-        None => specs.to_vec(),
-    };
+    if let Some(q) = qualifier
+        && super::federation::specs_matching(specs, q).is_empty()
+    {
+        return Err(ConstellationError::SourceUnavailable {
+            detail: format!("qualifier @{q} matches no source in this scope"),
+        });
+    }
+    let mut graphs = Vec::new();
+    let mut selected = Vec::new();
     let mut report = ImpactReport {
         changed: changed.to_string(),
         bounds: ImpactBoundsSerde {
@@ -548,11 +657,14 @@ pub async fn impact_live(
         failures: Vec::new(),
         sources: Vec::new(),
     };
-    for spec in &selected {
+    for spec in specs {
         match source_graph_live(spec).await {
             Ok(graph) => {
+                selected.push(qualifier.is_none_or(|q| {
+                    !super::federation::specs_matching(std::slice::from_ref(spec), q).is_empty()
+                }));
                 report.sources.push(graph.source.clone());
-                walk(&graph, bare, bounds, &mut report);
+                graphs.push(graph);
             }
             Err(f) => {
                 if failure_is_fatal(spec, mode) {
@@ -562,6 +674,8 @@ pub async fn impact_live(
             }
         }
     }
+    let seeds = resolve_seeds(&graphs, &selected, bare, &mut report)?;
+    walk(&graphs, seeds, bounds, &mut report);
     Ok(report)
 }
 
@@ -572,26 +686,18 @@ pub fn impact_snapshot(
     bounds: ImpactBounds,
 ) -> Result<ImpactReport, ConstellationError> {
     let (bare, qualifier) = super::federation::parse_qualified_ref(changed);
-    let selected: Vec<&super::snapshot::SnapshotSourceEntry> = match qualifier {
-        Some(qualifier) => {
-            let matched: Vec<&super::snapshot::SnapshotSourceEntry> = snapshot
-                .sources
-                .iter()
-                .filter(|entry| {
-                    let id =
-                        super::federation::source_id_for(std::path::Path::new(&entry.source_path));
-                    id == qualifier || id.starts_with(qualifier)
-                })
-                .collect();
-            if matched.is_empty() {
-                return Err(ConstellationError::SourceUnavailable {
-                    detail: format!("qualifier @{qualifier} matches no source in this snapshot"),
-                });
-            }
-            matched
-        }
-        None => snapshot.sources.iter().collect(),
-    };
+    if let Some(q) = qualifier
+        && !snapshot
+            .sources
+            .iter()
+            .any(|entry| super::snapshot::entry_matches_qualifier(entry, q))
+    {
+        return Err(ConstellationError::SourceUnavailable {
+            detail: format!("qualifier @{q} matches no source in this snapshot"),
+        });
+    }
+    let mut graphs = Vec::new();
+    let mut selected = Vec::new();
     let mut report = ImpactReport {
         changed: changed.to_string(),
         bounds: ImpactBoundsSerde {
@@ -612,11 +718,14 @@ pub fn impact_snapshot(
             .collect(),
         sources: Vec::new(),
     };
-    for entry in selected {
+    for entry in &snapshot.sources {
         match source_graph_snapshot(entry) {
             Ok(graph) => {
+                selected.push(
+                    qualifier.is_none_or(|q| super::snapshot::entry_matches_qualifier(entry, q)),
+                );
                 report.sources.push(graph.source.clone());
-                walk(&graph, bare, bounds, &mut report);
+                graphs.push(graph);
             }
             Err(reason) => report.failures.push(SourceFailure {
                 path: entry.source_path.clone(),
@@ -624,13 +733,30 @@ pub fn impact_snapshot(
             }),
         }
     }
+    let seeds = resolve_seeds(&graphs, &selected, bare, &mut report)?;
+    walk(&graphs, seeds, bounds, &mut report);
     Ok(report)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use tempfile::TempDir;
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     fn doc(id: &str, kind: &str, links: &[(&str, &str)]) -> String {
         let mut s = format!("---\nid: {id}\nkind: {kind}\nstatus: accepted\ntitle: {id} title\n");
@@ -654,12 +780,12 @@ mod tests {
         std::fs::create_dir_all(root.join("notes")).unwrap();
         std::fs::write(
             root.join("adrs/SEED.md"),
-            doc("SEED-001", "adr", &[("GHOST-999", "informs")]),
+            doc("ADR-001", "adr", &[("GHOST-999", "informs")]),
         )
         .unwrap();
         std::fs::write(
             root.join("adrs/A.md"),
-            doc("ADR-100", "adr", &[("SEED-001", "based_on")]),
+            doc("ADR-100", "adr", &[("ADR-001", "based_on")]),
         )
         .unwrap();
         std::fs::write(
@@ -667,13 +793,13 @@ mod tests {
             doc(
                 "ADR-101",
                 "adr",
-                &[("ADR-100", "based_on"), ("SEED-001", "informs")],
+                &[("ADR-100", "based_on"), ("ADR-001", "informs")],
             ),
         )
         .unwrap();
         std::fs::write(
             root.join("notes/N.md"),
-            doc("NOTE-200", "note", &[("SEED-001", "references")]),
+            doc("NOTE-200", "note", &[("ADR-001", "references")]),
         )
         .unwrap();
         std::fs::write(
@@ -690,7 +816,7 @@ mod tests {
         let specs = vec![SourceSpec::new(ws.path().join(".forgeplan"))];
         let report = impact_live(
             &specs,
-            "SEED-001",
+            "ADR-001",
             ImpactBounds::default(),
             QueryMode::Strict,
         )
@@ -704,7 +830,7 @@ mod tests {
                 .iter()
                 .find(|n| n.canonical_key.contains(k) || n.display_id.as_deref() == Some(k))
         };
-        // ADR-100 is structurally direct on SEED-001.
+        // ADR-100 is structurally direct on ADR-001.
         let a = by_key("ADR-100").expect("ADR-100 impacted");
         assert_eq!(a.severity, ImpactSeverity::Direct);
         assert_eq!(a.depth, 1);
@@ -738,7 +864,7 @@ mod tests {
         let specs = vec![SourceSpec::new(ws.path().join(".forgeplan"))];
         let report = impact_live(
             &specs,
-            "NOPE-000",
+            "ADR-999",
             ImpactBounds::default(),
             QueryMode::Strict,
         )
@@ -754,17 +880,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join(".forgeplan/adrs");
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("R.md"), doc("ROOT-0", "adr", &[])).unwrap();
+        std::fs::write(root.join("R.md"), doc("ADR-0", "adr", &[])).unwrap();
         for (i, prev) in [(1, 0), (2, 1), (3, 2), (4, 3)] {
             std::fs::write(
                 root.join(format!("N{i}.md")),
                 doc(
-                    &format!("NODE-{i}"),
+                    &format!("ADR-{i}"),
                     "adr",
-                    &[(
-                        &format!("{}-{prev}", if prev == 0 { "ROOT" } else { "NODE" }),
-                        "based_on",
-                    )],
+                    &[(&format!("ADR-{prev}"), "based_on")],
                 ),
             )
             .unwrap();
@@ -772,7 +895,7 @@ mod tests {
         let specs = vec![SourceSpec::new(tmp.path().join(".forgeplan"))];
         let report = impact_live(
             &specs,
-            "ROOT-0",
+            "ADR-0",
             ImpactBounds {
                 max_depth: 2,
                 max_nodes: 256,
@@ -798,7 +921,7 @@ mod tests {
         ];
         let err = impact_live(
             &specs,
-            "SEED-001",
+            "ADR-001",
             ImpactBounds::default(),
             QueryMode::Strict,
         )
@@ -813,7 +936,7 @@ mod tests {
         ];
         let report = impact_live(
             &specs,
-            "SEED-001",
+            "ADR-001",
             ImpactBounds::default(),
             QueryMode::Strict,
         )
@@ -828,7 +951,7 @@ mod tests {
         ];
         let report = impact_live(
             &specs,
-            "SEED-001",
+            "ADR-001",
             ImpactBounds::default(),
             QueryMode::AllowPartial,
         )
@@ -836,6 +959,119 @@ mod tests {
         .unwrap();
         assert_eq!(report.failures.len(), 1);
         assert!(!report.impacted.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cross_source_live_and_git_snapshot_impact_and_graph() {
+        let tmp = TempDir::new().unwrap();
+        let hub = tmp.path().join("hub");
+        let shared = tmp.path().join("shared");
+        for repo in [&hub, &shared] {
+            std::fs::create_dir_all(repo.join(".forgeplan/adrs")).unwrap();
+            std::fs::create_dir_all(repo.join(".forgeplan/prds")).unwrap();
+            std::fs::write(
+                repo.join(".forgeplan/adrs/ADR-001.md"),
+                doc("ADR-001", "adr", &[]),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            hub.join(".forgeplan/prds/PRD-002.md"),
+            doc("PRD-002", "prd", &[("ADR-001@shared", "based_on")]),
+        )
+        .unwrap();
+        std::fs::write(
+            hub.join(".forgeplan/prds/PRD-003.md"),
+            doc("PRD-003", "prd", &[("PRD-002", "based_on")]),
+        )
+        .unwrap();
+        for repo in [&hub, &shared] {
+            git_in(repo, &["init", "-q"]);
+            git_in(repo, &["config", "user.email", "test@example.invalid"]);
+            git_in(repo, &["config", "user.name", "test"]);
+            git_in(repo, &["add", "-A"]);
+            git_in(repo, &["commit", "-qm", "initial"]);
+        }
+        let specs = vec![
+            SourceSpec::new(hub.join(".forgeplan")),
+            SourceSpec::new(shared.join(".forgeplan")),
+        ];
+        let check = |report: &ImpactReport, graph: &super::super::graph::GraphOutcome| {
+            assert_eq!(report.sources.len(), 2);
+            assert!(report.failures.is_empty());
+            let hub_id = &report
+                .sources
+                .iter()
+                .find(|s| s.path.contains("/hub/"))
+                .unwrap()
+                .source_id;
+            let shared_id = &report
+                .sources
+                .iter()
+                .find(|s| s.path.contains("/shared/"))
+                .unwrap()
+                .source_id;
+            let direct = report
+                .impacted
+                .iter()
+                .find(|n| n.display_id.as_deref() == Some("PRD-002"))
+                .unwrap();
+            assert_eq!(direct.severity, ImpactSeverity::Direct);
+            assert_eq!(&direct.source.source_id, hub_id);
+            assert_eq!(direct.path[0].source_id, *hub_id);
+            assert_eq!(direct.path[0].relation, "based_on");
+            let transitive = report
+                .impacted
+                .iter()
+                .find(|n| n.display_id.as_deref() == Some("PRD-003"))
+                .unwrap();
+            assert_eq!(transitive.severity, ImpactSeverity::Transitive);
+            assert_eq!(transitive.depth, 2);
+            assert_eq!(transitive.path.len(), 2);
+            assert!(transitive.path.iter().all(|step| step.source_id == *hub_id));
+            assert!(
+                !report
+                    .impacted
+                    .iter()
+                    .any(|n| n.display_id.as_deref() == Some("ADR-001"))
+            );
+            let edge = graph.edges.iter().find(|e| e.from == "PRD-002").unwrap();
+            assert_eq!(edge.resolved.as_deref(), Some("ADR-001"));
+            assert_eq!(edge.resolved_source_id.as_deref(), Some(shared_id.as_str()));
+            assert_eq!(edge.source_id, *hub_id);
+        };
+        let live = impact_live(
+            &specs,
+            "ADR-001@shared",
+            ImpactBounds::default(),
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+        let live_graph =
+            super::super::graph::graph_live(&specs, Default::default(), QueryMode::Strict)
+                .await
+                .unwrap();
+        check(&live, &live_graph);
+        let snapshot = super::super::snapshot::capture_snapshot(&specs, None).unwrap();
+        std::fs::write(
+            hub.join(".forgeplan/prds/PRD-002.md"),
+            doc("PRD-002", "prd", &[]),
+        )
+        .unwrap();
+        let pinned = impact_snapshot(&snapshot, "ADR-001@shared", ImpactBounds::default()).unwrap();
+        let pinned_graph =
+            super::super::graph::graph_snapshot(&snapshot, Default::default()).unwrap();
+        check(&pinned, &pinned_graph);
+        let shared_id = &pinned
+            .sources
+            .iter()
+            .find(|s| s.path.contains("/shared/"))
+            .unwrap()
+            .source_id;
+        let qualified = format!("ADR-001@{shared_id}");
+        let pinned_by_id = impact_snapshot(&snapshot, &qualified, ImpactBounds::default()).unwrap();
+        assert_eq!(pinned_by_id.impacted.len(), 2);
     }
 
     #[tokio::test]
@@ -861,8 +1097,17 @@ mod tests {
             report.changed, qualified,
             "the receipt echoes what was asked"
         );
-        assert_eq!(report.sources.len(), 1, "only the named source is walked");
-        assert_eq!(report.sources[0].source_id, second_id);
+        assert_eq!(
+            report.sources.len(),
+            2,
+            "all admitted sources are witnessed"
+        );
+        assert!(
+            report
+                .sources
+                .iter()
+                .any(|source| source.source_id == second_id)
+        );
         assert!(
             report
                 .impacted
@@ -883,5 +1128,189 @@ mod tests {
             matches!(unknown, Err(ConstellationError::SourceUnavailable { .. })),
             "an unmatched qualifier is a named refusal"
         );
+    }
+    #[tokio::test]
+    async fn incomplete_live_source_is_failed_as_a_whole() {
+        let good = ws();
+        let bad = TempDir::new().unwrap();
+        let bad_root = bad.path().join(".forgeplan");
+        std::fs::create_dir_all(bad_root.join("adrs")).unwrap();
+        std::fs::write(bad_root.join("adrs/SEED.md"), doc("ADR-001", "adr", &[])).unwrap();
+        std::fs::write(
+            bad_root.join("adrs/DEPENDENT.md"),
+            doc("ADR-777", "adr", &[("ADR-001", "based_on")]),
+        )
+        .unwrap();
+        std::fs::write(bad_root.join("adrs/BROKEN.md"), "---\nid: [invalid\n").unwrap();
+        let specs = vec![
+            SourceSpec::new(good.path().join(".forgeplan")),
+            SourceSpec::new(&bad_root),
+        ];
+
+        let strict = impact_live(
+            &specs,
+            "ADR-001",
+            ImpactBounds::default(),
+            QueryMode::Strict,
+        )
+        .await
+        .expect_err("an incomplete required source must refuse a strict impact report");
+        assert!(matches!(
+            strict,
+            ConstellationError::SourceUnavailable { .. }
+        ));
+
+        let partial = impact_live(
+            &specs,
+            "ADR-001",
+            ImpactBounds::default(),
+            QueryMode::AllowPartial,
+        )
+        .await
+        .unwrap();
+        assert_eq!(partial.failures.len(), 1);
+        assert_eq!(partial.failures[0].path, bad_root.display().to_string());
+        assert!(partial.failures[0].reason.contains("adrs/BROKEN.md"));
+        assert_eq!(partial.sources.len(), 1);
+        assert!(
+            partial
+                .impacted
+                .iter()
+                .any(|node| node.display_id.as_deref() == Some("ADR-100"))
+        );
+        assert!(
+            partial
+                .impacted
+                .iter()
+                .all(|node| node.display_id.as_deref() != Some("ADR-777")),
+            "valid documents from the invalid source must not leak into impact results"
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_key_collision_is_a_source_failure() {
+        let good = ws();
+        let bad = TempDir::new().unwrap();
+        let bad_root = bad.path().join(".forgeplan");
+        std::fs::create_dir_all(bad_root.join("adrs")).unwrap();
+        let duplicate = doc("ADR-777", "adr", &[("ADR-001", "based_on")]);
+        std::fs::write(bad_root.join("adrs/A.md"), &duplicate).unwrap();
+        std::fs::write(bad_root.join("adrs/B.md"), &duplicate).unwrap();
+        let specs = vec![
+            SourceSpec::new(good.path().join(".forgeplan")),
+            SourceSpec::new(&bad_root),
+        ];
+
+        let strict = impact_live(
+            &specs,
+            "ADR-001",
+            ImpactBounds::default(),
+            QueryMode::Strict,
+        )
+        .await
+        .expect_err("duplicate canonical keys must refuse a strict impact report");
+        assert!(matches!(
+            strict,
+            ConstellationError::SourceUnavailable { .. }
+        ));
+
+        let partial = impact_live(
+            &specs,
+            "ADR-001",
+            ImpactBounds::default(),
+            QueryMode::AllowPartial,
+        )
+        .await
+        .unwrap();
+        assert_eq!(partial.failures.len(), 1);
+        assert_eq!(partial.failures[0].path, bad_root.display().to_string());
+        assert!(partial.failures[0].reason.contains("IdentityCollision"));
+        assert_eq!(partial.sources.len(), 1);
+        assert!(
+            partial
+                .impacted
+                .iter()
+                .all(|node| node.display_id.as_deref() != Some("ADR-777"))
+        );
+    }
+
+    #[test]
+    fn malformed_pinned_artifact_is_a_named_snapshot_failure() {
+        let tmp = TempDir::new().unwrap();
+        let fp = tmp.path().join(".forgeplan");
+        std::fs::create_dir_all(fp.join("adrs")).unwrap();
+        std::fs::write(fp.join("adrs/SEED.md"), doc("ADR-001", "adr", &[])).unwrap();
+        std::fs::write(
+            fp.join("adrs/DEPENDENT.md"),
+            doc("ADR-777", "adr", &[("ADR-001", "based_on")]),
+        )
+        .unwrap();
+        std::fs::write(fp.join("adrs/BROKEN.md"), "---\nid: [invalid\n").unwrap();
+        std::fs::write(fp.join("README.md"), "---\nid: [unrelated\n").unwrap();
+        git_in(tmp.path(), &["init", "-q"]);
+        git_in(
+            tmp.path(),
+            &["config", "user.email", "test@example.invalid"],
+        );
+        git_in(tmp.path(), &["config", "user.name", "test"]);
+        git_in(tmp.path(), &["add", "-A"]);
+        git_in(tmp.path(), &["commit", "-qm", "snapshot"]);
+
+        let snapshot =
+            super::super::snapshot::capture_snapshot(&[SourceSpec::new(&fp)], None).unwrap();
+        assert_eq!(snapshot.sources[0].files, 3);
+        let report = impact_snapshot(&snapshot, "ADR-001", ImpactBounds::default()).unwrap();
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(
+            std::fs::canonicalize(&report.failures[0].path).unwrap(),
+            fp.canonicalize().unwrap()
+        );
+        assert!(report.failures[0].reason.contains("adrs/BROKEN.md"));
+        assert!(report.sources.is_empty());
+        assert!(report.impacted.is_empty());
+    }
+    #[tokio::test]
+    async fn ambiguous_qualified_edge_remains_unresolved() {
+        let first = ws();
+        let second = ws();
+        std::fs::write(
+            first.path().join(".forgeplan/adrs/AMBIGUOUS.md"),
+            doc("ADR-888", "adr", &[("ADR-001@.forgeplan", "based_on")]),
+        )
+        .unwrap();
+        let specs = vec![
+            SourceSpec::new(first.path().join(".forgeplan")),
+            SourceSpec::new(second.path().join(".forgeplan")),
+        ];
+        let report = impact_live(
+            &specs,
+            "ADR-001",
+            ImpactBounds::default(),
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+        assert!(
+            report
+                .unresolved
+                .iter()
+                .any(|edge| edge.target == "ADR-001@.forgeplan")
+        );
+        assert!(
+            !report
+                .impacted
+                .iter()
+                .any(|node| node.display_id.as_deref() == Some("ADR-888"))
+        );
+        let graph = super::super::graph::graph_live(&specs, Default::default(), QueryMode::Strict)
+            .await
+            .unwrap();
+        let edge = graph
+            .edges
+            .iter()
+            .find(|edge| edge.target == "ADR-001@.forgeplan")
+            .unwrap();
+        assert!(edge.resolved.is_none());
+        assert!(edge.resolved_source_id.is_none());
     }
 }

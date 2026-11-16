@@ -1,6 +1,6 @@
 ---
 title: "forgeplan constellation add"
-description: "Add a `.forgeplan` directory as a source. Validates the path at registration time — a symlink or a non-workspace fails here, not at every later read"
+description: "Добавить источник в созвездие. Корень .forgeplan проверяется при регистрации и чтении текущих данных; символьные ссылки отклоняются."
 ---
 
 ## Использование
@@ -13,7 +13,7 @@ description: "Add a `.forgeplan` directory as a source. Validates the path at re
 Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan constellation add --help`.
 
 ```text
-Add a `.forgeplan` directory as a source. Validates the path at registration time — a symlink or a non-workspace fails here, not at every later read
+Add a `.forgeplan` directory as a source. Rejects symlinks and non-workspaces at registration. Live reads recheck the registered source boundary
 
 Usage: forgeplan constellation add [OPTIONS] <PATH>
 

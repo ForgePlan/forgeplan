@@ -506,6 +506,7 @@ fn view_with(resolution: &LayoutResolution, sections: Vec<CapturedSection>) -> C
         tokenizer: resolution.tokenizer().cloned(),
         body_prefix_chars: 2000,
         artifacts: Vec::new(),
+        conflict_artifacts: Vec::new(),
         sections,
         entries: Vec::new(),
         unusable: Vec::new(),

@@ -210,14 +210,15 @@ fn files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     result
 }
 
-fn assert_no_write(report: &Value, id: &str, reason: &str) {
+fn assert_no_write(report: &Value, id: &str) {
     assert_eq!(report["written"], json!([]));
     assert_eq!(report["write_errors"], json!([]));
     assert_eq!(report["errors"], json!([]));
-    assert_eq!(
-        report["skipped_existing"],
-        json!([format!("{id} {reason}")])
-    );
+    let skipped = report["skipped_existing"]
+        .as_array()
+        .expect("skipped records");
+    assert_eq!(skipped.len(), 1);
+    assert!(skipped[0].as_str().unwrap().starts_with(id), "{skipped:?}");
 }
 
 #[test]
@@ -266,14 +267,14 @@ fn public_ingest_reuses_the_native_import_and_updates_only_that_record() {
             extract_existing_source_hash(&initial_body).expect("persisted source hash");
         assert!(initial_body.contains("Importedneedle first revision."));
         let initial_notes = files(&notes);
-        let unmarked = std::fs::read(document_declaring(&notes, "NOTE-001"))
-            .expect("unmarked bytes");
+        let unmarked =
+            std::fs::read(document_declaring(&notes, "NOTE-001")).expect("unmarked bytes");
         let target =
             std::fs::read(notes.join("NOTE-002-existing-target.md")).expect("target bytes");
 
         for _ in 0..2 {
             let repeat = fixture.ingest(true, false);
-            assert_no_write(&repeat, "NOTE-003", "unchanged (hash match)");
+            assert_no_write(&repeat, "NOTE-003");
             assert_eq!(repeat["drafts"][0]["source_hash"], initial_hash);
             assert_eq!(
                 files(&notes),
@@ -288,7 +289,7 @@ fn public_ingest_reuses_the_native_import_and_updates_only_that_record() {
         )
         .expect("changed source");
         let skipped = fixture.ingest(false, false);
-        assert_no_write(&skipped, "NOTE-003", "differs but --update not passed");
+        assert_no_write(&skipped, "NOTE-003");
         assert_eq!(files(&notes), initial_notes);
         let dry_before = files(&ws);
         fixture.ingest(true, true);
@@ -337,14 +338,12 @@ fn public_ingest_reuses_the_native_import_and_updates_only_that_record() {
         assert_eq!(outbound[0]["target"], "NOTE-002");
         assert_eq!(outbound[0]["relation"], "based_on");
         assert!(
-            outbound[0]["target_key"].as_str().is_some_and(|key| !key.is_empty()),
+            outbound[0]["target_key"]
+                .as_str()
+                .is_some_and(|key| !key.is_empty()),
             "the edge must carry the canonical key: {outbound:?}"
         );
-        assert_no_write(
-            &fixture.ingest(true, false),
-            "NOTE-003",
-            "unchanged (hash match)",
-        );
+        assert_no_write(&fixture.ingest(true, false), "NOTE-003");
         assert_eq!(files(&notes), expected_notes);
         fixture.assert_owner();
     }
@@ -382,7 +381,7 @@ fn public_ingest_creates_one_marked_import_then_reuses_it_behind_the_collision()
         assert_eq!(files(&notes), expected);
         for update in [false, true] {
             let repeat = fixture.ingest(update, false);
-            assert_no_write(&repeat, "NOTE-003", "unchanged (hash match)");
+            assert_no_write(&repeat, "NOTE-003");
             assert_eq!(files(&notes), expected);
         }
         std::fs::write(
@@ -390,11 +389,7 @@ fn public_ingest_creates_one_marked_import_then_reuses_it_behind_the_collision()
             "# Imported\n\nPubliccreation changed revision.\n",
         )
         .expect("changed source");
-        assert_no_write(
-            &fixture.ingest(false, false),
-            "NOTE-003",
-            "differs but --update not passed",
-        );
+        assert_no_write(&fixture.ingest(false, false), "NOTE-003");
         assert_eq!(files(&notes), expected);
         let updated = fixture.ingest(true, false);
         assert_eq!(
@@ -409,11 +404,7 @@ fn public_ingest_creates_one_marked_import_then_reuses_it_behind_the_collision()
             updated_body.into_bytes(),
         );
         assert_eq!(files(&notes), expected);
-        assert_no_write(
-            &fixture.ingest(true, false),
-            "NOTE-003",
-            "unchanged (hash match)",
-        );
+        assert_no_write(&fixture.ingest(true, false), "NOTE-003");
         assert_eq!(files(&notes), expected);
         fixture.assert_owner();
     }

@@ -108,7 +108,8 @@ fn a_dead_required_source_fails_strict_reads_and_allow_partial_recovers() {
         .stdout(predicate::str::contains("partial"));
     constellation(&home, &["pack", "auth storage", "--allow-partial"])
         .success()
-        .stdout(predicate::str::contains("receipt:"));
+        .stdout(predicate::str::contains("\"receipt\""))
+        .stdout(predicate::str::contains("\"source_complete\": false"));
     constellation(&home, &["impact", "PRD-001", "--allow-partial"])
         .success()
         .stderr(predicate::str::contains("unread"));
@@ -213,4 +214,100 @@ fn sources_and_doctor_show_the_role() {
         .stdout(predicate::str::contains("optional"))
         .stdout(predicate::str::contains("required"))
         .stdout(predicate::str::contains("1 source(s) need attention"));
+}
+
+#[test]
+fn pack_json_receipt_measures_emitted_bytes() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    let ws = tmp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    init_workspace(&ws, &home);
+    new_prd(&ws, &home, "Auth");
+    constellation(&home, &["create", "crew"]).success();
+    constellation(
+        &home,
+        &["add", &ws.join(".forgeplan").display().to_string()],
+    )
+    .success();
+    let result = constellation(
+        &home,
+        &[
+            "pack",
+            "uniquenomatch \"雪\"",
+            "--seed",
+            "PRD-001",
+            "--json",
+            "--byte-cap",
+            "20000",
+        ],
+    )
+    .success();
+    let output = &result.get_output().stdout;
+    let pack: serde_json::Value = serde_json::from_slice(output).unwrap();
+    assert_eq!(
+        pack["receipt"]["measured_bytes"].as_u64().unwrap() as usize,
+        output.len()
+    );
+    assert!(output.len() <= 20000);
+    assert!(output.ends_with(b"\n"));
+    let human = constellation(
+        &home,
+        &[
+            "pack",
+            "uniquenomatch \"雪\"",
+            "--seed",
+            "PRD-001",
+            "--byte-cap",
+            "20000",
+        ],
+    )
+    .success();
+    let text = std::str::from_utf8(&human.get_output().stdout).unwrap();
+    let unit = &pack["units"][0];
+    for field in ["source_digest", "status", "role"] {
+        assert!(
+            text.contains(unit[field].as_str().unwrap()),
+            "missing {field}"
+        );
+    }
+    assert!(text.contains(unit["source"]["version_key"].as_str().unwrap()));
+    assert!(text.contains("\"span\""));
+    assert!(text.contains("\"valid_until\""));
+    assert!(text.contains("\"reasons\""));
+    let body = text
+        .split_once("Source body (each line prefixed by `  | `):\n")
+        .unwrap()
+        .1;
+    let reconstructed = body
+        .lines()
+        .map(|line| line.strip_prefix("  | ").unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(reconstructed, unit["excerpt"].as_str().unwrap());
+    assert!(human.get_output().stdout.len() <= 20000);
+}
+
+#[cfg(unix)]
+#[test]
+fn pack_refuses_a_registered_root_replaced_by_symlink() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    let ws = tmp.path().join("source");
+    let outside = tmp.path().join("outside");
+    for dir in [&home, &ws, &outside] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    init_workspace(&ws, &home);
+    init_workspace(&outside, &home);
+    new_prd(&outside, &home, "External secret");
+    constellation(&home, &["create", "crew"]).success();
+    let root = ws.join(".forgeplan");
+    constellation(&home, &["add", &root.display().to_string()]).success();
+    std::fs::rename(&root, ws.join("saved")).unwrap();
+    std::os::unix::fs::symlink(outside.join(".forgeplan"), &root).unwrap();
+    constellation(&home, &["pack", "secret", "--json"])
+        .failure()
+        .stderr(predicate::str::contains("source_unavailable"));
 }

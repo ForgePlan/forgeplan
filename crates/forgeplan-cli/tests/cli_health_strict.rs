@@ -62,7 +62,11 @@ fn first_id_with_prefix(ws: &std::path::Path, subdir: &str, prefix: &str) -> Str
             let Some(value) = line.strip_prefix("id: ") else {
                 continue;
             };
-            let id = value.trim().trim_matches('"').trim_matches('\'').to_string();
+            let id = value
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string();
             if id.starts_with(prefix) {
                 ids.push(id);
             }
@@ -159,7 +163,13 @@ fn health_strict_exits_nonzero_on_blind_spots() {
             text.lines()
                 .take(12)
                 .find_map(|line| line.strip_prefix("id: "))
-                .map(|value| value.trim().trim_matches('"').trim_matches('\'').to_string())
+                .map(|value| {
+                    value
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .to_string()
+                })
                 .expect("the document declares its id")
         });
 

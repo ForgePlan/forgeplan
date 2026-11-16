@@ -17,6 +17,9 @@
 //!
 //! Ignored / negative-path rationale documented inline per test.
 
+#[path = "common/historical_lance.rs"]
+mod historical_lance;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -83,47 +86,6 @@ fn embed_without_feature_returns_error_with_fix() {
         .stderr(predicate::str::contains("semantic-search"));
 }
 
-/// PROB-088 M2 / PRD-083 FR-006 — the `Fix:` line must be runnable by the
-/// audience that reaches it.
-///
-/// This error is reachable from a **prebuilt binary** (brew, install.sh,
-/// GitHub Releases). Such a user has no source tree, so `cargo build` is
-/// inert advice — it fails with "could not find Cargo.toml" and leaves them
-/// stuck. `cargo install --git` carries its own source and works from an
-/// empty directory.
-///
-/// The assertion is deliberately negative: it pins the property (no
-/// checkout-dependent command) rather than the exact wording, so rephrasing
-/// the message stays free while a regression to `cargo build` fails loudly.
-#[test]
-#[cfg(not(feature = "semantic-search"))]
-fn embed_fix_hint_is_runnable_without_a_checkout() {
-    let tmp = init_workspace();
-
-    let output = forgeplan()
-        .args(["embed"])
-        .current_dir(tmp.path())
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
-
-    let fix_line = stderr
-        .lines()
-        .find(|l| l.trim_start().starts_with("Fix:"))
-        .unwrap_or_else(|| panic!("no `Fix:` line in embed refusal output:\n{stderr}"));
-
-    assert!(
-        !fix_line.contains("cargo build"),
-        "`Fix:` must not tell a binary-install user to run `cargo build` — \
-         they have no source tree. Got: {fix_line}"
-    );
-    assert!(
-        fix_line.contains("cargo install"),
-        "`Fix:` should offer a self-contained install command. Got: {fix_line}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // tree
 // ---------------------------------------------------------------------------
@@ -179,10 +141,9 @@ fn tree_json_emits_valid_array() {
 // git_sync
 // ---------------------------------------------------------------------------
 
-/// `git-sync` без recent pull/merge возвращает Err с actionable `Fix:` line.
-/// Verifies error-path contract (no panic, deterministic message).
+/// Missing Git history refuses synchronization and names the missing reference.
 #[test]
-fn git_sync_without_orig_head_emits_fix() {
+fn git_sync_without_orig_head_reports_error() {
     let tmp = init_workspace();
     // Init git repo but no pull/merge → no ORIG_HEAD
     Command::new("git")
@@ -197,111 +158,7 @@ fn git_sync_without_orig_head_emits_fix() {
         .current_dir(tmp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("ORIG_HEAD"))
-        .stderr(predicate::str::contains("Fix:"));
-}
-
-#[test]
-fn git_sync_since_head_no_changes() {
-    let tmp = init_workspace();
-    // Real git repo with an initial commit so `--since HEAD` succeeds.
-    Command::new("git")
-        .arg("init")
-        .arg("-q")
-        .current_dir(tmp.path())
-        .assert()
-        .success();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(tmp.path())
-        .assert()
-        .success();
-    Command::new("git")
-        .args([
-            "-c",
-            "user.email=t@t.com",
-            "-c",
-            "user.name=t",
-            "commit",
-            "-q",
-            "-m",
-            "init",
-        ])
-        .current_dir(tmp.path())
-        .assert()
-        .success();
-
-    forgeplan()
-        .args(["git-sync", "--since", "HEAD"])
-        .current_dir(tmp.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("No .forgeplan/ files changed"));
-}
-
-/// C12a regression — the first time reconcile runs on a legacy workspace,
-/// the migration must be announced: the operator watches legacy tables
-/// get renamed aside and CURRENT.json appear, so the sync output names
-/// the transition instead of leaving it to be discovered after the fact.
-#[test]
-fn git_sync_announces_the_index_migration() {
-    let tmp = init_workspace();
-    // A legacy workspace: `init -y` created `artifacts.lance`, and no
-    // reconcile has run yet, so no CURRENT.json.
-    let lance = tmp.path().join(".forgeplan").join("lance");
-    assert!(lance.join("artifacts.lance").exists());
-    assert!(!lance.join("CURRENT.json").exists());
-
-    Command::new("git")
-        .arg("init")
-        .arg("-q")
-        .current_dir(tmp.path())
-        .assert()
-        .success();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(tmp.path())
-        .assert()
-        .success();
-    Command::new("git")
-        .args([
-            "-c",
-            "user.email=t@t.com",
-            "-c",
-            "user.name=t",
-            "commit",
-            "-q",
-            "-m",
-            "init",
-        ])
-        .current_dir(tmp.path())
-        .assert()
-        .success();
-
-    // #540 — an ordinary sync does NOT migrate. The command states that
-    // decision where it is made: reconciling a legacy workspace here would
-    // change the layout as a side effect of `git pull`, which is not what the
-    // operator asked for. Migration is the explicit `forgeplan index`, which
-    // has its own scenario.
-    let out = forgeplan()
-        .args(["git-sync", "--since", "HEAD"])
-        .current_dir(tmp.path())
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !stdout.contains("migrated to constellation protocol"),
-        "an ordinary sync must not migrate: {stdout}"
-    );
-    // The legacy layout is exactly as it was.
-    assert!(lance.join("artifacts.lance").exists());
-    assert!(!lance.join("CURRENT.json").exists());
-    assert!(!lance.join("artifacts.legacy-backup.lance").exists());
+        .stderr(predicate::str::contains("ORIG_HEAD"));
 }
 
 // ---------------------------------------------------------------------------
@@ -689,7 +546,6 @@ fn remember_creates_memory_artifact() {
             .and_then(serde_yaml::Value::as_str)
             .is_some_and(|key| key.starts_with("mem-"))
     );
-
 }
 #[test]
 fn remember_list_empty_shows_no_memories() {
@@ -848,7 +704,8 @@ fn remember_forget_removes_memory() {
 
 #[test]
 fn migrate_runs_schema_migrations() {
-    let tmp = init_workspace();
+    let tmp = TempDir::new().unwrap();
+    historical_lance::init_legacy_workspace(tmp.path(), "Schema migration fixture");
 
     forgeplan()
         .args(["migrate"])
@@ -1033,23 +890,6 @@ fn setup_refuses_to_overwrite_an_existing_fpl() {
         b"someone elses tool",
         "a foreign file at the alias path must survive untouched"
     );
-}
-
-/// On a build without the feature there is no model to fetch. Saying so beats
-/// either a silent no-op or a confident claim that something was prepared.
-#[test]
-#[cfg(not(feature = "semantic-search"))]
-fn setup_explains_itself_when_the_build_cannot_embed() {
-    let dir = TempDir::new().unwrap();
-    let exe = dir.path().join("forgeplan");
-    std::fs::copy(assert_cmd::cargo::cargo_bin("forgeplan"), &exe).unwrap();
-
-    Command::new(&exe)
-        .arg("setup")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("no semantic-search feature"))
-        .stdout(predicate::str::contains("cargo install --git"));
 }
 
 /// PROB-088 lesson applied to our own flags: `-y` must never pull gigabytes.

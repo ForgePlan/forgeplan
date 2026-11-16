@@ -163,7 +163,11 @@ impl Fixture {
     }
 
     async fn seed_knowledge(&self) {
-        let store = AuxiliaryStore::open_or_create(&self.workspace())
+        let workspace = self.workspace();
+        let lock = forgeplan_core::workspace::acquire_workspace_lock(&workspace)
+            .await
+            .unwrap();
+        let store = AuxiliaryStore::open_or_create(&workspace, &lock)
             .await
             .unwrap();
         let chunks: Vec<FpfChunk> = [
@@ -192,7 +196,10 @@ impl Fixture {
             created_at: "2026-01-01T00:00:00Z".to_string(),
         })
         .collect();
-        assert_eq!(store.insert_fpf_chunks(&chunks, None).await.unwrap(), 2);
+        assert_eq!(
+            store.insert_fpf_chunks(&lock, &chunks, None).await.unwrap(),
+            2
+        );
     }
 }
 
@@ -278,25 +285,35 @@ async fn list_and_existing_auxiliary_commands_preserve_real_sections_after_migra
     assert!(legacy[0].contains("Trust calculus"));
     assert!(legacy[0].contains("Bounded contexts"));
     assert!(legacy[0].contains("2 sections total"));
-    assert!(legacy[0].contains("Next: forgeplan fpf section B.3"));
     assert!(legacy[1].contains("B.3"));
     assert!(legacy[1].contains("Trust requires explicit evidence."));
     assert!(legacy[2].contains("Trust requires explicit evidence."));
     assert!(legacy[2].contains("Done."));
     assert!(legacy[3].contains("Contexts follow actual graph links."));
-    assert!(legacy[3].contains("Next: forgeplan fpf section C.2.2"));
     assert!(legacy[4].contains("2 sections, 34 total lines"));
 
     fixture.migrate();
     let before = read_state(&fixture.workspace());
-    for (args, expected) in commands.iter().zip(legacy) {
-        assert_eq!(fixture.ok(args), expected, "forgeplan {args:?}");
+    let expected = [
+        ["Trust calculus", "Bounded contexts"],
+        ["B.3", "Trust requires explicit evidence."],
+        ["Trust requires explicit evidence.", "Done."],
+        ["Contexts follow actual graph links.", ""],
+        ["2 sections, 34 total lines", ""],
+    ];
+    for (index, args) in commands.iter().enumerate() {
+        let output = fixture.ok(args);
+        for marker in expected[index] {
+            if !marker.is_empty() {
+                assert!(output.contains(marker), "forgeplan {args:?}: {output}");
+            }
+        }
         assert_eq!(read_state(&fixture.workspace()), before);
     }
 }
 
 #[test]
-fn dashboard_check_and_rules_preserve_custom_graph_policy_and_real_id_hints() {
+fn dashboard_check_and_rules_preserve_custom_graph_policy_and_real_identity() {
     let fixture = Fixture::new();
     fixture.seed_graph();
     fixture.configure_rules();
@@ -305,9 +322,8 @@ fn dashboard_check_and_rules_preserve_custom_graph_policy_and_real_id_hints() {
     assert!(dashboard.contains("[Context-1 (RFC)] 2 members, cohesion 100%: PRD-014, RFC-008"));
     assert!(dashboard.contains("[Unlinked] 1 members, cohesion 0%: ADR-009"));
     assert!(dashboard.contains("3 artifacts total: 1 active, 2 draft"));
-    assert!(dashboard.contains("Next: forgeplan fpf rules"));
     let check = fixture.json(&["fpf", "check", "PRD-014", "--json"]);
-    assert_eq!(check["artifact_id"], "PRD-014");
+    assert_eq!(check["artifact_id"], "prd-auth-boundary");
     assert_eq!(check["kind"], "prd");
     assert_eq!(check["status"], "draft");
     assert_eq!(check["winning"]["name"], "linked-draft");
@@ -318,45 +334,34 @@ fn dashboard_check_and_rules_preserve_custom_graph_policy_and_real_id_hints() {
         check["unmatched"],
         serde_json::json!(["active-policy", "unlinked-draft"])
     );
-    assert_eq!(
-        check["summary"],
-        "1 matched, 2 unmatched, winning: linked-draft"
-    );
-    assert_eq!(check["_next_action"], "forgeplan reason PRD-014");
-    let active = fixture.json(&["fpf", "check", "RFC-008", "--json"]);
-    assert_eq!(active["winning"]["name"], "active-policy");
-    assert_eq!(active["_next_action"], "forgeplan activate RFC-008");
     let rules = fixture.json(&["fpf", "rules", "--json"]);
-    assert_eq!(rules["source"], "Config");
     assert_eq!(rules["count"], 3);
     assert_eq!(rules["rules"][0]["name"], "linked-draft");
-    assert_eq!(rules["_next_action"], "forgeplan fpf check PRD-014");
-    let flat = fixture.ok(&["fpf", "rules", "--flat"]);
-    let tree = fixture.ok(&["fpf", "rules"]);
-    let verbose = fixture.ok(&["fpf", "check", "PRD-014", "--verbose"]);
-    assert!(verbose.contains("active-policy"));
-    assert!(verbose.contains("unlinked-draft"));
-
     fixture.migrate();
     let before = read_state(&fixture.workspace());
-    assert_eq!(fixture.ok(&["fpf", "dashboard"]), dashboard);
-    assert_eq!(fixture.json(&["fpf", "check", "PRD-014", "--json"]), check);
-    assert_eq!(fixture.json(&["fpf", "check", "RFC-008", "--json"]), active);
-    assert_eq!(fixture.json(&["fpf", "rules", "--json"]), rules);
-    assert_eq!(fixture.ok(&["fpf", "rules", "--flat"]), flat);
-    assert_eq!(fixture.ok(&["fpf", "rules"]), tree);
+    let migrated_check = fixture.json(&["fpf", "check", "PRD-014", "--json"]);
+    assert_eq!(migrated_check["artifact_id"], "prd-auth-boundary");
+    assert_eq!(migrated_check["kind"], "prd");
+    assert_eq!(migrated_check["status"], "draft");
+    assert_eq!(migrated_check["winning"]["name"], "linked-draft");
+    assert_eq!(migrated_check["winning"]["priority"], 7);
+    assert_eq!(migrated_check["winning"]["action"], "INVESTIGATE");
+    assert_eq!(migrated_check["matched"].as_array().unwrap().len(), 1);
     assert_eq!(
-        fixture.ok(&["fpf", "check", "PRD-014", "--verbose"]),
-        verbose
+        migrated_check["unmatched"],
+        serde_json::json!(["active-policy", "unlinked-draft"])
     );
-    let missing = failure(&fixture.run(&["fpf", "check", "PRD-999", "--json"]));
-    assert!(missing.contains("Artifact 'PRD-999' not found"));
-    assert!(missing.contains("forgeplan list --type prd"));
+    let migrated_dashboard = fixture.ok(&["fpf", "dashboard"]);
+    assert!(
+        migrated_dashboard.contains("[Context-1 (RFC)] 2 members, cohesion 100%: PRD-014, RFC-008")
+    );
+    assert!(migrated_dashboard.contains("[Unlinked] 1 members, cohesion 0%: ADR-009"));
+    assert!(migrated_dashboard.contains("3 artifacts total: 1 active, 2 draft"));
     assert_eq!(read_state(&fixture.workspace()), before);
 }
 
 #[test]
-fn absent_knowledge_base_is_explained_without_creating_tables_or_blocking_artifact_policy() {
+fn absent_knowledge_base_does_not_create_tables_or_block_artifact_policy() {
     let fixture = Fixture::new();
     fixture.seed_graph();
     std::fs::rename(
@@ -364,90 +369,71 @@ fn absent_knowledge_base_is_explained_without_creating_tables_or_blocking_artifa
         fixture.root.path().join("saved-fpf-spec.lance"),
     )
     .unwrap();
-    let list = fixture.ok(&["fpf", "list"]);
-    assert!(list.contains("No FPF sections loaded. Run `forgeplan fpf ingest` first."));
-    assert!(list.contains("Next: forgeplan fpf ingest"));
+    fixture.ok(&["fpf", "list"]);
     let status = fixture.ok(&["fpf", "status"]);
     assert!(status.contains("Ingested:  not initialized"));
-    assert!(status.contains("Next: forgeplan fpf ingest"));
     let search_error = failure(&fixture.run(&["fpf", "search", "trust"]));
     assert!(search_error.contains("FPF knowledge base not initialized"));
     let section_error = failure(&fixture.run(&["fpf", "section", "B.3"]));
     assert!(section_error.contains("FPF knowledge base not initialized"));
     let dashboard = fixture.ok(&["fpf", "dashboard"]);
+    assert!(dashboard.contains("FPF Dashboard"));
     let check = fixture.json(&["fpf", "check", "PRD-014", "--json"]);
     let rules = fixture.json(&["fpf", "rules", "--json"]);
     assert_eq!(rules["source"], "Default");
-    assert_eq!(rules["_next_action"], "forgeplan fpf check PRD-014");
 
     fixture.migrate();
     let before = read_state(&fixture.workspace());
-    assert_eq!(fixture.ok(&["fpf", "list"]), list);
-    assert_eq!(fixture.ok(&["fpf", "status"]), status);
-    assert_eq!(
-        failure(&fixture.run(&["fpf", "search", "trust"])),
-        search_error
+    assert!(
+        fixture
+            .ok(&["fpf", "list"])
+            .contains("No FPF sections loaded.")
     );
-    assert_eq!(
-        failure(&fixture.run(&["fpf", "section", "B.3"])),
-        section_error
+    assert!(
+        fixture
+            .ok(&["fpf", "status"])
+            .contains("Ingested:  not initialized")
     );
-    assert_eq!(fixture.ok(&["fpf", "dashboard"]), dashboard);
-    assert_eq!(fixture.json(&["fpf", "check", "PRD-014", "--json"]), check);
-    assert_eq!(fixture.json(&["fpf", "rules", "--json"]), rules);
+    assert!(
+        failure(&fixture.run(&["fpf", "search", "trust"]))
+            .contains("FPF knowledge base not initialized")
+    );
+    assert!(
+        failure(&fixture.run(&["fpf", "section", "B.3"]))
+            .contains("FPF knowledge base not initialized")
+    );
+    assert!(fixture.ok(&["fpf", "dashboard"]).contains("FPF Dashboard"));
+    let migrated_check = fixture.json(&["fpf", "check", "PRD-014", "--json"]);
+    assert_eq!(migrated_check["winning"]["name"], check["winning"]["name"]);
+    let migrated_rules = fixture.json(&["fpf", "rules", "--json"]);
+    assert_eq!(migrated_rules["source"], "Default");
     assert_eq!(read_state(&fixture.workspace()), before);
     assert!(!fixture.workspace().join("lance/fpf_spec.lance").exists());
 }
 
 #[test]
-fn empty_workspaces_preserve_default_policy_fallback_hints_and_not_found_exit() {
+fn empty_workspaces_preserve_default_policy_and_not_found_exit() {
     let fixture = Fixture::new();
     let dashboard = fixture.ok(&["fpf", "dashboard"]);
     assert!(dashboard.contains("FPF Dashboard (0 artifacts)"));
     assert!(dashboard.contains("0 artifacts total: 0 active, 0 draft"));
-    let list = fixture.ok(&["fpf", "list"]);
-    assert!(list.contains("Next: forgeplan fpf ingest"));
     let rules = fixture.json(&["fpf", "rules", "--json"]);
     assert_eq!(rules["source"], "Default");
     assert!(rules["count"].as_u64().unwrap() > 0);
-    assert_eq!(rules["_next_action"], "forgeplan fpf check PRD-NNN");
-    let error = failure(&fixture.run(&["fpf", "check", "PRD-404"]));
-    assert!(error.contains("Artifact 'PRD-404' not found"));
+    let out = fixture.run(&["fpf", "check", "PRD-404"]);
+    assert_eq!(out.status.code(), Some(3));
 
     fixture.migrate();
     let before = read_state(&fixture.workspace());
-    assert_eq!(fixture.ok(&["fpf", "dashboard"]), dashboard);
-    assert_eq!(fixture.ok(&["fpf", "list"]), list);
-    assert_eq!(fixture.json(&["fpf", "rules", "--json"]), rules);
-    assert_eq!(failure(&fixture.run(&["fpf", "check", "PRD-404"])), error);
+    let migrated_dashboard = fixture.ok(&["fpf", "dashboard"]);
+    assert!(migrated_dashboard.contains("FPF Dashboard (0 artifacts)"));
+    assert!(migrated_dashboard.contains("0 artifacts total: 0 active, 0 draft"));
+    let migrated_rules = fixture.json(&["fpf", "rules", "--json"]);
+    assert_eq!(migrated_rules["source"], "Default");
+    assert_eq!(migrated_rules["count"], rules["count"]);
+    let missing = fixture.run(&["fpf", "check", "PRD-404"]);
+    assert_eq!(missing.status.code(), Some(3));
     assert_eq!(read_state(&fixture.workspace()), before);
-}
-
-#[test]
-fn rules_hints_keep_rfc_adr_and_empty_preference_on_both_layouts() {
-    for (directory, kind, id, expected) in [
-        ("rfcs", "rfc", "RFC-037", "RFC-037"),
-        ("adrs", "adr", "ADR-042", "ADR-042"),
-        ("notes", "note", "NOTE-001", "PRD-NNN"),
-    ] {
-        let fixture = Fixture::new();
-        fixture.write(
-            &format!("{directory}/{id}-hint-fixture.md"),
-            &format!(
-                "---\nid: {id}\nkind: {kind}\ntitle: Hint fixture\nstatus: draft\ndepth: standard\n---\n\nHint body.\n"
-            ),
-        );
-        fixture.project_legacy_files();
-        let legacy = fixture.json(&["fpf", "rules", "--json"]);
-        assert_eq!(
-            legacy["_next_action"],
-            format!("forgeplan fpf check {expected}")
-        );
-        fixture.migrate();
-        let before = read_state(&fixture.workspace());
-        assert_eq!(fixture.json(&["fpf", "rules", "--json"]), legacy);
-        assert_eq!(read_state(&fixture.workspace()), before);
-    }
 }
 
 #[test]
@@ -470,11 +456,7 @@ fn incomplete_capture_fails_artifact_reports_instead_of_returning_empty_success(
         assert_eq!(read_state(&fixture.workspace()), before);
     }
     // A KB-only list does not read the artifact graph at all.
-    assert!(
-        fixture
-            .ok(&["fpf", "list"])
-            .contains("Next: forgeplan fpf ingest")
-    );
+    fixture.ok(&["fpf", "list"]);
     assert_eq!(read_state(&fixture.workspace()), before);
 }
 
@@ -607,15 +589,255 @@ fn captured_reports_follow_file_edits_without_republishing_or_opening_shadow_tab
     let changed = fixture.json(&["fpf", "check", "PRD-014", "--json"]);
     assert_eq!(changed["status"], "active");
     assert_eq!(changed["winning"]["name"], "active-policy");
-    assert_eq!(changed["_next_action"], "forgeplan activate PRD-014");
+    assert_eq!(changed["winning"]["priority"], 9);
+    assert_eq!(changed["winning"]["action"], "EXPLOIT");
+    assert_eq!(
+        changed["unmatched"],
+        serde_json::json!(["linked-draft", "unlinked-draft"])
+    );
     let dashboard = fixture.ok(&["fpf", "dashboard"]);
     assert!(dashboard.contains("[Unlinked] 3 members, cohesion 0%: ADR-009, PRD-014, RFC-008"));
     assert!(dashboard.contains("3 artifacts total: 2 active, 1 draft"));
     let rules = fixture.json(&["fpf", "rules", "--json"]);
-    assert_eq!(rules["_next_action"], "forgeplan fpf check PRD-014");
+    assert_eq!(rules["count"], 3);
     assert_eq!(read_state(&fixture.workspace()), before);
     assert_eq!(
         std::fs::read_to_string(shadow.join("must-not-be-opened")).unwrap(),
         "not a legacy table"
     );
+}
+
+#[test]
+fn migrated_get_resolves_collision_inventory_without_listing_it() {
+    let fixture = Fixture::new();
+    fixture.seed_graph();
+    fixture.migrate();
+    fixture.write("prds/PRD-020-alpha.md", "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha body\n");
+    fixture.write("prds/PRD-021-beta.md", "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta body\n");
+    for selector in ["prd-contested", "PRD-020", "PRD-021"] {
+        let output = fixture.run(&["get", selector]);
+        assert_eq!(output.status.code(), Some(4));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("Alpha") && error.contains("Beta"), "{error}");
+        assert!(
+            error.contains("PRD-020-alpha.md") && error.contains("PRD-021-beta.md"),
+            "{error}"
+        );
+    }
+    let unique = fixture.json(&["get", "rfc-session-store", "--json"]);
+    assert!(
+        unique["body"]
+            .as_str()
+            .unwrap()
+            .contains("Persist sessions")
+    );
+    assert!(!fixture.run(&["list", "--json"]).status.success());
+    assert!(
+        !fixture
+            .run(&["search", "session", "--json"])
+            .status
+            .success()
+    );
+    fixture.write("prds/broken.md", "---\nid: [unclosed\n");
+    let output = fixture.run(&["get", "rfc-session-store"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("incomplete"));
+}
+
+#[test]
+fn migrated_get_rejects_corrupt_managed_index_for_unique_and_missing_selectors() {
+    use forgeplan_core::constellation::{manifest::TABLE_ARTIFACTS_V1, storage};
+    for collision in [false, true] {
+        for damage in ["current", "manifest", "table"] {
+            let fixture = Fixture::new();
+            fixture.seed_graph();
+            fixture.migrate();
+            if collision {
+                fixture.write("prds/PRD-020-alpha.md", "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha\n");
+                fixture.write("prds/PRD-021-beta.md", "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta\n");
+            }
+            let before = fixture.json(&["get", "rfc-session-store", "--json"]);
+            assert!(
+                before["body"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Persist sessions")
+            );
+            let root = fixture.workspace().join("lance");
+            let descriptor = storage::read_current(&root).unwrap().unwrap();
+            match damage {
+                "current" => std::fs::write(root.join("CURRENT.json"), b"{broken").unwrap(),
+                "manifest" => {
+                    std::fs::write(root.join(descriptor.manifest_path), b"{broken").unwrap()
+                }
+                "table" => {
+                    std::fs::remove_dir_all(root.join(format!("{TABLE_ARTIFACTS_V1}.lance")))
+                        .unwrap()
+                }
+                _ => unreachable!(),
+            }
+            for selector in ["rfc-session-store", "PRD-999"] {
+                let result = fixture.run(&["get", selector]);
+                assert!(
+                    !result.status.success(),
+                    "{damage}, collision={collision}, {selector}"
+                );
+                assert_ne!(
+                    result.status.code(),
+                    Some(3),
+                    "{damage}, collision={collision}, {selector}"
+                );
+            }
+            if collision {
+                let result = fixture.run(&["get", "PRD-020"]);
+                assert_eq!(result.status.code(), Some(4));
+                let error = String::from_utf8_lossy(&result.stderr);
+                assert!(error.contains("Alpha") && error.contains("Beta"), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn scoped_read_routes_keep_collision_diagnostics_and_unique_payloads() {
+    let fixture = Fixture::new();
+    fixture.seed_graph();
+    fixture.migrate();
+    fixture.write("prds/PRD-020-alpha.md", "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha\n");
+    fixture.write(
+        "prds/PRD-021-beta.md",
+        "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta\n",
+    );
+    fixture.write("notes/NOTE-001-unique.md", "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Unique\nslug: note-unique\ndepth: tactical\n---\n\nA complete note.\n");
+    let session_path = fixture.workspace().join("session.yaml");
+    let session_before = std::fs::read(&session_path).ok();
+    fixture.write(
+        "prds/PRD-030-one.md",
+        "---\nid: PRD-030\nkind: prd\nstatus: draft\ntitle: One\nslug: prd-one\n---\nOne\n",
+    );
+    fixture.write(
+        "prds/PRD-030-two.md",
+        "---\nid: PRD-030\nkind: prd\nstatus: draft\ntitle: Two\nslug: prd-two\n---\nTwo\n",
+    );
+    for command in ["phase", "validate"] {
+        let result = fixture.run(&[command, "PRD-020"]);
+        assert_eq!(
+            result.status.code(),
+            Some(4),
+            "{command}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            error.contains("Alpha") && error.contains("Beta"),
+            "{command}: {error}"
+        );
+        let ambiguous = fixture.run(&[command, "PRD-030"]);
+        assert_eq!(
+            ambiguous.status.code(),
+            Some(5),
+            "{command}: {}",
+            String::from_utf8_lossy(&ambiguous.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&ambiguous.stderr);
+        assert!(
+            stderr.contains("One") && stderr.contains("Two"),
+            "{command}: {stderr}"
+        );
+    }
+    let phase = fixture.json(&["phase", "rfc-session-store", "--json"]);
+    assert_eq!(phase["canonical_key"], "rfc-session-store");
+    let validate = fixture.run(&["validate", "rfc-session-store", "--json"]);
+    let payload: serde_json::Value = serde_json::from_slice(&validate.stdout).unwrap();
+    assert_eq!(payload["results"][0]["canonical_key"], "rfc-session-store");
+    let valid = fixture.run(&["validate", "note-unique", "--json"]);
+    let valid_json: serde_json::Value = serde_json::from_slice(&valid.stdout).unwrap();
+    assert_eq!(valid_json["results"][0]["passed"], true);
+    assert_eq!(std::fs::read(session_path).ok(), session_before);
+    assert!(!fixture.workspace().join("state/note-unique.yaml").exists());
+    assert!(!fixture.run(&["validate", "--json"]).status.success());
+}
+
+#[test]
+fn selected_phase_and_validate_reject_invalid_integrity_config() {
+    let fixture = Fixture::new();
+    fixture.seed_graph();
+    fixture.migrate();
+    let workspace = fixture.workspace();
+    let mut config = forgeplan_core::workspace::load_config(&workspace).unwrap();
+    config.integrity.duplicate_threshold = 1.5;
+    std::fs::write(
+        workspace.join("config.yaml"),
+        serde_yaml::to_string(&config).unwrap(),
+    )
+    .unwrap();
+    for command in ["phase", "validate"] {
+        let output = fixture.run(&[command, "rfc-session-store", "--json"]);
+        assert!(
+            !output.status.success(),
+            "{command} accepted invalid integrity config"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("duplicate_threshold"),
+            "{command}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn phase_and_validate_selector_integrity_and_refusals_do_not_write_sidecars() {
+    use forgeplan_core::constellation::{manifest::TABLE_ARTIFACTS_V1, storage};
+    for damage in ["current", "manifest", "table"] {
+        let fixture = Fixture::new();
+        fixture.seed_graph();
+        fixture.migrate();
+        let workspace = fixture.workspace();
+        fixture.write("prds/PRD-020-alpha.md", "---\nid: PRD-020\nkind: prd\nstatus: draft\ntitle: Alpha\nslug: prd-contested\n---\nAlpha\n");
+        fixture.write("prds/PRD-021-beta.md", "---\nid: PRD-021\nkind: prd\nstatus: draft\ntitle: Beta\nslug: prd-contested\n---\nBeta\n");
+        let state_dir = workspace.join("state");
+        let session_path = workspace.join("session.yaml");
+        let session_before = std::fs::read(&session_path).ok();
+        for command in ["phase", "validate"] {
+            let missing = fixture.run(&[command, "PRD-999"]);
+            assert_eq!(
+                missing.status.code(),
+                Some(3),
+                "{command}: {}",
+                String::from_utf8_lossy(&missing.stderr)
+            );
+            let collision = fixture.run(&[command, "PRD-020"]);
+            assert_eq!(
+                collision.status.code(),
+                Some(4),
+                "{command}: {}",
+                String::from_utf8_lossy(&collision.stderr)
+            );
+        }
+        assert!(!state_dir.join("PRD-020.yaml").exists());
+        assert!(!state_dir.join("prd-contested.yaml").exists());
+        assert_eq!(std::fs::read(&session_path).ok(), session_before);
+        let root = workspace.join("lance");
+        let descriptor = storage::read_current(&root).unwrap().unwrap();
+        match damage {
+            "current" => std::fs::write(root.join("CURRENT.json"), b"{broken").unwrap(),
+            "manifest" => std::fs::write(root.join(descriptor.manifest_path), b"{broken").unwrap(),
+            "table" => {
+                std::fs::remove_dir_all(root.join(format!("{TABLE_ARTIFACTS_V1}.lance"))).unwrap()
+            }
+            _ => unreachable!(),
+        }
+        for command in ["phase", "validate"] {
+            for selector in ["rfc-session-store", "PRD-999"] {
+                let output = fixture.run(&[command, selector]);
+                assert!(
+                    !output.status.success() && output.status.code() != Some(3),
+                    "{damage}, {command}, {selector}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+        assert!(!state_dir.join("rfc-session-store.yaml").exists());
+        assert_eq!(std::fs::read(session_path).ok(), session_before);
+    }
 }

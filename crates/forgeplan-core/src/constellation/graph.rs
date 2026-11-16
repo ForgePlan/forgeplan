@@ -16,11 +16,8 @@
 //! the cap cuts, `truncated` says the view is partial by bound, not by
 //! corpus.
 //!
-//! Resolution is same-source only, matching `impact` and `export`: an
-//! edge's `target` string resolves to a canonical key inside the source
-//! that declared it, or stays a dangling target with `resolved: null` —
-//! `ADR-001` in project A never silently merges with `ADR-001` in
-//! project B.
+//! Bare targets resolve only within the declaring source. Qualified targets
+//! resolve against the admitted sources and retain the target's identity.
 
 use serde::Serialize;
 
@@ -66,8 +63,8 @@ pub struct GraphNode {
     pub relative_path: Option<String>,
 }
 
-/// A declared link, exactly as the source wrote it, plus what it
-/// resolves to inside the same source.
+/// A declared link, exactly as the source wrote it, plus its resolved
+/// canonical key and admitted target-source identity.
 #[derive(Debug, Clone, Serialize)]
 pub struct GraphEdge {
     /// Provenance: the `source_id` whose relations table or frontmatter
@@ -77,12 +74,14 @@ pub struct GraphEdge {
     pub from: String,
     /// The relation kind as written (`based_on`, `informs`, …).
     pub relation: String,
-    /// The target as written — a canonical key, a display id, or a
-    /// string nothing in the source resolves.
+    /// The target as written — an optionally qualified canonical key or
+    /// display id, including unresolved references.
     pub target: String,
-    /// The canonical key `target` resolves to in the same source, or
-    /// `None` when the edge dangles — named, never silently dropped.
+    /// The canonical key in `resolved_source_id`, or `None` for an
+    /// unresolved target — named, never silently dropped.
     pub resolved: Option<String>,
+    /// Source containing the resolved target, if the edge resolves.
+    pub resolved_source_id: Option<String>,
     /// The file inside the source that declared the edge, when the
     /// channel records one (markdown and pinned-git carry it; the
     /// pinned relations table does not).
@@ -114,10 +113,16 @@ pub struct GraphOutcome {
 /// `(from, target-as-written, relation)` tuple order — because two
 /// agents reading the same graph must be able to diff it. The cap is
 /// checked per item; once it fires, `truncated` stays set.
-fn absorb(graph: SourceGraph, bounds: GraphBounds, out: &mut GraphOutcome) {
+fn absorb(
+    graphs: &[SourceGraph],
+    source_index: usize,
+    bounds: GraphBounds,
+    out: &mut GraphOutcome,
+) {
+    let graph = &graphs[source_index];
     out.sources.push(graph.source.clone());
     let mut nodes: Vec<&impact::Node> = graph.nodes.values().collect();
-    nodes.sort_by(|a, b| a.canonical_key.cmp(&b.canonical_key));
+    nodes.sort_by(|a, b| a.candidate.canonical_key.cmp(&b.candidate.canonical_key));
     for node in nodes {
         if out.nodes.len() >= bounds.limit {
             out.truncated = true;
@@ -125,15 +130,17 @@ fn absorb(graph: SourceGraph, bounds: GraphBounds, out: &mut GraphOutcome) {
         }
         out.nodes.push(GraphNode {
             source: graph.source.clone(),
-            canonical_key: node.canonical_key.clone(),
-            display_id: node.display_id.clone(),
-            title: node.title.clone(),
+            canonical_key: node.candidate.canonical_key.clone(),
+            display_id: node.has_display.then(|| node.candidate.display_id.clone()),
+            title: node.candidate.title.clone(),
             kind: if node.kind.is_empty() {
                 None
             } else {
                 Some(node.kind.clone())
             },
-            relative_path: node.relative_path.clone(),
+            relative_path: node
+                .has_path
+                .then(|| node.candidate.relative_path.to_string_lossy().into_owned()),
         });
     }
     let mut edges: Vec<&(String, String, String)> = graph.edges.iter().collect();
@@ -143,66 +150,21 @@ fn absorb(graph: SourceGraph, bounds: GraphBounds, out: &mut GraphOutcome) {
             out.truncated = true;
             break;
         }
+        let resolved = impact::resolve_edge(graphs, source_index, target);
         out.edges.push(GraphEdge {
             source_id: graph.source.source_id.clone(),
             from: from.clone(),
             relation: relation.clone(),
             target: target.clone(),
-            resolved: graph.resolve(target),
-            declared_in: graph.nodes.get(from).and_then(|n| n.relative_path.clone()),
+            resolved: resolved.as_ref().map(|(_, key)| (*key).to_owned()),
+            resolved_source_id: resolved
+                .as_ref()
+                .map(|(i, _)| graphs[*i].source.source_id.clone()),
+            declared_in: graph.nodes.get(from).and_then(|n| {
+                n.has_path
+                    .then(|| n.candidate.relative_path.to_string_lossy().into_owned())
+            }),
         });
-    }
-}
-
-/// Resolve edges whose target carries an explicit `KEY@qualifier`.
-///
-/// Same-source resolution is the default and stays the default: a bare
-/// `ADR-001` never merges with another project's `ADR-001`. An explicit
-/// qualifier is the caller's statement that the edge is cross-source, so it
-/// is resolved against the node set of exactly the source it names — and only
-/// when that source holds exactly one matching node. A qualifier that matches
-/// nothing, or several nodes, leaves the edge dangling rather than guessing.
-fn resolve_qualified_edges(out: &mut GraphOutcome) {
-    if out
-        .edges
-        .iter()
-        .all(|edge| edge.resolved.is_some() || !edge.target.contains('@'))
-    {
-        return;
-    }
-    // Disjoint field borrows: the index reads `nodes` while `edges` mutates.
-    let GraphOutcome { nodes, edges, .. } = out;
-    let index: Vec<(&str, &str, Option<&str>, &str)> = nodes
-        .iter()
-        .map(|node| {
-            (
-                node.source.source_id.as_str(),
-                node.canonical_key.as_str(),
-                node.display_id.as_deref(),
-                node.source.path.as_str(),
-            )
-        })
-        .collect();
-    for edge in edges {
-        if edge.resolved.is_some() {
-            continue;
-        }
-        let (bare, qualifier) = super::federation::parse_qualified_ref(&edge.target);
-        let Some(qualifier) = qualifier else {
-            continue;
-        };
-        let mut matches = index
-            .iter()
-            .filter(|(source_id, canonical_key, display_id, path)| {
-                super::federation::qualifier_matches(source_id, path, qualifier)
-                    && (*canonical_key == bare || *display_id == Some(bare))
-            });
-        let Some((_, canonical_key, _, _)) = matches.next() else {
-            continue;
-        };
-        if matches.next().is_none() {
-            edge.resolved = Some((*canonical_key).to_string());
-        }
     }
 }
 
@@ -238,9 +200,10 @@ pub async fn graph_live(
         partial: false,
         limit: bounds.limit,
     };
+    let mut graphs = Vec::new();
     for spec in specs {
         match impact::source_graph_live(spec).await {
-            Ok(graph) => absorb(graph, bounds, &mut out),
+            Ok(graph) => graphs.push(graph),
             Err(f) => {
                 if failure_is_fatal(spec, mode) {
                     return Err(source_unavailable(&f));
@@ -250,7 +213,9 @@ pub async fn graph_live(
         }
     }
     out.partial = !out.failures.is_empty();
-    resolve_qualified_edges(&mut out);
+    for i in 0..graphs.len() {
+        absorb(&graphs, i, bounds, &mut out);
+    }
     Ok(out)
 }
 
@@ -282,9 +247,10 @@ pub fn graph_snapshot(
         partial: false,
         limit: bounds.limit,
     };
+    let mut graphs = Vec::new();
     for entry in &snapshot.sources {
         match impact::source_graph_snapshot(entry) {
-            Ok(graph) => absorb(graph, bounds, &mut out),
+            Ok(graph) => graphs.push(graph),
             Err(reason) => out.failures.push(SourceFailure {
                 path: entry.source_path.clone(),
                 reason,
@@ -292,7 +258,9 @@ pub fn graph_snapshot(
         }
     }
     out.partial = !out.failures.is_empty();
-    resolve_qualified_edges(&mut out);
+    for i in 0..graphs.len() {
+        absorb(&graphs, i, bounds, &mut out);
+    }
     Ok(out)
 }
 
@@ -481,6 +449,115 @@ mod tests {
         assert_eq!(out.nodes.len(), 1, "the readable source still answers");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replaced_source_roots_do_not_expose_foreign_graph_or_impact() {
+        let allowed = workspace_with(&[
+            ("adrs", "A.md", &doc("ADR-001", "adr", &[])),
+            (
+                "adrs",
+                "B.md",
+                &doc("ADR-002", "adr", &[("ADR-001", "based_on")]),
+            ),
+        ]);
+        let admitted = workspace_with(&[("notes", "N.md", &doc("NOTE-001", "note", &[]))]);
+        let foreign = workspace_with(&[
+            ("adrs", "A.md", &doc("ADR-001", "adr", &[])),
+            (
+                "adrs",
+                "Secret.md",
+                &doc("ADR-003", "adr", &[("ADR-001", "based_on")]),
+            ),
+        ]);
+        let retained = TempDir::new().unwrap();
+        let registered = admitted.path().to_path_buf();
+        let required = SourceSpec::new(registered.clone());
+        std::fs::rename(&registered, retained.path().join("original")).unwrap();
+        std::os::unix::fs::symlink(foreign.path(), &registered).unwrap();
+
+        let specs = [SourceSpec::new(allowed.path().to_path_buf()), required];
+        assert!(matches!(
+            graph_live(&specs, GraphBounds::default(), QueryMode::Strict).await,
+            Err(ConstellationError::SourceUnavailable { .. })
+        ));
+        assert!(matches!(
+            impact::impact_live(
+                &specs,
+                "ADR-001",
+                impact::ImpactBounds::default(),
+                QueryMode::Strict,
+            )
+            .await,
+            Err(ConstellationError::SourceUnavailable { .. })
+        ));
+        let allowed_path = allowed.path().canonicalize().unwrap();
+
+        for (source, mode) in [
+            (
+                SourceSpec::new_optional(registered.clone()),
+                QueryMode::Strict,
+            ),
+            (SourceSpec::new(registered.clone()), QueryMode::AllowPartial),
+        ] {
+            let specs = [SourceSpec::new(allowed.path().to_path_buf()), source];
+            let graph = graph_live(&specs, GraphBounds::default(), mode)
+                .await
+                .unwrap();
+            assert!(graph.partial);
+            assert_eq!(graph.failures.len(), 1);
+            assert_eq!(graph.failures[0].path, registered.display().to_string());
+            let mut keys: Vec<_> = graph
+                .nodes
+                .iter()
+                .map(|node| node.canonical_key.as_str())
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["ADR-001", "ADR-002"]);
+            let edges: Vec<_> = graph
+                .edges
+                .iter()
+                .map(|edge| {
+                    (
+                        edge.from.as_str(),
+                        edge.target.as_str(),
+                        edge.relation.as_str(),
+                    )
+                })
+                .collect();
+            assert_eq!(edges, [("ADR-002", "ADR-001", "based_on")]);
+            assert_eq!(
+                graph
+                    .sources
+                    .iter()
+                    .map(|source| std::path::Path::new(&source.path))
+                    .collect::<Vec<_>>(),
+                [allowed_path.as_path()]
+            );
+
+            let report =
+                impact::impact_live(&specs, "ADR-001", impact::ImpactBounds::default(), mode)
+                    .await
+                    .unwrap();
+            assert_eq!(report.failures.len(), 1);
+            assert_eq!(report.failures[0].path, registered.display().to_string());
+            let impacted: Vec<_> = report
+                .impacted
+                .iter()
+                .map(|node| node.canonical_key.as_str())
+                .collect();
+            assert_eq!(impacted, ["ADR-002"]);
+            assert!(report.unresolved.is_empty());
+            assert_eq!(
+                report
+                    .sources
+                    .iter()
+                    .map(|source| std::path::Path::new(&source.path))
+                    .collect::<Vec<_>>(),
+                [allowed_path.as_path()]
+            );
+        }
+    }
+
     /// The role contract on the graph surface: a *required* dead source
     /// aborts the strict read; `optional` or `AllowPartial` keeps the
     /// named-failure envelope.
@@ -620,6 +697,7 @@ mod tests {
             Some("ADR-001"),
             "an explicit qualifier resolves against the source it names"
         );
+        assert_eq!(edge.resolved_source_id.as_deref(), Some(second_id.as_str()));
 
         let bare = workspace_with(&[(
             "notes",
@@ -645,5 +723,110 @@ mod tests {
             bare_edge.resolved, None,
             "a bare key never merges across sources"
         );
+    }
+    #[tokio::test]
+    async fn incomplete_live_source_is_failed_as_a_whole() {
+        let good = workspace_with(&[("adrs", "ADR-001.md", &doc("ADR-001", "adr", &[]))]);
+        let bad = workspace_with(&[
+            ("adrs", "ADR-777.md", &doc("ADR-777", "adr", &[])),
+            ("adrs", "BROKEN.md", "---\nid: [invalid\n"),
+        ]);
+        let bad_path = bad.path().to_path_buf();
+        let specs = vec![SourceSpec::new(good.path()), SourceSpec::new(&bad_path)];
+
+        let strict = graph_live(&specs, GraphBounds::default(), QueryMode::Strict)
+            .await
+            .expect_err("an incomplete required source must refuse a strict graph");
+        assert!(matches!(
+            strict,
+            ConstellationError::SourceUnavailable { .. }
+        ));
+
+        let partial = graph_live(&specs, GraphBounds::default(), QueryMode::AllowPartial)
+            .await
+            .unwrap();
+        assert!(partial.partial);
+        assert_eq!(partial.failures.len(), 1);
+        assert_eq!(partial.failures[0].path, bad_path.display().to_string());
+        assert!(partial.failures[0].reason.contains("adrs/BROKEN.md"));
+        assert_eq!(partial.sources.len(), 1);
+        assert!(
+            partial
+                .nodes
+                .iter()
+                .any(|node| node.display_id.as_deref() == Some("ADR-001"))
+        );
+        assert!(
+            partial
+                .nodes
+                .iter()
+                .all(|node| node.display_id.as_deref() != Some("ADR-777")),
+            "valid nodes from the invalid source must not leak into a partial graph"
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_key_collision_is_a_source_failure() {
+        let good = workspace_with(&[("adrs", "ADR-001.md", &doc("ADR-001", "adr", &[]))]);
+        let duplicate = doc("ADR-777", "adr", &[]);
+        let bad = workspace_with(&[("adrs", "A.md", &duplicate), ("adrs", "B.md", &duplicate)]);
+        let bad_path = bad.path().to_path_buf();
+        let specs = vec![SourceSpec::new(good.path()), SourceSpec::new(&bad_path)];
+
+        let strict = graph_live(&specs, GraphBounds::default(), QueryMode::Strict)
+            .await
+            .expect_err("duplicate canonical keys must refuse a strict graph");
+        assert!(matches!(
+            strict,
+            ConstellationError::SourceUnavailable { .. }
+        ));
+
+        let partial = graph_live(&specs, GraphBounds::default(), QueryMode::AllowPartial)
+            .await
+            .unwrap();
+        assert!(partial.partial);
+        assert_eq!(partial.failures.len(), 1);
+        assert_eq!(partial.failures[0].path, bad_path.display().to_string());
+        assert!(partial.failures[0].reason.contains("IdentityCollision"));
+        assert_eq!(partial.sources.len(), 1);
+        assert!(
+            partial
+                .nodes
+                .iter()
+                .all(|node| node.display_id.as_deref() != Some("ADR-777"))
+        );
+    }
+
+    #[test]
+    fn malformed_pinned_artifact_is_a_named_snapshot_failure() {
+        let tmp = TempDir::new().unwrap();
+        let fp = tmp.path().join(".forgeplan");
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(fp.join(dir)).unwrap();
+        }
+        std::fs::write(fp.join("adrs/ADR-001.md"), doc("ADR-001", "adr", &[])).unwrap();
+        std::fs::write(fp.join("adrs/BROKEN.md"), "---\nid: [invalid\n").unwrap();
+        std::fs::write(fp.join("README.md"), "---\nid: [unrelated\n").unwrap();
+        git_in(tmp.path(), &["init", "-q"]);
+        git_in(
+            tmp.path(),
+            &["config", "user.email", "test@example.invalid"],
+        );
+        git_in(tmp.path(), &["config", "user.name", "test"]);
+        git_in(tmp.path(), &["add", "-A"]);
+        git_in(tmp.path(), &["commit", "-qm", "snapshot"]);
+
+        let snapshot = capture_snapshot(&[SourceSpec::new(&fp)], None).unwrap();
+        assert_eq!(snapshot.sources[0].files, 2);
+        let outcome = graph_snapshot(&snapshot, GraphBounds::default()).unwrap();
+        assert!(outcome.partial);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(
+            std::fs::canonicalize(&outcome.failures[0].path).unwrap(),
+            fp.canonicalize().unwrap()
+        );
+        assert!(outcome.failures[0].reason.contains("adrs/BROKEN.md"));
+        assert!(outcome.sources.is_empty());
+        assert!(outcome.nodes.is_empty());
     }
 }

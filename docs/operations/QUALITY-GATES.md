@@ -216,13 +216,16 @@ also apply. Schema recommendations are not all automatically enforced.
 
 **CI command:**
 ```bash
-forgeplan validate --ci   # validates all artifacts; exit 1 on any MUST error
+forgeplan validate --ci   # validates selected active/stale artifacts; exit 1 on any MUST error
 ```
+
+Without an ID, CI validation selects stored active/stale artifacts. Pass an
+explicit ID to validate a draft; this no-ID selection is not a draft audit.
 
 **How to run locally:**
 ```bash
 forgeplan validate PRD-001          # single artifact
-forgeplan validate --ci             # all artifacts
+forgeplan validate --ci             # selected active/stale artifacts
 forgeplan score PRD-001             # R_eff score
 forgeplan blocked                   # what is blocked
 forgeplan order                     # work order by dependencies
@@ -395,7 +398,7 @@ Before every commit:
 
 Before PR (additionally):
   6. cargo clippy --workspace --all-targets -- -D warnings   # strict lint
-  7. forgeplan validate --ci                # all artifacts pass
+  7. forgeplan validate --ci                # selected active/stale artifacts pass
   8. ./scripts/check-mcp-tool-count.sh     # no drift
 ```
 

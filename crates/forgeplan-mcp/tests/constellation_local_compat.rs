@@ -65,7 +65,7 @@ use std::time::{Duration, Instant};
 use forgeplan_core::constellation::capture::CaptureLimits;
 use forgeplan_core::constellation::facade::{MaintainCapability, maintain_index};
 use forgeplan_core::db::auxiliary::AuxiliaryStore;
-use forgeplan_core::db::store::{FpfChunk, LanceStore, NewArtifact};
+use forgeplan_core::db::store::{FpfChunk, LanceStore};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -146,47 +146,6 @@ fn write_corpus(ws: &Path) {
     }
 }
 
-/// The same corpus as `LanceStore` rows, so the legacy branch answers from
-/// data equal to the migrated branch's.
-async fn seed_store(store: &LanceStore) {
-    for (id, kind, status, title, body) in [
-        ("PRD-001", "prd", "draft", "Auth rewrite", PRD_001),
-        ("ADR-002", "adr", "active", "Session storage", ADR_002),
-        (
-            "EVID-003",
-            "evidence",
-            "active",
-            "Load run 2026-01",
-            EVID_003,
-        ),
-    ] {
-        store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: id.into(),
-                id: id.into(),
-                kind: kind.into(),
-                status: status.into(),
-                title: title.into(),
-                body: body.into(),
-                depth: "standard".into(),
-                author: None,
-                parent_epic: None,
-                // EVID-003's expiry is what makes decay/journal report it.
-                valid_until: (id == "EVID-003").then(|| "2020-01-01".to_string()),
-                tags: Vec::new(),
-            })
-            .await
-            .unwrap_or_else(|e| panic!("seed {id}: {e}"));
-    }
-    // The canonical form of a mistyped evidence link: EVID -> decision via
-    // `based_on`. Written here so the anomaly detector has something real to
-    // find on the legacy layout too.
-    store
-        .add_relation_for_test("EVID-003", "PRD-001", "based_on")
-        .await
-        .expect("seed based_on relation");
-}
-
 /// One Rust source file, so `forgeplan_coverage` has a module to match the
 /// ADRs' `## Affected Files` against.
 fn write_source_module(root: &Path) {
@@ -232,7 +191,16 @@ fn git_init_with_base_commit(root: &Path) -> String {
 
 /// Commit the corpus so `forgeplan_release_notes` has a range to walk.
 fn git_commit_corpus(root: &Path, message: &str) {
-    git(root, &["add", "-A", ".forgeplan"]);
+    git(
+        root,
+        &[
+            "add",
+            "-A",
+            ".forgeplan",
+            ":!.forgeplan/lance",
+            ":!.forgeplan/.lock",
+        ],
+    );
     git(root, &["commit", "-q", "-m", message]);
 }
 
@@ -244,12 +212,22 @@ async fn legacy_workspace() -> (TempDir, PathBuf, PathBuf, String) {
     let root = tmp.path().to_path_buf();
     let ws = forgeplan_core::workspace::init_workspace(&root, "mcp-compat-legacy")
         .expect("init workspace");
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws)
+        .await
+        .unwrap();
+    let store = LanceStore::init_legacy_for_test(&ws, &lock)
+        .await
+        .expect("init legacy tables");
+    drop(store);
     write_corpus(&ws);
     write_source_module(&root);
     let base = git_init_with_base_commit(&root);
     git_commit_corpus(&root, "corpus");
-    let store = LanceStore::init(&ws).await.expect("init legacy tables");
-    seed_store(&store).await;
+    let store = LanceStore::open_for_write(&ws, &lock)
+        .await
+        .expect("import canonical corpus through the verified writer");
+    drop(store);
+    drop(lock);
     assert!(
         !forgeplan_core::constellation::facade::workspace_is_migrated(&ws),
         "fixture precondition: a workspace with no published generation is legacy"
@@ -322,7 +300,10 @@ fn legacy_tables(ws: &Path) -> Vec<String> {
 /// sections with distinct bodies, so a search assertion is about the content
 /// that was actually written.
 async fn ingest_fpf(ws: &Path) {
-    let auxiliary = AuxiliaryStore::open_or_create(ws)
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(ws)
+        .await
+        .expect("FPF auxiliary-store writer lock");
+    let auxiliary = AuxiliaryStore::open_or_create(ws, &lock)
         .await
         .expect("open/create the FPF auxiliary store");
     let chunks = vec![
@@ -348,7 +329,7 @@ async fn ingest_fpf(ws: &Path) {
         },
     ];
     let written = auxiliary
-        .insert_fpf_chunks(&chunks, None)
+        .insert_fpf_chunks(&lock, &chunks, None)
         .await
         .expect("ingest FPF chunks");
     assert_eq!(written, 2, "both sections must be ingested");
@@ -358,7 +339,10 @@ async fn ingest_fpf(ws: &Path) {
 /// so a keyword query for it matches every one and the ranking/limit path is
 /// genuinely exercised instead of short-circuited by a unique hit.
 async fn ingest_fpf_sections(ws: &Path, count: usize) {
-    let auxiliary = AuxiliaryStore::open_or_create(ws)
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(ws)
+        .await
+        .expect("FPF auxiliary-store writer lock");
+    let auxiliary = AuxiliaryStore::open_or_create(ws, &lock)
         .await
         .expect("open/create the FPF auxiliary store");
     let chunks: Vec<FpfChunk> = (0..count)
@@ -374,7 +358,7 @@ async fn ingest_fpf_sections(ws: &Path, count: usize) {
         })
         .collect();
     let written = auxiliary
-        .insert_fpf_chunks(&chunks, None)
+        .insert_fpf_chunks(&lock, &chunks, None)
         .await
         .expect("ingest FPF chunks");
     assert_eq!(written, count, "every section must be ingested");
@@ -1372,16 +1356,16 @@ async fn the_twelve_reads_on_a_migrated_workspace_create_no_retired_tables() {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Typed failure instead of an empty success
+// 6. Refusal instead of an empty success
 // ---------------------------------------------------------------------------
 
 /// A `CURRENT` pointer that does not parse is an index that lost the ability
-/// to say what it published. Every artifact-reading surface must surface that
-/// as an error — an empty report would read as "this workspace is healthy",
+/// to say what it published. Every artifact-reading surface must refuse the
+/// request — an empty report would read as "this workspace is healthy",
 /// which is a different fact.
 #[tokio::test]
 #[serial_test::serial(env_model_cache)]
-async fn a_corrupt_current_pointer_is_a_typed_error_not_an_empty_report() {
+async fn a_corrupt_current_pointer_refuses_reads_without_empty_successes() {
     let (_tmp, root, ws, _base) = migrated_workspace().await;
     let server = server_at(&root).await;
 
@@ -1409,17 +1393,6 @@ async fn a_corrupt_current_pointer_is_a_typed_error_not_an_empty_report() {
             "`{tool}` must fail loudly on a corrupt pointer, got: {}",
             env.raw_text
         );
-        // `is_error` alone would be satisfied by any failure, including a
-        // panic-shaped one. The diagnostic must be the INDEX one: a caller
-        // has to be able to tell "this index is damaged" from "your query was
-        // bad" without parsing prose.
-        assert!(
-            env.raw_text.contains("read view could not be built")
-                || env.raw_text.contains("generation")
-                || env.raw_text.contains("CURRENT"),
-            "`{tool}` must report the index-generation failure specifically, got: {}",
-            env.raw_text
-        );
         let looks_successful = env
             .json
             .as_ref()
@@ -1431,6 +1404,15 @@ async fn a_corrupt_current_pointer_is_a_typed_error_not_an_empty_report() {
             env.raw_text
         );
     }
+    assert_eq!(
+        std::fs::read(&current).expect("read damaged pointer after refused reads"),
+        b"{ this is not json",
+        "refused reads must not rewrite the managed pointer"
+    );
+    assert!(
+        legacy_tables(&ws).is_empty(),
+        "refused reads must not fall back to legacy tables"
+    );
 
     // The auxiliary surfaces are unaffected by design, and stay honest about
     // their own state rather than inheriting the artifact index's failure.

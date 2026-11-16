@@ -91,8 +91,8 @@ pub fn truncate_reason(reason: Option<String>) -> Option<String> {
 /// Methodology phase for the greenfield workflow.
 ///
 /// Order: Shape → Validate → Adi → Code → Test → Audit → Evidence → Done.
-/// `Unknown` is reserved for artifacts without a state file (pre-PRD-056
-/// artifacts or state corruption).
+/// `Unknown` is reserved for artifacts without a state file (pre-PRD-056).
+/// Invalid state files are reported as read errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -258,7 +258,10 @@ pub fn validate_canonical_key(key: &str) -> anyhow::Result<()> {
     if !key.starts_with(|c: char| c.is_ascii_alphabetic()) {
         anyhow::bail!("canonical key must start with an ASCII letter: {key}");
     }
-    if key.split('/').any(|segment| segment == ".." || segment.starts_with('.')) {
+    if key
+        .split('/')
+        .any(|segment| segment == ".." || segment.starts_with('.'))
+    {
         anyhow::bail!("canonical key contains a path traversal segment: {key}");
     }
     Ok(())

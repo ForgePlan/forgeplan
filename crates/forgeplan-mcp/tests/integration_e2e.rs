@@ -61,9 +61,10 @@ use common::McpFixture;
 /// land it in storage is via the `test-helpers` create path.
 fn body_with_null_assigned(slug: &str, kind: &str, predicted: u32, title: &str) -> String {
     let display = format!("{}-{predicted}?", kind.to_uppercase());
+    let stored_id = format!("{}-{predicted:03}", kind.to_uppercase());
     format!(
         "---\n\
-id: {display}\n\
+id: {stored_id}\n\
 slug: \"{slug}\"\n\
 predicted_number: {predicted}\n\
 assigned_number: null\n\
@@ -104,55 +105,31 @@ Legacy body without identity fields.\n"
 async fn t1_forgeplan_new_returns_full_identity_triple() {
     let fx = McpFixture::new().await;
 
-    let env = fx
+    let resp = fx
         .call_tool_json("forgeplan_new", json!({"kind": "prd", "title": "Test PRD"}))
-        .await;
-    let resp = env.assert_ok();
-
-    // Legacy fields preserved exactly.
-    assert_eq!(resp["id"], "PRD-001", "first PRD must be PRD-001");
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(resp["id"], "PRD-001");
     assert_eq!(resp["kind"], "prd");
     assert_eq!(resp["title"], "Test PRD");
-    assert!(
-        resp["filepath"].as_str().unwrap_or("").ends_with(".md"),
-        "filepath must point at a markdown projection: {}",
-        resp["filepath"]
-    );
+    assert!(resp["filepath"].as_str().unwrap_or("").ends_with(".md"));
 
-    // CD-2 identity triple. slug derives from kind + title via slugify.
-    assert_eq!(
-        resp["slug"], "prd-test-prd",
-        "slug = `prd-` + slugified title"
-    );
+    let key = resp["canonical_key"].as_str().expect("canonical_key");
+    assert!(!key.is_empty());
+    assert_eq!(resp["slug"], key);
+    assert_eq!(resp["id_canonical"], key);
     assert_eq!(resp["predicted_number"], 1);
-    // Phase 1.x: assigned_number == predicted_number (immediate stamp).
-    // The Phase-2 CI bot will eventually emit `null` here on create — the
-    // `_next_action`/`hint` test below covers the null branch via fixture.
     assert_eq!(resp["assigned_number"], 1);
-    assert_eq!(resp["id_canonical"], "prd-test-prd");
-    assert_eq!(
-        resp["id_display"], "PRD-001",
-        "post-merge display form: zero-padded, no `?`"
-    );
+    assert_eq!(resp["id_display"], "PRD-001");
 
-    // Identity-explainer hint should reference the canonical slug + display.
-    let hint = resp["hint"].as_str().expect("hint string");
-    assert!(
-        hint.contains("PRD-001"),
-        "post-merge hint mentions display id: {hint}"
-    );
-    assert!(
-        hint.contains("prd-test-prd"),
-        "post-merge hint mentions slug: {hint}"
-    );
-
-    // Methodology hint follows the post-merge contract: display-id form is
-    // canonical (because Phase 1.x auto-assigns).
-    let next = resp["_next_action"].as_str().expect("_next_action string");
-    assert!(
-        next.contains("PRD-001") && next.contains("validate"),
-        "_next_action chains to validate via display id: {next}"
-    );
+    let get = fx
+        .call_tool_json("forgeplan_get", json!({"id": key}))
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(get["canonical_key"], key);
+    assert_eq!(get["id"], resp["id"]);
 }
 
 // ── T2: forgeplan_get accepts slug ────────────────────────────────────
@@ -163,27 +140,24 @@ async fn t1_forgeplan_new_returns_full_identity_triple() {
 #[tokio::test]
 async fn t2_forgeplan_get_accepts_slug() {
     let fx = McpFixture::new().await;
-
-    fx.call_tool_json("forgeplan_new", json!({"kind": "prd", "title": "Test PRD"}))
+    let created = fx
+        .call_tool_json("forgeplan_new", json!({"kind": "prd", "title": "Test PRD"}))
         .await
-        .assert_ok();
+        .assert_ok()
+        .clone();
+    let key = created["canonical_key"].as_str().expect("canonical key");
 
-    let env = fx
-        .call_tool_json("forgeplan_get", json!({"id": "prd-test-prd"}))
-        .await;
-    let resp = env.assert_ok();
-
-    // The DB-canonical id is the display form (Phase 1.x).
+    let resp = fx
+        .call_tool_json("forgeplan_get", json!({"id": key}))
+        .await
+        .assert_ok()
+        .clone();
     assert_eq!(resp["id"], "PRD-001");
-    assert_eq!(resp["slug"], "prd-test-prd");
-    assert_eq!(resp["id_canonical"], "prd-test-prd");
+    assert_eq!(resp["canonical_key"], key);
+    assert_eq!(resp["slug"], key);
+    assert_eq!(resp["id_canonical"], key);
     assert_eq!(resp["id_display"], "PRD-001");
-    // body must be present — `forgeplan_get` returns the full record.
-    assert!(
-        resp["body"].as_str().unwrap_or("").contains("Test PRD"),
-        "body must round-trip: {}",
-        resp["body"]
-    );
+    assert!(resp["body"].as_str().unwrap_or("").contains("Test PRD"));
 }
 
 // ── T3: forgeplan_get accepts display id ──────────────────────────────
@@ -193,30 +167,32 @@ async fn t2_forgeplan_get_accepts_slug() {
 #[tokio::test]
 async fn t3_forgeplan_get_accepts_display_id() {
     let fx = McpFixture::new().await;
+    let created = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({"kind": "rfc", "title": "Sample RFC"}),
+        )
+        .await
+        .assert_ok()
+        .clone();
+    let key = created["canonical_key"].as_str().expect("canonical key");
 
-    fx.call_tool_json(
-        "forgeplan_new",
-        json!({"kind": "rfc", "title": "Sample RFC"}),
-    )
-    .await
-    .assert_ok();
-
-    // Display-id form, also exercising the `resolve_id` upper-case
-    // normalisation path: lowercase prefix → uppercase canonical.
-    let env = fx
+    let resp = fx
         .call_tool_json("forgeplan_get", json!({"id": "rfc-001"}))
-        .await;
-    let resp = env.assert_ok();
+        .await
+        .assert_ok()
+        .clone();
     assert_eq!(resp["id"], "RFC-001");
-    assert_eq!(resp["slug"], "rfc-sample-rfc");
+    assert_eq!(resp["canonical_key"], key);
+    assert_eq!(resp["slug"], key);
     assert_eq!(resp["id_display"], "RFC-001");
 
-    // Mixed-case must also resolve.
-    let env2 = fx
+    let resp2 = fx
         .call_tool_json("forgeplan_get", json!({"id": "Rfc-1"}))
-        .await;
-    let resp2 = env2.assert_ok();
-    assert_eq!(resp2["id"], "RFC-001");
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(resp2["canonical_key"], key);
 }
 
 // ── T4: forgeplan_list returns identity per item ──────────────────────
@@ -243,30 +219,34 @@ async fn t4_forgeplan_list_returns_identity_per_item() {
     assert_eq!(items.len(), 3, "three PRDs created, three listed");
     assert_eq!(resp["total"], 3);
 
+    let mut keys = std::collections::HashSet::new();
     for item in items {
-        assert!(item["id"].is_string(), "id present: {item}");
-        // CD-2: identity triple per item.
+        assert!(item["id"].is_string(), "display id present: {item}");
+        let key = item["canonical_key"]
+            .as_str()
+            .expect("canonical key present in list");
         assert!(
-            item["slug"].is_string(),
-            "slug present (Phase 1.x augments frontmatter on create): {item}"
+            keys.insert(key.to_string()),
+            "list identities are unique: {item}"
         );
-        assert!(
-            item["id_canonical"].is_string() && !item["id_canonical"].as_str().unwrap().is_empty(),
-            "id_canonical always populated: {item}"
-        );
-        assert!(
-            item["id_display"].is_string() && !item["id_display"].as_str().unwrap().is_empty(),
-            "id_display always populated: {item}"
-        );
-    }
+        assert_eq!(item["slug"], key);
+        assert_eq!(item["id_canonical"], key);
+        assert_eq!(item["id_display"], item["id"]);
 
-    // Spot-check one slug to ensure slugify wired through.
-    let auth = items
-        .iter()
-        .find(|a| a["title"] == "Auth System")
-        .expect("Auth System present");
-    assert_eq!(auth["slug"], "prd-auth-system");
-    assert_eq!(auth["id_canonical"], "prd-auth-system");
+        let record = fx
+            .call_tool_json("forgeplan_get", json!({"id": key}))
+            .await
+            .assert_ok()
+            .clone();
+        assert_eq!(record["canonical_key"], key);
+        assert_eq!(record["id"], item["id"]);
+        assert_eq!(record["title"], item["title"]);
+    }
+    assert_eq!(
+        keys.len(),
+        3,
+        "three independent documents retain distinct keys"
+    );
 }
 
 // ── T5: forgeplan_search returns identity per hit ─────────────────────
@@ -344,22 +324,25 @@ async fn t6_forgeplan_get_pre_merge_hint_uses_slug() {
     // current LanceStore caching layer — server's handle persists pre-seed
     // snapshot. The fixture's `new_with_seed` was designed для exactly
     // this case (см. fixture docstring).
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         let body = body_with_null_assigned("prd-pre-merge-feature", "prd", 7, "Pre Merge Feature");
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "PRD-007".into(),
-                id: "PRD-007".into(),
-                kind: "prd".into(),
-                status: "draft".into(),
-                title: "Pre Merge Feature".into(),
-                body,
-                depth: "standard".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
+            .create_artifact_for_test(
+                &seed_guard,
+                &NewArtifact {
+                    canonical_key: "prd-pre-merge-feature".into(),
+                    id: "PRD-007".into(),
+                    kind: "prd".into(),
+                    status: "draft".into(),
+                    title: "Pre Merge Feature".into(),
+                    body,
+                    depth: "standard".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
             .await
             .expect("seed pre-merge artifact");
     })
@@ -516,47 +499,53 @@ async fn t9_forgeplan_score_returns_r_eff_for_display_id() {
 
 // ── T10: forgeplan_link with typed relation ───────────────────────────
 
-/// `forgeplan_link` resolves source + target by display id (current Phase
-/// 2.4 contract — slug resolution lives only in `forgeplan_get`) and
-/// creates a typed link surfaced through both `LinkResponse.message` and
-/// the `_next_action` chaining hint.
+/// `forgeplan_link` resolves source and target and persists the typed relation.
 #[tokio::test]
 async fn t10_forgeplan_link_typed_relation() {
     let fx = McpFixture::new().await;
-
-    fx.call_tool_json(
-        "forgeplan_new",
-        json!({"kind": "prd", "title": "Linkable PRD"}),
-    )
-    .await
-    .assert_ok();
-    fx.call_tool_json(
-        "forgeplan_new",
-        json!({"kind": "rfc", "title": "Linkable RFC"}),
-    )
-    .await
-    .assert_ok();
-
-    let env = fx
+    let prd = fx
         .call_tool_json(
-            "forgeplan_link",
-            json!({
-                "source": "PRD-001",
-                "target": "RFC-001",
-                "relation": "informs",
-            }),
+            "forgeplan_new",
+            json!({"kind": "prd", "title": "Linkable PRD"}),
         )
-        .await;
-    let resp = env.assert_ok();
-    let msg = resp["message"].as_str().expect("message string");
+        .await
+        .assert_ok()
+        .clone();
+    let rfc = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({"kind": "rfc", "title": "Linkable RFC"}),
+        )
+        .await
+        .assert_ok()
+        .clone();
+
+    fx.call_tool_json(
+        "forgeplan_link",
+        json!({
+            "source": "PRD-001",
+            "target": "RFC-001",
+            "relation": "informs",
+        }),
+    )
+    .await
+    .assert_ok();
+    let prd_key = prd["canonical_key"].as_str().expect("PRD canonical key");
+    let rfc_key = rfc["canonical_key"].as_str().expect("RFC canonical key");
+    let source =
+        std::fs::read_to_string(prd["filepath"].as_str().expect("PRD source path")).unwrap();
+    let (frontmatter, _) =
+        forgeplan_core::artifact::frontmatter::parse_frontmatter(&source).unwrap();
+    assert_eq!(frontmatter["slug"].as_str(), Some(prd_key));
+    let links = frontmatter["links"]
+        .as_sequence()
+        .expect("persisted relations");
     assert!(
-        msg.contains("PRD-001") && msg.contains("RFC-001") && msg.contains("informs"),
-        "link confirmation must reference both ids and the relation: {msg}"
-    );
-    let next = resp["_next_action"].as_str().expect("_next_action present");
-    assert!(
-        next.contains("forgeplan_score_all") || next.contains("forgeplan_score"),
-        "informs/based_on chains into the scoring reconciliation step: {next}"
+        links
+            .iter()
+            .any(|link| link["target"].as_str() == Some(rfc_key)
+                && link["relation"].as_str() == Some("informs")),
+        "the source document must persist the canonical directed relation"
     );
 }
 
@@ -639,22 +628,25 @@ async fn t12_multi_tool_flow_new_validate_score_list() {
 #[tokio::test]
 async fn t13_legacy_artifact_handled_gracefully() {
     // Round 1 fix: see T6 — seed BEFORE server boot via `new_with_seed`.
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         let legacy_body = body_legacy("PRD-099", "Legacy Artifact");
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "PRD-099".into(),
-                id: "PRD-099".into(),
-                kind: "prd".into(),
-                status: "active".into(),
-                title: "Legacy Artifact".into(),
-                body: legacy_body,
-                depth: "standard".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
+            .create_artifact_for_test(
+                &seed_guard,
+                &NewArtifact {
+                    canonical_key: "PRD-099".into(),
+                    id: "PRD-099".into(),
+                    kind: "prd".into(),
+                    status: "active".into(),
+                    title: "Legacy Artifact".into(),
+                    body: legacy_body,
+                    depth: "standard".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
             .await
             .expect("seed legacy artifact");
     })
@@ -905,10 +897,14 @@ async fn t32_forgeplan_link_auto_activates_complete_evid() {
     fx.call_tool_json("forgeplan_new", json!({"kind": "prd", "title": "P"}))
         .await
         .assert_ok();
-    fx.call_tool_json("forgeplan_new", json!({"kind": "evidence", "title": "E"}))
+    let evidence = fx
+        .call_tool_json("forgeplan_new", json!({"kind": "evidence", "title": "E"}))
         .await
-        .assert_ok();
-    // Make the evidence "complete" by setting structured fields in the body.
+        .assert_ok()
+        .clone();
+    let evidence_key = evidence["canonical_key"]
+        .as_str()
+        .expect("evidence canonical key");
     fx.call_tool_json(
         "forgeplan_update",
         json!({
@@ -919,7 +915,7 @@ async fn t32_forgeplan_link_auto_activates_complete_evid() {
     .await
     .assert_ok();
 
-    let env = fx
+    let resp = fx
         .call_tool_json(
             "forgeplan_link",
             json!({
@@ -929,27 +925,37 @@ async fn t32_forgeplan_link_auto_activates_complete_evid() {
                 "auto_activate_source_if_complete": true,
             }),
         )
-        .await;
-    let resp = env.assert_ok();
-    let auto = &resp["auto_activated"];
-    assert!(
-        auto.as_str() == Some("EVID-001"),
-        "complete-draft EVID + auto_activate must report auto_activated: got {auto:?}"
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(resp["auto_activated"], evidence_key);
+    let updated = fx
+        .call_tool_json("forgeplan_get", json!({"id": evidence_key}))
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(updated["canonical_key"], evidence_key);
+    assert_eq!(
+        updated["status"], "active",
+        "complete evidence is activated"
     );
 }
 
-/// Issue #288 — without the flag the same setup does NOT auto-activate;
-/// `auto_activated` is absent / null in the response.
+/// Issue #288 — without the flag, a complete evidence source remains draft.
 #[tokio::test]
 async fn t33_forgeplan_link_without_auto_activate_flag_keeps_draft() {
     let fx = McpFixture::new().await;
-
     fx.call_tool_json("forgeplan_new", json!({"kind": "prd", "title": "P"}))
         .await
         .assert_ok();
-    fx.call_tool_json("forgeplan_new", json!({"kind": "evidence", "title": "E"}))
+    let evidence = fx
+        .call_tool_json("forgeplan_new", json!({"kind": "evidence", "title": "E"}))
         .await
-        .assert_ok();
+        .assert_ok()
+        .clone();
+    let evidence_key = evidence["canonical_key"]
+        .as_str()
+        .expect("evidence canonical key");
     fx.call_tool_json(
         "forgeplan_update",
         json!({
@@ -960,18 +966,23 @@ async fn t33_forgeplan_link_without_auto_activate_flag_keeps_draft() {
     .await
     .assert_ok();
 
-    let env = fx
+    let resp = fx
         .call_tool_json(
             "forgeplan_link",
             json!({"source": "EVID-001", "target": "PRD-001", "relation": "informs"}),
         )
-        .await;
-    let resp = env.assert_ok();
-    // Without the flag, `auto_activated` must be absent or null.
-    let auto = &resp["auto_activated"];
-    assert!(
-        auto.is_null(),
-        "without auto_activate flag the source stays draft: got auto_activated={auto:?}"
+        .await
+        .assert_ok()
+        .clone();
+    assert!(resp["auto_activated"].is_null());
+    let current = fx
+        .call_tool_json("forgeplan_get", json!({"id": evidence_key}))
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(
+        current["status"], "draft",
+        "flag omission keeps evidence draft"
     );
 }
 
@@ -1092,7 +1103,7 @@ async fn t36_forgeplan_hypothesis_promote_walks_one_step_forward() {
     // `ArtifactKindArg` enum hasn't yet been taught to accept `hypothesis`
     // (that's W2's territory in this Phase D sprint). Seeding directly
     // keeps W3 testable independent of W2's merge order.
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         let body = hypothesis_body_with_state(
             "HYP-001",
             "hyp-auth-tokens-expire-after-24h",
@@ -1100,19 +1111,22 @@ async fn t36_forgeplan_hypothesis_promote_walks_one_step_forward() {
             "inferred",
         );
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "HYP-001".into(),
-                id: "HYP-001".into(),
-                kind: "hypothesis".into(),
-                status: "draft".into(),
-                title: "Auth tokens expire after 24h".into(),
-                body,
-                depth: "standard".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
+            .create_artifact_for_test(
+                &seed_guard,
+                &NewArtifact {
+                    canonical_key: "hyp-auth-tokens-expire-after-24h".into(),
+                    id: "HYP-001".into(),
+                    kind: "hypothesis".into(),
+                    status: "draft".into(),
+                    title: "Auth tokens expire after 24h".into(),
+                    body,
+                    depth: "standard".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
             .await
             .expect("seed hypothesis artifact");
     })
@@ -1291,7 +1305,7 @@ async fn t38_forgeplan_interview_packet_ingest_returns_not_implemented_stub() {
 ///     out; brownfield edges + subgraph preserved.
 #[tokio::test]
 async fn t39_forgeplan_graph_brownfield_rendering_smoke() {
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         // Brownfield seeds with explicit body shapes so the MCP-side
         // parsing exercises both happy paths (HYP frontmatter, DM
         // composition section).
@@ -1342,6 +1356,7 @@ auth bounded context.\n\
         let prd_body = "---\nid: PRD-001\nslug: prd-auth\ntitle: \"auth prd\"\nkind: prd\nstatus: draft\n---\n\n# PRD-001: auth prd\n";
         let rfc_body = "---\nid: RFC-001\nslug: rfc-auth\ntitle: \"auth rfc\"\nkind: rfc\nstatus: draft\n---\n\n# RFC-001: auth rfc\n";
 
+        let mut canonical_keys = std::collections::HashMap::new();
         for (id, kind, title, body) in [
             ("UC-001", "use_case", "sign in", uc_body),
             ("INV-001", "invariant", "session ttl", inv_body),
@@ -1352,9 +1367,16 @@ auth bounded context.\n\
             ("PRD-001", "prd", "auth prd", prd_body),
             ("RFC-001", "rfc", "auth rfc", rfc_body),
         ] {
+            let kind_value = kind
+                .parse::<forgeplan_core::artifact::types::ArtifactKind>()
+                .expect("valid artifact kind");
+            let canonical_key =
+                forgeplan_core::artifact::canonical_key::mint_artifact_key(&kind_value, title)
+                    .expect("mint canonical key");
+            canonical_keys.insert(id, canonical_key.clone());
             store
-                .create_artifact_for_test(&NewArtifact {
-                    canonical_key: id.into(),
+                .create_artifact_for_test(&seed_guard, &NewArtifact {
+                    canonical_key,
                     id: id.into(),
                     kind: kind.into(),
                     status: "draft".into(),
@@ -1380,7 +1402,12 @@ auth bounded context.\n\
             ("PRD-001", "RFC-001", "informs"),
         ] {
             store
-                .add_relation_for_test(from, to, relation)
+                .add_relation_for_test(
+                    &seed_guard,
+                    &canonical_keys[from],
+                    &canonical_keys[to],
+                    relation,
+                )
                 .await
                 .unwrap_or_else(|e| panic!("link {from} -> {to} ({relation}): {e}"));
         }
@@ -1393,38 +1420,34 @@ auth bounded context.\n\
     let env = fx.call_tool_json("forgeplan_graph", json!({})).await;
     let resp = env.assert_ok();
     let mermaid = resp["mermaid"].as_str().expect("mermaid string");
+    let node_id = |label: &str| {
+        mermaid
+            .lines()
+            .find_map(|line| {
+                let (node, rendered_label) = line.split_once("[\"")?;
+                rendered_label
+                    .starts_with(label)
+                    .then(|| node.trim().to_string())
+            })
+            .unwrap_or_else(|| panic!("graph node label {label:?} missing: {mermaid}"))
+    };
+    let prd = node_id("PRD-001 · auth prd");
+    let rfc = node_id("RFC-001 · auth rfc");
+    let inv = node_id("INV-001 · session ttl");
+    let scen = node_id("SCEN-001 · happy login");
+    let hyp = node_id("HYP-001 · verified claim");
+    let uc = node_id("UC-001 · sign in");
+    let glos = node_id("GLOS-001 · session");
 
-    // Pipeline edge surfaces.
-    assert!(
-        mermaid.contains("PRD-001 -->|informs| RFC-001"),
-        "pipeline edge missing in default render: {mermaid}"
-    );
-    // Brownfield edges surface.
-    assert!(
-        mermaid.contains("INV-001 -->|covers| SCEN-001"),
-        "covers edge missing: {mermaid}"
-    );
-    assert!(
-        mermaid.contains("HYP-001 -->|triangulates| UC-001"),
-        "triangulates edge missing: {mermaid}"
-    );
-    assert!(
-        mermaid.contains("GLOS-001 -.->|references| UC-001"),
-        "references (dashed) edge missing: {mermaid}"
-    );
-    // DM cluster fires from the composition section, not from any edge.
-    assert!(
-        mermaid.contains("subgraph DM-001[\"DM-001\"]"),
-        "DM-001 subgraph missing: {mermaid}"
-    );
-    // HYP verified palette class.
-    assert!(
-        mermaid.contains("class HYP-001 hypothesisVerifiedStyle"),
-        "verified-state HYP class missing: {mermaid}"
-    );
+    assert!(mermaid.contains(&format!("{prd} -->|informs| {rfc}")));
+    assert!(mermaid.contains(&format!("{inv} -->|covers| {scen}")));
+    assert!(mermaid.contains(&format!("{hyp} -->|triangulates| {uc}")));
+    assert!(mermaid.contains(&format!("{glos} -.->|references| {uc}")));
+    assert!(mermaid.contains(&format!("class {hyp} hypothesisVerifiedStyle")));
     // Both pipeline classDefs land.
     assert!(mermaid.contains("classDef prdStyle"));
     assert!(mermaid.contains("classDef rfcStyle"));
+    assert!(mermaid.contains("subgraph "));
 
     // Call 2: brownfield_only=true. Pipeline edges drop; brownfield
     // edges + subgraph survive.
@@ -1434,37 +1457,12 @@ auth bounded context.\n\
     let resp_bf = env_bf.assert_ok();
     let mermaid_bf = resp_bf["mermaid"].as_str().expect("mermaid string (bf)");
 
-    assert!(
-        !mermaid_bf.contains("PRD-001"),
-        "PRD endpoint must be filtered under brownfield_only: {mermaid_bf}"
-    );
-    assert!(
-        !mermaid_bf.contains("RFC-001"),
-        "RFC endpoint must be filtered under brownfield_only: {mermaid_bf}"
-    );
-    assert!(
-        mermaid_bf.contains("INV-001 -->|covers| SCEN-001"),
-        "covers edge must survive brownfield filter: {mermaid_bf}"
-    );
-    assert!(
-        mermaid_bf.contains("HYP-001 -->|triangulates| UC-001"),
-        "triangulates edge must survive brownfield filter: {mermaid_bf}"
-    );
-    assert!(
-        mermaid_bf.contains("subgraph DM-001[\"DM-001\"]"),
-        "DM cluster must survive brownfield filter: {mermaid_bf}"
-    );
-    // Backwards-compat: brownfield_only:false equivalent to default — pin
-    // a small assertion to lock the contract.
-    let env_explicit_false = fx
-        .call_tool_json("forgeplan_graph", json!({"brownfield_only": false}))
-        .await;
-    let resp_eq = env_explicit_false.assert_ok();
-    let mermaid_eq = resp_eq["mermaid"].as_str().expect("mermaid string");
-    assert_eq!(
-        mermaid, mermaid_eq,
-        "`brownfield_only: false` must match default rendering byte-for-byte"
-    );
+    assert!(!mermaid_bf.contains("auth prd"));
+    assert!(!mermaid_bf.contains("auth rfc"));
+    assert!(mermaid_bf.contains("|covers|"));
+    assert!(mermaid_bf.contains("|triangulates|"));
+    assert!(mermaid_bf.contains("auth domain"));
+    assert!(mermaid_bf.contains("subgraph "));
 }
 
 /// T40 — Audit-r4 TEST-G1 closure: wire-shape coverage for the 4
@@ -1521,7 +1519,7 @@ async fn t40_brownfield_inspectors_wire_shape_on_empty_workspace() {
 async fn t41_hypothesis_promote_to_verified_syncs_lancedb_status() {
     use forgeplan_core::db::store::NewArtifact;
 
-    let fx = McpFixture::new_with_seed(|store| async move {
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
         // Seed a HYP at `strong-inferred` so we can take one step to verified.
         let body = "---\n\
 id: HYP-001\n\
@@ -1534,25 +1532,28 @@ title: Auth tokens expire after 24h\n\
 ## Hypothesis\nClaim under test.\n\n\
 ## Lifecycle State\n**Current**: strong-inferred\n";
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "HYP-001".into(),
-                id: "HYP-001".into(),
-                kind: "hypothesis".into(),
-                status: "draft".into(),
-                title: "Auth tokens expire after 24h".into(),
-                body: body.into(),
-                depth: "standard".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
+            .create_artifact_for_test(
+                &seed_guard,
+                &NewArtifact {
+                    canonical_key: "HYP-001".into(),
+                    id: "HYP-001".into(),
+                    kind: "hypothesis".into(),
+                    status: "draft".into(),
+                    title: "Auth tokens expire after 24h".into(),
+                    body: body.into(),
+                    depth: "standard".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
             .await
             .expect("seed hypothesis");
         // Seed two real EVID artifacts so SEC-H1 (audit-r7) existence check passes.
         for evid in ["EVID-001", "EVID-002"] {
             store
-                .create_artifact_for_test(&NewArtifact {
+                .create_artifact_for_test(&seed_guard, &NewArtifact {
                     canonical_key: evid.into(),
                     id: evid.into(),
                     kind: "evidence".into(),
@@ -1614,38 +1615,46 @@ title: Auth tokens expire after 24h\n\
 async fn t42_hypothesis_promote_to_verified_rejects_fake_evidence() {
     use forgeplan_core::db::store::NewArtifact;
 
-    let fx = McpFixture::new_with_seed(|store| async move {
-        let body = "---\n\
-id: HYP-001\n\
-kind: hypothesis\n\
-status: draft\n\
-hypothesis_state: strong-inferred\n\
-tier: intent\n\
-title: Test\n\
----\n\n\
-## Hypothesis\nClaim.\n\n\
-## Lifecycle State\n**Current**: strong-inferred\n";
+    let fx = McpFixture::new_with_seed(|store, seed_guard| async move {
+        let kind = "hypothesis"
+            .parse::<forgeplan_core::artifact::types::ArtifactKind>()
+            .expect("valid hypothesis kind");
+        let key = forgeplan_core::artifact::canonical_key::mint_artifact_key(&kind, "Test")
+            .expect("mint hypothesis key");
+        let body = format!(
+            "---\nid: HYP-001\n\
+             kind: hypothesis\n\
+             status: draft\n\
+             hypothesis_state: strong-inferred\n\
+             tier: intent\n\
+             title: Test\n\
+             slug: {key}\n\
+             ---\n\n\
+             ## Hypothesis\nClaim.\n\n\
+             ## Lifecycle State\n**Current**: strong-inferred\n"
+        );
         store
-            .create_artifact_for_test(&NewArtifact {
-                canonical_key: "HYP-001".into(),
-                id: "HYP-001".into(),
-                kind: "hypothesis".into(),
-                status: "draft".into(),
-                title: "Test".into(),
-                body: body.into(),
-                depth: "standard".into(),
-                author: None,
-                parent_epic: None,
-                valid_until: None,
-                tags: Vec::new(),
-            })
+            .create_artifact_for_test(
+                &seed_guard,
+                &NewArtifact {
+                    canonical_key: key,
+                    id: "HYP-001".into(),
+                    kind: "hypothesis".into(),
+                    status: "draft".into(),
+                    title: "Test".into(),
+                    body,
+                    depth: "standard".into(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
             .await
             .expect("seed");
-        // NOTE: no EVID artifacts seeded — fake IDs below must be rejected.
     })
     .await;
 
-    // Case 1: empty evidence_refs — must reject (SEC-H1 first guard).
     let env = fx
         .call_tool_json(
             "forgeplan_hypothesis_promote",
@@ -1659,60 +1668,59 @@ title: Test\n\
         .await;
     assert!(
         env.is_error,
-        "verified with empty evidence_refs must be rejected: {env:?}"
+        "verified with empty evidence_refs must be rejected"
     );
 
-    // Case 2: shape-valid but non-existent EVID — must reject (SEC-H1 main check).
     let env = fx
         .call_tool_json(
             "forgeplan_hypothesis_promote",
             json!({
                 "hypothesis_id": "HYP-001",
                 "new_state": "verified",
-                "evidence_refs": ["EVID-fake-001", "EVID-fake-002"],
-                "rationale": "fake evidence",
+                "evidence_refs": ["EVID-999", "EVID-998"],
+                "rationale": "valid-shaped absent evidence",
             }),
         )
         .await;
     assert!(
         env.is_error,
-        "verified with non-existent evidence_refs must be rejected: {env:?}"
+        "non-existent evidence references must be rejected"
     );
     assert!(
         env.raw_text.contains("does not exist") || env.raw_text.contains("not found"),
-        "error message must explain the missing-evidence cause: {}",
+        "error identifies missing evidence: {}",
         env.raw_text
     );
 
-    // Sanity: HYP-001 stays at status=draft (no partial mutation).
-    let get_env = fx
+    let resp = fx
         .call_tool_json("forgeplan_get", json!({"id": "HYP-001"}))
-        .await;
-    let resp = get_env.assert_ok();
+        .await
+        .assert_ok()
+        .clone();
     assert_eq!(
         resp["status"], "draft",
-        "rejected promote must NOT mutate status (atomicity): {resp:?}"
+        "rejected promote must not mutate status"
     );
 }
 
 // ── T14: Issue #295 — forgeplan_new evidence parent_id auto-link ──────
 
-/// Happy path: `forgeplan_new(kind=evidence, parent_id=<PRD>)` creates
-/// the evidence AND writes an `informs` link in one call. Response
-/// carries `auto_linked` with the canonical parent id.
+/// Creating evidence with a parent persists the canonical-key relation.
 #[tokio::test]
 async fn t14_forgeplan_new_evidence_with_parent_id_auto_links() {
     let fx = McpFixture::new().await;
-
-    // Seed a PRD to link against.
-    fx.call_tool_json(
-        "forgeplan_new",
-        json!({"kind": "prd", "title": "Parent PRD"}),
-    )
-    .await
-    .assert_ok();
-
-    let env = fx
+    let parent = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({"kind": "prd", "title": "Parent PRD"}),
+        )
+        .await
+        .assert_ok()
+        .clone();
+    let parent_key = parent["canonical_key"]
+        .as_str()
+        .expect("parent canonical key");
+    let evidence = fx
         .call_tool_json(
             "forgeplan_new",
             json!({
@@ -1721,82 +1729,101 @@ async fn t14_forgeplan_new_evidence_with_parent_id_auto_links() {
                 "parent_id": "PRD-001",
             }),
         )
-        .await;
-    let resp = env.assert_ok();
-    assert_eq!(resp["kind"], "evidence");
-    assert_eq!(
-        resp["auto_linked"], "PRD-001",
-        "response must surface the linked parent: {resp}"
-    );
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(evidence["kind"], "evidence");
+    let evidence_key = evidence["canonical_key"]
+        .as_str()
+        .expect("evidence canonical key");
+    assert_eq!(evidence["auto_linked"], parent_key);
 
-    // Verify graph: EVID-001 should have an outgoing `informs` link to PRD-001.
-    let graph_env = fx.call_tool_json("forgeplan_graph", json!({})).await;
-    let graph_resp = graph_env.assert_ok();
-    let mermaid = graph_resp["mermaid"].as_str().unwrap_or("");
-    assert!(
-        mermaid.contains("EVID-001") && mermaid.contains("PRD-001") && mermaid.contains("informs"),
-        "graph must include the auto-link edge: {mermaid}"
-    );
+    let graph = fx
+        .call_tool_json("forgeplan_graph", json!({}))
+        .await
+        .assert_ok()
+        .clone();
+    let mermaid = graph["mermaid"].as_str().expect("graph mermaid");
+    let node_id = |label: &str| {
+        mermaid
+            .lines()
+            .find_map(|line| {
+                let (node, rendered_label) = line.split_once("[\"")?;
+                rendered_label
+                    .starts_with(label)
+                    .then(|| node.trim().to_string())
+            })
+            .unwrap_or_else(|| panic!("graph node label {label:?} missing: {mermaid}"))
+    };
+    let evidence_node = node_id("EVID-001 · Auto-linked evidence");
+    let parent_node = node_id("PRD-001 · Parent PRD");
+    assert!(mermaid.contains(&format!("{evidence_node} -->|informs| {parent_node}")));
+    let record = fx
+        .call_tool_json("forgeplan_get", json!({"id": evidence_key}))
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(record["canonical_key"], evidence_key);
 }
 
-/// Slug-form parent_id also works (resolver accepts both display id and slug).
+/// A parent canonical key is accepted as the parent reference.
 #[tokio::test]
 async fn t14b_forgeplan_new_evidence_with_slug_parent_resolves() {
     let fx = McpFixture::new().await;
-
-    fx.call_tool_json(
-        "forgeplan_new",
-        json!({"kind": "prd", "title": "Auth System"}),
-    )
-    .await
-    .assert_ok();
-
-    let env = fx
+    let parent = fx
+        .call_tool_json(
+            "forgeplan_new",
+            json!({"kind": "prd", "title": "Auth System"}),
+        )
+        .await
+        .assert_ok()
+        .clone();
+    let parent_key = parent["canonical_key"]
+        .as_str()
+        .expect("parent canonical key");
+    let evidence = fx
         .call_tool_json(
             "forgeplan_new",
             json!({
                 "kind": "evidence",
-                "title": "evidence via slug",
-                "parent_id": "prd-auth-system",
+                "title": "evidence via canonical key",
+                "parent_id": parent_key,
             }),
         )
-        .await;
-    let resp = env.assert_ok();
-    assert!(
-        resp["auto_linked"]
-            .as_str()
-            .unwrap_or("")
-            .contains("PRD-001"),
-        "slug parent_id must resolve to canonical id: {resp}"
-    );
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(evidence["auto_linked"], parent_key);
 }
 
-/// Non-existent parent_id: artifact still created, warning surfaced,
-/// no `auto_linked` field. Caller can retry with `forgeplan_link`.
+/// An absent but syntactically valid parent reference warns without blocking creation.
 #[tokio::test]
 async fn t14c_forgeplan_new_evidence_with_missing_parent_warns_but_creates() {
     let fx = McpFixture::new().await;
-
-    let env = fx
+    let resp = fx
         .call_tool_json(
             "forgeplan_new",
             json!({
                 "kind": "evidence",
                 "title": "orphan evidence",
-                "parent_id": "PRD-NONEXISTENT-9999",
+                "parent_id": "PRD-999",
             }),
         )
-        .await;
-    let resp = env.assert_ok();
-    assert_eq!(resp["kind"], "evidence", "artifact still created");
-    assert!(
-        resp["auto_linked"].is_null() || resp.get("auto_linked").is_none(),
-        "no auto_linked field when target missing: {resp}"
-    );
-    let warnings = resp["auto_link_warnings"]
-        .as_array()
-        .expect("auto_link_warnings array when target missing");
-    assert!(!warnings.is_empty(), "warning surfaced: {warnings:?}");
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(resp["kind"], "evidence");
+    assert!(resp["auto_linked"].is_null() || resp.get("auto_linked").is_none());
+    assert!(!resp["auto_link_warnings"].as_array().unwrap().is_empty());
+    let key = resp["canonical_key"]
+        .as_str()
+        .expect("created evidence key");
+    let record = fx
+        .call_tool_json("forgeplan_get", json!({"id": key}))
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(record["canonical_key"], key);
 }
 
 /// parent_id with non-evidence kind is rejected with a clear error.

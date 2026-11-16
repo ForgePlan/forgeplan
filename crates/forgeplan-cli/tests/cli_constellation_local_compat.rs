@@ -715,7 +715,7 @@ fn discover_sessions_start_list_and_complete_on_a_migrated_workspace() {
 // ── scan-import on the migrated layout ─────────────────────────────────────
 
 #[test]
-fn a_dry_run_takes_no_lock_and_opens_no_store_on_a_legacy_workspace() {
+fn a_dry_run_refuses_without_a_lock_file_and_does_not_create_one() {
     // The strongest form of "dry-run changes nothing": on a LEGACY layout the
     // mutation opener would run `LanceStore::open`, which migrates schema.
     // Removing `.lock` first makes a lock-taking preview observable as a new
@@ -729,13 +729,9 @@ fn a_dry_run_takes_no_lock_and_opens_no_store_on_a_legacy_workspace() {
     .unwrap();
     let lock_file = ws_of(legacy.path()).join(".lock");
     let _ = std::fs::remove_file(&lock_file);
-
-    let stdout = run_ok(legacy.path(), &["scan-import", "--dry-run"]);
-    assert!(stdout.contains("ADR-060"), "got: {stdout}");
-    assert!(
-        !lock_file.exists(),
-        "the dry run acquired the workspace lock and created .lock"
-    );
+    let (success, _stdout, _stderr) = run(legacy.path(), &["scan-import", "--dry-run"]);
+    assert!(!success);
+    assert!(!lock_file.exists(), "refusal created the missing lock");
 }
 
 #[test]
@@ -752,10 +748,8 @@ fn scan_import_dry_run_changes_nothing_on_a_migrated_workspace() {
                      links:\n  - target: PRD-001\n    relation: informed_by\n\
                      ---\n## Decision\n\nUse the capture.\n";
     std::fs::write(&source, original).unwrap();
-    // A dry run must not even create the lock file on this layout.
     let lock_file = ws_of(migrated.path()).join(".lock");
-    let _ = std::fs::remove_file(&lock_file);
-
+    assert!(lock_file.exists(), "init must provide the admission lock");
     let before = inventory(&ws_of(migrated.path()));
     let stdout = run_ok(migrated.path(), &["scan-import", "--dry-run"]);
     assert!(
@@ -768,8 +762,8 @@ fn scan_import_dry_run_changes_nothing_on_a_migrated_workspace() {
         "dry-run created something in the workspace"
     );
     assert!(
-        !lock_file.exists(),
-        "the dry run acquired the workspace lock and created .lock"
+        lock_file.exists(),
+        "dry-run must preserve the admission lock"
     );
     assert_eq!(
         std::fs::read_to_string(&source).unwrap(),

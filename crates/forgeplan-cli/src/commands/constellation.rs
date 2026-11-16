@@ -18,20 +18,66 @@ use clap::Subcommand;
 use forgeplan_core::constellation::context_pack::{self, ContextPack};
 use forgeplan_core::constellation::export as exp;
 use forgeplan_core::constellation::facade;
-use forgeplan_core::constellation::federation::{self, FederatedGet, QueryMode};
+use forgeplan_core::constellation::federation::{self, QueryMode};
 use forgeplan_core::constellation::graph::{self, GraphBounds, GraphOutcome};
 use forgeplan_core::constellation::impact::{self, ImpactBounds, ImpactReport, ImpactSeverity};
 use forgeplan_core::constellation::registry::{self, SourceRole};
 use forgeplan_core::constellation::snapshot as snap;
 use forgeplan_core::constellation::storage;
 
+use super::common;
+
+fn print_get_failures(failures: &[federation::SourceFailure]) {
+    for failure in failures {
+        println!(
+            "  (incomplete: unread source {} — {})",
+            failure.path, failure.reason
+        );
+    }
+}
+
+fn refuse_resolution(
+    error: forgeplan_core::artifact::canonical_key::ResolveError,
+    input: &str,
+    json: bool,
+) -> Result<()> {
+    let outcome: common::Resolution = Err(error).into();
+    let failure = common::resolution_failure(&outcome, input, &[]);
+    if json {
+        let candidates: Vec<_> = failure
+            .candidates
+            .iter()
+            .map(|candidate| {
+                serde_json::json!({
+                    "canonical_key": candidate.canonical_key,
+                    "display_id": candidate.display_id,
+                    "title": candidate.title,
+                    "relative_path": candidate.relative_path,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "error": failure.code,
+                "input": failure.input,
+                "candidates": candidates,
+                "message": failure.message,
+            }))?
+        );
+    } else {
+        common::print_resolution_failure(&failure);
+    }
+    Err(common::resolution_failure_error(&failure))
+}
+
 #[derive(Subcommand)]
 pub enum ConstellationAction {
     /// Create a named constellation. The first one created becomes active.
     Create { name: String },
-    /// Add a `.forgeplan` directory as a source. Validates the path at
-    /// registration time — a symlink or a non-workspace fails here, not at
-    /// every later read.
+    /// Add a `.forgeplan` directory as a source. Rejects symlinks and
+    /// non-workspaces at registration. Live reads recheck the registered
+    /// source boundary.
     Add {
         /// Path to the source's `.forgeplan` directory
         path: PathBuf,
@@ -126,9 +172,39 @@ pub enum ConstellationAction {
     Pack {
         /// What the agent must do — the ranking terms come from this text
         task: String,
-        /// Token budget for the whole pack (estimated tokens, chars/4)
+        /// Estimated token allowance for the complete response (UTF-8 bytes / 4).
         #[arg(long, default_value = "8000")]
         budget: usize,
+        /// Exact maximum bytes in the complete output.
+        #[arg(long, default_value = "1000000")]
+        byte_cap: usize,
+        /// Explicit artifact selector, optionally qualified as KEY@source.
+        #[arg(long)]
+        seed: Vec<String>,
+        /// Maximum declared relation depth.
+        #[arg(long, default_value = "4")]
+        max_depth: usize,
+        /// Maximum visited nodes.
+        #[arg(long, default_value = "256")]
+        max_nodes: usize,
+        /// Maximum traversed edges.
+        #[arg(long, default_value = "1024")]
+        max_edges: usize,
+        /// Maximum traversal time in milliseconds.
+        #[arg(long, default_value = "5000")]
+        max_millis: u64,
+        /// Refuse incomplete sources, obligations or page delivery.
+        #[arg(long)]
+        require_complete: bool,
+        /// Continue a previous response on the same basis and presentation.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Retrieval mode (only lexical is supported).
+        #[arg(long, default_value = "lexical")]
+        retrieval_mode: String,
+        /// Include Mermaid graph navigation.
+        #[arg(long)]
+        mermaid: bool,
         /// Pack at a recorded snapshot instead of the live sources
         #[arg(long)]
         snapshot: Option<String>,
@@ -523,7 +599,7 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             Ok(())
         }
         ConstellationAction::Get {
-            id,
+            id: requested_id,
             snapshot,
             allow_partial,
             json,
@@ -534,7 +610,7 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
             // `ADR-001@src:b7d6…`. The qualifier narrows the source set
             // before reading; an unmatched qualifier is an error that
             // names what was registered, never a silent wider search.
-            let (bare_id, qualifier) = federation::parse_qualified_ref(id.as_str());
+            let (bare_id, qualifier) = federation::parse_qualified_ref(requested_id.as_str());
             let qualifier = qualifier.map(str::to_string);
             let id = bare_id.to_string();
             if let Some(snap_id) = &snapshot {
@@ -542,7 +618,13 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
                 let snap = snap::load_snapshot(&snap::snapshot_path(&home, snap_id))
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
-                let found = snap::snapshot_get(&snap, &id, qualifier.as_deref())?;
+                let found = match snap::snapshot_get(&snap, &id, qualifier.as_deref()) {
+                    Ok(found) => found,
+                    Err(forgeplan_core::constellation::ConstellationError::Resolve(error)) => {
+                        return refuse_resolution(error, &requested_id, json);
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 return match found.len() {
                     0 => {
                         if json {
@@ -635,8 +717,9 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                 }
             }
             let result = federation::federated_get(&specs, &id, mode).await?;
+            let federation::FederatedGet { result, read } = result;
             match result {
-                FederatedGet::Found(artifact) => {
+                federation::FederatedGetResult::Found(artifact) => {
                     if json {
                         println!(
                             "{}",
@@ -650,6 +733,9 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                                 "semantic_state": artifact.semantic_state,
                                 "body": artifact.body,
                                 "source": artifact.source,
+                                "sources": read.sources,
+                                "failures": read.failures,
+                                "partial": read.partial,
                             }))?
                         );
                     } else {
@@ -665,9 +751,10 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                             &artifact.source.source_id,
                         );
                         println!("{}", artifact.body);
+                        print_get_failures(&read.failures);
                     }
                 }
-                FederatedGet::Ambiguous { sources } => {
+                federation::FederatedGetResult::Ambiguous { sources } => {
                     if json {
                         println!(
                             "{}",
@@ -681,6 +768,9 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                                         "source_id": s.source_id,
                                     }))
                                     .collect::<Vec<_>>(),
+                                "scanned_sources": read.sources,
+                                "failures": read.failures,
+                                "partial": read.partial,
                             }))?
                         );
                     } else {
@@ -691,30 +781,28 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                         for source in &sources {
                             println!("  {} ({})", source.path, source.source_id);
                         }
+                        print_get_failures(&read.failures);
                     }
                 }
-                FederatedGet::NotFound { failures } => {
+                federation::FederatedGetResult::NotFound => {
                     if json {
                         println!(
                             "{}",
                             serde_json::to_string_pretty(&serde_json::json!({
                                 "result": "not_found",
                                 "id": id,
-                                "failures": failures
-                                    .iter()
-                                    .map(|f| serde_json::json!({
-                                        "path": f.path,
-                                        "reason": f.reason,
-                                    }))
-                                    .collect::<Vec<_>>(),
+                                "sources": read.sources,
+                                "failures": read.failures,
+                                "partial": read.partial,
                             }))?
                         );
                     } else {
                         println!("Not found: {id}");
-                        for failure in &failures {
-                            println!("  (unread source: {} — {})", failure.path, failure.reason);
-                        }
+                        print_get_failures(&read.failures);
                     }
+                }
+                federation::FederatedGetResult::ResolveError(error) => {
+                    return refuse_resolution(error, &requested_id, json);
                 }
             }
             Ok(())
@@ -722,18 +810,44 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
         ConstellationAction::Pack {
             task,
             budget,
+            byte_cap,
+            seed,
+            max_depth,
+            max_nodes,
+            max_edges,
+            max_millis,
+            require_complete,
+            cursor,
+            mermaid,
+            retrieval_mode,
             snapshot,
             allow_partial,
             json,
         } => {
             let (_path, registry) = load_registry()?;
             let mode = query_mode(allow_partial);
+            let options = context_pack::PackOptions {
+                budget_tokens: budget,
+                byte_cap,
+                seeds: seed,
+                max_depth,
+                max_nodes,
+                max_edges,
+                max_millis,
+                require_complete,
+                cursor,
+                presentation: if json { "cli-json" } else { "cli-text" }.into(),
+                request_context: snapshot.clone().unwrap_or_else(|| "active".into()),
+                mermaid,
+                retrieval_mode,
+            };
+            let measure = |pack: &ContextPack| render_pack(pack, json).map(|s| s.len());
             let pack = if let Some(id) = &snapshot {
                 let home = dirs::home_dir()
                     .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
                 let snap = snap::load_snapshot(&snap::snapshot_path(&home, id))
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
-                context_pack::pack_snapshot(&snap, &task, budget)
+                context_pack::pack_snapshot(&snap, &task, &options, &measure)
                     .map_err(|e| anyhow::anyhow!("{e}"))?
             } else {
                 let specs = registry::current_sources(&registry)
@@ -741,15 +855,14 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                 if specs.is_empty() {
                     anyhow::bail!("the active constellation has no sources");
                 }
-                context_pack::pack_live(&specs, &task, budget, mode)
+                context_pack::pack_live(&specs, &task, &options, mode, &measure)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?
             };
-            if json {
-                println!("{}", serde_json::to_string_pretty(&pack)?);
-            } else {
-                print_pack_text(&pack);
-            }
+            print!(
+                "{}",
+                render_pack(&pack, json).map_err(|e| anyhow::anyhow!("{e}"))?
+            );
             Ok(())
         }
         ConstellationAction::Graph {
@@ -803,16 +916,23 @@ pub async fn run(action: ConstellationAction) -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("cannot locate the user home directory"))?;
                 let snap = snap::load_snapshot(&snap::snapshot_path(&home, snap_id))
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
-                impact::impact_snapshot(&snap, &id, bounds).map_err(|e| anyhow::anyhow!("{e}"))?
+                impact::impact_snapshot(&snap, &id, bounds)
             } else {
                 let specs = registry::current_sources(&registry)
                     .ok_or_else(|| anyhow::anyhow!("no active constellation"))?;
                 if specs.is_empty() {
                     anyhow::bail!("the active constellation has no sources");
                 }
-                impact::impact_live(&specs, &id, bounds, mode)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                impact::impact_live(&specs, &id, bounds, mode).await
+            };
+            let report = match report {
+                Ok(report) => report,
+                Err(forgeplan_core::constellation::ConstellationError::Resolve(error))
+                | Err(forgeplan_core::constellation::ConstellationError::ResolveRead {
+                    error,
+                    ..
+                }) => return refuse_resolution(error, &id, json),
+                Err(error) => return Err(anyhow::anyhow!("{error}")),
             };
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
@@ -906,22 +1026,27 @@ fn print_impact_text(report: &ImpactReport) {
         );
         // Path is stored leafward (changed → node); print it node-first
         // so the chain reads "who depends on whom".
-        let trail: Vec<String> = node
-            .path
-            .iter()
-            .rev()
-            .map(|s| format!("{} --{}-->", s.dependent, s.relation))
-            .collect();
-        println!("    {} {}", trail.join(" "), report.changed);
+        print!("    ");
+        for step in node.path.iter().rev() {
+            print!(
+                "{}@{} --{}--> ",
+                step.dependent, step.source_id, step.relation
+            );
+        }
+        println!("{}", report.changed);
         println!("    {} ({})", node.source.path, node.source.source_id);
     }
-    if report.impacted.is_empty() && report.failures.is_empty() {
+    if report.impacted.is_empty()
+        && report.failures.is_empty()
+        && report.unresolved.is_empty()
+        && report.stops.is_empty()
+    {
         println!("Nothing depends on '{}' structurally.", report.changed);
     }
     if !report.stops.is_empty() {
         println!("stops:");
         for stop in &report.stops {
-            println!("  {} — {}", stop.at, stop.reason);
+            println!("  {}@{} — {}", stop.at, stop.source_id, stop.reason);
         }
     }
     if !report.unresolved.is_empty() {
@@ -966,15 +1091,16 @@ fn print_graph_text(outcome: &GraphOutcome) {
         );
     }
     for edge in &outcome.edges {
-        let to = edge.resolved.as_deref().unwrap_or(&edge.target);
-        let provenance = match &edge.declared_in {
-            Some(file) => format!("{}:{}", edge.source_id, file),
-            None => edge.source_id.clone(),
-        };
-        println!(
-            "edge {} --{}--> {} [{}]",
-            edge.from, edge.relation, to, provenance
-        );
+        print!("edge {} --{}--> ", edge.from, edge.relation);
+        match (&edge.resolved, &edge.resolved_source_id) {
+            (Some(key), Some(source_id)) => print!("{key}@{source_id}"),
+            _ => print!("{}", edge.target),
+        }
+        print!(" [{}", edge.source_id);
+        if let Some(file) = &edge.declared_in {
+            print!(":{file}");
+        }
+        println!("]");
     }
     if outcome.truncated {
         println!("(truncated — raise --limit)");
@@ -984,52 +1110,34 @@ fn print_graph_text(outcome: &GraphOutcome) {
     }
 }
 
-/// Human-readable pack: the selected units with role and reasons, then
-/// the receipt — budget, spend, per-role/source counts — then omissions.
-fn print_pack_text(pack: &ContextPack) {
-    for failure in &pack.failures {
-        eprintln!(
-            "warning: source {} unread — {}",
-            failure.path, failure.reason
-        );
+/// Render the exact public output, including its terminating newline.
+fn render_pack(pack: &ContextPack, json: bool) -> Result<String, String> {
+    if json {
+        return serde_json::to_string(pack)
+            .map(|s| format!("{s}\n"))
+            .map_err(|e| e.to_string());
     }
-    for unit in &pack.units {
-        println!(
-            "{}  {:<12} {:<10} score={:<5} ~{}tok",
-            unit.unit_id,
-            format!("{:?}", unit.role).to_lowercase(),
-            unit.display_id.as_deref().unwrap_or(&unit.canonical_key),
-            unit.score,
-            unit.tokens,
-        );
-        println!("      {} — {}", unit.relative_path, unit.title);
-        for reason in &unit.reasons {
-            println!("      · {reason}");
-        }
-        println!("      | {}", unit.excerpt.lines().next().unwrap_or(""));
-    }
-    let r = &pack.receipt;
-    println!(
-        "receipt: {}/{} tokens ({}) — {} unit(s){}",
-        r.used_tokens,
-        r.budget_tokens,
-        r.token_kind,
-        r.units,
-        if pack.failures.is_empty() {
-            String::new()
-        } else {
-            format!(", {} source(s) failed", pack.failures.len())
-        }
+    let mut metadata = pack.clone();
+    metadata.units.clear();
+    let mut text = format!(
+        "ContextPack metadata:\n{}\n",
+        serde_json::to_string_pretty(&metadata).map_err(|e| e.to_string())?
     );
-    for (role, count) in &r.per_role {
-        println!("  {role}: {count}");
-    }
-    if !pack.omitted.is_empty() {
-        println!("omitted:");
-        for o in &pack.omitted {
-            println!("  {} ({}, score={})", o.canonical_key, o.reason, o.score);
+    for unit in &pack.units {
+        let mut unit_metadata = serde_json::to_value(unit).map_err(|e| e.to_string())?;
+        if let Some(fields) = unit_metadata.as_object_mut() {
+            fields.remove("excerpt");
+        }
+        text.push_str("\nUnit metadata:\n");
+        text.push_str(&serde_json::to_string_pretty(&unit_metadata).map_err(|e| e.to_string())?);
+        text.push_str("\nSource body (each line prefixed by `  | `):\n");
+        for line in unit.excerpt.split('\n') {
+            text.push_str("  | ");
+            text.push_str(line);
+            text.push('\n');
         }
     }
+    Ok(text)
 }
 
 fn print_search_text(outcome: &federation::FederatedSearchOutcome) {

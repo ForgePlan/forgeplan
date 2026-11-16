@@ -35,7 +35,7 @@ pub async fn run() -> anyhow::Result<()> {
         // the workspace lock this command already holds. It rebuilds the
         // index from the Markdown, verifies it, and publishes it behind the
         // readiness marker. A conflict leaves the original index untouched.
-        let report = forgeplan_core::db::migrate::run_identity_v5_migration(&ws).await?;
+        let report = forgeplan_core::db::store::LanceStore::migrate_identity_v5(&ws, &lock).await?;
         if report.already_published {
             println!(
                 "  Identity-v5 index already published ({} documents).",

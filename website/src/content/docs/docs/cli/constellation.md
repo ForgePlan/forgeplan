@@ -19,7 +19,7 @@ Usage: forgeplan constellation <COMMAND>
 
 Commands:
   create    Create a named constellation. The first one created becomes active
-  add       Add a `.forgeplan` directory as a source. Validates the path at registration time — a symlink or a non-workspace fails here, not at every later read
+  add       Add a `.forgeplan` directory as a source. Rejects symlinks and non-workspaces at registration. Live reads recheck the registered source boundary
   remove    Remove a source from a constellation
   rebind    Rebind a source after its checkout moved. Source identity is path-derived, so a moved checkout is a new source: this rewrites the registry path and, by default, the index's path-bound marker so `forgeplan index` answers at the new location. References qualified by the old `src:` id stop resolving — that is the contract
   list      List all constellations and which is active

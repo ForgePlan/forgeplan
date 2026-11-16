@@ -13,6 +13,13 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ### Added
 
+- ContextPack supports explicit source-qualified seeds, declared relation
+  closure, complete source-text units, response byte caps and continuation.
+  Source, traversal and delivery completeness are reported separately. Compact
+  JSON and per-page incident graphs leave the budget for whole source units;
+  Mermaid preserves unresolved declared links. Contributor documentation now
+  describes the same full-response budget and continuation contract.
+
 - EN/RU how-to и reference для Constellation: два изолированных проекта,
   full/read MCP, неоднозначные ID, Git snapshots, явные условия auto-embed
   и проверка пригодных векторных строк. Contributor-runbook описывает
@@ -31,8 +38,134 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   прозу вне помеченных блоков, не запускают Cargo и не удаляют страницы;
   команда `index` имеет отдельный `index-command.md`, не затирает overview.
   Проверка полноты сверяет интерфейс и покрытие, а не число строк страницы.
+- В unreleased Rust API связанные параметры создания подготовленного ключа,
+  проверки опубликованного поколения и soft-delete передаются именованными
+  `PreparedKeyRequest`, `VerificationRequest` и `SoftDeleteCaptureRequest`.
+  Все вызывающие места workspace переведены вместе; команды CLI и параметры MCP не менялись.
+- В unreleased manifest `pending_jobs` хранит одну группу на документ с отдельными
+  заданиями его prefix и секций. Каждый вход сохраняет собственные binding,
+  token и retry state; завершение одного не снимает остальные.
+  Непустые плоские очереди промежуточного кандидата отклоняются, а не переинтерпретируются.
+
+### Security
+
+- Исправлены 14 текущих RustSec-отказов обновлением девяти затронутых пакетов,
+  включая `rmcp` 3.9.0, `rustls` 0.23.46 и `tokio` 1.53.3.
+  `cargo deny check advisories` завершился успешно без новых исключений.
+  Отдельно учтены остающиеся website alerts; этот результат не объявляет их исправленными.
 
 ### Fixed
+- Scope-bound MCP reads verify the source-content identity actually served,
+  including misses, identity diagnostics and ContextPack. Recovered sources
+  require reopening; qualified get checks the matching sources, while impact
+  verifies all admitted graph sources it consumes.
+- Live graph and impact reject a registered workspace root replaced by a
+  symlink instead of reading an unregistered destination.
+- Federated get retains source failures and partial status for found,
+  ambiguous and missing results in CLI and read MCP. Canonical-key conflicts
+  preserve every candidate instead of choosing a winner or hiding the conflict.
+  Broadly qualified live and pinned get ambiguities retain all matching candidates,
+  including identities, aliases, titles and source-qualified relative paths.
+- Pinned Git reads preserve `revision_unavailable` for missing commits, trees
+  and blobs without lazy fetching or falling back to HEAD.
+- Impact follows qualified incoming dependencies across admitted projects in
+  live and Git-pinned reads. Graph targets and impact paths retain source
+  identities; bounded traversal no longer discards dependent projects.
+- Graph and impact use the canonical identity resolver for numeric aliases,
+  canonical-key priority and ambiguity. Typed ambiguity retains the actual
+  read witnesses instead of becoming a false absence or an arbitrary winner.
+- Correct EN/RU ordinary-read body contracts: migrated reads strip the outer
+  frontmatter; Git snapshot reads retain the complete committed file.
+- Fix evidence field examples, lifecycle activation targets and supersession
+  direction, CI validation scope, score/tree guidance and ingest wildcard docs.
+- `health` повторно использует один полный захват документов при чтении фаз
+  вместо полного чтения корпуса для каждого активного артефакта. Проверки
+  уникальности ключа, старого алиаса и безопасности phase-файлов сохранены.
+- `health` сопоставляет связи с доказательствами по canonical key, а не
+  display ID: одноимённые документы больше не делят чужое доказательство
+  и не получают ложный blind spot из-за разных имён одного endpoint.
+- `coverage --backfill` сохраняет canonical Markdown через штатную file-first
+  projection перед изменением индекса. Последующее согласование больше не
+  восстанавливает прежнее тело из неизменённого файла; ошибки записи возвращаются
+  вызывающему коду, а не скрываются за сообщением об успешной обработке.
+- CLI `context` определяет наличие действующих Evidence по каноническим
+  концам связей, а не отображаемым ID. Связанный pack с положительным
+  `R_eff` больше не оставляет документ ошибочно в `SHAPED`.
+- `reindex` согласует обычные правки Markdown в identity-v5 одной транзакцией,
+  сохраняя исходные файлы, историю и Evidence. Неполный корпус и конфликтующие
+  ключи не дают разрешения на удаление индексных записей.
+- `git-sync` проверяет удаляемый документ по Git before-image и опубликованной
+  записи. Перемещение сохраняет ключ; повторный диапазон не повторяет удаление.
+  Журнал записывается после публикации, без ложных body-событий для metadata-only правок.
+- `git-sync` закрепляет Git OID до чтения diff и blobs, проверяет весь
+  подготовленный набор до первого события истории и отказывает при изменении
+  ключа существующего документа. Параллельные managed `git-sync` и `reindex`
+  не записывают один переход в журнал повторно.
+- Identity-v5 сохраняет прежний `updated_at`, если дата отсутствует в Markdown,
+  и возвращает изменения именно своей транзакции, а не позднейшего писателя.
+  Нормальный отказ до публикации удаляет только созданные этой попыткой delete
+  intents; частично завершённая очистка после публикации допускает повтор.
+  Trim-only и metadata-only изменения не создают ложные body-события.
+- Новые CLI-события истории несут `canonical_key` вместе с отображаемым ID.
+  Старые восьмиколоночные записи сохраняются без выдуманного ключа.
+- `init --force` восстанавливает identity-v5 индекс из существующего корпуса,
+  когда прежних таблиц нет, без неявного перехода на Constellation.
+  Backfill покрытия использует уже выделенный текст, не разбирает его повторно как frontmatter.
+- Проверка владельца индекса учитывает backup-only состояние. Потерянный marker
+  восстанавливается только по проверенному `CURRENT` с точными тремя версиями таблиц;
+  опубликованная эпоха не подменяется нулём.
+- MCP сохраняет typed `-32602` и resolver data при отказе выбрать workspace
+  в связанном Git worktree. После сохранённого `update` сбой семантического
+  обслуживания возвращается как `index_pending` с причиной, а не как откат записи.
+- Полный захват без metadata токенизатора удаляет прежние индексные секции
+  живых документов и отзывает их незавершённые задания до публикации поколения.
+  Восстановленная секция получает новое задание; прежний результат не может его завершить.
+- Recovery восстанавливает исходное задание только при совпадении binding и
+  точных входных байтов. Изменённый или пересозданный вход требует нового admission,
+  а section key больше не принимается как ключ родительской группы.
+
+- Повреждённый required source больше не исчезает из live/snapshot
+  `pack`, `graph` и `impact`: строгий режим отказывает, а частичный ответ
+  называет источник и не включает его исправные фрагменты как полный результат.
+- Identity-v5 восстанавливает повторные объявления одной связи как логическое
+  множество, не переписывая Markdown. Лишняя индексная связь проверяется до
+  исправляющих записей; история и Evidence не удаляются ради успешного восстановления.
+  `reindex` использует штатное транзакционное восстановление v5 и сохраняет журнал изменений.
+- Согласование identity-v5 читает корпус и таблицы один раз на проход вместо
+  повторного обхода и SQL-запросов для каждого документа. Совместимые старые тела
+  и разница в один завершающий LF больше не вызывают постоянные ложные перезаписи.
+- Проверка допуска к обычной записи не загружает токенизатор BGE-M3.
+  Обе проверки стабильности canonical source сохранены; семантический захват,
+  публичные версии чтения и проверка актуальности векторов не изменены.
+- CLI `update` различает сохранённую запись с `IndexBusy` и настоящий отказ
+  согласования: занятый индекс остаётся `index_pending`, а не выдаётся за
+  откат записи или готовую семантику. MCP при живом maintenance runtime
+  передаёт ему публикацию без второго синхронного прохода модели.
+- В dev-профиле оптимизирован только `sha2` 0.11: проверка полного содержимого
+  весов модели больше не платит цену неоптимизированного хеширования на каждом проходе.
+  Проверяемые байты, хеши и 30-секундное окно обслуживания не изменены;
+  release/dist-профили остаются прежними.
+- Исправлен standalone Lance `StorageDriver`: создание, изменения и связи
+  сохраняют канонический Markdown через существующие file-first операции.
+  Удаление связей очищает объявления в сохранившихся документах, поэтому
+  последующий scan не восстанавливает удалённые индексные связи.
+  Явный timestamp-only `update(None, None)` сохраняет прежний контракт
+  `updated_at`, не меняя содержимое документа. Проверки workspace/identity не ослаблены.
+- Интеграционные fixtures передают живые workspace permits и заполняют
+  поля canonical snapshot/capture; исторические таблицы создаются отдельным
+  debug/test-only помощником, не доступным в production-сборке.
+
+- Убрано удаление старого пути после смены заголовка через CLI и MCP.
+  Основной рендеринг и удаление проекции разрешают документ по полному набору
+  workspace; миграция отклоняет неоднозначные локальные ссылки вместо выбора
+  первого совпадения.
+- При откате identity repair проверяется хеш сохранённого preimage;
+  неудачное восстановление и посторонние правки не обозначаются как успешный
+  откат.
+- Ingest сохраняет canonical key кандидата при повторном запуске, чтобы
+  документы с одинаковым display ID не заменяли друг друга в индексе кандидатов.
+- `forgeplan update` сохраняет выбранный canonical key до записи и отказывает
+  при неоднозначном display ID, перечисляя подходящие документы.
 
 - CLI selector refusals preserve their outcome: ambiguous aliases exit 5 and name candidates,
   canonical-key collisions exit 4, and missing artifacts exit 3. `phase` now refuses a
@@ -147,8 +280,32 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   запрашивает на строку больше, усекает до предела и говорит словами, что
   совпадений больше. Поле `warning` сохраняет прежний смысл (семантический
   канал не отработал — сработал keyword-фолбэк).
+- Допуск обычной записи (`new`/`update`/`delete`/`restore`) и артефакт-первые
+  чтения Constellation используют канонический census без вывода BGE-секций:
+  полный двухпроходный пересчёт, диагностика повреждённых файлов, коллизии
+  канонических ключей и проверка `CURRENT` сохранены, а токен-окна считаются
+  только при индексации (`capture_source`). Раньше допуск записи мог вообще
+  отказать, если метаданные модели не давали пригодного токен-бюджета, и
+  тратил десятки секунд на холостое переразбиение корпуса перед каждой
+  мутацией; теперь он работает без модели и на корпусе из 205 документов
+  экономит ~25–30 с на команду (measured, debug build с реальной BGE-M3).
+  Чтения `get`/`list`/`search`/федерация/`pack`/`impact` стали субсекундными.
+  Концевая синхронная reconcile-публикация поколения после мутации сохранена
+  как есть: на той же копии `new` 88 с, `update` 82 с, `delete` 160–170 с,
+  `restore` 79 с (на прежнем бинарнике было 113/113/190–202/113); для
+  интерактивного редактирования штатный путь — работающий full-сервер с
+  `--auto-index`, а не отдельные CLI-мутации. Публичные схемы и ответы не
+  менялись; повреждённый источник по-прежнему даёт `source_unavailable`.
 
 ### Internal
+
+- Контракт «get возвращает текущее тело источника» закреплён в process-e2e;
+  сравнение тела строки с телом-источника в тестах проекций заменено на
+  инвариант сохранности до/после. Добавлен regression
+  `ordinary_mutation_is_independent_of_semantic_token_budget`: допуск записи
+  работает при непригодном токен-бюджете модели и по-прежнему отказывает на
+  повреждённом frontmatter; отдельный negative-контроль подтверждает
+  `SourceUnavailable` для strict федеративных чтений.
 
 - В R3 выполнены реальные CLI/full MCP-сценарии и локальный BGE-инференс:
   подтверждены semantic ranking и автоматическое обновление embeddings после

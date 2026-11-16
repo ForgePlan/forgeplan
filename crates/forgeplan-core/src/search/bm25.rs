@@ -35,7 +35,10 @@ impl Bm25Index {
             .iter()
             .map(|r| {
                 let clean_body = strip_indexing_noise(&r.body);
-                Document::new(r.canonical_key.clone(), format!("{} {}", r.title, clean_body))
+                Document::new(
+                    r.canonical_key.clone(),
+                    format!("{} {}", r.title, clean_body),
+                )
             })
             .collect();
 
@@ -210,6 +213,18 @@ mod tests {
     }
 
     #[test]
+    fn bm25_does_not_index_yaml_frontmatter_fields() {
+        let record = mk(
+            "PRD-001",
+            "Unrelated title",
+            "---\nsecret_marker: yaml-only-marker\n---\n\nBody without that term",
+        );
+        let index = Bm25Index::build(std::slice::from_ref(&record));
+
+        assert_eq!(index.score(&record, "yaml-only-marker"), 0.0);
+    }
+
+    #[test]
     fn shared_display_aliases_keep_independent_canonical_search_hits() {
         let mut alpha = mk("PRD-001", "Alpha authentication", "alpha-only-token");
         alpha.canonical_key = "prd-alpha-k11111111111111111111111111111111".into();
@@ -221,8 +236,7 @@ mod tests {
         assert!(index.score(&records[0], "alpha-only-token") > 0.0);
         assert!(index.score(&records[1], "beta-only-token") > 0.0);
         let hits = index.search_scores("authentication", 10);
-        let keys: std::collections::BTreeSet<_> =
-            hits.into_iter().map(|(key, _)| key).collect();
+        let keys: std::collections::BTreeSet<_> = hits.into_iter().map(|(key, _)| key).collect();
         assert_eq!(
             keys,
             [

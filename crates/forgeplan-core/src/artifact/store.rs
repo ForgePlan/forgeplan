@@ -86,8 +86,6 @@ pub fn canonical_filename(canonical_key: &str) -> anyhow::Result<String> {
     Ok(format!("{key}.md"))
 }
 
-
-
 /// File-first counterpart to the indexed resolver.
 /// Resolve a local selector through the shared complete-document-set resolver.
 ///
@@ -125,7 +123,9 @@ pub async fn list_artifacts(workspace: &Path) -> anyhow::Result<Vec<ArtifactSumm
                 let status = fm_string(&fm, "status").unwrap_or_else(|| "Draft".into());
                 if let Some(id) = id {
                     results.push(ArtifactSummary {
-                        canonical_key: crate::artifact::canonical_key::canonical_key_from_document(&id, &content),
+                        canonical_key: crate::artifact::canonical_key::canonical_key_from_document(
+                            &id, &content,
+                        ),
                         id,
                         title: title.unwrap_or_default(),
                         kind,
@@ -166,13 +166,16 @@ mod tests {
         assert!(canonical_filename("with space").is_err());
     }
 
-
     fn write(ws: &Path, dir: &str, name: &str, fm_extra: &str) -> PathBuf {
         let d = ws.join(dir);
         std::fs::create_dir_all(&d).unwrap();
         let path = d.join(name);
         let stem = path.file_stem().unwrap().to_string_lossy();
-        let id = if stem.as_bytes().get(3) == Some(&b'-') {
+        // `mem-*` ids ARE the whole stem (issue #411); every other fixture
+        // name is `KIND-NNN-<slug>` and its id is the first two segments.
+        let id = if stem.starts_with("mem-") {
+            stem.to_string()
+        } else if stem.as_bytes().get(3) == Some(&b'-') {
             stem.splitn(3, '-').take(2).collect::<Vec<_>>().join("-")
         } else {
             "X".to_string()

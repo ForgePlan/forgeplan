@@ -121,7 +121,7 @@ impl Fixture {
         std::fs::write(
             &path,
             format!(
-                "---\nid: {id}\nkind: note\nstatus: {status}\ntitle: {title}\ndepth: tactical\n---\n\n## Summary\n\n{body}\n"
+                "---\nid: {id}\nkind: note\nstatus: {status}\ntitle: {title}\ndepth: tactical\n---\n\n## Summary\n\n{body}\n",
             ),
         )
         .unwrap();
@@ -191,8 +191,21 @@ fn event(
     source: &str,
     commit: Option<&str>,
 ) -> Value {
+    event_with_key((id, id), action, field, old, new, source, commit)
+}
+
+fn event_with_key(
+    (canonical_key, id): (&str, &str),
+    action: &str,
+    field: Option<&str>,
+    old: Option<&str>,
+    new: Option<&str>,
+    source: &str,
+    commit: Option<&str>,
+) -> Value {
     json!({
         "artifact_id": id,
+        "canonical_key": canonical_key,
         "action": action,
         "field": field,
         "old_value": old,
@@ -207,21 +220,7 @@ fn assert_events(actual: &[Value], expected: &[Value]) {
         .iter()
         .map(|entry| {
             let mut entry = entry.as_object().unwrap().clone();
-            // Nine columns now: the established eight plus the canonical
-            // key, which a receipt carries so two documents sharing an alias
-            // cannot be confused (#10). The key is identity metadata, not
-            // part of the event shape pinned below.
-            // The established eight columns, plus `canonical_key` when the
-            // receipt knows which document it is about. It is omitted when
-            // unknown (a legacy receipt), so both counts are legitimate; it
-            // is identity metadata either way, not part of the event shape
-            // pinned below.
-            assert!(
-                entry.len() == 8 || entry.len() == 9,
-                "eight established columns plus an optional canonical_key: {:?}",
-                entry.keys().collect::<Vec<_>>()
-            );
-            entry.remove("canonical_key");
+            assert_eq!(entry.len(), 9, "expected the canonical identity column");
             let timestamp = entry.remove("timestamp").unwrap();
             chrono::DateTime::parse_from_rfc3339(timestamp.as_str().unwrap()).unwrap();
             Value::Object(entry)
@@ -242,11 +241,21 @@ fn create_keeps_old_history_and_appends_once_in_both_layouts() {
         );
         let before = fixture.history();
         fixture.ok(&["new", "note", "New audit entry", "--allow-duplicate"]);
+        let created = fixture.json(&["get", "NOTE-002", "--json"]);
+        let created_key = created["canonical_key"].as_str().unwrap();
         let after = fixture.history();
         assert_eq!(after.len(), before.len() + 1);
         assert_events(
             &delta(&before, &after),
-            &[event("NOTE-002", "create", None, None, None, "cli", None)],
+            &[event_with_key(
+                (created_key, "NOTE-002"),
+                "create",
+                None,
+                None,
+                None,
+                "cli",
+                None,
+            )],
         );
         assert_eq!(
             fixture.history(),
@@ -261,7 +270,7 @@ fn create_keeps_old_history_and_appends_once_in_both_layouts() {
             1
         );
         assert!(
-            fixture.json(&["get", "NOTE-002", "--json"])["body"]
+            created["body"]
                 .as_str()
                 .unwrap()
                 .contains("New audit entry")
@@ -432,6 +441,10 @@ fn lifecycle_verbs_keep_their_established_status_events_and_reopen_pair() {
         );
         assert_eq!(fixture.history(), statuses);
         fixture.ok(&["reopen", "NOTE-003", "--reason", "New revision needed"]);
+        let revision_key = fixture.json(&["get", "NOTE-005", "--json"])["canonical_key"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let reopened = fixture.history();
         assert_eq!(reopened.len(), statuses.len() + 2);
         assert_events(
@@ -446,8 +459,8 @@ fn lifecycle_verbs_keep_their_established_status_events_and_reopen_pair() {
                     "cli",
                     None,
                 ),
-                event(
-                    "NOTE-005",
+                event_with_key(
+                    (&revision_key, "NOTE-005"),
                     "create",
                     Some("status"),
                     None,
@@ -620,10 +633,19 @@ fn ingest_create_update_skip_and_dry_run_preserve_the_original_events() {
                 .unwrap()
                 .contains("Original source purpose.")
         );
+        let created_key = initial["canonical_key"].as_str().unwrap();
         let after_create = fixture.history();
         assert_events(
             &delta(&before, &after_create),
-            &[event(id, "ingest_create", None, None, None, "cli", None)],
+            &[event_with_key(
+                (created_key, id),
+                "ingest_create",
+                None,
+                None,
+                None,
+                "cli",
+                None,
+            )],
         );
         fixture.ok(&["ingest", "--mapping", mapping, "--source", "c4-mini"]);
         assert_eq!(
@@ -650,12 +672,21 @@ fn ingest_create_update_skip_and_dry_run_preserve_the_original_events() {
             "c4-mini",
             "--update",
         ]);
+        let updated = fixture.json(&["get", id, "--json"]);
+        let updated_key = updated["canonical_key"].as_str().unwrap();
         let after_update = fixture.history();
         assert_events(
             &delta(&after_create, &after_update),
-            &[event(id, "ingest_update", None, None, None, "cli", None)],
+            &[event_with_key(
+                (updated_key, id),
+                "ingest_update",
+                None,
+                None,
+                None,
+                "cli",
+                None,
+            )],
         );
-        let updated = fixture.json(&["get", id, "--json"]);
         let updated_body = updated["body"].as_str().unwrap();
         assert!(updated_body.contains("Changed source purpose."));
         assert!(!updated_body.contains("Original source purpose."));

@@ -233,6 +233,38 @@ async fn activate_writes_the_status_into_canonical_frontmatter() {
     );
 }
 
+#[tokio::test]
+async fn activate_by_key_does_not_mutate_a_sibling_with_the_same_display_id() {
+    let tmp = workspace().await;
+    let ws = tmp.path();
+    let alpha = ws.join("notes/alpha.md");
+    let beta = ws.join("notes/beta.md");
+    std::fs::write(
+        &alpha,
+        "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Alpha\nslug: note-alpha\ndepth: tactical\n---\n\nAlpha body.\n",
+    ).unwrap();
+    let beta_bytes = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Beta\nslug: note-beta\ndepth: tactical\n---\n\nBeta body.\n";
+    std::fs::write(&beta, beta_bytes).unwrap();
+    let read = published_read(ws).await;
+    let guard = lock(ws).await;
+    let ctx = MutationContext::new(ws, &guard, None);
+    let result =
+        forgeplan_core::lifecycle::canonical::activate_captured(&ctx, &read, "note-alpha", false)
+            .await
+            .unwrap();
+    assert_eq!(result.artifact_id, "NOTE-001");
+    let alpha_bytes = std::fs::read_to_string(&alpha).unwrap();
+    assert!(alpha_bytes.contains("status: active"));
+    assert_eq!(std::fs::read_to_string(&beta).unwrap(), beta_bytes);
+    assert!(
+        forgeplan_core::lifecycle::canonical::activate_captured(&ctx, &read, "NOTE-001", false)
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read_to_string(&alpha).unwrap(), alpha_bytes);
+    assert_eq!(std::fs::read_to_string(&beta).unwrap(), beta_bytes);
+}
+
 /// The evidence gate blocks a PRD that has no linked evidence — and the
 /// refusal carries the canonical fix order, not a generic "failed".
 #[tokio::test]
@@ -1023,8 +1055,7 @@ async fn reopen_creates_the_successor_then_links_then_deprecates() {
         .iter()
         .find(|candidate| candidate.display_id == result.new_id)
         .expect("the reopened successor is in the document set");
-    let successor =
-        std::fs::read_to_string(ws.join(&successor_candidate.relative_path)).unwrap();
+    let successor = std::fs::read_to_string(ws.join(&successor_candidate.relative_path)).unwrap();
     assert!(
         successor.contains("status: draft"),
         "the successor must be a draft:\n{successor}"
@@ -1171,7 +1202,12 @@ async fn reopen_allocates_the_next_number_and_preserves_existing_documents() {
         .find(|candidate| candidate.display_id == result.new_id)
         .expect("the reopened successor is in the document set");
     assert_eq!(
-        successor.relative_path.file_name().unwrap().to_str().unwrap(),
+        successor
+            .relative_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap(),
         format!("{}.md", successor.canonical_key)
     );
 }

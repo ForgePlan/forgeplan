@@ -66,7 +66,9 @@ pub mod storage;
 pub mod view;
 pub mod workspace_read;
 
-mod durability;
+pub(crate) mod durability;
+#[cfg(windows)]
+pub(crate) use durability::{read_mutable_file, replace_mutable_file};
 mod owner;
 
 /// Test-only publication/native fault barriers (ADR-029 §8).
@@ -156,6 +158,14 @@ pub enum DiagnosticCode {
     PublicationUncertain,
     /// Two paths claim the same canonical identity.
     IdentityCollision,
+    /// A selector matched more than one display alias.
+    Ambiguous,
+    /// Multiple documents claim the same canonical key.
+    ConflictingCanonicalKey,
+    /// A selector cannot name an artifact.
+    InvalidSelector,
+    /// The full document set could not be observed.
+    IncompleteCapture,
     /// A `links:` entry is malformed or names a target we cannot represent.
     InvalidLinks,
     /// The active embedding profile is not the one a vector was built with.
@@ -178,10 +188,16 @@ pub enum DiagnosticCode {
     MissingIdentity,
     /// A `required` federated source could not answer a strict query.
     SourceUnavailable,
+    /// A pinned Git object is unavailable locally; no fetch or HEAD fallback.
+    RevisionUnavailable,
     /// The requested context budget cannot admit even the smallest unit that
     /// matched the task, so no pack can both respect the budget and carry
     /// evidence. Reported instead of an empty "successful" pack.
     InsufficientBudget,
+    /// ContextPack request parameters are invalid.
+    InvalidPackRequest,
+    /// A complete ContextPack was requested but could not be produced.
+    IncompletePack,
 }
 
 impl DiagnosticCode {
@@ -197,6 +213,10 @@ impl DiagnosticCode {
             Self::IndexGenerationUnavailable => "index_generation_unavailable",
             Self::PublicationUncertain => "publication_uncertain",
             Self::IdentityCollision => "identity_collision",
+            Self::Ambiguous => "ambiguous",
+            Self::ConflictingCanonicalKey => "conflicting_canonical_key",
+            Self::InvalidSelector => "invalid_selector",
+            Self::IncompleteCapture => "incomplete_capture",
             Self::InvalidLinks => "invalid_links",
             Self::ProfileIncompatible => "profile_incompatible",
             Self::IncarnationMismatch => "incarnation_mismatch",
@@ -208,7 +228,10 @@ impl DiagnosticCode {
             Self::UnsupportedIndexFilesystem => "unsupported_index_filesystem",
             Self::MissingIdentity => "missing_identity",
             Self::SourceUnavailable => "source_unavailable",
+            Self::RevisionUnavailable => "revision_unavailable",
             Self::InsufficientBudget => "insufficient_budget",
+            Self::InvalidPackRequest => "invalid_pack_request",
+            Self::IncompletePack => "incomplete_pack",
         }
     }
 
@@ -299,6 +322,14 @@ pub enum ConstellationError {
     IndexBusy { detail: String },
     /// A durable format carries a field this build cannot represent.
     IndexProtocolMismatch { detail: String },
+    /// The full source census could not resolve an artifact selector.
+    Resolve(crate::artifact::canonical_key::ResolveError),
+    /// Identity diagnostic paired with the exact source reads that produced it.
+    ResolveRead {
+        error: crate::artifact::canonical_key::ResolveError,
+        sources: Vec<federation::SourceRef>,
+        failures: Vec<federation::SourceFailure>,
+    },
     /// The active tables already exist.
     ///
     /// **Not a failure.** `NativeTable::create` / `create_empty` map
@@ -353,6 +384,12 @@ pub enum ConstellationError {
     /// in `failures` and flips `partial` instead. Snapshot reads never
     /// produce it — a lockfile's source set is frozen at pin time.
     SourceUnavailable { detail: String },
+    /// A Git snapshot's pinned object cannot be read locally.
+    RevisionUnavailable { detail: String },
+    /// Invalid ContextPack input.
+    InvalidPackRequest { detail: String },
+    /// The requested complete ContextPack has incomplete coverage.
+    IncompletePack { detail: String },
     /// No evidence unit fits the requested token budget.
     ///
     /// A pack that respects the budget and a pack that carries evidence are
@@ -371,6 +408,20 @@ impl ConstellationError {
         match self {
             Self::SourceBusy { .. } => DiagnosticCode::SourceBusy,
             Self::IndexBusy { .. } => DiagnosticCode::IndexBusy,
+            Self::Resolve(error) | Self::ResolveRead { error, .. } => match error {
+                crate::artifact::canonical_key::ResolveError::Ambiguous { .. } => {
+                    DiagnosticCode::Ambiguous
+                }
+                crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey {
+                    ..
+                } => DiagnosticCode::ConflictingCanonicalKey,
+                crate::artifact::canonical_key::ResolveError::InvalidSelector { .. } => {
+                    DiagnosticCode::InvalidSelector
+                }
+                crate::artifact::canonical_key::ResolveError::IncompleteCapture { .. } => {
+                    DiagnosticCode::IncompleteCapture
+                }
+            },
             Self::IndexProtocolMismatch { .. } | Self::ProtocolOverflow { .. } => {
                 DiagnosticCode::IndexProtocolMismatch
             }
@@ -387,6 +438,9 @@ impl ConstellationError {
             Self::Io { .. } | Self::StorageIo { .. } => DiagnosticCode::StorageIo,
             Self::DurabilityUnavailable { .. } => DiagnosticCode::DurabilityUnavailable,
             Self::SourceUnavailable { .. } => DiagnosticCode::SourceUnavailable,
+            Self::RevisionUnavailable { .. } => DiagnosticCode::RevisionUnavailable,
+            Self::InvalidPackRequest { .. } => DiagnosticCode::InvalidPackRequest,
+            Self::IncompletePack { .. } => DiagnosticCode::IncompletePack,
             Self::InsufficientBudget { .. } => DiagnosticCode::InsufficientBudget,
         }
     }
@@ -403,6 +457,9 @@ impl fmt::Display for ConstellationError {
                 "source_busy: source still moving after {attempts} capture attempts in {elapsed_ms}ms"
             ),
             Self::IndexBusy { detail } => write!(f, "index_busy: {detail}"),
+            Self::Resolve(error) | Self::ResolveRead { error, .. } => {
+                write!(f, "{}: {error}", self.code().as_str())
+            }
             Self::IndexProtocolMismatch { detail } => {
                 write!(f, "index_protocol_mismatch: {detail}")
             }
@@ -432,13 +489,16 @@ impl fmt::Display for ConstellationError {
                 write!(f, "index_protocol_mismatch: {field} overflowed at {value}")
             }
             Self::SourceUnavailable { detail } => write!(f, "source_unavailable: {detail}"),
+            Self::RevisionUnavailable { detail } => write!(f, "revision_unavailable: {detail}"),
+            Self::InvalidPackRequest { detail } => write!(f, "invalid_pack_request: {detail}"),
+            Self::IncompletePack { detail } => write!(f, "incomplete_pack: {detail}"),
             Self::InsufficientBudget {
                 budget_tokens,
                 smallest_unit_tokens,
             } => write!(
                 f,
-                "insufficient_budget: budget of {budget_tokens} tokens cannot admit the smallest \
-                 matching unit ({smallest_unit_tokens} tokens); raise the budget or narrow the task"
+                "insufficient_budget: response needs approximately {smallest_unit_tokens} tokens \
+                 including metadata; increase --budget and --byte-cap (requested budget: {budget_tokens})"
             ),
         }
     }
